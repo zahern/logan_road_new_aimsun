@@ -1,0 +1,10 @@
+*.md
+.claude
+*.apa
+*.ang
+*.sang
+*.sqlite
+*.txt
+*.log
+*.csv
+*.json
