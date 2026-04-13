@@ -2,8 +2,11 @@ from AAPI import *
 import sys
 import csv
 import collections
-AKIPrintString("PYTHON EXECUTABLE: " + sys.executable)
-AKIPrintString("PYTHON VERSION: " + sys.version)
+try:
+    AKIPrintString("PYTHON EXECUTABLE: " + sys.executable)
+    AKIPrintString("PYTHON VERSION: " + sys.version)
+except Exception:
+    pass
 sys.path.insert(0, r"C:\AimsunPackages")
 import matplotlib
 matplotlib.use('Agg')
@@ -20,34 +23,87 @@ import math
 # =============================================================================
 
 # ── Core control modes ────────────────────────────────────────────────────────
-LOG_HARMONY   = False  # [HARMONY]    GE/insertion decisions in HARMONY mode
-LOG_URTSP     = False   # [URTSP]      detection/extension/insertion in URTSP mode
-LOG_TSP_EVT   = False   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
+LOG_HARMONY   = True  # [HARMONY]    GE/insertion decisions in HARMONY mode
+LOG_URTSP     = True   # [URTSP]      detection/extension/insertion in URTSP mode
+LOG_TSP_EVT   = True   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
 
 # ── Initialisation ────────────────────────────────────────────────────────────
-LOG_INIT      = False   # [INIT]       controller creation, phase list, veh types
-LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
-LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
-LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
-LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
+LOG_INIT      = True   # [INIT]       controller creation, phase list, veh types
+LOG_NODE_ID   = True   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
+LOG_SECTION   = True  # [SECTION]    incoming-section & topology init detail
+LOG_JUNC_XY   = True  # [JUNC_XY]   junction centroid coordinate resolution
+LOG_SIDE_DISC = True  # [SIDE_DISC]  side-street section discovery
 
 # ── Group-Based controller ────────────────────────────────────────────────────
-LOG_GB        = False  # [GB]         phase build/expand/terminate decisions
-LOG_GB_BUS    = False   # [GB BUS]     bus detection events inside GroupBasedController
-LOG_GB_DELAY  = False  # [GB DELAY]   per-step delay computation in GroupBasedController
-LOG_GB_STATE  = False   # [GB STATE]   state-machine transitions + watchdog resets
+LOG_GB        = True  # [GB]         phase build/expand/terminate decisions
+LOG_GB_BUS    = True   # [GB BUS]     bus detection events inside GroupBasedController
+LOG_GB_DELAY  = True  # [GB DELAY]   per-step delay computation in GroupBasedController
+LOG_GB_STATE  = True   # [GB STATE]   state-machine transitions + watchdog resets
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
-LOG_PT_SCAN   = False  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
-LOG_DEMAND    = False  # [DEMAND]     vehicle-type position detection at startup
+LOG_PT_SCAN   = True  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
+LOG_DEMAND    = True  # [DEMAND]     vehicle-type position detection at startup
 
 # ── Delay & statistics ────────────────────────────────────────────────────────
 LOG_STATS     = True   # [STATS]      end-of-simulation results summary
-LOG_DELAY     = False  # [DELAY]      IntersectionController collect_delay detail
+LOG_DELAY     = True  # [DELAY]      IntersectionController collect_delay detail
 
 # ── Diagnostic heartbeat ──────────────────────────────────────────────────────
-LOG_HEARTBEAT = False  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
-LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and state
+LOG_HEARTBEAT = True  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
+LOG_CORRIDOR  = True   # [CORRIDOR]   corridor-group coordination events and state
+
+# ── Per-intersection detection-level logging ──────────────────────────────────
+# List junction IDs to enable verbose per-step detection scans for those junctions.
+# Independent of LOG_GB_BUS — logs every vehicle checked even when no request fires.
+# Example: LOG_DETECTION_INTERSECTIONS = [17249, 17383]
+LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to enable
+
+# ── Detection point marking ───────────────────────────────────────────────────
+# MARK_DETECTION_POINTS = True:
+#   • Changes the detected bus to a bright RED colour in the Aimsun animation
+#     at the exact simulation step when the first TSP request fires.
+#     (Colour is reset after the bus clears the intersection.)
+#   • Writes every first-detection event to:
+#       logs/detection_points.csv   — X, Y, junction_id, veh_id, sim_time, tier
+#       logs/detection_points.geojson  — importable as a map layer in any GIS tool
+#     The GeoJSON can be loaded via File → Import in Aimsun or opened in QGIS/ArcGIS
+#     to see coloured dots exactly where each bus was first detected.
+# Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
+MARK_DETECTION_POINTS: bool = True
+
+# =============================================================================
+# AIMSUN CANVAS OVERLAY
+# OVERLAY_DETECTIONS_ON_MAP = True:
+#   After the simulation finishes (AAPIFinish) this script uses PyANGKernel to
+#   create GKAnnotation markers directly in the Aimsun network editor view at
+#   the exact model-coordinate location of each bus detection.  Markers persist
+#   in the network view after the simulation — no external GIS tool needed.
+#
+#   Each marker shows:  "● Bus <id>  jct <jct>  t=<sim_time>s  [<tier>]"
+#
+#   The annotations are created in a named layer "TSP Bus Detections" so you
+#   can toggle their visibility from the Aimsun Layers panel.
+#
+# NOTE: requires PyANGKernel (bundled with Aimsun Next).  Fails silently if
+#   the API is unavailable or the model cannot be accessed.
+#
+# Set False to skip (e.g. if you only want the CSV / PNG outputs).
+# =============================================================================
+OVERLAY_DETECTIONS_ON_MAP: bool = True
+
+# =============================================================================
+# LIVE STATUS DASHBOARD
+# STATUS_DASHBOARD_INTERVAL_S:
+#   How often (in simulation seconds) to print a formatted status table to the
+#   Aimsun console showing every intersection's current TSP state.
+#   The table always prints regardless of VERBOSE so you can see what the
+#   controller is doing at a glance without scrolling through debug logs.
+#
+#   Columns:  Jct | Phase | Flag | GE-debt | Bus? | det/ext/ins counts
+#
+#   Set to 0 to disable the dashboard.
+# =============================================================================
+STATUS_DASHBOARD_INTERVAL_S: float = 60.0   # 0 = disabled
 
 # =============================================================================
 # MASTER CONSOLE SWITCH
@@ -56,7 +112,7 @@ LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and st
 #                   goes to the log file so you can review it after the run.
 #                   Critical errors (simulation halted) are always shown.
 # =============================================================================
-VERBOSE = False
+VERBOSE = True
 
 try:
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -66,6 +122,87 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 LOG_FILE = os.path.join(LOG_DIR, f"Aimsun_TSP_Log_{timestamp}.txt")
+
+# Detection-point output files (written when MARK_DETECTION_POINTS=True)
+_DET_CSV      = os.path.join(LOG_DIR, f"detection_points_{timestamp}.csv")
+_DET_GEOJSON  = os.path.join(LOG_DIR, f"detection_points_{timestamp}.geojson")
+# Junction centroids — written once per junction in AAPIFinish so the plot
+# script knows where each intersection is in model coordinates.
+_JUNC_CSV     = os.path.join(LOG_DIR, f"junction_centroids_{timestamp}.csv")
+
+# Tracks (junction_id, veh_id) pairs already marked — prevents duplicates
+_marked_detections: set = set()
+# Accumulates GeoJSON features; flushed to file in AAPIFinish
+_geojson_features: list = []
+# Diagnostic counters — incremented in _mark_detection_point regardless of early-returns
+_mark_calls_total:   int = 0   # every call (incl. disabled / duplicate)
+_mark_calls_written: int = 0   # calls that actually wrote a new row
+
+# Dashboard timer — tracks when the next status table should print
+_last_dashboard_t: float = -1e9
+
+
+def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
+                          sim_time: float, tier: str):
+    """
+    Record the first detection event for this (junction, vehicle) pair.
+
+    1. Writes a row to detection_points.csv immediately.
+    2. Appends a GeoJSON feature (flushed to .geojson in AAPIFinish).
+    3. Attempts to colour the vehicle bright red in the Aimsun animation.
+       The colour API may not exist in all Aimsun builds — failure is silent.
+    """
+    global _mark_calls_total, _mark_calls_written
+    _mark_calls_total += 1
+
+    if not MARK_DETECTION_POINTS:
+        return
+    key = (junction_id, veh_id)
+    if key in _marked_detections:
+        return
+    _marked_detections.add(key)
+    _mark_calls_written += 1
+
+    # ── 1. CSV ────────────────────────────────────────────────────────────────
+    write_header = not os.path.isfile(_DET_CSV)
+    try:
+        with open(_DET_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(["sim_time_s", "junction_id", "veh_id",
+                             "x", "y", "tier"])
+            w.writerow([f"{sim_time:.1f}", junction_id, veh_id,
+                        f"{x:.3f}", f"{y:.3f}", tier])
+    except Exception as _e:
+        log_to_file(f"[MARK] CSV write failed: {_e}", force=True)
+
+    # ── 2. GeoJSON feature accumulation ───────────────────────────────────────
+    _geojson_features.append({
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [x, y]},
+        "properties": {
+            "junction_id": junction_id,
+            "veh_id":      veh_id,
+            "sim_time_s":  round(sim_time, 1),
+            "tier":        tier,
+        },
+    })
+
+    # ── 3. Colour vehicle red in Aimsun animation ─────────────────────────────
+    # AKIVehSetVehicleColor(veh_id, R, G, B) is available in Aimsun Next ≥22.
+    # Looked up via globals() so static analysis doesn't flag an undefined name
+    # (it arrives via `from AAPI import *`).  Falls back silently if absent.
+    try:
+        _color_fn = globals().get("AKIVehSetVehicleColor")
+        if _color_fn is not None:
+            _color_fn(veh_id, 255, 0, 0)   # bright red
+    except Exception:
+        pass
+
+    log_to_file(
+        f"[MARK] jct={junction_id} v={veh_id} tier={tier} "
+        f"xy=({x:.1f},{y:.1f}) t={sim_time:.1f}s"
+    )
 
 
 def resolve_vehicle_type_positions():
@@ -132,14 +269,44 @@ def _vprint(msg):
 # "GROUP_BASED_URTSP"   — group-based SG control + Unrestricted TSP (URTSP) upstream-detector bus detection
 # "GROUP_BASED_HARMONY" — group-based SG control + harmony-search-optimised bus extension
 # =============================================================================
-CONTROL_MODE = "HARMONY"   # set control mode here
+CONTROL_MODE = "GROUP_BASED_HARMONY"   # set control mode here
 GROUP_BASED_BUS_PRIORITY = True
 
-# Set True to enable Kalman-filter based corridor green-wave coordination.
-# When True, granting bus priority at junction[i] pre-arms junction[i+1..i+3]
-# using a 1D Kalman tracker so downstream greens are ready on arrival.
-# Set False to run each junction independently (original behaviour).
-COORDINATED_TSP = False
+# =============================================================================
+# CORRIDOR COORDINATION SETTINGS
+#
+# COORDINATED_TSP : True  → intersections in the same INTERSECTION_GROUPS key
+#   coordinate their TSP signals.  Bus priority at junction[i] pre-arms
+#   junction[i+1..i+3] so downstream greens are ready on arrival.
+#   False → each junction runs independently (original behaviour).
+#
+# COORDINATION_ALGO : algorithm used when COORDINATED_TSP=True.
+#
+#   "KALMAN"    — 1-D Kalman filter (position + speed state vector).
+#                 Robust to measurement noise, adapts to varying bus speeds.
+#                 Best choice for free-flow / lightly congested corridors.
+#
+#   "SHOCKWAVE" — Kalman ETA plus a queue-clearance correction derived from
+#                 shockwave theory (ShockwaveSpeed functions).  When the
+#                 downstream intersection has a large queue the discharge wave
+#                 propagation time is added to the bus travel ETA, giving a
+#                 more accurate pre-arm moment under congested conditions.
+#
+#   "OBJECTIVE" — Adaptive lead time: instead of a fixed PRE_GREEN_LEAD_S the
+#                 coordinator picks the lead time that maximises a combined
+#                 person-level objective:
+#                   J = COORD_OBJ_ALPHA * bus_delay_saved_persons
+#                     - COORD_OBJ_BETA  * normal_throughput_displaced_persons
+#                 This prevents the perverse incentive of pure delay
+#                 minimisation (which can game the metric by serving fewer
+#                 vehicles). Adjust ALPHA/BETA to reflect your priorities.
+#
+# COORD_OBJ_ALPHA / COORD_OBJ_BETA only apply when COORDINATION_ALGO="OBJECTIVE".
+# =============================================================================
+COORDINATED_TSP     = False        # True to enable corridor-wide TSP coordination, False for independent intersection control
+COORDINATION_ALGO   = "KALMAN"   # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE"
+COORD_OBJ_ALPHA     = 1.0        # weight on bus person-delay savings
+COORD_OBJ_BETA      = 0.5        # weight on displaced normal-traffic throughput
 
 TSP_ACTIVE_INTERSECTIONS = None
 _bus_type_needs_recheck = False   # set True at AAPIInit when bus_pos unresolved
@@ -591,7 +758,9 @@ class GroupBasedController:
         self.state          = self.IDLE
         self.sg_list        = []              # currently green SG positions
         self.non_activated  = set(self.all_sg)  # legacy per-SG tracking (kept for starvation)
-        self._group_served  = set()           # indices into phase_groups served this cycle
+        self._group_served          = set()   # indices into phase_groups served this cycle
+        self._current_group_idx     = None    # index of currently active phase group
+        self._interrupted_group_idx = None    # group cut short by forced TSP insertion
         self.lower_time     = {}
         self.upper_time     = {}
         self.intergreen_end = 0.0
@@ -609,12 +778,13 @@ class GroupBasedController:
         self.extension_used    = 0.0          # cumulative extension granted
         self.prev_bus_presence = {det: 0 for det in self.bus_det}
         # Junction-level TSP cooldown: after ANY bus phase is served, suppress all
-        # new bus requests until this time.  This guarantees normal round-robin can
-        # serve every phase group (including low-demand right-turn groups) before
-        # another bus can hijack the cycle — regardless of how many detectors fire.
-        # Duration is configured via "tsp_cycle_cooldown" in GroupBasedConfig;
-        # default 60 s gives roughly one non-bus cycle at a typical 135 s plan.
-        self._tsp_cycle_cooldown  = float(gb_config.get("tsp_cycle_cooldown", 60.0))
+        # new bus requests for this many seconds so normal round-robin can serve
+        # remaining phase groups before another bus hijacks the cycle.
+        # Default 25 s: short enough that a bus arriving ~30-60 s after the last
+        # TSP event is still detected; long enough to prevent back-to-back grants
+        # on the same bus that crosses multiple detection tiers rapidly.
+        # Override per-intersection via 'tsp_cycle_cooldown' in GroupBasedConfig.
+        self._tsp_cycle_cooldown  = float(gb_config.get("tsp_cycle_cooldown", 25.0))
         self._tsp_cooldown_until  = -1.0      # sim time before which bus requests are blocked
 
         # TSPStrategy (matches original group-based algorithm):
@@ -654,6 +824,15 @@ class GroupBasedController:
         self._harmony_bandwidth   = float(gb_config.get("harmony_bandwidth",    2.0))
         self._harmony_iterations  = int(gb_config.get("harmony_iterations",    50))
 
+        # Exit-detector-based phase restoration: when the active bus passes one
+        # of these detectors the bus priority phase is ended early so normal
+        # round-robin can resume immediately rather than waiting for max_green.
+        self.bus_exit_det        = list(gb_config.get("bus_exit_det", []))
+        self._bus_exit_det_geom  = {}   # {det_id: (section_id, ini_pos, fin_pos)}
+        self._active_bus_veh_id  = None # veh_id of the bus currently being served
+        if self.bus_exit_det:
+            self._build_exit_det_geometry()
+
         # Starvation tracking (incremented per step when SG has demand but is red)
         self.wait_time = {sg: 0.0 for sg in self.all_sg}
 
@@ -661,6 +840,10 @@ class GroupBasedController:
         # after all controllers are created.  None when not part of a corridor group
         # or when COORDINATED_TSP=False.
         self._corridor_coord = None
+        # Set True by CorridorCoordinator when it fires a pre-green request here.
+        # Cleared once the coordinated phase is activated (_activate_for_bus).
+        # While True, the junction is exempt from the corridor wave ban.
+        self._coord_sourced_request: bool = False
 
         _vprint(
             f"[GB] Junction {junction_id} | tsp_mode={tsp_mode} | "
@@ -733,6 +916,50 @@ class GroupBasedController:
             )
 
     # =========================================================================
+    # EXIT DETECTOR SUPPORT
+    # =========================================================================
+
+    def _build_exit_det_geometry(self):
+        """Resolve section/position geometry for bus exit detectors."""
+        for det_id in self.bus_exit_det:
+            try:
+                props = AKIDetGetPropertiesDetectorById(det_id)
+                if props.report >= 0:
+                    self._bus_exit_det_geom[det_id] = (
+                        props.IdSection, props.InitialPosition, props.FinalPosition)
+            except Exception:
+                pass
+
+    def _check_bus_exit_cleared(self) -> bool:
+        """
+        Return True if the active priority bus has passed an exit detector.
+        Scans all PT-line vehicles for self._active_bus_veh_id; if that vehicle
+        is at or past the exit detector section/position the bus has cleared.
+        If the vehicle is no longer in the network it is also treated as cleared.
+        """
+        if not self._bus_exit_det_geom or self._active_bus_veh_id is None:
+            return False
+        try:
+            n_lines = AKIPTGetNumberLines()
+            bus_found = False
+            for li in range(n_lines):
+                n_vehs = AKIPTGetNumberVehiclesInLineSection(li, -1, self.bus_type_pos)
+                for vi in range(n_vehs):
+                    inf = AKIPTGetInfVehicleInLineSection(li, -1, vi, self.bus_type_pos)
+                    if not hasattr(inf, 'idVehicle') or inf.report < 0:
+                        continue
+                    if inf.idVehicle != self._active_bus_veh_id:
+                        continue
+                    bus_found = True
+                    for _, (sec_id, ini_pos, _fin_pos) in self._bus_exit_det_geom.items():
+                        if inf.idSection == sec_id and inf.CurrentPos >= ini_pos:
+                            return True  # bus is at/past exit detector
+            # Bus not found in any PT line — it has left the network
+            return not bus_found
+        except Exception:
+            return False
+
+    # =========================================================================
     # MAIN STEP
     # =========================================================================
 
@@ -788,6 +1015,20 @@ class GroupBasedController:
         if self.state == self.GREEN:
             self._handle_bus_logic(time, queue)
             self._update_time_bounds(time)
+            # ── Exit-detector early termination of bus priority phase ──────────
+            # When the active bus clears an exit detector, collapse upper_time
+            # to trigger phase termination on the next _check_termination call.
+            if (self.tsp_strategy > 0
+                    and self.bus_exit_det
+                    and self._check_bus_exit_cleared()):
+                for sg in self.sg_list:
+                    self.upper_time[sg] = time
+                if LOG_GB_BUS:
+                    _vprint(
+                        f"[GB] t={time:.1f} jct={self.junction_id} "
+                        f"bus v={self._active_bus_veh_id} cleared exit detector "
+                        f"— ending priority phase early"
+                    )
             self._apply_signals(time, timeSta)   # apply current phase signals first
             self._check_termination(time, queue) # then check — _force_intergreen sets
             if self.sg_list:                     # at least one SG is green: healthy
@@ -804,7 +1045,12 @@ class GroupBasedController:
                     )
                 self.state = self.IDLE
                 queue = self._compute_queue()
-                self._build_new_phase(time, timeSta, queue)
+                if self._interrupted_group_idx is not None:
+                    # Restore the group that the bus forced out — mirrors
+                    # IntersectionController.restore_phase_if_needed() flag==2.
+                    self._restore_interrupted_group(time, timeSta, queue)
+                else:
+                    self._build_new_phase(time, timeSta, queue)
                 self._last_phase_t = time
             return
 
@@ -941,7 +1187,38 @@ class GroupBasedController:
         """
         detected = False
 
+        # Per-intersection detection trace: independent of LOG_GB_BUS; lists every
+        # vehicle checked so you can see why a detection did or did not fire.
+        _log_det = self.junction_id in LOG_DETECTION_INTERSECTIONS
+
+        # Forced 10-minute heartbeat so we can see _detect_bus is running and
+        # what state it sees.  Always printed — helps diagnose "no CSV" issues.
+        _det_hb_key = '_det_hb_t'
+        _det_hb_interval = 600.0
+        if time - getattr(self, _det_hb_key, -_det_hb_interval) >= _det_hb_interval:
+            setattr(self, _det_hb_key, time)
+            try:
+                _n_pt_lines = AKIPTGetNumberLines()
+            except Exception:
+                _n_pt_lines = -1
+            log_to_file(
+                f"[DET HB] t={time:.0f} jct={self.junction_id} "
+                f"bus_sg={self.bus_sg} bus_request={self.bus_request} "
+                f"bus_type_pos={self.bus_type_pos} "
+                f"bus_det={self.bus_det} "
+                f"incoming_secs={self.incoming_sections} "
+                f"n_pt_lines={_n_pt_lines} "
+                f"junc_xy_cache={getattr(self,'_junction_xy_cache',None)} "
+                f"detection_zone_m={self._detection_zone_m:.0f} "
+                f"eta_min={self._eta_min_s:.0f}s "
+                f"mark_total={_mark_calls_total}",
+                force=True
+            )
+
         junc_xy = self._get_junction_xy()
+        # Cache on self so _detect_bus_urtsp and coordinator can use it too
+        if junc_xy is not None and not getattr(self, '_junction_xy_cache', None):
+            self._junction_xy_cache = junc_xy
         jx = jy = None
         if junc_xy is not None:
             jx, jy = junc_xy
@@ -959,35 +1236,76 @@ class GroupBasedController:
             speed_ms = max(speed_kmh / 3.6, 1.0)
             return dist_m / speed_ms
 
-        def _request_bus(veh_id, source, eta, dist_m, approach):
-            if not self.bus_sg or self.bus_request is not None:
-                return
-            if time < self._tsp_cooldown_until:
-                return
-            # ETA gating — ignore if bus is too close or too far
-            if eta < self._eta_min_s:
-                if LOG_GB_BUS:
+        def _request_bus(veh_id, source, eta, dist_m, approach, xy=None):
+            """
+            xy : (float, float) | None  — exact bus coordinates at detection.
+                 T1 passes (inf.xCurrentPos, inf.yCurrentPos).
+                 T2/T3 pass None; junction XY (jx, jy) is used as fallback.
+            """
+            # ── Corridor wave suppression ─────────────────────────────────────
+            # When a coordination wave is active this junction is banned from
+            # raising independent bus requests.  Requests sourced by the
+            # coordinator (_coord_sourced_request already set on self) are exempt
+            # — they will be processed in IDLE via _activate_for_bus, not here.
+            if (self._corridor_coord is not None
+                    and COORDINATED_TSP
+                    and self._corridor_coord.is_wave_banned(self.junction_id)):
+                if _log_det or LOG_CORRIDOR:
                     _vprint(
-                        f"[GB BUS] t={time:.1f} jct={self.junction_id} "
+                        f"[CORRIDOR WAVE] t={time:.1f} jct={self.junction_id} "
+                        f"v={veh_id} — SUPPRESSED (wave active for bus="
+                        f"{self._corridor_coord._wave_veh_id})"
+                    )
+                return
+            # ── ETA gates first — drop buses outside the actionable window ────
+            if eta < self._eta_min_s:
+                if LOG_GB_BUS or _log_det:
+                    _vprint(
+                        f"[DET] t={time:.1f} jct={self.junction_id} "
                         f"v={veh_id} [{approach}] dist={dist_m:.0f}m "
-                        f"ETA={eta:.1f}s < min={self._eta_min_s:.0f}s — skipped (too close)"
+                        f"ETA={eta:.1f}s < min={self._eta_min_s:.0f}s — too close"
                     )
                 return
             if eta > eta_max:
-                if LOG_GB_BUS:
+                if LOG_GB_BUS or _log_det:
                     _vprint(
-                        f"[GB BUS] t={time:.1f} jct={self.junction_id} "
+                        f"[DET] t={time:.1f} jct={self.junction_id} "
                         f"v={veh_id} [{approach}] dist={dist_m:.0f}m "
-                        f"ETA={eta:.1f}s > max={eta_max:.0f}s — deferred (too far)"
+                        f"ETA={eta:.1f}s > max={eta_max:.0f}s — too far (deferred)"
                     )
                 return
-            self.bus_request   = self.bus_sg
-            self._bus_eta      = eta
-            self._bus_det_time = time
-            if LOG_GB_BUS:
+            # ── Bus is inside the detection zone — mark it (first time only) ──
+            # Always write the CSV row; fall back to (0,0) if XY is unavailable
+            # so the counter increments and the file is created regardless.
+            _mx = (xy[0] if xy is not None else jx) if (xy is not None or jx is not None) else 0.0
+            _my = (xy[1] if xy is not None else jy) if (xy is not None or jy is not None) else 0.0
+            _mark_detection_point(self.junction_id, veh_id, _mx, _my, time, source)
+            # ── Now check if we should raise a new request ────────────────────
+            if not self.bus_sg or self.bus_request is not None:
+                if _log_det:
+                    _vprint(
+                        f"[DET] t={time:.1f} jct={self.junction_id} "
+                        f"v={veh_id} [{source}|{approach}] dist={dist_m:.0f}m "
+                        f"ETA={eta:.1f}s — SKIPPED (bus_sg={self.bus_sg} "
+                        f"req_active={self.bus_request is not None})"
+                    )
+                return
+            if time < self._tsp_cooldown_until:
+                if _log_det:
+                    _vprint(
+                        f"[DET] t={time:.1f} jct={self.junction_id} "
+                        f"v={veh_id} [{source}|{approach}] dist={dist_m:.0f}m "
+                        f"ETA={eta:.1f}s — COOLDOWN until={self._tsp_cooldown_until:.1f}s"
+                    )
+                return
+            self.bus_request        = self.bus_sg
+            self._bus_eta           = eta
+            self._bus_det_time      = time
+            self._active_bus_veh_id = veh_id
+            if LOG_GB_BUS or _log_det:
                 _vprint(
-                    f"[GB BUS] t={time:.1f} jct={self.junction_id} "
-                    f"detected [{source}|{approach}] v={veh_id} "
+                    f"[DET] t={time:.1f} jct={self.junction_id} "
+                    f"DETECTED [{source}|{approach}] v={veh_id} "
                     f"dist={dist_m:.0f}m ETA={eta:.1f}s "
                     f"window=[{self._eta_min_s:.0f},{eta_max:.0f}]s "
                     f"→ requesting SG {self.bus_sg}"
@@ -1029,6 +1347,12 @@ class GroupBasedController:
                         dy   = float(inf.yCurrentPos) - jy
                         dist = (dx * dx + dy * dy) ** 0.5
                         if dist > detection_zone_m:
+                            if _log_det:
+                                _vprint(
+                                    f"[DET T1] t={time:.1f} jct={self.junction_id} "
+                                    f"v={veh_id} type={inf.type} "
+                                    f"dist={dist:.0f}m > zone={detection_zone_m:.0f}m — out of range"
+                                )
                             continue
                         try:
                             spd_kmh = float(inf.CurrentSpeed)
@@ -1036,6 +1360,13 @@ class GroupBasedController:
                             spd_kmh = 40.0
                         eta      = _eta_from_dist(dist, spd_kmh)
                         approach = _approach_label(getattr(inf, 'idSection', -1))
+                        if _log_det:
+                            _vprint(
+                                f"[DET T1] t={time:.1f} jct={self.junction_id} "
+                                f"v={veh_id} type={inf.type} bus_pos={self.bus_type_pos} "
+                                f"dist={dist:.0f}m spd={spd_kmh:.0f}km/h "
+                                f"ETA={eta:.1f}s [{approach}] sec={getattr(inf,'idSection',-1)}"
+                            )
                     else:
                         # No junction coordinates yet — fall back to section membership
                         if not hasattr(self, '_turn_origin_secs'):
@@ -1065,7 +1396,8 @@ class GroupBasedController:
                         approach = _approach_label(getattr(inf, 'idSection', -1))
 
                     if not detected:
-                        _request_bus(veh_id, "PT-coord", eta, dist, approach)
+                        _bus_xy = (float(inf.xCurrentPos), float(inf.yCurrentPos)) if jx is not None else None
+                        _request_bus(veh_id, "PT-coord", eta, dist, approach, xy=_bus_xy)
                     detected = True
                 except Exception:
                     continue
@@ -1095,7 +1427,9 @@ class GroupBasedController:
                             continue
                         eta      = _eta_from_dist(max(dist, 1.0), spd_kmh)
                         approach = _approach_label(sec_id)
-                        _request_bus(inf.idVeh, f"sec={sec_id}", eta, dist, approach)
+                        # T2 has no per-vehicle XY; junction centroid is best fallback
+                        _request_bus(inf.idVeh, f"sec={sec_id}", eta, dist, approach,
+                                     xy=(jx, jy) if jx is not None else None)
                         detected = True
                         break
                 except Exception:
@@ -1110,6 +1444,12 @@ class GroupBasedController:
             try:
                 current = AKIDetGetPresenceCyclebyId(det, 1)
                 rising  = current == 1 and self.prev_bus_presence.get(det, 0) == 0
+                if _log_det:
+                    _vprint(
+                        f"[DET T3] t={time:.1f} jct={self.junction_id} "
+                        f"det={det} presence={current} prev={self.prev_bus_presence.get(det,0)} "
+                        f"rising={rising}"
+                    )
                 self.prev_bus_presence[det] = current
                 if not rising:
                     continue
@@ -1128,7 +1468,9 @@ class GroupBasedController:
                     spd      = 40.0
                     approach = "?"
                 eta = _eta_from_dist(dist, spd)
-                _request_bus(-det, f"det={det}", eta, dist, approach)
+                # T3 has no vehicle XY; junction centroid is best fallback
+                _request_bus(-det, f"det={det}", eta, dist, approach,
+                             xy=(jx, jy) if jx is not None else None)
             except Exception:
                 pass
 
@@ -1172,6 +1514,34 @@ class GroupBasedController:
         """
         DETECTION_WINDOW_M = 20.0   # metres either side of detector zone
 
+        # Per-intersection verbose trace (independent of LOG_GB_BUS)
+        _log_det = self.junction_id in LOG_DETECTION_INTERSECTIONS
+
+        # Populate junction XY cache if not already set (used by mark_detection_point)
+        if not getattr(self, '_junction_xy_cache', None):
+            _jxy = self._get_junction_xy()
+            if _jxy:
+                self._junction_xy_cache = _jxy
+
+        # 10-minute heartbeat — shows _detect_bus_urtsp IS running even when
+        # VERBOSE=False.  Helps diagnose "no CSV" issues.
+        _hb_key = '_urtsp_hb_t'
+        if time - getattr(self, _hb_key, -601.0) >= 600.0:
+            setattr(self, _hb_key, time)
+            _jxy_c = getattr(self, '_junction_xy_cache', None)
+            try:
+                _n_pt = AKIPTGetNumberLines()
+            except Exception:
+                _n_pt = -1
+            log_to_file(
+                f"[DET HB URTSP] t={time:.0f} jct={self.junction_id} "
+                f"bus_sg={self.bus_sg} bus_req={self.bus_request} "
+                f"bus_type_pos={self.bus_type_pos} bus_det={self.bus_det} "
+                f"n_pt_lines={_n_pt} jxy_cache={_jxy_c} "
+                f"mark_total={_mark_calls_total}",
+                force=True
+            )
+
         for det_id in self.bus_det:
             # Track previous presence for rising-edge fallback
             try:
@@ -1180,6 +1550,13 @@ class GroupBasedController:
                 current_presence = 0
             was_present = self.prev_bus_presence.get(det_id, 0)
             self.prev_bus_presence[det_id] = current_presence
+
+            if _log_det:
+                _vprint(
+                    f"[DET URTSP] t={time:.1f} jct={self.junction_id} "
+                    f"det={det_id} presence={current_presence} prev={was_present} "
+                    f"cooldown_ok={time >= self._tsp_cooldown_until}"
+                )
 
             geo = self._urtsp_det_geometry.get(det_id)
             if geo:
@@ -1192,14 +1569,39 @@ class GroupBasedController:
                         inf = AKIVehStateGetVehicleInfSection(sec_id, vi)
                         # Type filter: only buses
                         if self.bus_type_pos > 0 and inf.type != self.bus_type_pos:
+                            if _log_det:
+                                _vprint(
+                                    f"[DET URTSP] t={time:.1f} jct={self.junction_id} "
+                                    f"det={det_id} v={inf.idVeh} type={inf.type} "
+                                    f"≠ bus_pos={self.bus_type_pos} — skipped"
+                                )
                             continue
                         # Position filter: within detection window
                         try:
                             pos = float(inf.CurrentPos)
                         except Exception:
                             pos = float(inf.distance2End if hasattr(inf, 'distance2End') else 0)
+                        if _log_det:
+                            _vprint(
+                                f"[DET URTSP] t={time:.1f} jct={self.junction_id} "
+                                f"det={det_id} v={inf.idVeh} pos={pos:.1f}m "
+                                f"window=[{window_lo:.0f},{window_hi:.0f}]m "
+                                f"in_window={window_lo <= pos <= window_hi}"
+                            )
                         if window_lo <= pos <= window_hi:
                             _vid = inf.idVeh
+                            # Mark detection point (first time only).
+                            # Use vehicle XY if available, junction cache next,
+                            # (0,0) as last resort — always write the CSV row.
+                            _jxy_c = getattr(self, '_junction_xy_cache', None)
+                            _vx = float(getattr(inf, 'xCurrentPos',
+                                                 _jxy_c[0] if _jxy_c else 0.0))
+                            _vy = float(getattr(inf, 'yCurrentPos',
+                                                 _jxy_c[1] if _jxy_c else 0.0))
+                            _mark_detection_point(
+                                self.junction_id, _vid, _vx, _vy,
+                                time, f"urtsp-sec={sec_id}"
+                            )
                             if (self.bus_sg and self.bus_request is None
                                     and time >= self._tsp_cooldown_until):
                                 self.bus_request = self.bus_sg
@@ -1216,11 +1618,11 @@ class GroupBasedController:
                                 except Exception:
                                     self._bus_eta = None
                                     self._bus_det_time = None
-                                if LOG_GB_BUS:
+                                if LOG_GB_BUS or _log_det:
                                     _eta_s = f"{self._bus_eta:.1f}s" if self._bus_eta is not None else "?"
                                     _vprint(
-                                        f"[GB URTSP] t={time:.1f} jct={self.junction_id} "
-                                        f"detected [sec={sec_id} pos={pos:.1f}m] "
+                                        f"[DET URTSP] t={time:.1f} jct={self.junction_id} "
+                                        f"DETECTED [sec={sec_id} pos={pos:.1f}m] "
                                         f"v={_vid} ETA={_eta_s} → requesting SG {self.bus_sg}"
                                     )
                                 if self._stats:
@@ -1236,12 +1638,19 @@ class GroupBasedController:
             else:
                 # Fallback: rising-edge presence (only fires on 0→1 edge)
                 if current_presence == 1 and was_present == 0:
+                    _jxy_c = getattr(self, '_junction_xy_cache', None)
+                    _mark_detection_point(
+                        self.junction_id, -det_id,
+                        _jxy_c[0] if _jxy_c else 0.0,
+                        _jxy_c[1] if _jxy_c else 0.0,
+                        time, f"urtsp-det={det_id}"
+                    )
                     if self.bus_sg and self.bus_request is None and time >= self._tsp_cooldown_until:
                         self.bus_request = self.bus_sg
-                        if LOG_GB_BUS:
+                        if LOG_GB_BUS or _log_det:
                             _vprint(
-                                f"[GB URTSP] t={time:.1f} jct={self.junction_id} "
-                                f"detected [det={det_id} rising-edge] "
+                                f"[DET URTSP] t={time:.1f} jct={self.junction_id} "
+                                f"DETECTED [det={det_id} rising-edge] "
                                 f"→ requesting SG {self.bus_sg}"
                             )
                         if self._stats:
@@ -1437,16 +1846,35 @@ class GroupBasedController:
                 groups.append(sorted(intersection))
                 uncovered -= intersection
 
-        # Sort phase groups by total max_green descending so the cycle always
-        # starts with the highest-priority (longest) phase — NB/SB through
-        # movements first, then turn phases, then minor cross-street phases.
-        # This means the bus SG (in the NB/SB group) is group 0, so buses
-        # arriving while that group is running trigger Strategy 1 (extension)
-        # rather than Strategy 3 (forced insertion).
-        groups.sort(
-            key=lambda g: sum(self.max_green.get(sg, 40.0) for sg in g),
-            reverse=True,
-        )
+        # Sort phase groups so bus-friendly groups run earlier in the cycle:
+        #   tier 0 — the group that contains bus_sg (Strategy 1 extension)
+        #   tier 1 — groups fully compatible with bus_sg (Strategy 2 insertion)
+        #   tier 2 — groups that conflict with bus_sg (Strategy 3 forced insertion)
+        # Within each tier, sort by total max_green descending so the longest
+        # phases (NB/SB through movements) run before shorter turn/side phases.
+        if self.bus_sg is not None and self.conflict_matrix:
+            _bus_compat = {
+                other for other in self.all_sg
+                if self.conflict_matrix.get(self.bus_sg, {}).get(other, 1) == 0
+            }
+
+            def _bus_tier(g):
+                g_set = set(g)
+                if self.bus_sg in g_set:
+                    return 0   # bus can run here — Strategy 1
+                if g_set <= (_bus_compat | {self.bus_sg}):
+                    return 1   # bus compatible — Strategy 2 if needed
+                return 2       # bus conflicts — requires Strategy 3
+
+            groups.sort(key=lambda g: (
+                _bus_tier(g),
+                -sum(self.max_green.get(sg, 40.0) for sg in g),
+            ))
+        else:
+            groups.sort(
+                key=lambda g: sum(self.max_green.get(sg, 40.0) for sg in g),
+                reverse=True,
+            )
 
         self.phase_groups = groups
         _pg_summary = (
@@ -1459,8 +1887,8 @@ class GroupBasedController:
             )
         )
         _vprint(_pg_summary)
-        # Always write to log file so phase groups are visible even when LOG_GB=False
-        log_to_file(_pg_summary)
+        if LOG_GB:
+            log_to_file(_pg_summary)
 
     def _build_new_phase(self, time: float, timeSta: float, queue: dict):
         """
@@ -1534,6 +1962,7 @@ class GroupBasedController:
         best_group = self.phase_groups[best_idx]
 
         self._group_served.add(best_idx)
+        self._current_group_idx = best_idx
         self.sg_list = list(best_group)   # FULL group — no partial subsetting
 
         # Use the group's maximum max_green as the shared upper bound so that
@@ -1560,6 +1989,56 @@ class GroupBasedController:
             )
         self._apply_signals(time, timeSta)
         self.state = self.GREEN
+
+    # =========================================================================
+    # INTERRUPTED-PHASE RESTORATION  (group-based equivalent of restore_phase_if_needed)
+    # =========================================================================
+
+    def _restore_interrupted_group(self, time: float, timeSta: float, queue: dict):
+        """
+        Re-activate the phase group that was cut short by a forced TSP insertion
+        (Strategy 3).  Mirrors IntersectionController.restore_phase_if_needed()
+        flag==2 behaviour: after the bus priority phase ends the interrupted group
+        gets at least one full min_green before normal round-robin resumes.
+
+        The restored group uses the same conflict-safe SG list it was running
+        when the bus interrupted it — no additional conflict check needed since
+        phase_groups is derived from the Bron-Kerbosch clique cover.
+        """
+        idx = self._interrupted_group_idx
+        self._interrupted_group_idx = None   # consume — only one restoration per event
+
+        if idx is None or not self.phase_groups or idx >= len(self.phase_groups):
+            # Fallback: no valid interrupted group recorded; run normal round-robin
+            self._build_new_phase(time, timeSta, queue)
+            return
+
+        group = self.phase_groups[idx]
+        if not group:
+            self._build_new_phase(time, timeSta, queue)
+            return
+
+        self.sg_list = list(group)
+        # Mark as served so the cycle advances past it once done
+        self._group_served.add(idx)
+        self._current_group_idx = idx
+
+        _group_max = max(self.max_green.get(sg, 40.0) for sg in self.sg_list)
+        for sg in self.sg_list:
+            self.non_activated.discard(sg)
+            self.lower_time[sg] = time + self.min_green.get(sg, 6.0)
+            self.upper_time[sg] = time + _group_max
+
+        self._apply_signals(time, timeSta)
+        self.state = self.GREEN
+
+        if LOG_GB_STATE or LOG_GB_BUS:
+            _vprint(
+                f"[GB RESTORE] t={time:.1f} jct={self.junction_id} "
+                f"Restored interrupted group_idx={idx} SGs={sorted(self.sg_list)} "
+                f"min={self.min_green.get(self.sg_list[0], 6.0):.0f}s "
+                f"max={_group_max:.0f}s (post-TSP restoration)"
+            )
 
     def _expand_phase(self, queue: dict):
         """
@@ -1722,6 +2201,7 @@ class GroupBasedController:
             self.sg_list = list(bus_group)
             if bus_group_idx is not None:
                 self._group_served.add(bus_group_idx)
+                self._current_group_idx = bus_group_idx
         else:
             # Fallback: seed + greedy expand (legacy path, no phase_groups entry)
             self.sg_list = [bus_sg]
@@ -1734,6 +2214,10 @@ class GroupBasedController:
             self.upper_time[sg] = time + _bus_group_max
 
         self.state = self.GREEN
+        # Consume the coord-sourced flag now that the phase is activated.
+        # The coordinator's _check_wave_complete watches bus_request (not this flag),
+        # so clearing here is safe — it only affects future detection suppression.
+        self._coord_sourced_request = False
         # Start junction-level cooldown: block new bus requests until the
         # normal round-robin has had time to serve all remaining phase groups.
         self._tsp_cooldown_until = time + self._tsp_cycle_cooldown
@@ -1783,10 +2267,14 @@ class GroupBasedController:
             compatible = self._get_compatible(self.sg_list)
             if self.bus_request not in compatible:
                 if all(time >= self.lower_time.get(sg, 0.0) for sg in self.sg_list):
+                    # Record which group was running so we can restore it after
+                    # the bus priority phase ends (mirrors phase-based restoration).
+                    self._interrupted_group_idx = self._current_group_idx
                     if LOG_GB:
                         _vprint(
                             f"[GB] t={time:.1f} jct={self.junction_id} "
-                            f"Bus SG {self.bus_request} forcing early termination"
+                            f"Bus SG {self.bus_request} forcing early termination "
+                            f"(interrupted group_idx={self._interrupted_group_idx})"
                         )
                     terminate = True
 
@@ -1809,9 +2297,10 @@ class GroupBasedController:
                 f"GREEN→INTERGREEN SGs={sorted(self.sg_list)} "
                 f"end={time + self.intergreen_dur:.1f}"
             )
-        self.state          = self.INTERGREEN
-        self.intergreen_end = time + self.intergreen_dur
-        self.extension_used = 0.0
+        self.state              = self.INTERGREEN
+        self.intergreen_end     = time + self.intergreen_dur
+        self.extension_used     = 0.0
+        self._active_bus_veh_id = None   # bus has left the priority phase
 
         ctrl_type = ECIGetControlType(self.junction_id)
         if ctrl_type in (2, 3):
@@ -1841,6 +2330,37 @@ class GroupBasedController:
                 f"(expected 2=External) — signal change skipped"
             )
             return
+
+        # ── Conflict-safety pass: never allow two conflicting SGs simultaneously ─
+        # Walk sg_list in order; each new candidate is checked against every SG
+        # already admitted.  Bus SG (if present) is always admitted first so it
+        # is never dropped in favour of an earlier-listed SG.
+        if self.conflict_matrix and len(self.sg_list) > 1:
+            # Put bus_sg first so it is never the one removed
+            ordered = []
+            if self.bus_sg and self.bus_sg in self.sg_list:
+                ordered.append(self.bus_sg)
+            for sg in self.sg_list:
+                if sg not in ordered:
+                    ordered.append(sg)
+
+            safe = []
+            for sg in ordered:
+                conflict = False
+                for other in safe:
+                    if self.conflict_matrix.get(sg, {}).get(other, 0) == 1:
+                        conflict = True
+                        log_to_file(
+                            f"[GB CONFLICT] t={time:.1f} jct={self.junction_id} "
+                            f"SG {sg} conflicts with SG {other} — dropped from phase",
+                            force=True
+                        )
+                        break
+                if not conflict:
+                    safe.append(sg)
+
+            if len(safe) != len(self.sg_list):
+                self.sg_list = safe
 
         green_sgs = [sg for sg in self.all_sg if sg in self.sg_list]
         # Throttled diagnostic: log actual applied signal state once per 10 sim-seconds
@@ -2565,6 +3085,22 @@ class CorridorCoordinator:
         # Pre-green requests: {inter_id: (veh_id, eta_t, bus_sg, issued_t)}
         self._pre_requests: dict = {}
 
+        # ── Coordination wave state ───────────────────────────────────────────
+        # When a bus is granted priority at any corridor junction a "wave" begins.
+        # During the wave ALL other junctions block INDEPENDENT bus detections;
+        # only coordinator-fired (pre-armed) requests are allowed through.
+        # The ban lifts once all pre-requests for that wave vehicle have resolved.
+        #
+        # _wave_active     : True while a green-wave is in progress
+        # _wave_veh_id     : vehicle that triggered the wave
+        # _wave_origin     : junction ID where the wave started
+        # _wave_served_ids : junctions that have already been pre-armed this wave
+        #                    (once served, ban lifts individually for that junction)
+        self._wave_active:     bool  = False
+        self._wave_veh_id:     int   = -1
+        self._wave_origin:     int   = -1
+        self._wave_served_ids: set   = set()
+
         log_to_file(
             f"[CORRIDOR] group={self.name} members={self.inter_ids} "
             f"({len(self.inter_ids)}/{len(inter_ids)} have active GB controllers) "
@@ -2594,6 +3130,24 @@ class CorridorCoordinator:
             f"[CORRIDOR] group={self.name} corridor positions set: "
             + ", ".join(f"{iid}:{pos:.0f}m" for iid, pos in sorted(pos_map.items()))
         )
+
+    # ------------------------------------------------------------------
+    def is_wave_banned(self, inter_id: int) -> bool:
+        """
+        Return True if junction inter_id should block independent bus detections.
+
+        A junction is banned when:
+          • A coordination wave is active (COORDINATED_TSP=True)
+          • The junction is not yet in _wave_served_ids
+            (served = the coordinator has already pre-armed it this wave)
+
+        Once the coordinator pre-arms junction[j] and the pre-request fires,
+        junction[j] is added to _wave_served_ids and its ban is lifted so it
+        can react normally to the pre-armed request.
+        """
+        if not COORDINATED_TSP or not self._wave_active:
+            return False
+        return inter_id not in self._wave_served_ids
 
     # ------------------------------------------------------------------
     def notify_bus_granted(self, veh_id: int, at_inter_id: int,
@@ -2629,6 +3183,21 @@ class CorridorCoordinator:
                 f"spd={tracker.x[1]:.1f}m/s ({tracker.x[1]*3.6:.0f}km/h)"
             )
 
+        # Start (or refresh) a coordination wave.
+        # All other junctions get a ban on independent bus detection until
+        # each of them is individually pre-armed and served.
+        if COORDINATED_TSP:
+            self._wave_active     = True
+            self._wave_veh_id     = veh_id
+            self._wave_origin     = at_inter_id
+            self._wave_served_ids = {at_inter_id}   # origin is already "served"
+            if LOG_CORRIDOR:
+                _vprint(
+                    f"[CORRIDOR WAVE] t={time:.1f} WAVE START bus={veh_id} "
+                    f"origin=jct{at_inter_id} — banning independent TSP at "
+                    f"{[i for i in self.inter_ids if i != at_inter_id]}"
+                )
+
         # Schedule pre-green requests for downstream intersections
         my_idx = (self.inter_ids.index(at_inter_id)
                   if at_inter_id in self.inter_ids else -1)
@@ -2645,30 +3214,141 @@ class CorridorCoordinator:
             sigma = tracker.uncertainty_s(next_pos)
             next_gb  = self._ctrl_map.get(next_id)
             next_bus_sg = next_gb.bus_sg if next_gb else None
+
+            # SHOCKWAVE mode: add queue-clearance time on top of Kalman ETA.
+            # The discharge shockwave propagates backward through the queue at
+            # speed w4 = SatFlow/(JamDen−SatDen).  Bus must wait until the
+            # wave has cleared N queued vehicles ahead of it.
+            if COORDINATION_ALGO == "SHOCKWAVE" and next_gb is not None:
+                try:
+                    q = next_gb._compute_queue()
+                    queue_len = q.get(next_bus_sg, 0) if next_bus_sg else 0
+                    if queue_len > 0:
+                        # Approximate: 2s headway per vehicle to discharge
+                        queue_clearance_s = queue_len * 2.0
+                        # ShockwaveSpeed4 gives the backward propagation speed
+                        # (m/s) of the discharge wave; negative = upstream.
+                        w4 = abs(ShockwaveSpeed4(
+                            safe_float(getattr(next_gb, '_sat_flow', 1800.0)),
+                            safe_float(getattr(next_gb, '_jam_den',  150.0)),
+                            safe_float(getattr(next_gb, '_sat_den',   45.0)),
+                        ))
+                        wave_delay_s = queue_len / max(w4, 0.1) if w4 > 0.1 else queue_clearance_s
+                        eta_adj = eta + min(queue_clearance_s, wave_delay_s)
+                        if LOG_CORRIDOR:
+                            _vprint(
+                                f"[CORRIDOR SW] jct={next_id} queue={queue_len}veh "
+                                f"ETA_base={eta:.1f}s wave_adj=+{eta_adj-eta:.1f}s "
+                                f"ETA_adj={eta_adj:.1f}s"
+                            )
+                        eta = eta_adj
+                except Exception:
+                    pass
+
             self._pre_requests[next_id] = (veh_id, eta, next_bus_sg, time)
             if LOG_CORRIDOR:
+                _algo_tag = f"[{COORDINATION_ALGO}]"
                 _vprint(
-                    f"[CORRIDOR KF] Pre-arm jct={next_id} bus={veh_id} "
+                    f"[CORRIDOR {_algo_tag}] Pre-arm jct={next_id} bus={veh_id} "
                     f"SG={next_bus_sg} ETA={eta:.1f}s "
                     f"(+{eta - time:.0f}s ±{sigma:.0f}s) dist={next_pos - at_pos:.0f}m"
                 )
 
     # ------------------------------------------------------------------
+    def _objective_lead_time(self, gb, bus_sg, eta_t: float, time: float,
+                              tracker) -> float:
+        """
+        OBJECTIVE mode: compute the pre-arm lead time that maximises:
+          J = COORD_OBJ_ALPHA * bus_delay_saved_persons
+            - COORD_OBJ_BETA  * normal_throughput_displaced_persons
+
+        This avoids the perverse incentive of pure delay minimisation
+        (fewer vehicles served → lower total delay) by explicitly including
+        a throughput benefit term.  Lead times from 5 to 60 s are evaluated;
+        the one with the highest J is returned.
+
+        Parameters
+        ----------
+        gb       : GroupBasedController at the downstream intersection
+        bus_sg   : signal group for bus at that intersection
+        eta_t    : estimated arrival time (absolute sim seconds)
+        time     : current sim time
+        tracker  : BusKalmanTracker for this vehicle
+        """
+        BUS_OCC     = getattr(gb, 'BusOcc',   40.0)
+        NORMAL_OCC  = getattr(gb, 'CarOcc',    1.5)
+        MAX_RED_WAIT = getattr(gb, '_eta_max_s', 60.0)   # typical max red wait
+
+        try:
+            queue    = gb._compute_queue()
+            q_bus_sg = queue.get(bus_sg, 0)
+        except Exception:
+            q_bus_sg = 0
+
+        # Arrival time uncertainty: 1-sigma from Kalman tracker
+        try:
+            target_pos = self.corridor_pos.get(
+                next(iid for iid, c in self._ctrl_map.items() if c is gb), None)
+            sigma = tracker.uncertainty_s(target_pos) if target_pos else 15.0
+        except Exception:
+            sigma = 15.0
+
+        best_J    = -1e9
+        best_lead = self.PRE_GREEN_LEAD_S   # fallback to fixed default
+
+        for lead in range(5, 65, 5):
+            eta_in = eta_t - time   # seconds until bus arrives
+            # P[bus arrives during green] grows as lead / (2*sigma)
+            p_green = min(1.0, max(0.0, lead / (2.0 * sigma + 1.0)))
+
+            # Delay saved for bus: avoided red wait × occupancy
+            # Maximum possible red wait capped at MAX_RED_WAIT
+            delay_saved = min(eta_in, MAX_RED_WAIT) * p_green * BUS_OCC
+
+            # Normal-traffic cost: pre-arming disrupts normal phases for ~lead s.
+            # Queue at downstream * occupancy * fractional green lost.
+            green_fraction_lost = lead / max(self.PRE_GREEN_LEAD_S * 2, 30.0)
+            throughput_lost = q_bus_sg * NORMAL_OCC * green_fraction_lost
+
+            J = COORD_OBJ_ALPHA * delay_saved - COORD_OBJ_BETA * throughput_lost
+            if J > best_J:
+                best_J    = J
+                best_lead = float(lead)
+
+        if LOG_CORRIDOR:
+            _vprint(
+                f"[CORRIDOR OBJ] Optimal lead={best_lead:.0f}s "
+                f"J={best_J:.1f} sigma={sigma:.1f}s q={q_bus_sg}"
+            )
+        return best_lead
+
+    # ------------------------------------------------------------------
     def _process_pre_requests(self, time: float, timeSta: float):
-        """Fire pre-green requests when the bus is within PRE_GREEN_LEAD_S."""
+        """Fire pre-green requests when the bus is within the algorithm's lead time."""
         for inter_id, (veh_id, eta_t, bus_sg, issued_t) in list(self._pre_requests.items()):
             # Stale: bus never arrived or took a different route
             if time - issued_t > self.PRE_REQ_TIMEOUT_S or eta_t - time < -30.0:
                 del self._pre_requests[inter_id]
                 if LOG_CORRIDOR:
                     _vprint(
-                        f"[CORRIDOR KF] Stale pre-request expired "
+                        f"[CORRIDOR] Stale pre-request expired "
                         f"jct={inter_id} bus={veh_id}"
                     )
                 continue
 
-            if eta_t - time <= self.PRE_GREEN_LEAD_S:
-                gb = self._ctrl_map.get(inter_id)
+            # Determine the required lead time for the chosen algorithm
+            gb = self._ctrl_map.get(inter_id)
+            if COORDINATION_ALGO == "OBJECTIVE" and gb is not None and bus_sg is not None:
+                # Find the tracker for this vehicle (may have been created at notify_bus_granted)
+                _tracker = self._trackers.get(veh_id)
+                if _tracker is not None:
+                    lead_s = self._objective_lead_time(gb, bus_sg, eta_t, time, _tracker)
+                else:
+                    lead_s = self.PRE_GREEN_LEAD_S
+            else:
+                lead_s = self.PRE_GREEN_LEAD_S   # KALMAN and SHOCKWAVE use fixed lead
+
+            if eta_t - time <= lead_s:
                 if gb is not None and bus_sg is not None and gb.bus_request is None:
                     # Respect the per-vehicle cooldown at the target junction
                     cooldown_ok = not (
@@ -2678,13 +3358,77 @@ class CorridorCoordinator:
                     )
                     if cooldown_ok:
                         gb.bus_request = bus_sg
+                        # Mark as coordinator-sourced so the detection suppression
+                        # logic in _detect_bus/_detect_bus_urtsp knows to let it through.
+                        gb._coord_sourced_request = True
+                        # Lift the wave ban for this junction: it is now reacting
+                        # to coordination, not acting independently.
+                        self._wave_served_ids.add(inter_id)
+                        # Mark detection point using the Kalman tracker's current
+                        # position estimate — the bus may not yet be in the local
+                        # detection zone so this is the only XY we have.
+                        _tracker_coord = self._trackers.get(veh_id)
+                        _coord_pos     = self.corridor_pos.get(inter_id)
+                        if _tracker_coord is not None and _coord_pos is not None:
+                            # Convert corridor distance to junction centroid XY if
+                            # available; otherwise mark with (0, 0) as a placeholder
+                            # so the CSV still records the event.
+                            _junc_xy = getattr(gb, '_junction_xy_cache', None)
+                            if _junc_xy:
+                                _mark_detection_point(
+                                    inter_id, veh_id,
+                                    _junc_xy[0], _junc_xy[1],
+                                    time, f"coord-prearm/{COORDINATION_ALGO}"
+                                )
+                            else:
+                                _mark_detection_point(
+                                    inter_id, veh_id, 0.0, 0.0,
+                                    time, f"coord-prearm/{COORDINATION_ALGO}"
+                                )
                         if LOG_CORRIDOR:
                             _vprint(
-                                f"[CORRIDOR KF] Pre-green FIRED "
+                                f"[CORRIDOR {COORDINATION_ALGO}] Pre-green FIRED "
                                 f"jct={inter_id} bus={veh_id} SG={bus_sg} "
-                                f"ETA_in={eta_t - time:.1f}s"
+                                f"ETA_in={eta_t - time:.1f}s lead={lead_s:.0f}s "
+                                f"— ban lifted for jct{inter_id}"
                             )
                 del self._pre_requests[inter_id]
+
+    # ------------------------------------------------------------------
+    def _check_wave_complete(self, time: float):
+        """
+        Lift the corridor wave ban once all pre-requests for the current wave
+        have been resolved (fired or expired) AND every pre-armed junction has
+        cleared its coordinated bus phase (bus_request is None).
+
+        Also expires a wave that has been running for > 2 × PRE_REQ_TIMEOUT_S
+        as a safety net against buses that never arrive.
+        """
+        if not self._wave_active:
+            return
+
+        # Safety expiry
+        # (we store wave start time lazily — use issued_t of the last stale check)
+        # Simple heuristic: if no pre_requests remain and all served junctions
+        # have cleared their bus_request, the wave is done.
+        pending = bool(self._pre_requests)
+        any_coord_pending = any(
+            getattr(self._ctrl_map.get(iid), 'bus_request', None) is not None
+            and getattr(self._ctrl_map.get(iid), '_coord_sourced_request', False)
+            for iid in self._wave_served_ids
+            if iid != self._wave_origin
+        )
+
+        if not pending and not any_coord_pending:
+            self._wave_active     = False
+            self._wave_veh_id     = -1
+            self._wave_origin     = -1
+            self._wave_served_ids = set()
+            if LOG_CORRIDOR:
+                _vprint(
+                    f"[CORRIDOR WAVE] t={time:.1f} WAVE COMPLETE — "
+                    f"independent TSP ban fully lifted for all corridor junctions"
+                )
 
     # ------------------------------------------------------------------
     def step(self, time: float, timeSta: float):
@@ -2695,6 +3439,7 @@ class CorridorCoordinator:
         # Process Kalman pre-green requests first
         if COORDINATED_TSP:
             self._process_pre_requests(time, timeSta)
+            self._check_wave_complete(time)
 
         states    = {iid: c.state            for iid, c in self._ctrl_map.items()}
         n_groups  = {iid: len(c.phase_groups) for iid, c in self._ctrl_map.items()}
@@ -2772,8 +3517,20 @@ class IntersectionController:
         # auto-correct this via section topology if the configured value is wrong.
         self.node_id = config.get("AimsunNodeID", self.id)
 
-        self.BusPhase         = config.get("BusPhase",2)
-        self.BusPhaseDuration = config["BusPhaseDuration"]
+        self.BusPhase         = config.get("BusPhase", 2)
+
+        # BusPhaseDuration — use config value if present, otherwise discover
+        # from Aimsun live plan.  Allows minimal configs with just IntersectionID.
+        _bpd = config.get("BusPhaseDuration")
+        if _bpd is None:
+            try:
+                _bpd = GetPhaseDuration(self.id, self.BusPhase, 0.0)
+                if not _bpd or _bpd <= 0:
+                    _bpd = 30.0
+            except Exception:
+                _bpd = 30.0
+        self.BusPhaseDuration = float(_bpd)
+
         self.BusDet           = config.get("BusDet", [])
         self.main_sections = config.get('MainSections', [])
         self.side_sections = config.get('SideSections', [])
@@ -2782,10 +3539,12 @@ class IntersectionController:
             config.get('BusCallDetectors',
                     config.get('BusDet', []))
         )
-        
-        self.UpDetList        = config["UpDetList"]
-        self.SignalGroupIDList = config["SignalGroupIDList"]
-        self.PhaseIndex       = config["PhaseIndex"]
+
+        # These three fields are optional — minimal configs may omit them.
+        # Default to empty so downstream code sees a consistent type (list/dict).
+        self.UpDetList        = config.get("UpDetList", [])
+        self.SignalGroupIDList = config.get("SignalGroupIDList", [])
+        self.PhaseIndex       = config.get("PhaseIndex", {})
         self.VehLength        = config.get("VehLength", 4.5)
         self.DetLength        = config.get("DetLength", 5)
         self.JamDensity       = config.get("JamDensity", 200)
@@ -2818,26 +3577,6 @@ class IntersectionController:
         self.BusOcc = config.get('BusOcc', 40.0)
         self.TruckOcc = config.get('TruckOcc', self.CarOcc)
         
-        '''
-        self.UpDetList = config.get('UpDetList', [])
-        self.SignalGroupIDList = config.get('SignalGroupIDList', [])
-        self.PhaseIndex = config.get('PhaseIndex', {})
-        self.VehLength = config.get('VehLength', 7.0)
-        self.DetLength = config.get('DetLength', 5.0)
-        self.JamDensity = config.get('JamDensity', 150)
-        self.SaturationDensity = config.get('SaturationDensity', 35)
-        self.SaturationFlow = config.get('SaturationFlow', 1800)
-        self.GE_lower_bound = config.get('GE_lower_bound', 0)
-        self.GE_upper_bound = config.get('GE_upper_bound', 30)
-        self.BP_lower_bound = config.get('BP_lower_bound', 5)
-        self.BP_upper_bound = config.get('BP_upper_bound', 60)
-        self.DetDistance = config.get('DetDistance', [[]])
-        self.max_iterations = config.get('max_iterations', 20)
-        self.harmony_memory_size = config.get('harmony_memory_size', 10)
-        self.hmcr = config.get('hmcr', 0.9)
-        self.par = config.get('par', 0.3)
-        self.NumberOfLanes = config.get('NumberOfLanes', 1)
-        '''
 
         # ── URTSP config — read from config dict or use defaults ──────
         u = URTSP_DEFAULTS
@@ -3091,6 +3830,7 @@ class IntersectionController:
                         'max_green':       _max_green,
                         'sections':        [],
                         'bus_det':         config.get('BusDet', config.get('BusCallDetectors', [])),
+                        'bus_exit_det':    config.get('BusExitDetectors', []),
                         'bus_sg':          _bus_sg,
                         'CarOcc':          config.get('CarOcc', 1.5),
                         'BusOcc':          config.get('BusOcc', 40.0),
@@ -3498,6 +4238,28 @@ class IntersectionController:
         # Sentinel values
         self.BusPhaseEndTime       = 1e9
         self.TimeToTerminateBusPhase = 1e9
+
+        # ── Cycle-recovery state (GE only) ────────────────────────────────────
+        # When a green extension of X seconds is granted the cycle is "in debt".
+        # After the GE ends, remaining phases are shortened proportionally so the
+        # cycle re-aligns with its nominal start offset as quickly as possible.
+        # _ge_debt_s  : seconds still owed (decremented as phases absorb it)
+        # _ge_opt_GE  : the extension that was granted (for logging)
+        self._ge_debt_s  = 0.0
+        self._ge_opt_GE  = 0.0
+
+        # _nominal_phase_durations: lazily-populated on first GE.
+        # Stores the ORIGINAL plan durations so cycle recovery always trims
+        # relative to the base (not relative to a previously-trimmed value).
+        # Without this, repeated GEs compound trimming → permanent short greens.
+        self._nominal_phase_durations: dict = {}
+
+        # _phases_to_restore: set after trimming — {phase: nominal_dur}.
+        # Restored to their nominals when BusPhase next becomes current
+        # (i.e. start of the next signal cycle), ensuring trimmed durations
+        # only apply for ONE cycle.
+        self._phases_to_restore: dict = {}
+        self._restore_fired_this_cycle: bool = False
 
         if LOG_INIT: AKIPrintString(f"[INIT] Inter {self.id} | phases={n_phases} | lanes={n_lanes} | busdets={n_busdet} | arrays initialized safely")
 
@@ -4373,7 +5135,7 @@ class IntersectionController:
 
         _prev_presence = int(self.BusPresence[0][0]) if len(self.BusPresence[0]) else 0
 
-        def _hit(veh_id, speed_kph):
+        def _hit(veh_id, speed_kph, hit_x=None, hit_y=None):
             self.BusPresence[0][0]    = 1
             self.BusSpeed[0][0]       = max(speed_kph / 3.6, 0.5)
             self.last_detected_bus_id = veh_id
@@ -4383,6 +5145,11 @@ class IntersectionController:
                 self.stats.record_pt_bus_detection(self.id, veh_id, time)
             except Exception:
                 pass
+            # Detection-point marker: use vehicle XY, fall back to junction
+            # centroid, then (0,0) so the CSV is always written.
+            _mx = hit_x if hit_x is not None else (jx if jx is not None else 0.0)
+            _my = hit_y if hit_y is not None else (jy if jy is not None else 0.0)
+            _mark_detection_point(self.id, veh_id, _mx, _my, time, "IC-detect")
 
         # ── Tier 1: PT line vehicle scan ────────────────────────────────────
         # Always runs regardless of whether junction coordinates are available.
@@ -4424,7 +5191,8 @@ class IntersectionController:
                                 f"sec={inf.idSection}"
                             )
                         if dist <= detection_radius_m:
-                            _hit(veh_id, inf.CurrentSpeed)
+                            _hit(veh_id, inf.CurrentSpeed,
+                                 float(inf.xCurrentPos), float(inf.yCurrentPos))
                     else:
                         # Fallback path — coordinates not yet available.
                         # Build/use a cached set of all sections that feed into
@@ -4460,7 +5228,9 @@ class IntersectionController:
                                 f"matched={matched}"
                             )
                         if matched:
-                            _hit(veh_id, inf.CurrentSpeed)
+                            _hit(veh_id, inf.CurrentSpeed,
+                                 float(getattr(inf, 'xCurrentPos', 0.0)),
+                                 float(getattr(inf, 'yCurrentPos', 0.0)))
                 except Exception:
                     continue
 
@@ -4619,7 +5389,12 @@ class IntersectionController:
             self.rl_agent.update(reward, next_state, done=False)
 
     def run_normal(self, time, timeSta, acycle):
-        """Passive baseline — data collection only, no signal changes."""
+        """Passive baseline — data collection only, no signal changes.
+
+        Still records bus detections (mark_detection_point + stats) so that
+        NORMAL mode produces detection counts comparable to HARMONY, and the
+        batch results show how many buses were 'seen' without TSP action.
+        """
         busTypePos = self.bus_type_pos
 
         # Primary: physical detector crossing this cycle
@@ -4632,6 +5407,38 @@ class IntersectionController:
                 self.BusPresence[0][i] > 0
                 for i in range(len(self.BusDet)))
 
+        # ── Passive detection recording ───────────────────────────────────────
+        # Track which detector slots are newly presenting a bus this step.
+        # Use a set on self to avoid counting the same bus twice per approach.
+        if not hasattr(self, '_normal_det_active'):
+            self._normal_det_active = set()   # slots currently presenting
+
+        _newly_detected = False
+        for i, det in enumerate(self.BusDet):
+            _presence = self.BusPresence[0][i] if i < len(self.BusPresence[0]) else 0
+            _counter  = AKIDetGetCounterCyclebyId(det, busTypePos)
+            _active   = (_presence > 0) or (_counter > 0)
+            if _active and i not in self._normal_det_active:
+                # New bus arrival at this detector slot
+                self._normal_det_active.add(i)
+                _newly_detected = True
+                _vid = int(self.last_detected_bus_id) if hasattr(self, 'last_detected_bus_id') else -1
+                _mark_detection_point(
+                    junction_id=self.id,
+                    veh_id=_vid,
+                    x=0.0, y=0.0,
+                    sim_time=time,
+                    tier="NORMAL-detect",
+                )
+                self.stats.record_tsp_event(self.id, 'detection')
+                self.stats.record_tsp_skip(self.id, 'no_action')
+                try:
+                    self.stats.record_pt_bus_detection(self.id, _vid, time)
+                except Exception:
+                    pass
+            elif not _active and i in self._normal_det_active:
+                self._normal_det_active.discard(i)
+
         # Periodic diagnostic — log det counters + BusPresence every 5 minutes
         _diag_t = int(time) // 300
         if _diag_t != getattr(self, '_run_normal_diag_t', -1):
@@ -4641,10 +5448,146 @@ class IntersectionController:
             log_to_file(
                 f"[NORMAL DIAG] t={time:.0f}s inter={self.id} "
                 f"det_counters={counters} BusPresence={presence} "
-                f"busCallActive={busCallActive}")
+                f"busCallActive={busCallActive} newly_det={_newly_detected}")
+
+    def _apply_cycle_recovery(self, timeSta: float):
+        """
+        Proportionally shorten the remaining phases in the current cycle to
+        recover the time stolen by a green extension.
+
+        Algorithm
+        ---------
+        1. Build the ordered list of phases AFTER the current one in this cycle.
+        2. For each candidate phase (skip BusPhase — already served):
+               nominal  = ECIGetDurationsPhase(phase)
+               min_dur  = config MinGreen or 5 s hard floor
+               headroom = nominal - min_dur   (how much can be trimmed)
+               fraction = headroom / total_headroom_remaining
+               trim     = min(fraction * debt, headroom)
+               new_dur  = nominal - trim
+               ECIChangeTimingPhase(phase, new_dur, ...)
+        3. Accumulate actual trimmed; update _ge_debt_s with any residual
+           (can't always recover 100% if minimums bind).
+
+        Only GE (flag==1) triggers this — phase insertion already interrupts and
+        restores the cycle so its own timing is self-correcting.
+        """
+        if self._ge_debt_s <= 0.5:
+            self._ge_debt_s = 0.0
+            return
+
+        current_phase = ECIGetCurrentPhase(self.node_id)
+        phase_list    = getattr(self, 'phase_list', [])
+        if not phase_list or current_phase not in phase_list:
+            self._ge_debt_s = 0.0
+            return
+
+        # Build ordered list of phases still to run this cycle (after current)
+        ci = phase_list.index(current_phase)
+        n  = len(phase_list)
+        upcoming = [phase_list[(ci + k) % n] for k in range(1, n)]
+        # Exclude BusPhase (just completed) and current phase
+        upcoming = [p for p in upcoming if p != self.BusPhase and p != current_phase]
+
+        if not upcoming:
+            self._ge_debt_s = 0.0
+            return
+
+        # Gather nominals (always from stored originals, never from a trimmed plan)
+        # and minimum floors.
+        min_floor   = float(self.config.get('MinGreen', 5.0))
+        # Safety cap: never trim more than 50 % of any single phase's nominal.
+        max_trim_frac = 0.50
+        nominals  = {}
+        headrooms = {}
+        for ph in upcoming:
+            # Prefer the stored nominal from before any trimming happened.
+            nom = self._nominal_phase_durations.get(ph)
+            if nom is None:
+                try:
+                    nom = GetPhaseDuration(self.node_id, ph, timeSta)
+                except Exception:
+                    nom = 15.0
+                if not nom or nom <= 0:
+                    nom = 15.0
+                # Lock in the original value so subsequent GEs don't compound.
+                self._nominal_phase_durations[ph] = float(nom)
+            nom = max(float(nom), min_floor)
+            hr  = max(0.0, nom - min_floor)
+            # Apply 50 % cap
+            hr  = min(hr, nom * max_trim_frac)
+            nominals[ph]  = nom
+            headrooms[ph] = hr
+
+        total_headroom = sum(headrooms.values())
+        if total_headroom < 0.5:
+            # Phases already at minimum — can't recover
+            self._ge_debt_s = 0.0
+            return
+
+        debt          = self._ge_debt_s
+        total_trimmed = 0.0
+
+        for ph in upcoming:
+            hr = headrooms[ph]
+            if hr <= 0.0 or debt <= 0.0:
+                continue
+            # Proportional share of the debt for this phase
+            trim    = min(hr, debt * (hr / total_headroom))
+            new_dur = nominals[ph] - trim
+            try:
+                ECIChangeTimingPhase(self.node_id, ph, new_dur, timeSta)
+            except Exception:
+                continue
+            total_trimmed += trim
+            debt          -= trim
+            # Schedule restoration to nominal at the start of the next cycle.
+            # This prevents permanent drift: trimmed durations only apply for
+            # the recovery cycle, not all subsequent cycles.
+            self._phases_to_restore[ph] = nominals[ph]
+
+        self._ge_debt_s = max(0.0, debt)   # residual (if minimums bound)
+
+        if LOG_HARMONY:
+            _vprint(
+                f"[HARMONY] Cycle recovery inter={self.id} "
+                f"GE={self._ge_opt_GE:.1f}s trimmed={total_trimmed:.1f}s "
+                f"residual={self._ge_debt_s:.1f}s phases={upcoming} "
+                f"restore_scheduled={list(self._phases_to_restore.keys())}"
+            )
+        else:
+            log_to_file(
+                f"[HARMONY] Cycle recovery inter={self.id} "
+                f"GE={self._ge_opt_GE:.1f}s trimmed={total_trimmed:.1f}s "
+                f"residual={self._ge_debt_s:.1f}s phases={upcoming}"
+            )
 
     def restore_phase_if_needed(self, time, timeSta, acycle):
         current_phase = ECIGetCurrentPhase(self.node_id)
+
+        # ── Restore phases trimmed by cycle recovery in the PREVIOUS cycle ───
+        # When BusPhase next becomes current (start of a new cycle) we reset
+        # any phases that were shortened for cycle recovery back to their
+        # original nominal durations so trimming doesn't accumulate over time.
+        if self._phases_to_restore:
+            if current_phase == self.BusPhase:
+                if not self._restore_fired_this_cycle:
+                    _n_restored = 0
+                    for _ph, _nom in self._phases_to_restore.items():
+                        try:
+                            ECIChangeTimingPhase(self.node_id, _ph, _nom, timeSta)
+                            _n_restored += 1
+                        except Exception:
+                            pass
+                    if _n_restored:
+                        log_to_file(
+                            f"[HARMONY] Nominal restore inter={self.id} "
+                            f"restored {_n_restored} phases to plan durations"
+                        )
+                    self._phases_to_restore.clear()
+                    self._restore_fired_this_cycle = True
+            else:
+                self._restore_fired_this_cycle = False
 
         # ── Flag 1: GREEN EXTENSION ─────────────────────────────────────────
         # Primary end: Aimsun naturally advanced past BusPhase (phase changed).
@@ -4661,6 +5604,8 @@ class IntersectionController:
                 self.flag        = 0
                 self.TSPStrategy = 0
                 self.reset_bus_color(self.last_detected_bus_id)
+                # ── Cycle recovery: spread the GE debt across remaining phases
+                self._apply_cycle_recovery(timeSta)
                 if LOG_HARMONY:
                     _vprint(
                         f"[HARMONY] GE ended | t={time:.1f}s "
@@ -5147,6 +6092,58 @@ class IntersectionController:
                         self.hmcr, self.par, 5, time)
                     if math.isnan(opt_GE) or opt_GE < 0:
                         opt_GE = 10.0
+
+                    # ── Cap GE to what this cycle can actually recover ──────────
+                    # Prevents granting 28 s of GE when the remaining phases
+                    # only have 5 s of combined headroom — which would leave a
+                    # massive irrecoverable debt and inflate cycle length.
+                    _min_floor_ge  = float(self.config.get('MinGreen', 5.0))
+                    _max_trim_frac = 0.50
+                    _phase_list    = getattr(self, 'phase_list', [])
+                    if _phase_list and current_phase in _phase_list:
+                        _ci = _phase_list.index(current_phase)
+                        _n  = len(_phase_list)
+                        _upcoming_ge = [
+                            _phase_list[(_ci + _k) % _n]
+                            for _k in range(1, _n)
+                        ]
+                        _upcoming_ge = [
+                            p for p in _upcoming_ge
+                            if p != self.BusPhase and p != current_phase
+                        ]
+                        _recoverable = 0.0
+                        for _ph in _upcoming_ge:
+                            _nom = self._nominal_phase_durations.get(_ph)
+                            if _nom is None:
+                                try:
+                                    _nom = GetPhaseDuration(self.node_id, _ph, timeSta)
+                                except Exception:
+                                    _nom = 15.0
+                                if not _nom or _nom <= 0:
+                                    _nom = 15.0
+                            _nom = max(float(_nom), _min_floor_ge)
+                            _hr  = max(0.0, _nom - _min_floor_ge)
+                            _hr  = min(_hr, _nom * _max_trim_frac)
+                            _recoverable += _hr
+                        if _recoverable > 0.5 and opt_GE > _recoverable:
+                            if LOG_HARMONY:
+                                _vprint(
+                                    f"[HARMONY] GE cap | inter={self.id} "
+                                    f"opt_GE={opt_GE:.1f}s → capped to "
+                                    f"{_recoverable:.1f}s (cycle headroom limit)"
+                                )
+                            opt_GE = _recoverable
+
+                    # Skip if harmony says extension is trivially small
+                    if opt_GE < 0.5:
+                        if LOG_HARMONY:
+                            _vprint(
+                                f"[HARMONY] GE skip | inter={self.id} "
+                                f"opt_GE={opt_GE:.2f}s < 0.5 s — no action")
+                        self.stats.record_tsp_event(self.id, 'detection')
+                        self.stats.record_tsp_skip(self.id, 'ge_trivial')
+                        continue
+
                     remain = GetPhaseDuration(self.node_id, current_phase, timeSta) \
                              - (time - ECIGetStartingTimePhase(self.node_id))
                     ECIChangeTimingPhase(self.node_id, current_phase,
@@ -5156,6 +6153,10 @@ class IntersectionController:
                     self.flag        = 1
                     self.TSPActiveTime = time + float(opt_GE) + 30
                     self._tsp_cycle_grant_until = time + self.config.get('CycleTime', 135)
+                    # Record the cycle debt so restore_phase_if_needed can
+                    # spread the recovery across remaining phases.
+                    self._ge_debt_s = float(opt_GE)
+                    self._ge_opt_GE = float(opt_GE)
                     if LOG_HARMONY:
                         _vprint(
                             f"[HARMONY] GE | t={time:.1f}s inter={self.id} "
@@ -5222,6 +6223,17 @@ class IntersectionController:
                     self.BP_Objective_Function, self.BP_lower_bound,
                     self.BP_upper_bound, self.max_iterations,
                     self.harmony_memory_size, self.hmcr, self.par, 5, time)
+
+                # Skip if harmony says insertion phase is trivially short
+                if math.isnan(opt_BP) or opt_BP < 0.5:
+                    if LOG_HARMONY:
+                        _vprint(
+                            f"[HARMONY] INS skip | inter={self.id} "
+                            f"opt_BP={opt_BP:.2f}s < 0.5 s — no action")
+                    self.stats.record_tsp_event(self.id, 'detection')
+                    self.stats.record_tsp_skip(self.id, 'ins_trivial')
+                    continue
+
                 self.previous_phase  = current_phase
                 self.BusPhaseEndTime = time + float(opt_BP)
                 # ECIChangeDirectPhase alone — ECIChangeTimingPhase first
@@ -5277,14 +6289,19 @@ class IntersectionController:
                 self.UpFlowList[0][i] *
                 (self.HSRedDurationList[0][i] + 35 + GE) / 3600)
             if self.BusJoinQueueTime[0][i] <= self.HSMaxQueueLengthTime[0][i]:
-                self.BusDelay[0][i] = (
-                    self.HSGreenStartTimeList[0][i]
-                    + (abs(self.ShockwaveSpeed1List[0][i]) * self.DetDistance[0][i]) /
-                    ((abs(self.ShockwaveSpeed1List[0][i]) + self.BusSpeed[0][i]) *
-                     abs(self.ShockwaveSpeed2List[0][i]))
-                    - (time + self.DetDistance[0][i] /
-                       (abs(self.ShockwaveSpeed1List[0][i]) +
-                        abs(self.ShockwaveSpeed2List[0][i]))))
+                _w1 = abs(self.ShockwaveSpeed1List[0][i])
+                _w2 = abs(self.ShockwaveSpeed2List[0][i])
+                _bs = abs(self.BusSpeed[0][i])
+                _denom_a = (_w1 + _bs) * _w2   # denominator of the queue-join term
+                _denom_b = _w1 + _w2            # denominator of the travel-time term
+                if _denom_a < 1e-6 or _denom_b < 1e-6:
+                    self.BusDelay[0][i] = 0.0
+                else:
+                    self.BusDelay[0][i] = (
+                        self.HSGreenStartTimeList[0][i]
+                        + (_w1 * self.DetDistance[0][i]) / _denom_a
+                        - (time + self.DetDistance[0][i] / _denom_b)
+                    )
             else:
                 self.BusDelay[0][i] = 0
             if self.HSQueueDissTime[0][i] < self.NextRedStartTime[0][i] + GE:
@@ -5797,6 +6814,18 @@ def AAPILoad():
 
 def AAPIInit():
     global controllers, corridor_coordinators
+    # ── Clear bus-detection polyline circles left from the previous run ────────
+    try:
+        from PyANGKernel import GKSystem as _GKS
+        _model = _GKS.getSystem().getActiveModel()
+        if _model is not None:
+            _pl_type = _model.getType("GKPolyline")
+            if _pl_type is not None:
+                _n = _clear_existing_markers(_model, _pl_type)
+                if _n and LOG_INIT:
+                    AKIPrintString(f"[INIT] Cleared {_n} TSP marker(s) from previous run")
+    except Exception as _e:
+        pass  # non-fatal — PyANGKernel may not be available in all environments
     dm = DemandMonitor()
     dm.print_demand("AAPIInit")
     for inter_id, config in INTERSECTIONS_CONFIG.items():
@@ -5821,13 +6850,15 @@ def AAPIInit():
                     f"[INIT] jct={iid} sg_count={len(gb.all_sg)} "
                     f"phase_groups={n_pg} bus_sg={gb.bus_sg} tsp_mode={gb.tsp_mode} | {detail}"
                 )
-                AKIPrintString(
-                    f"[INIT] jct={iid} phase_groups={n_pg} "
-                    f"all_sg={gb.all_sg} bus_sg={gb.bus_sg}"
-                )
+                if LOG_INIT:
+                    AKIPrintString(
+                        f"[INIT] jct={iid} phase_groups={n_pg} "
+                        f"all_sg={gb.all_sg} bus_sg={gb.bus_sg}"
+                    )
             else:
                 log_to_file(f"[INIT] jct={iid} — GroupBasedController NOT initialised (check control type = External)")
-                AKIPrintString(f"[INIT] WARNING jct={iid} — GroupBasedController not initialised")
+                if LOG_INIT:
+                    AKIPrintString(f"[INIT] WARNING jct={iid} — GroupBasedController not initialised")
 
     # ── Build corridor coordinators from INTERSECTION_GROUPS ─────────────────
     if CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY"):
@@ -5836,13 +6867,14 @@ def AAPIInit():
         for gname, iids in INTERSECTION_GROUPS.items():
             coord = CorridorCoordinator(gname, iids, controllers)
             corridor_coordinators.append(coord)
-        AKIPrintString(
-            f"[INIT] Corridor groups: "
-            + ", ".join(
-                f"{c.name}({len(c.inter_ids)} intersections)"
-                for c in corridor_coordinators
+        if LOG_INIT:
+            AKIPrintString(
+                f"[INIT] Corridor groups: "
+                + ", ".join(
+                    f"{c.name}({len(c.inter_ids)} intersections)"
+                    for c in corridor_coordinators
+                )
             )
-        )
 
     return 0
 
@@ -6201,6 +7233,27 @@ def AAPISimulationReady():
     # and 1-SG-per-group structure.  Now that the sim is running, re-derive
     # from the live model to get correct phase-based compatibility groupings.
     if CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY"):
+        # ── Verify intersections are in External Control mode ─────────────────
+        # GROUP_BASED uses ECIChangeSignalGroupState which requires control_type=2/3.
+        # HARMONY does not — it rides on top of the normal plan.
+        # If an intersection is not External, log a prominent warning.
+        _bad_ctrl = []
+        for iid in controllers:
+            try:
+                ct = ECIGetControlType(iid)
+                if ct not in (2, 3):
+                    _bad_ctrl.append((iid, ct))
+            except Exception:
+                pass
+        if _bad_ctrl:
+            _msg = (
+                f"[GB] CRITICAL: {len(_bad_ctrl)} junction(s) NOT in External Control "
+                f"mode — GROUP_BASED signals will NOT change (all-red or frozen). "
+                f"Set control type = External in Aimsun for: "
+                + ", ".join(f"jct={j}(type={t})" for j, t in _bad_ctrl)
+            )
+            log_to_file(_msg, force=True)   # always prints regardless of VERBOSE
+
         for iid, ctrl in controllers.items():
             if ctrl.gb is not None:
                 try:
@@ -6325,7 +7378,10 @@ def AAPIPostManage(time, timeSta, timeTrans, acycle):
 
     for inter_id, controller in controllers.items():
         try:
-            controller.collect_delay(time, timeSta)
+            # GROUP_BASED collects its own delay inside gb.step() — skip outer
+            # collect_delay to avoid double-counting and phase-based mis-attribution.
+            if CONTROL_MODE not in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY"):
+                controller.collect_delay(time, timeSta)
         except Exception as e:
             stop_simulation(f"collect_delay crashed inter={inter_id} t={time:.1f}: {e}")
             return 0
@@ -6342,7 +7398,718 @@ def AAPIPostManage(time, timeSta, timeTrans, acycle):
         except Exception as e:
             log_to_file(f"[CORRIDOR] coordinator {coord.name} crashed t={time:.1f}: {e}")
 
+    # ── Live status dashboard ─────────────────────────────────────────────────
+    global _last_dashboard_t
+    if STATUS_DASHBOARD_INTERVAL_S > 0 and (time - _last_dashboard_t) >= STATUS_DASHBOARD_INTERVAL_S:
+        _last_dashboard_t = time
+        try:
+            _print_status_dashboard(time)
+        except Exception as _de:
+            log_to_file(f"[DASH] dashboard error: {_de}")
+
     return 0
+
+
+# =============================================================================
+# LIVE STATUS DASHBOARD
+# =============================================================================
+
+def _print_status_dashboard(time: float):
+    """
+    Print a compact, always-readable status table to the Aimsun console.
+
+    Example output (every STATUS_DASHBOARD_INTERVAL_S seconds):
+
+      [DASH] t=  3600s ══════════════════════════════════════════════════════
+      [DASH]  Junction   Phase    TSP       GE-debt  Bus   det/ext/ins
+      [DASH]  ─────────────────────────────────────────────────────────────
+      [DASH]  17249      3 / 6    GE        12.4 s   YES   3 / 2 / 0
+      [DASH]  17383      5 / 7    IDLE       0.0 s    NO   1 / 1 / 0
+      [DASH]  19363      1 / 3    IDLE       0.0 s    NO   0 / 0 / 0
+      [DASH]  ─────────────────────────────────────────────────────────────
+      [DASH]  Active TSP: 17249 (GE, 12.4 s debt)   Corridor wave: OFF
+      [DASH] ══════════════════════════════════════════════════════════════
+    """
+    if STATUS_DASHBOARD_INTERVAL_S <= 0:
+        return
+    if not controllers:
+        return
+
+    _W  = 66     # total table width
+    _SEP  = "─" * _W
+    _DSEP = "═" * _W
+
+    hh = int(time // 3600)
+    mm = int((time % 3600) // 60)
+    ss = int(time % 60)
+    t_str = f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    lines = []
+    lines.append(f"[DASH] t={t_str}  " + _DSEP[len(t_str)+8:])
+    lines.append(f"[DASH]  {'Junction':<10} {'Phase':<8} {'TSP':<10} {'Debt':>7}  {'Bus':<5} {'det/ext/ins':>11}")
+    lines.append(f"[DASH]  " + _SEP)
+
+    active_tsp  = []
+    wave_active = any(getattr(c, '_wave_active', False)
+                      for coord in corridor_coordinators
+                      for c in [coord])
+
+    for iid, ctrl in controllers.items():
+        # ── Phase info ──────────────────────────────────────────────────
+        try:
+            cur_ph  = ECIGetCurrentPhase(ctrl.node_id)
+            n_ph    = len(ctrl.phase_list) if ctrl.phase_list else "?"
+            ph_str  = f"{cur_ph} / {n_ph}"
+        except Exception:
+            ph_str  = "?"
+
+        # ── TSP flag ────────────────────────────────────────────────────
+        flag = getattr(ctrl, 'flag', 0)
+        if flag == 1:
+            tsp_str = "GE"
+        elif flag == 2:
+            tsp_str = "INSERTION"
+        else:
+            # Check GB sub-controller state too
+            gb = getattr(ctrl, 'gb', None)
+            gb_state = getattr(gb, 'state', None) if gb else None
+            if gb_state and gb_state != "IDLE":
+                tsp_str = f"GB:{gb_state}"
+            else:
+                tsp_str = "IDLE"
+
+        # ── GE debt ─────────────────────────────────────────────────────
+        debt   = getattr(ctrl, '_ge_debt_s', 0.0)
+        debt_s = f"{debt:5.1f} s" if debt > 0.1 else "  0.0 s"
+
+        # ── Bus presence ────────────────────────────────────────────────
+        try:
+            bus_here = any(ctrl.BusPresence[0] > 0)
+        except Exception:
+            bus_here = False
+        # Also check last detected bus (non -1 and recent)
+        if not bus_here:
+            bus_here = getattr(ctrl, 'last_detected_bus_id', -1) != -1
+
+        bus_str = "YES" if bus_here else " NO"
+
+        # ── TSP event counts from stats ──────────────────────────────────
+        _si = getattr(stats, '_inter', {}).get(iid, {})
+        n_det = _si.get('n_detections', 0)
+        n_ext = _si.get('n_extensions',  0)
+        n_ins = _si.get('n_insertions',  0)
+        ev_str = f"{n_det} / {n_ext} / {n_ins}"
+
+        lines.append(
+            f"[DASH]  {iid:<10} {ph_str:<8} {tsp_str:<10} {debt_s:>7}  {bus_str:<5} {ev_str:>11}"
+        )
+
+        if tsp_str != "IDLE":
+            active_tsp.append(f"{iid} ({tsp_str}, {debt:.1f}s debt)")
+
+    lines.append(f"[DASH]  " + _SEP)
+
+    # ── Summary line ─────────────────────────────────────────────────────────
+    if active_tsp:
+        tsp_summary = "Active TSP: " + ", ".join(active_tsp)
+    else:
+        tsp_summary = "Active TSP: none"
+
+    wave_str = "ON" if wave_active else "OFF"
+    lines.append(f"[DASH]  {tsp_summary:<42}  Corridor wave: {wave_str}")
+    lines.append(f"[DASH] " + _DSEP)
+
+    for ln in lines:
+        AKIPrintString(ln)
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as _lf:
+                _lf.write(ln + "\n")
+        except Exception:
+            pass
+
+
+# =============================================================================
+# AIMSUN CANVAS OVERLAY — creates GKAnnotation objects in the network view
+# =============================================================================
+
+def _write_overlay_script(valid_feats: list) -> str:
+    """
+    Write a standalone Aimsun GUI Python script that creates GKPolyline circle
+    markers for every detection point.  Returns the script path.
+
+    Run it from Aimsun Next: Tools > Run Script  (or Scripts > Run Script File)
+    """
+    import json as _json
+
+    script_path = _DET_GEOJSON.replace(".geojson", "_overlay_script.py")
+
+    # Embed the coordinates directly so the script is self-contained
+    pts_data = [
+        {
+            "x": float(f["geometry"]["coordinates"][0]),
+            "y": float(f["geometry"]["coordinates"][1]),
+            "label": (
+                f"[{f['properties'].get('tier','?')}] "
+                f"Bus {f['properties'].get('veh_id','?')} "
+                f"jct {f['properties'].get('junction_id','?')} "
+                f"t={f['properties'].get('sim_time_s','?')}s"
+            ),
+        }
+        for f in valid_feats
+    ]
+
+    script = f'''\
+"""
+TSP Bus Detection Overlay Script
+Generated automatically by intersection_controller.py
+
+Run from Aimsun Next:  Tools > Run Script  (select this file)
+
+Creates {len(pts_data)} GKPolyline circle markers in layer "TSP Bus Detections".
+"""
+import math
+from PyANGKernel import GKSystem
+
+CIRCLE_R = 8.0    # marker radius in model units (metres)
+CIRCLE_N = 16     # polygon segments
+LAYER_NAME = "TSP Bus Detections"
+
+PTS = {_json.dumps(pts_data, indent=2)}
+
+
+def _make_circle_pts(cx, cy):
+    coords = []
+    for k in range(CIRCLE_N + 1):
+        angle = 2.0 * math.pi * k / CIRCLE_N
+        coords.append((cx + CIRCLE_R * math.cos(angle),
+                       cy + CIRCLE_R * math.sin(angle), 0.0))
+    return coords
+
+
+def _clear_existing_markers(model, pl_type):
+    """Delete all GKPolyline objects whose name starts with a TSP marker prefix."""
+    _PREFIXES = ("[BUS]", "[WAVE]", "[SEC]", "[DET]", "[IC-detect]", "[NORMAL-detect]")
+    catalog = model.getCatalog()
+    if catalog is None:
+        return 0
+    objs = catalog.getObjectsByType(pl_type)
+    if not objs:
+        return 0
+    obj_list = list(objs.values()) if isinstance(objs, dict) else list(objs)
+    n_del = 0
+    for obj in obj_list:
+        name = ""
+        for fn in ("getName", "getExternalName"):
+            try:
+                name = getattr(obj, fn)() or ""
+                if name:
+                    break
+            except Exception:
+                pass
+        if any(name.startswith(p) for p in _PREFIXES):
+            try:
+                model.deleteObject(obj)
+                n_del += 1
+            except Exception:
+                pass
+    if n_del:
+        print(f"[overlay] Cleared {{n_del}} existing TSP marker(s).")
+    return n_del
+
+
+def run():
+    model = GKSystem.getSystem().getActiveModel()
+    if model is None:
+        print("[overlay] ERROR: no active model")
+        return
+
+    pl_type = model.getType("GKPolyline")
+    if pl_type is None:
+        print("[overlay] ERROR: GKPolyline type not found in this model")
+        return
+
+    # Remove markers from any previous run before drawing new ones
+    _clear_existing_markers(model, pl_type)
+
+    # Find or create the layer
+    # Aimsun Next 26: newObject(type) — one arg only; getCreateFolderForType(str)
+    layer = None
+    try:
+        catalog = model.getCatalog()
+        lyr_type = model.getType("GKLayer")
+        if catalog and lyr_type:
+            for lyr in (catalog.getObjectsByType(lyr_type) or []):
+                if getattr(lyr, "getName", lambda: "")() == LAYER_NAME:
+                    layer = lyr
+                    break
+        if layer is None and lyr_type:
+            layer = model.newObject(lyr_type)
+            if layer:
+                for fn in ("setName", "setExternalName"):
+                    try:
+                        getattr(layer, fn)(LAYER_NAME); break
+                    except Exception:
+                        pass
+                try:
+                    folder = model.getCreateFolderForType("GKLayer")
+                    model.addObjectToFolder(layer, folder)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[overlay] Layer setup failed: {{e}} — continuing without layer")
+
+    # Get creation folder for polylines (string arg in Aimsun Next 26)
+    pl_folder = None
+    try:
+        pl_folder = model.getCreateFolderForType("GKPolyline")
+    except Exception:
+        pass
+
+    n_ok = n_fail = 0
+    for pt in PTS:
+        try:
+            obj = model.newObject(pl_type)
+            if obj is None:
+                raise RuntimeError("newObject returned None")
+            if pl_folder is not None:
+                try:
+                    model.addObjectToFolder(obj, pl_folder)
+                except Exception:
+                    pass
+
+            coords = _make_circle_pts(pt["x"], pt["y"])
+
+            set_ok = False
+            if not set_ok:
+                try:
+                    obj.setPoints(coords); set_ok = True
+                except Exception:
+                    pass
+            if not set_ok:
+                try:
+                    from PyANGKernel import GKPoint
+                    gkpts = []
+                    for cx, cy, cz in coords:
+                        p = GKPoint(); p.x = cx; p.y = cy; p.z = cz
+                        gkpts.append(p)
+                    obj.setPoints(gkpts); set_ok = True
+                except Exception:
+                    pass
+            if not set_ok:
+                try:
+                    for cx, cy, cz in coords:
+                        obj.addPoint(cx, cy, cz)
+                    set_ok = True
+                except Exception:
+                    pass
+
+            for fn in ("setName", "setExternalName", "setLabel"):
+                try:
+                    getattr(obj, fn)(pt["label"]); break
+                except Exception:
+                    pass
+
+            # Set bright red colour so circles are visible
+            try:
+                from PyANGKernel import GKColor
+                obj.setColor(GKColor(220, 30, 30))
+            except Exception:
+                try:
+                    from PyQt5.QtGui import QColor
+                    obj.setColor(QColor(220, 30, 30))
+                except Exception:
+                    pass
+
+            if layer:
+                for fn in ("setLayer", "addToLayer"):
+                    try:
+                        getattr(obj, fn)(layer); break
+                    except Exception:
+                        pass
+
+            n_ok += 1
+        except Exception as e:
+            n_fail += 1
+            if n_fail == 1:
+                print(f"[overlay] First marker failed: {{e}}")
+
+    # Refresh the view
+    try:
+        GKSystem.getSystem().getGUI().getActiveView().update()
+    except Exception:
+        pass
+
+    print(f"[overlay] Done: {{n_ok}} circles created, {{n_fail}} failed.")
+    print(f"[overlay] Zoom out on the network canvas to see red circles.")
+    print(f"[overlay] Or: Catalog panel > GEO objects to find them by name.")
+
+
+run()
+'''
+
+    with open(script_path, "w", encoding="utf-8") as _sf:
+        _sf.write(script)
+    return script_path
+
+
+def _overlay_detections_on_aimsun_map():
+    """
+    After simulation:
+    1. Writes a standalone Aimsun GUI script that creates GKPolyline circle
+       markers — run it via Tools > Run Script for instant canvas overlay.
+    2. Attempts to create the markers directly (AAPI context — may be read-only).
+
+    Uses PyANGKernel (bundled with Aimsun Next).  Any API mismatch is caught
+    and logged — the function never raises.
+    """
+    if not OVERLAY_DETECTIONS_ON_MAP:
+        return
+    if not MARK_DETECTION_POINTS:
+        return
+
+    valid_feats = [
+        f for f in _geojson_features
+        if not (f["geometry"]["coordinates"][0] == 0.0
+                and f["geometry"]["coordinates"][1] == 0.0)
+    ]
+    if not valid_feats:
+        log_to_file("[MAP] No valid-coordinate detections — canvas overlay skipped", force=True)
+        return
+
+    # Always write the standalone script — works even if the direct AAPI path fails.
+    try:
+        _script_path = _write_overlay_script(valid_feats)
+        log_to_file(
+            f"[MAP] Overlay script written: {_script_path}\n"
+            f"      → To show circles in Aimsun: Tools > Run Script > select that file",
+            force=True
+        )
+    except Exception as _se:
+        log_to_file(f"[MAP] Overlay script write failed: {_se}", force=True)
+
+    try:
+        from PyANGKernel import GKSystem
+    except ImportError:
+        log_to_file(
+            "[MAP] PyANGKernel not available — use the overlay script above.",
+            force=True
+        )
+        return
+
+    try:
+        model = GKSystem.getSystem().getActiveModel()
+        if model is None:
+            log_to_file("[MAP] getActiveModel() returned None — canvas overlay skipped", force=True)
+            return
+    except Exception as _ge:
+        log_to_file(f"[MAP] Could not access Aimsun model: {_ge}", force=True)
+        return
+
+    try:
+        # Try type names used across different Aimsun Next versions.
+        # getType() returns None for unknown names — no exception raised.
+        _ANN_NAMES = [
+            "GKAnnotation", "GKNote", "GKLabel",
+            "GKMapLabel", "GKTextAnnotation", "GKAnnotation3D",
+        ]
+        ann_type = None
+        _ann_name_used = ""
+        for _tn in _ANN_NAMES:
+            _t = model.getType(_tn)
+            if _t is not None:
+                ann_type = _t
+                _ann_name_used = _tn
+                break
+
+        _use_polyline = False
+        if ann_type is None:
+            # GKAnnotation not available — try GKPolyline circle markers instead
+            _pl_type = model.getType("GKPolyline")
+            if _pl_type is None:
+                # No usable type found — log available types for diagnostics
+                _PROBE = [
+                    "GKNode", "GKSection", "GKDetector", "GKCentroid",
+                    "GKAnnotation", "GKNote", "GKLabel", "GKMapLabel",
+                    "GKPolyline", "GKPolygon", "GKBitmap", "GKObject",
+                ]
+                _found = [n for n in _PROBE if model.getType(n) is not None]
+                log_to_file(
+                    f"[MAP] No overlay type found (tried {_ANN_NAMES} + GKPolyline). "
+                    f"Types present in this model: {_found}. "
+                    f"Open the GeoJSON manually: File > Import > {_DET_GEOJSON}",
+                    force=True
+                )
+                return
+            _use_polyline = True
+            log_to_file("[MAP] Using GKPolyline circles as detection markers", force=True)
+        else:
+            log_to_file(f"[MAP] Using annotation type '{_ann_name_used}'", force=True)
+
+        # ── Clear markers from any previous simulation run ────────────────────
+        _MARKER_PREFIXES = (
+            "[BUS]", "[WAVE]", "[SEC]", "[DET]",
+            "[IC-detect]", "[NORMAL-detect]",
+        )
+        _clear_type = _pl_type if _use_polyline else ann_type
+        try:
+            _catalog = model.getCatalog()
+            _all_objs = _catalog.getObjectsByType(_clear_type) if _catalog else None
+            _obj_list = (
+                list(_all_objs.values()) if isinstance(_all_objs, dict)
+                else list(_all_objs or [])
+            )
+            _n_cleared = 0
+            for _old in _obj_list:
+                _name = ""
+                for _fn in ("getName", "getExternalName"):
+                    try:
+                        _name = getattr(_old, _fn)() or ""
+                        if _name:
+                            break
+                    except Exception:
+                        pass
+                if any(_name.startswith(_p) for _p in _MARKER_PREFIXES):
+                    try:
+                        model.deleteObject(_old)
+                        _n_cleared += 1
+                    except Exception:
+                        pass
+            if _n_cleared:
+                log_to_file(f"[MAP] Cleared {_n_cleared} marker(s) from previous run", force=True)
+        except Exception as _ce:
+            log_to_file(f"[MAP] Marker clear failed (non-fatal): {_ce}", force=True)
+
+
+        # ── Tier → ASCII prefix (emoji may not render in all Aimsun builds) ─
+        def _pfx(tier: str) -> str:
+            if "IC-detect" in tier or "PT-coord" in tier:
+                return "[BUS]"
+            if "coord-prearm" in tier:
+                return "[WAVE]"
+            if "sec" in tier:
+                return "[SEC]"
+            return "[DET]"
+
+        # ── Object creation helper (Aimsun Next 26 API) ───────────────────────
+        # Confirmed signatures:
+        #   model.newObject(gktype)                 — one arg, no parent/folder
+        #   model.getCreateFolderForType(type_name) — takes str, not GKType
+        #   model.addObjectToFolder(obj, folder)    — add to folder after creation
+        def _create_obj(gktype, type_name: str):
+            """Create and return a new model object, placed in its default folder."""
+            obj = model.newObject(gktype)
+            if obj is None:
+                raise RuntimeError("model.newObject() returned None")
+            # Place in the type's default creation folder
+            try:
+                _folder = model.getCreateFolderForType(type_name)
+                model.addObjectToFolder(obj, _folder)
+            except Exception:
+                pass
+            return obj
+
+        # ── Try to find or create a dedicated layer ───────────────────────────
+        _layer = None
+        _LAYER_NAME = "TSP Bus Detections"
+        try:
+            # Iterate layers to find an existing one with this name
+            _catalog = model.getCatalog()
+            if _catalog is not None:
+                for _lyr in (_catalog.getObjectsByType(model.getType("GKLayer")) or []):
+                    if getattr(_lyr, 'getName', lambda: '')() == _LAYER_NAME:
+                        _layer = _lyr
+                        break
+            # Create new layer if not found
+            if _layer is None:
+                _lyr_type = model.getType("GKLayer")
+                if _lyr_type is not None:
+                    try:
+                        _layer = _create_obj(_lyr_type, "GKLayer")
+                    except Exception:
+                        _layer = None
+                    for _set_fn in ("setName", "setExternalName"):
+                        try:
+                            getattr(_layer, _set_fn)(_LAYER_NAME)
+                            break
+                        except Exception:
+                            pass
+        except Exception:
+            _layer = None   # proceed without a custom layer
+
+        # ── Create one marker per detection ───────────────────────────────────
+        import math as _math
+        n_ok   = 0
+        n_fail = 0
+
+        # GKPolyline circle parameters
+        _CIRCLE_R  = 8.0   # radius in model units (metres)
+        _CIRCLE_N  = 16    # number of segments
+
+        for feat in valid_feats:
+            x     = float(feat["geometry"]["coordinates"][0])
+            y     = float(feat["geometry"]["coordinates"][1])
+            props = feat["properties"]
+            tier  = str(props.get("tier", ""))
+            vid   = props.get("veh_id", "?")
+            jid   = props.get("junction_id", "?")
+            t_s   = props.get("sim_time_s", "?")
+            label = f"{_pfx(tier)} Bus {vid}  jct {jid}  t={t_s}s  [{tier}]"
+
+            try:
+                if _use_polyline:
+                    # ── Draw a small circle using GKPolyline ──────────────────
+                    # Build circle coordinates as plain Python tuples — avoids
+                    # depending on GKPoints3D / GKPoint which vary across builds.
+                    _coords = []
+                    for _k in range(_CIRCLE_N + 1):   # +1 closes the circle
+                        _angle = 2.0 * _math.pi * _k / _CIRCLE_N
+                        _coords.append((
+                            x + _CIRCLE_R * _math.cos(_angle),
+                            y + _CIRCLE_R * _math.sin(_angle),
+                            0.0
+                        ))
+
+                    obj = _create_obj(_pl_type, "GKPolyline")
+
+                    # Try every known point-setting API in order of preference.
+                    _pts_set = False
+
+                    # Option A: setPoints with list of tuples (simplest)
+                    if not _pts_set:
+                        try:
+                            obj.setPoints(_coords)
+                            _pts_set = True
+                        except Exception:
+                            pass
+
+                    # Option B: GKPoint objects in a plain list
+                    if not _pts_set:
+                        try:
+                            from PyANGKernel import GKPoint as _GKP
+                            _gk_pts = []
+                            for _cx, _cy, _cz in _coords:
+                                _p = _GKP(); _p.x = _cx; _p.y = _cy; _p.z = _cz
+                                _gk_pts.append(_p)
+                            obj.setPoints(_gk_pts)
+                            _pts_set = True
+                        except Exception:
+                            pass
+
+                    # Option C: addPoint one at a time (tuple variant)
+                    if not _pts_set:
+                        try:
+                            for _cx, _cy, _cz in _coords:
+                                obj.addPoint(_cx, _cy, _cz)
+                            _pts_set = True
+                        except Exception:
+                            pass
+
+                    # Option D: addPoint with GKPoint
+                    if not _pts_set:
+                        try:
+                            from PyANGKernel import GKPoint as _GKP
+                            for _cx, _cy, _cz in _coords:
+                                _p = _GKP(); _p.x = _cx; _p.y = _cy; _p.z = _cz
+                                obj.addPoint(_p)
+                            _pts_set = True
+                        except Exception:
+                            pass
+
+                    if not _pts_set:
+                        raise RuntimeError("No working setPoints/addPoint API found for GKPolyline")
+
+                    for _fn in ("setName", "setExternalName", "setLabel"):
+                        try:
+                            getattr(obj, _fn)(label)
+                            break
+                        except Exception:
+                            pass
+                else:
+                    # ── Create annotation (GKAnnotation or equivalent) ────────
+                    obj = _create_obj(ann_type, _ann_name_used)
+
+                    _pos_set = False
+                    try:
+                        from PyANGKernel import GKPoint
+                        _pt = GKPoint()
+                        _pt.x = x; _pt.y = y; _pt.z = 0.0
+                        obj.setPosition(_pt)
+                        _pos_set = True
+                    except Exception:
+                        pass
+
+                    if not _pos_set:
+                        try:
+                            obj.setPoints([(x, y, 0.0)])
+                            _pos_set = True
+                        except Exception:
+                            pass
+
+                    if not _pos_set:
+                        try:
+                            obj.setPosition((x, y, 0.0))
+                        except Exception:
+                            pass
+
+                    for _fn in ("setLabel", "setText", "setName", "setExternalName"):
+                        try:
+                            getattr(obj, _fn)(label)
+                            break
+                        except Exception:
+                            pass
+
+                # ── Set colour (bright red so circles are visible) ────────────
+                try:
+                    from PyANGKernel import GKColor as _GKC
+                    obj.setColor(_GKC(220, 30, 30))
+                except Exception:
+                    pass
+                try:
+                    from PyQt5.QtGui import QColor as _QC
+                    obj.setColor(_QC(220, 30, 30))
+                except Exception:
+                    pass
+
+                # ── Assign to layer (both paths) ──────────────────────────────
+                if _layer is not None:
+                    for _fn in ("setLayer", "addToLayer"):
+                        try:
+                            getattr(obj, _fn)(_layer)
+                            break
+                        except Exception:
+                            pass
+
+                n_ok += 1
+
+            except Exception as _obj_e:
+                n_fail += 1
+                if n_fail == 1:
+                    log_to_file(f"[MAP] Marker creation failed: {_obj_e}", force=True)
+                if n_fail >= 2:
+                    log_to_file("[MAP] Second failure identical — stopping canvas overlay", force=True)
+                    break
+
+        # ── Trigger a view refresh so circles appear immediately ──────────────
+        try:
+            GKSystem.getSystem().getGUI().getActiveView().update()
+        except Exception:
+            pass
+
+        _marker_kind = "circle(s)" if _use_polyline else "annotation(s)"
+        log_to_file(
+            f"[MAP] Canvas overlay complete: {n_ok} {_marker_kind} created "
+            f"({n_fail} failed) from {len(valid_feats)} detection points.\n"
+            f"      → In Aimsun: zoom out on the network canvas to see red circles.\n"
+            f"      → Or open the Catalog panel and look under GEO objects.",
+            force=True
+        )
+
+    except Exception as _top_e:
+        import traceback
+        log_to_file(
+            f"[MAP] Canvas overlay error: {_top_e}\n{traceback.format_exc()}",
+            force=True
+        )
 
 
 def AAPIFinish():
@@ -6350,14 +8117,126 @@ def AAPIFinish():
     try:
         stats.print_results()
         stats.save_results()
+        log_to_file("[FINISH] stats saved OK", force=True)
     except Exception as e:
-        log_to_file(f"[FINISH] stats error: {e}")
+        import traceback
+        log_to_file(f"[FINISH] stats error: {e}\n{traceback.format_exc()}", force=True)
     for controller in controllers.values():
         if CONTROL_MODE == "URTSP":
             log_to_file(controller.get_urtsp_summary())
     # ── Corridor summary ──────────────────────────────────────────────────────
     for coord in corridor_coordinators:
         log_to_file(f"[FINISH] {coord.summary()}")
+    # ── Flush detection-point GeoJSON ─────────────────────────────────────────
+    if MARK_DETECTION_POINTS and _geojson_features:
+        try:
+            import json
+            geojson = {
+                "type": "FeatureCollection",
+                "features": _geojson_features,
+            }
+            with open(_DET_GEOJSON, "w", encoding="utf-8") as _gf:
+                json.dump(geojson, _gf, indent=2)
+            log_to_file(
+                f"[MARK] Detection GeoJSON written: {_DET_GEOJSON} "
+                f"({len(_geojson_features)} points)"
+            )
+        except Exception as _ge:
+            log_to_file(f"[MARK] GeoJSON write failed: {_ge}")
+
+    # ── Detection-point diagnostics (always shown) ────────────────────────────
+    log_to_file(
+        f"[MARK DIAG] MARK_DETECTION_POINTS={MARK_DETECTION_POINTS} | "
+        f"_mark_calls_total={_mark_calls_total} | "
+        f"_mark_calls_written={_mark_calls_written} | "
+        f"unique_pairs={len(_marked_detections)} | "
+        f"geojson_features={len(_geojson_features)} | "
+        f"CSV_path={_DET_CSV} | "
+        f"CSV_exists={os.path.isfile(_DET_CSV)}",
+        force=True
+    )
+    # Dump the bus_sg and tsp_mode of every GB controller so we can see if
+    # detection is even plausible
+    for _iid, _ctrl in controllers.items():
+        _gb = getattr(_ctrl, 'gb', None)
+        if _gb is not None:
+            log_to_file(
+                f"[MARK DIAG] jct={_iid} "
+                f"bus_sg={getattr(_gb,'bus_sg',None)} "
+                f"tsp_mode={getattr(_gb,'tsp_mode','?')} "
+                f"bus_type_pos={getattr(_gb,'bus_type_pos','?')} "
+                f"bus_det={getattr(_gb,'bus_det',[])} "
+                f"incoming_secs={getattr(_gb,'incoming_sections',[])} "
+                f"jxy_cache={getattr(_gb,'_junction_xy_cache',None)}",
+                force=True
+            )
+
+    # ── Write junction centroids CSV ──────────────────────────────────────────
+    # Collected from every controller's cached XY (IntersectionController and
+    # GroupBasedController both store _junction_xy / _junction_xy_cache).
+    # The plot script reads this to draw intersection markers as a reference frame.
+    if MARK_DETECTION_POINTS:
+        try:
+            with open(_JUNC_CSV, "w", newline="", encoding="utf-8") as _jf:
+                _jw = csv.writer(_jf)
+                _jw.writerow(["junction_id", "x", "y"])
+                for _jiid, _jctrl in controllers.items():
+                    # Try cached value first; if not set, call _get_junction_xy()
+                    # to resolve it now (the lazy cache may not have fired if no
+                    # buses were detected at this junction this run).
+                    _jxy = getattr(_jctrl, '_junction_xy', None)
+                    if _jxy is None and hasattr(_jctrl, '_get_junction_xy'):
+                        try:
+                            _jxy = _jctrl._get_junction_xy()
+                        except Exception:
+                            pass
+                    # GroupBasedController caches in gb._junction_xy_cache
+                    if _jxy is None:
+                        _gb = getattr(_jctrl, 'gb', None)
+                        if _gb is not None:
+                            _jxy = getattr(_gb, '_junction_xy_cache', None)
+                            if _jxy is None and hasattr(_gb, '_get_junction_xy'):
+                                try:
+                                    _jxy = _gb._get_junction_xy()
+                                except Exception:
+                                    pass
+                    if _jxy is not None:
+                        _jw.writerow([_jiid, f"{_jxy[0]:.3f}", f"{_jxy[1]:.3f}"])
+            log_to_file(f"[MARK] Junction centroids written: {_JUNC_CSV}", force=True)
+        except Exception as _je:
+            log_to_file(f"[MARK] Junction centroids write failed: {_je}", force=True)
+
+    # ── Plot detection points to PNG + HTML map (post-simulation) ─────────────
+    if MARK_DETECTION_POINTS:
+        if not os.path.isfile(_DET_CSV):
+            log_to_file("[MARK] Detection plot skipped — no CSV (no buses detected?)", force=True)
+        else:
+            _script_dir = os.path.dirname(os.path.abspath(__file__))
+            if _script_dir not in sys.path:
+                sys.path.insert(0, _script_dir)
+            try:
+                import importlib
+                import plot_detections as _pd
+                importlib.reload(_pd)
+                _junc_csv_arg = _JUNC_CSV if os.path.isfile(_JUNC_CSV) else None
+                _pd.run(csv_path=_DET_CSV, junc_csv=_junc_csv_arg)
+                log_to_file(f"[MARK] Detection plot written alongside {_DET_CSV}", force=True)
+            except Exception as _pe:
+                import traceback
+                log_to_file(f"[MARK] Detection plot failed: {_pe}\n{traceback.format_exc()}", force=True)
+
+    # ── Aimsun canvas overlay — GKAnnotation markers in the network view ────────
+    # Creates persistent markers visible in the Aimsun network editor.
+    # Independent of the PNG/HTML outputs — runs even if those fail.
+    if MARK_DETECTION_POINTS and _geojson_features:
+        _overlay_detections_on_aimsun_map()
+    elif OVERLAY_DETECTIONS_ON_MAP and not _geojson_features:
+        log_to_file(
+            f"[MAP] No detections collected — GeoJSON at {_DET_GEOJSON} for "
+            "manual import via File > Import in Aimsun",
+            force=True
+        )
+
     return 0
 
 

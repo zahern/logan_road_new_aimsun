@@ -5,6 +5,25 @@
 
 
 INTERSECTIONS_CONFIG = {
+    #FIXME TYRING TO ADD NEW INTESECTION WITH MINIMIAL INPUTS
+    19363:{
+        'IntersectionID': 19363,
+        'CarOcc': 1.5,
+        'BusOcc': 40.0,
+        'BusPhase': 1,
+        # ── ETA-aware detection tuning ──────────────────────────────────────
+        # detection_zone_m: PT-coord scan radius.  250 m ≈ 22 s at 40 km/h,
+        #   which is the outer edge of the useful TSP window for this junction.
+        #   Both front (NB/SB) and side (EW) buses within this radius are seen.
+        # eta_min_s: don't request if bus is already < 5 s away (too late to act).
+        # eta_max_s: don't request if bus is > 45 s away at current speed.
+        #   The main NB/SB phase lasts ~28 s; requesting at >45 s means the
+        #   green would expire and the bus would miss the benefit.
+        'detection_zone_m': 250.0,
+        'eta_min_s':          5.0,
+        'eta_max_s':         45.0,
+    },
+    
     # 17249 - Old Cleveland Road (NB + SB on Logan Road; EW on Old Cleveland Road)
     17249: {
         'IntersectionID': 17249,

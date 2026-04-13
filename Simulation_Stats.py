@@ -251,6 +251,10 @@ class SimulationStats:
             'n_insertions':   0,
             'n_exit_clears':  0,
             'n_cap_clears':   0,
+            # HARMONY skip counters — detected bus but no action taken
+            'n_skipped_ge':   0,   # harmony returned GE ≤ 0.5 s (not worth extending)
+            'n_skipped_ins':  0,   # harmony returned BP ≤ 0.5 s (not worth inserting)
+            'n_detected_no_action': 0,   # NORMAL mode: bus detected, no TSP applied
         }
         self._print(
             f"[STATS] Registered intersection {iid} | "
@@ -710,6 +714,24 @@ class SimulationStats:
         if key:
             d[key] += 1
 
+    def record_tsp_skip(self, intersection_id: int, skip_type: str):
+        """
+        Record a case where a bus was detected but no TSP action was applied.
+        skip_type: 'ge_trivial'  — GE opt ≤ 0.5 s (harmony said don't extend)
+                   'ins_trivial' — BP opt ≤ 0.5 s (harmony said don't insert)
+                   'no_action'   — NORMAL mode: bus seen, no TSP available
+        """
+        if intersection_id not in self._inter:
+            return
+        d = self._inter[intersection_id]
+        key = {
+            'ge_trivial':  'n_skipped_ge',
+            'ins_trivial': 'n_skipped_ins',
+            'no_action':   'n_detected_no_action',
+        }.get(skip_type)
+        if key:
+            d[key] += 1
+
     def record_pt_bus_detection(self, intersection_id: int, veh_id: int, time: float):
         """
         Called by the controller whenever a PT bus is newly detected approaching
@@ -801,6 +823,13 @@ class SimulationStats:
         avg_car_pass_delay_s = d['delay_car']   / car_passengers if car_passengers > 0 else 0.0
         avg_truck_pass_delay_s = d.get('delay_truck', 0.0) / truck_passengers if truck_passengers > 0 else 0.0
 
+        # Per-intersection objective: throughput / delay (same formula as global)
+        _delay_hrs_inter = total_delay_pax_s / 3600.0
+        inter_objective  = (
+            passengers / _delay_hrs_inter
+            if _delay_hrs_inter > 1e-6 else 0.0
+        )
+
         return {
             'bus_total_tt_hrs':      total_bus_tt_hrs,
             'n_buses':               n_buses,           # bus trips completed
@@ -831,12 +860,17 @@ class SimulationStats:
             'n_insertions':          d['n_insertions'],
             'n_exit_clears':         d['n_exit_clears'],
             'n_cap_clears':          d['n_cap_clears'],
+            'n_skipped_ge':          d.get('n_skipped_ge', 0),
+            'n_skipped_ins':         d.get('n_skipped_ins', 0),
+            'n_detected_no_action':  d.get('n_detected_no_action', 0),
             'total_vehicles':        d['vehicles'] + added_bus_veh_passages,
             'n_main_sections':       len(d.get('main_sections', [])),
             'n_side_sections':       len(d.get('side_sections', [])),
             'side_sections_resolved': bool(d.get('side_sections_resolved', False)),
             'main_sections':         list(d.get('main_sections', [])),
             'side_sections':         list(d.get('side_sections', [])),
+            # Objective
+            'objective':             inter_objective,
         }
 
     def _global_kpis(self) -> dict:
@@ -852,6 +886,9 @@ class SimulationStats:
         total_dets         = 0
         total_exts         = 0
         total_ins          = 0
+        total_skipped_ge   = 0
+        total_skipped_ins  = 0
+        total_no_action    = 0
         sim_total_delay    = 0.0
         sim_bus_delay      = 0.0
         sim_car_delay      = 0.0
@@ -874,6 +911,9 @@ class SimulationStats:
             total_dets          += k['n_detections']
             total_exts          += k['n_extensions']
             total_ins           += k['n_insertions']
+            total_skipped_ge    += k['n_skipped_ge']
+            total_skipped_ins   += k['n_skipped_ins']
+            total_no_action     += k['n_detected_no_action']
             sim_total_delay     += k['delay_total_pax_s']
             sim_bus_delay       += k['delay_bus_pax_s']
             sim_car_delay       += k['delay_car_pax_s']
@@ -908,32 +948,49 @@ class SimulationStats:
             if truck_passengers > 0 else 0.0
         )
 
+        # ── Objective metric ──────────────────────────────────────────────────
+        # Goal: maximise passenger flow while minimising total delay.
+        # Metric: pax-equivalent throughput per hour of total delay.
+        #   Objective = TotalPaxPassages / (TotalDelayPax_s / 3600)
+        # Higher is better: more pax moved per hour of queue/delay incurred.
+        # Also report raw components so different runs can be compared directly.
+        _delay_hrs = sim_total_delay / 3600.0
+        throughput_per_delay_hr = (
+            total_passengers / _delay_hrs
+            if _delay_hrs > 1e-6 else 0.0
+        )
+
         return {
-            'bus_total_tt_hrs':      total_bus_tt_hrs,
-            'n_buses':               total_n_buses,
-            'n_distinct_buses':      total_distinct_buses,
-            'n_distinct_cars':       total_distinct_cars,
-            'n_distinct_trucks':     total_distinct_trucks,
-            'avg_bus_tt_s':          avg_bus_tt_s,
-            'total_pass_delay_hrs':  total_pass_delay,
-            'main_pass_delay_hrs':   total_main_delay,
-            'side_pass_delay_hrs':   total_side_delay,
-            'sim_total_delay':       sim_total_delay,
-            'sim_bus_delay':         sim_bus_delay,
-            'sim_car_delay':         sim_car_delay,
-            'sim_truck_delay':       sim_truck_delay,
-            'total_passengers':      total_passengers,
-            'bus_passengers':        bus_passengers,
-            'car_passengers':        car_passengers,
-            'truck_passengers':      truck_passengers,
-            'avg_pass_delay_s':      avg_pass_delay_s,
-            'avg_bus_pass_delay_s':  avg_bus_pass_delay_s,
-            'avg_car_pass_delay_s':  avg_car_pass_delay_s,
-            'avg_truck_pass_delay_s': avg_truck_pass_delay_s,
-            'avg_obj_pass_delay':    avg_obj_delay,
-            'n_tsp_detections':      total_dets,
-            'n_tsp_extensions':      total_exts,
-            'n_tsp_insertions':      total_ins,
+            'bus_total_tt_hrs':          total_bus_tt_hrs,
+            'n_buses':                   total_n_buses,
+            'n_distinct_buses':          total_distinct_buses,
+            'n_distinct_cars':           total_distinct_cars,
+            'n_distinct_trucks':         total_distinct_trucks,
+            'avg_bus_tt_s':              avg_bus_tt_s,
+            'total_pass_delay_hrs':      total_pass_delay,
+            'main_pass_delay_hrs':       total_main_delay,
+            'side_pass_delay_hrs':       total_side_delay,
+            'sim_total_delay':           sim_total_delay,
+            'sim_bus_delay':             sim_bus_delay,
+            'sim_car_delay':             sim_car_delay,
+            'sim_truck_delay':           sim_truck_delay,
+            'total_passengers':          total_passengers,
+            'bus_passengers':            bus_passengers,
+            'car_passengers':            car_passengers,
+            'truck_passengers':          truck_passengers,
+            'avg_pass_delay_s':          avg_pass_delay_s,
+            'avg_bus_pass_delay_s':      avg_bus_pass_delay_s,
+            'avg_car_pass_delay_s':      avg_car_pass_delay_s,
+            'avg_truck_pass_delay_s':    avg_truck_pass_delay_s,
+            'avg_obj_pass_delay':        avg_obj_delay,
+            'n_tsp_detections':          total_dets,
+            'n_tsp_extensions':          total_exts,
+            'n_tsp_insertions':          total_ins,
+            'n_tsp_skipped_ge':          total_skipped_ge,
+            'n_tsp_skipped_ins':         total_skipped_ins,
+            'n_tsp_detected_no_action':  total_no_action,
+            # Objective
+            'throughput_per_delay_hr':   throughput_per_delay_hr,
         }
 
     # =========================================================================
@@ -966,9 +1023,12 @@ class SimulationStats:
                        f"car={self._car_pos}('{self._car_type_name}') occ={self._inter[next(iter(self._inter))]['car_occ'] if self._inter else 0} | "
                        f"bus={self._bus_pos}('{self._bus_type_name}') occ={self._inter[next(iter(self._inter))]['bus_occ'] if self._inter else 0} | "
                        f"truck={self._truck_pos}('{self._truck_type_name}') occ={self._inter[next(iter(self._inter))].get('truck_occ',0) if self._inter else 0}")
-        self._print(f"[STATS]   TSP events — detections={g['n_tsp_detections']} "
-                       f"extensions={g['n_tsp_extensions']} "
-                       f"insertions={g['n_tsp_insertions']}")
+        self._print(f"[STATS]   TSP events — det={g['n_tsp_detections']} "
+                       f"ext={g['n_tsp_extensions']} "
+                       f"ins={g['n_tsp_insertions']} | "
+                       f"skipped_GE={g['n_tsp_skipped_ge']} "
+                       f"skipped_ins={g['n_tsp_skipped_ins']} "
+                       f"no_action(NORMAL)={g['n_tsp_detected_no_action']}")
 
         self._print(sep)
         self._print("[STATS] ── PER-INTERSECTION BREAKDOWN ──")
@@ -1006,6 +1066,7 @@ class SimulationStats:
                            f"ext={k['n_extensions']} ins={k['n_insertions']} "
                            f"exit_clear={k['n_exit_clears']} "
                            f"cap_clear={k['n_cap_clears']}")
+            self._print(f"[STATS]   Objective       : {k['objective']:.2f} pax/delay-hr")
 
         self._print(sep)
         self._print("[STATS] ── SIMULATION DELAY (occupancy-weighted) ──")
@@ -1026,6 +1087,15 @@ class SimulationStats:
                    if self.obj_steps > 0
                    else f"N/A (not used in {self.tsp_strategy} mode)")
         self._print(f"[STATS]   Avg obj delay     : {obj_str} (model — harmony/URTSP only)")
+
+        self._print(sep)
+        self._print("[STATS] ── NETWORK OBJECTIVE (flow vs delay) ──")
+        self._print(f"[STATS]   Total pax-equiv throughput : {g['total_passengers']:.1f} pax")
+        self._print(f"[STATS]   Total delay (all pax)      : {g['sim_total_delay']:.1f} pax·s "
+                       f"({g['total_pass_delay_hrs']:.4f} hrs)")
+        self._print(f"[STATS]   OBJECTIVE (pax/delay-hr)   : {g['throughput_per_delay_hr']:.2f} "
+                       f"pax per delay-hour")
+        self._print(f"[STATS]   (Higher = more pax moved per unit of delay — compare across runs)")
         self._print(sep)
 
         # CSV summary line for spreadsheet copy-paste
@@ -1227,6 +1297,9 @@ class SimulationStats:
                 "AvgPassDelay_s", "AvgBusPassDelay_s", "AvgCarPassDelay_s", "AvgTruckPassDelay_s",
                 "AvgObjPassDelay",
                 "TSP_Detections", "TSP_Extensions", "TSP_Insertions",
+                "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction",
+                # Objective metric
+                "Objective_PaxPerDelayHr",
             ],
             row=[
                 self.scenario_id, self.experiment_id, self.replication_id,
@@ -1256,6 +1329,10 @@ class SimulationStats:
                 g['n_tsp_detections'],
                 g['n_tsp_extensions'],
                 g['n_tsp_insertions'],
+                g['n_tsp_skipped_ge'],
+                g['n_tsp_skipped_ins'],
+                g['n_tsp_detected_no_action'],
+                round(g['throughput_per_delay_hr'], 3),
             ],
         )
 
@@ -1309,6 +1386,12 @@ class SimulationStats:
                     "TSP_Extensions",   # green-extension actions
                     "TSP_Insertions",   # phase-insertion actions
                     "TSP_ExitClears", "TSP_CapClears",
+                    # Skip counters — bus detected but no action taken
+                    "TSP_Skipped_GE",        # harmony GE opt ≤ 0.5 s
+                    "TSP_Skipped_Ins",       # harmony BP opt ≤ 0.5 s
+                    "TSP_Detected_NoAction", # NORMAL mode detections
+                    # Objective metric
+                    "Objective_PaxPerDelayHr",
                 ],
                 row=[
                     self.scenario_id, self.experiment_id, self.replication_id,
@@ -1349,6 +1432,10 @@ class SimulationStats:
                     k['n_insertions'],
                     k['n_exit_clears'],
                     k['n_cap_clears'],
+                    k['n_skipped_ge'],
+                    k['n_skipped_ins'],
+                    k['n_detected_no_action'],
+                    round(k['objective'], 3),
                 ],
             )
 
