@@ -1,0 +1,36 @@
+#!/bin/bash -l
+#PBS -N synth_stage4_analysis
+#PBS -l walltime=04:00:00
+#PBS -l select=1:ncpus=4:mem=16GB
+#PBS -j oe
+#PBS -m abe
+#PBS -r y
+
+# Stage 4 — GAN validation + SA-Only baseline + RSSZ outlier analysis
+# Run after Stages 1–3 are complete.
+
+set -euo pipefail
+echo "===== Stage 4: Analysis ====="
+echo "Host : $(hostname)"
+echo "Start: $(date)"
+
+module purge
+module load Anaconda3/2024.02-1
+source /home/ahernz/miniconda3/etc/profile.d/conda.sh
+conda activate syn_env
+
+SYNTH_POP=/home/ahernz/github_for_aimsun/logan_road_new/synth_pop
+cd "$SYNTH_POP"
+
+echo "--- GAN validation ---"
+python gan_validation.py
+
+echo "--- SA-Only baseline ---"
+python sa_only_baseline.py --max-iter 1000
+
+echo "--- RSSZ outlier analysis ---"
+python rssz_outlier_analysis.py
+
+echo "End: $(date)"
+echo "Outputs:"
+ls -lh outputs/ 2>/dev/null || echo "outputs/ not found"

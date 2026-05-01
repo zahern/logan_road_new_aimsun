@@ -9,7 +9,7 @@
 #
 # EXPERIMENT DICT KEYS:
 #   name                — output folder prefix and display label
-#   strategy            — NORMAL | URTSP | HARMONY |
+#   strategy            — NORMAL | URTSP | HARMONY | REWARD_TSP |
 #                         GROUP_BASED | GROUP_BASED_URTSP | GROUP_BASED_HARMONY
 #   coordinated         — True  → COORDINATED_TSP = True  (corridor coordination ON)
 #                         False → COORDINATED_TSP = False (independent intersections)
@@ -36,8 +36,13 @@ import re
 import json
 import csv
 import glob
+import shutil
+import sys as _sys
 import time as _time
 from PyANGKernel import GKSystem
+
+# Script directory — used for dashboard import
+_SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
 # =============================================================================
 # ── EXPERIMENT DEFINITIONS ───────────────────────────────────────────────────
@@ -48,33 +53,57 @@ EXPERIMENTS = [
         "name":                 "NORMAL",
         "strategy":             "NORMAL",
         "coordinated":          False,      # independent intersections, no TSP
+        "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
+    # ── Harmony: coordinated vs independent (shows value of corridor coordination)
+    # In current controller logic, coordinated HARMONY runs use CorridorCoordinator
+    # pre-arm propagation (wave scheduling + downstream ETA-based preparation).
     {
-        "name":                 "HARMONY",
+        "name":                 "HARMONY_COORD",
         "strategy":             "HARMONY",
-        "coordinated":          True,       # corridor-coordinated harmony search
+        "coordinated":          True,       # COORDINATED_TSP=True (corridor flag set)
+        "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
     {
-        "name":                 "GROUP_BASED_HARMONY",
-        "strategy":             "GROUP_BASED_HARMONY",
-        "coordinated":          True,       # corridor-coordinated group-based + harmony
+        "name":                 "HARMONY_COORD_SHOCKWAVE",
+        "strategy":             "HARMONY",
+        "coordinated":          True,
+        "coordination_algo":    "SHOCKWAVE",
         "active_intersections": None,
     },
     {
-        "name":                 "GROUP_BASED_HARMONY_UNCOORD",
-        "strategy":             "GROUP_BASED_HARMONY",
-        "coordinated":          False,      # independent group-based + harmony (no corridor)
+        "name":                 "HARMONY_COORD_ADAPTIVE",
+        "strategy":             "HARMONY",
+        "coordinated":          True,
+        "coordination_algo":    "ADAPTIVE",
         "active_intersections": None,
     },
-    # Uncomment to add more experiments:
+    {
+        "name":                 "HARMONY_INDEP",
+        "strategy":             "HARMONY",
+        "coordinated":          False,      # COORDINATED_TSP=False (independent)
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    # Group-based runs are disabled by default for this batch profile.
+    # Uncomment if you want them in a separate sweep.
     # {
-    #     "name":                 "HARMONY_UNCOORD",
-    #     "strategy":             "HARMONY",
-    #     "coordinated":          False,
+    #     "name":                 "GROUP_BASED_HARMONY",
+    #     "strategy":             "GROUP_BASED_HARMONY",
+    #     "coordinated":          True,
+    #     "coordination_algo":    "KALMAN",
     #     "active_intersections": None,
     # },
+    # {
+    #     "name":                 "GROUP_BASED_HARMONY_INDEP",
+    #     "strategy":             "GROUP_BASED_HARMONY",
+    #     "coordinated":          False,
+    #     "coordination_algo":    "KALMAN",
+    #     "active_intersections": None,
+    # },
+    # Uncomment to add more experiments:
     # {
     #     "name":                 "URTSP",
     #     "strategy":             "URTSP",
@@ -85,6 +114,43 @@ EXPERIMENTS = [
     #     "name":                 "GROUP_BASED",
     #     "strategy":             "GROUP_BASED",
     #     "coordinated":          True,
+    #     "active_intersections": None,
+    # },
+    # ── Reward-TSP: action-reward based TSP (delay cost-benefit analysis) ─────
+    {
+        "name":                 "REWARD_TSP_COORD",
+        "strategy":             "REWARD_TSP",
+        "coordinated":          True,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    {
+        "name":                 "REWARD_TSP_INDEP",
+        "strategy":             "REWARD_TSP",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    # ── DynaROPAC experiments — disabled (uncomment to re-enable) ────────────
+    # {
+    #     "name":                 "DYNAOPAC_COORD",
+    #     "strategy":             "DYNAOPAC",
+    #     "coordinated":          True,
+    #     "coordination_algo":    "ADAPTIVE",
+    #     "active_intersections": None,
+    # },
+    # {
+    #     "name":                 "DYNAOPAC_INDEP",
+    #     "strategy":             "DYNAOPAC",
+    #     "coordinated":          False,
+    #     "coordination_algo":    "KALMAN",
+    #     "active_intersections": None,
+    # },
+    # {
+    #     "name":                 "DYNAOPAC_COORD_SHOCKWAVE",
+    #     "strategy":             "DYNAOPAC",
+    #     "coordinated":          True,
+    #     "coordination_algo":    "SHOCKWAVE",
     #     "active_intersections": None,
     # },
 ]
@@ -239,8 +305,11 @@ def _set_logging(controller_path, enabled):
       • VERBOSE
       • every LOG_* flag
       • STATUS_DASHBOARD_INTERVAL_S  (set to 0 / restored to 60)
-      • MARK_DETECTION_POINTS        (set to False — stops CSV/GeoJSON writes)
       • OVERLAY_DETECTIONS_ON_MAP    (set to False — stops canvas annotation)
+
+    NOTE: MARK_DETECTION_POINTS is intentionally NOT disabled during batch runs.
+    It writes per-bus detection CSVs that the green-wave plot depends on.
+    The per-run overhead is small and the data is valuable for post-analysis.
 
     The controller still writes simulation_results.csv / summary.json because
     those are triggered by save_results(), not by the LOG_* flags.
@@ -260,10 +329,11 @@ def _set_logging(controller_path, enabled):
         r'\g<1>' + val,
         text, flags=re.MULTILINE)
 
-    # MARK_DETECTION_POINTS = True/False
+    # MARK_DETECTION_POINTS — always restored to True so detection CSVs are
+    # generated for every run (green-wave plot needs them).
     text, n2 = re.subn(
         r'^(MARK_DETECTION_POINTS\s*:\s*bool\s*=\s*)(True|False)',
-        r'\g<1>' + val,
+        r'\g<1>True',
         text, flags=re.MULTILINE)
 
     # OVERLAY_DETECTIONS_ON_MAP = True/False
@@ -284,7 +354,7 @@ def _set_logging(controller_path, enabled):
     total = n0 + n1 + n2 + n3 + n4
     if total > 0:
         log(f"Logging {'enabled' if enabled else 'disabled'} in controller "
-            f"(VERBOSE + {n1} LOG_* + MARK_DETECT={val} "
+            f"(VERBOSE + {n1} LOG_* + MARK_DETECT=True(always) "
             f"+ OVERLAY={val} + DASHBOARD={dash_val}).")
     else:
         log("WARNING: no logging flags found in controller — check file path.")
@@ -352,13 +422,18 @@ def set_coordinated(controller_path, coordinated: bool):
     Patch COORDINATED_TSP = True/False in the controller.
     True  → corridor-wide bus-priority coordination across intersections.
     False → each intersection runs independently.
+
+    The regex normalises any existing whitespace around the '=' so the
+    verification string ('COORDINATED_TSP = True/False') always matches.
     """
     val  = "True" if coordinated else "False"
     text = _read_controller(controller_path)
 
+    # Normalise spacing: replace 'COORDINATED_TSP <spaces>=<spaces> True/False'
+    # with the canonical single-space form so verification is reliable.
     text, n = re.subn(
-        r'^(COORDINATED_TSP\s*=\s*)(True|False)',
-        r'\g<1>' + val,
+        r'^COORDINATED_TSP\s*=\s*(True|False)',
+        f'COORDINATED_TSP = {val}',
         text, flags=re.MULTILINE)
 
     if n == 0:
@@ -367,7 +442,7 @@ def set_coordinated(controller_path, coordinated: bool):
 
     _write_controller(controller_path, text)
 
-    # Verify
+    # Verify (normalised form is now always present)
     verify = _read_controller(controller_path)
     if f'COORDINATED_TSP = {val}' not in verify:
         log(f"WARNING: COORDINATED_TSP patch verification failed. "
@@ -376,19 +451,50 @@ def set_coordinated(controller_path, coordinated: bool):
         log(f"COORDINATED_TSP -> {val}  [patch verified OK]")
 
 
+def set_coordination_algo(controller_path, algo: str):
+    """
+    Patch COORDINATION_ALGO = "..." in the controller.
+    Supported values: KALMAN | SHOCKWAVE | OBJECTIVE | ADAPTIVE.
+    """
+    algo_u = str(algo or "KALMAN").strip().upper()
+    if algo_u not in {"KALMAN", "SHOCKWAVE", "OBJECTIVE", "ADAPTIVE"}:
+        log(f"WARNING: unsupported COORDINATION_ALGO '{algo_u}', defaulting to KALMAN")
+        algo_u = "KALMAN"
+
+    text = _read_controller(controller_path)
+    text, n = re.subn(
+        r'^(COORDINATION_ALGO\s*=\s*)["\'].*?["\']',
+        r'\1"' + algo_u + '"',
+        text, flags=re.MULTILINE)
+
+    if n == 0:
+        log("WARNING: COORDINATION_ALGO not found in controller — cannot set.")
+        return
+
+    _write_controller(controller_path, text)
+
+    verify = _read_controller(controller_path)
+    if f'COORDINATION_ALGO   = "{algo_u}"' in verify or f'COORDINATION_ALGO = "{algo_u}"' in verify:
+        log(f"COORDINATION_ALGO -> {algo_u}  [patch verified OK]")
+    else:
+        log(f"WARNING: COORDINATION_ALGO patch verification failed for {algo_u}")
+
+
 def write_run_config(experiment_name, strategy, seed, scalar,
-                     coordinated, run_config_path):
+                     coordinated, coordination_algo, run_config_path):
     content = (
         "CURRENT_STRATEGY = "        + repr(strategy)        + "\n"
         "CURRENT_EXPERIMENT = "      + repr(experiment_name) + "\n"
         "CURRENT_SEED = "            + repr(seed)            + "\n"
         "CURRENT_DEMAND_SCALAR = "   + repr(scalar)          + "\n"
         "CURRENT_COORDINATED = "     + repr(coordinated)     + "\n"
+        "CURRENT_COORDINATION_ALGO = "+ repr(coordination_algo)+ "\n"
     )
     with open(run_config_path, 'w', encoding='utf-8') as f:
         f.write(content)
     log(f"run_config written: experiment={experiment_name} "
-        f"seed={seed} scalar={scalar} coordinated={coordinated}")
+        f"seed={seed} scalar={scalar} coordinated={coordinated} "
+        f"coord_algo={coordination_algo}")
 
 
 # =============================================================================
@@ -497,25 +603,39 @@ def run_replication(rep):
 # ── METRICS COLLECTION ────────────────────────────────────────────────────────
 # =============================================================================
 
-def _find_results_folder(project_dir, strategy, seed, scalar):
+def _find_results_folder(project_dir, strategy, seed, scalar, exp_name=None):
     """
     Locate the most-recently-written per-run results folder.
 
     The SimulationStats class writes to:
         <project>/results/<strategy>_seed<N>_<scenario>_<experiment>_<rep>/
 
-    We scan for any folder whose name starts with '<strategy>_seed<seed>'
-    and pick the newest one (by mtime).
+    Newer runs write to:
+        <project>/results/<experiment>_seed<N>_<scenario>_<experimentId>_<rep>/
+
+    Older runs used '<strategy>_seed<seed>_...'. Try experiment prefix first,
+    then fall back to strategy prefix for backward compatibility.
     """
     results_base = _os.path.join(project_dir, 'results')
     if not _os.path.isdir(results_base):
         return None
 
-    prefix = f"{strategy}_seed{seed}"
-    candidates = [
-        d for d in _os.scandir(results_base)
-        if d.is_dir() and d.name.startswith(prefix)
-    ]
+    prefixes = []
+    if exp_name:
+        safe_exp = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in str(exp_name)).strip('_')
+        if safe_exp:
+            prefixes.append(f"{safe_exp}_seed{seed}")
+    prefixes.append(f"{strategy}_seed{seed}")
+
+    candidates = []
+    for prefix in prefixes:
+        candidates = [
+            d for d in _os.scandir(results_base)
+            if d.is_dir() and d.name.startswith(prefix)
+        ]
+        if candidates:
+            break
+
     if not candidates:
         return None
 
@@ -544,6 +664,74 @@ def _read_json(json_path):
         return {}
 
 
+def _latest_rows_by_intersection(rows):
+    """
+    Keep only the latest row per intersection ID.
+
+    simulation_results_per_intersection.csv is append-only across repeated runs,
+    so run-scoped filtering can still return historical duplicates. Taking the
+    latest row per intersection recovers the current-run snapshot.
+    """
+    latest = {}
+    for r in rows:
+        iid = str(r.get("IntersectionID", "")).strip()
+        if not iid:
+            continue
+        latest[iid] = r
+    return list(latest.values())
+
+
+def _clear_previous_outputs(project_dir):
+    """
+    Start batch from a clean state.
+
+    Removes old logs and prior generated batch artifacts so dashboard and CSV
+    metrics always reflect the current batch only.
+    """
+    removed = {"files": 0, "dirs": 0}
+
+    def _safe_remove(path):
+        try:
+            if _os.path.isdir(path):
+                shutil.rmtree(path)
+                removed["dirs"] += 1
+            elif _os.path.isfile(path):
+                _os.remove(path)
+                removed["files"] += 1
+        except Exception as e:
+            log(f"WARNING: could not remove {path}: {e}")
+
+    # 1) logs/ folder contents
+    logs_dir = _os.path.join(project_dir, "logs")
+    if _os.path.isdir(logs_dir):
+        for name in _os.listdir(logs_dir):
+            _safe_remove(_os.path.join(logs_dir, name))
+
+    # 2) Batch-level artifacts
+    for p in (
+        _os.path.join(project_dir, "batch_results.csv"),
+        _os.path.join(project_dir, "batch_manifest.json"),
+        _os.path.join(project_dir, "tsp_dashboard.html"),
+    ):
+        _safe_remove(p)
+
+    # 3) Per-run result CSV/JSON files inside results/* folders
+    results_dir = _os.path.join(project_dir, "results")
+    if _os.path.isdir(results_dir):
+        for d in _os.scandir(results_dir):
+            if not d.is_dir():
+                continue
+            for fname in (
+                "simulation_results.csv",
+                "simulation_results_per_intersection.csv",
+                "summary.json",
+                "bus_trips.csv",
+            ):
+                _safe_remove(_os.path.join(d.path, fname))
+
+    log(f"Startup cleanup done: removed {removed['files']} files, {removed['dirs']} folders")
+
+
 def collect_run_metrics(project_dir, strategy, seed, scalar,
                         exp_name, coordinated, elapsed_s, success):
     """
@@ -570,10 +758,13 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
     if not success:
         return meta
 
-    folder = _find_results_folder(project_dir, strategy, seed, scalar)
+    folder = _find_results_folder(project_dir, strategy, seed, scalar, exp_name)
     if folder is None:
         log(f"  WARNING: results folder not found for {strategy} seed={seed}")
         return meta
+
+    # Store the results folder path so generate_dashboard.py can load per-intersection CSVs
+    meta["stats_results_folder"] = folder
 
     # ── 1. Global simulation_results.csv ──────────────────────────────────────
     global_row = _read_csv_first_row(_os.path.join(folder, "simulation_results.csv"))
@@ -611,7 +802,11 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
             else:
                 run_rows = [r for r in rows if r.get("TSP_Strategy", "") == strategy]
             if not run_rows:
-                run_rows = rows  # fallback: take all
+                run_rows = [r for r in rows if r.get("TSP_Strategy", "") == strategy] or rows
+
+            # Historical rows accumulate across repeated runs in the same folder.
+            # Keep the latest row per intersection to isolate current-run values.
+            run_rows = _latest_rows_by_intersection(run_rows)
             agg_cols = [
                 "TotalPassDelay_hrs", "MainPassDelay_hrs", "SidePassDelay_hrs",
                 "BusTotalTT_hrs", "N_BusTrips", "N_DistinctBuses",
@@ -622,6 +817,7 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
                 "AvgBusPassDelay_s", "AvgCarPassDelay_s", "AvgTruckPassDelay_s",
                 "TSP_Detections", "TSP_Extensions", "TSP_Insertions",
                 "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction",
+                "TSP_NaturalGreen",   # bus caught green without any TSP action
             ]
             for col in agg_cols:
                 vals = []
@@ -654,6 +850,12 @@ def _collect_aimsun_network_stats():
 
     Returns a dict with keys prefixed 'aimsun_'.
     Falls back gracefully if any API call fails.
+
+    Aimsun Next 25/26 statistics API is version-dependent. We try multiple
+    patterns in order:
+      1. getDataValueString / getDataValue (Aimsun Next 25+)
+      2. Direct attribute access (getFlow, getDensity, getMeanSpeed)
+      3. No-arg getStatistic() for some column IDs
     """
     out = {}
     try:
@@ -661,7 +863,6 @@ def _collect_aimsun_network_stats():
         if model is None:
             return out
 
-        # ── Section-level stats ───────────────────────────────────────────────
         sec_type = model.getType("GKSection")
         if sec_type is None:
             return out
@@ -672,55 +873,194 @@ def _collect_aimsun_network_stats():
 
         sec_list = list(sections.values()) if isinstance(sections, dict) else list(sections)
 
-        total_flow    = 0.0
-        total_density = 0.0
-        total_speed   = 0.0
-        total_delay   = 0.0
-        n_sec         = 0
+        # Length-weighted accumulators (all vehicles and per-type)
+        # Aimsun reports length-weighted averages: total(metric×length) / total(length)
+        wt_flow     = 0.0;  wt_density  = 0.0;  wt_speed    = 0.0;  wt_delay    = 0.0
+        wt_flow_car = 0.0;  wt_dens_car = 0.0;  wt_spd_car  = 0.0;  wt_dly_car  = 0.0
+        wt_flow_bus = 0.0;  wt_dens_bus = 0.0;  wt_spd_bus  = 0.0;  wt_dly_bus  = 0.0
+        wt_flow_trk = 0.0;  wt_dens_trk = 0.0;  wt_spd_trk  = 0.0;  wt_dly_trk  = 0.0
+        total_len   = 0.0
+        n_sec       = 0
+        n_flow_ok   = 0
 
         for sec in sec_list:
             try:
-                # getStatistic(column, replication, interval, vehicle_type=None)
-                # Column IDs: flow=0x1, density=0x2, speed=0x4, delay=0x20
-                # Use None for replication to get last run; None for interval = whole sim
-                flow    = _safe_stat(sec, "flow")
-                density = _safe_stat(sec, "density")
-                speed   = _safe_stat(sec, "speed")
-                delay   = _safe_stat(sec, "delay")
-                total_flow    += flow
-                total_density += density
-                total_speed   += speed
-                total_delay   += delay
+                # Section length in metres → km
+                sec_len_km = 0.0
+                for attr in ("length2D", "length", "getLengthInMeters"):
+                    try:
+                        fn = getattr(sec, attr, None)
+                        v = fn() if callable(fn) else fn
+                        if v is not None and float(v) > 0:
+                            sec_len_km = float(v) / 1000.0
+                            break
+                    except Exception:
+                        pass
+                if sec_len_km <= 0:
+                    sec_len_km = 0.1  # 100 m default so unresolved sections still contribute
+
+                flow    = _safe_stat_v2(sec, "flow")
+                density = _safe_stat_v2(sec, "density")
+                speed   = _safe_stat_v2(sec, "speed")
+                delay   = _safe_stat_v2(sec, "delay")
+
                 n_sec += 1
+                if flow > 0:
+                    n_flow_ok += 1
+                wt_flow    += flow    * sec_len_km
+                wt_density += density * sec_len_km
+                wt_speed   += speed   * sec_len_km
+                wt_delay   += delay   * sec_len_km
+                total_len  += sec_len_km
+
+                # Per-vehicle-type: try car, bus, truck via named-type stat methods
+                for _prefix, _ttype in (("car", "Car"), ("bus", "Bus"), ("truck", "Truck")):
+                    _flow  = _safe_stat_v2_typed(sec, "flow",    _ttype)
+                    _dens  = _safe_stat_v2_typed(sec, "density", _ttype)
+                    _spd   = _safe_stat_v2_typed(sec, "speed",   _ttype)
+                    _dly   = _safe_stat_v2_typed(sec, "delay",   _ttype)
+                    if _prefix == "car":
+                        wt_flow_car += _flow * sec_len_km; wt_dens_car += _dens * sec_len_km
+                        wt_spd_car  += _spd  * sec_len_km; wt_dly_car  += _dly  * sec_len_km
+                    elif _prefix == "bus":
+                        wt_flow_bus += _flow * sec_len_km; wt_dens_bus += _dens * sec_len_km
+                        wt_spd_bus  += _spd  * sec_len_km; wt_dly_bus  += _dly  * sec_len_km
+                    else:
+                        wt_flow_trk += _flow * sec_len_km; wt_dens_trk += _dens * sec_len_km
+                        wt_spd_trk  += _spd  * sec_len_km; wt_dly_trk  += _dly  * sec_len_km
             except Exception:
                 pass
 
-        if n_sec > 0:
-            out["aimsun_n_sections"]       = n_sec
-            out["aimsun_total_flow_veh"]   = round(total_flow, 1)
-            out["aimsun_avg_density_vkm"]  = round(total_density / n_sec, 4)
-            out["aimsun_avg_speed_kmh"]    = round(total_speed / n_sec, 4)
-            out["aimsun_total_delay_s"]    = round(total_delay, 2)
+        if n_sec > 0 and total_len > 0:
+            out["aimsun_n_sections"]        = n_sec
+            out["aimsun_flow_sections_ok"]  = n_flow_ok
+            # Length-weighted network averages — match Aimsun's Time Series output
+            if wt_flow > 0:
+                out["aimsun_total_flow_veh"]   = round(wt_flow    / total_len, 2)
+                out["aimsun_avg_density_vkm"]  = round(wt_density / total_len, 4)
+                out["aimsun_avg_speed_kmh"]    = round(wt_speed   / total_len, 4)
+                out["aimsun_avg_delay_s_km"]   = round(wt_delay   / total_len, 2)
+            # Per-type averages (car, bus, truck)
+            for _pfx, _wf, _wd, _ws, _wdly in [
+                ("car", wt_flow_car, wt_dens_car, wt_spd_car, wt_dly_car),
+                ("bus", wt_flow_bus, wt_dens_bus, wt_spd_bus, wt_dly_bus),
+                ("truck", wt_flow_trk, wt_dens_trk, wt_spd_trk, wt_dly_trk),
+            ]:
+                if _wf > 0:
+                    out[f"aimsun_flow_{_pfx}"]    = round(_wf   / total_len, 2)
+                    out[f"aimsun_density_{_pfx}"] = round(_wd   / total_len, 4)
+                    out[f"aimsun_speed_{_pfx}"]   = round(_ws   / total_len, 4)
+                    out[f"aimsun_delay_{_pfx}"]   = round(_wdly / total_len, 2)
 
     except Exception as e:
         out["aimsun_error"] = str(e)
 
+    # Also try reading aggregate network stats from the active experiment
+    try:
+        model = GKSystem.getSystem().getActiveModel()
+        if model is not None:
+            for attr in ("getFlow", "getMeanTravelTime", "getMeanDelay"):
+                fn = getattr(model, attr, None)
+                if fn:
+                    try:
+                        v = fn()
+                        if v is not None and float(v) > 0:
+                            out[f"aimsun_model_{attr[3:].lower()}"] = round(float(v), 3)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     return out
 
 
-def _safe_stat(section, stat_name):
-    """Try multiple Aimsun API patterns to read a statistic from a section."""
-    # Pattern 1: getStatistic(name) — some versions accept string
-    for method in ("getStatistic", "getMean", "getFlow"):
-        fn = getattr(section, method, None)
-        if fn is None:
-            continue
-        try:
-            v = fn(stat_name)
-            if v is not None and v >= 0:
-                return float(v)
-        except Exception:
-            pass
+def _safe_stat_v2(section, stat_name: str) -> float:
+    """
+    Try multiple Aimsun API patterns to read a per-section aggregate statistic.
+    Returns 0.0 if nothing works — callers must guard against all-zero results.
+
+    Known working patterns (version-dependent):
+      • getFlow() / getDensity() / getMeanSpeed() — zero-arg property methods
+      • getDataValueString(col_id, rep, interval, vehtype) — Aimsun 25+
+      • Direct attribute access (rarely used but included as fallback)
+    """
+    # Map stat name → common zero-arg method names and attribute names
+    _method_map = {
+        "flow":    ("getFlow",     "flow"),
+        "density": ("getDensity",  "density"),
+        "speed":   ("getMeanSpeed","speed",   "getMeanTravelSpeed"),
+        "delay":   ("getMeanDelay","delay",   "getDelay"),
+    }
+    candidates = _method_map.get(stat_name, (stat_name,))
+
+    for name in candidates:
+        # Try as zero-arg method
+        fn = getattr(section, name, None)
+        if callable(fn):
+            try:
+                v = fn()
+                if v is not None:
+                    fv = float(v)
+                    if fv >= 0:
+                        return fv
+            except Exception:
+                pass
+        # Try as attribute
+        v = getattr(section, name, None)
+        if v is not None:
+            try:
+                fv = float(v)
+                if fv >= 0:
+                    return fv
+            except Exception:
+                pass
+
+    # Aimsun Next 25+ API: getDataValueString(column_type, replication, interval, vehtype)
+    # Column type IDs differ by version; we try common ones
+    _col_ids = {
+        "flow":    [0x0001, 1],
+        "density": [0x0002, 2],
+        "speed":   [0x0004, 4],
+        "delay":   [0x0020, 32],
+    }
+    for col_id in _col_ids.get(stat_name, []):
+        for method_name in ("getDataValue", "getStatistic"):
+            fn = getattr(section, method_name, None)
+            if not callable(fn):
+                continue
+            for args in ((col_id, None, None, None), (col_id,), (col_id, None)):
+                try:
+                    v = fn(*args)
+                    if v is not None:
+                        fv = float(v)
+                        if fv >= 0:
+                            return fv
+                except Exception:
+                    pass
+
+    return 0.0
+
+
+def _safe_stat_v2_typed(section, stat_name: str, veh_type_name: str) -> float:
+    """
+    Like _safe_stat_v2 but attempts to read a per-vehicle-type statistic.
+    veh_type_name: 'Car', 'Bus', 'Truck' (or lowercase)
+    Returns 0.0 if unavailable.
+    """
+    # Try method variants: getCarFlow, getBusFlow, etc.
+    vtn = veh_type_name.capitalize()
+    stat_cap = stat_name.capitalize()
+    for name in (f"get{vtn}{stat_cap}", f"get{vtn}Mean{stat_cap}", f"get{stat_cap}For{vtn}"):
+        fn = getattr(section, name, None)
+        if callable(fn):
+            try:
+                v = fn()
+                if v is not None:
+                    fv = float(v)
+                    if fv >= 0:
+                        return fv
+            except Exception:
+                pass
     return 0.0
 
 
@@ -755,6 +1095,15 @@ def append_master_csv(master_path, row_dict):
         "stats_N_BusTrips",          "stats_N_DistinctBuses",
         "stats_N_DistinctCars",      "stats_N_DistinctTrucks",
         "stats_TSP_Detections",      "stats_TSP_Extensions", "stats_TSP_Insertions",
+        "stats_TSP_Skipped_GE",      "stats_TSP_Skipped_Ins",
+        "stats_TSP_Detected_NoAction", "stats_TSP_NaturalGreen",
+        "stats_Prearm_Fired",        "stats_Prearm_Success",
+        "stats_Prearm_Missed",       "stats_Prearm_Expired",     "stats_Prearm_Discarded",
+        "stats_Prearm_LateSuccess",  "stats_Prearm_LateSuccessDelay_s",
+        "stats_TSP_TotalExtension_s","stats_TSP_TotalInsertion_s",
+        "stats_TSP_AvgExtension_s",  "stats_TSP_AvgInsertion_s", "stats_TSP_AvgInsertionWait_s",
+        "stats_Net_TotalFlowVeh",    "stats_Net_AvgDensity_vkm", "stats_Net_AvgSpeed_kmh",
+        "stats_Net_Delay_All",        "stats_Net_Delay_Car",       "stats_Net_Delay_Bus",      "stats_Net_Delay_Truck",
         "stats_Objective_PaxPerDelayHr",
         # Per-intersection aggregates
         "inter_n",
@@ -771,12 +1120,18 @@ def append_master_csv(master_path, row_dict):
         "inter_sum_TSP_Detections",
         "inter_sum_TSP_Extensions",
         "inter_sum_TSP_Insertions",
-        # Aimsun network-level stats
+        "inter_sum_TSP_Skipped_GE",
+        "inter_sum_TSP_Skipped_Ins",
+        "inter_sum_TSP_Detected_NoAction",
+        "inter_sum_TSP_NaturalGreen",
+        # Aimsun network-level stats (from PyANGKernel post-run)
         "aimsun_n_sections",
         "aimsun_total_flow_veh",
         "aimsun_avg_density_vkm",
         "aimsun_avg_speed_kmh",
         "aimsun_total_delay_s",
+        # Results folder path (for per-intersection CSV loading in dashboard)
+        "stats_results_folder",
     ]
     priority_set = set(priority_keys)
 
@@ -846,6 +1201,9 @@ def main():
         log(f"FATAL: controller not found at {CONTROLLER_PATH}")
         return
 
+    # Clean old logs/results so this batch run starts from a deterministic state.
+    _clear_previous_outputs(PROJECT_DIR)
+
     n_total = len(EXPERIMENTS) * len(SEEDS) * len(DEMAND_SCALARS)
     log(f"Experiments : {[e['name'] for e in EXPERIMENTS]}")
     log(f"Seeds       : {SEEDS}")
@@ -879,6 +1237,7 @@ def main():
             exp_name    = exp["name"]
             strategy    = exp["strategy"]
             coordinated = exp.get("coordinated", True)
+            coord_algo  = exp.get("coordination_algo", "KALMAN")
             active_int  = exp.get("active_intersections", None)
 
             # ── Patch CONTROL_MODE ─────────────────────────────────────────
@@ -899,16 +1258,21 @@ def main():
             except Exception as e:
                 log(f"WARNING: could not patch COORDINATED_TSP: {e}")
 
+            try:
+                set_coordination_algo(CONTROLLER_PATH, coord_algo)
+            except Exception as e:
+                log(f"WARNING: could not patch COORDINATION_ALGO: {e}")
+
             for seed in SEEDS:
                 run_num += 1
                 print("-" * 68)
                 log(f"Run {run_num}/{n_total} | scalar={scalar} "
                     f"| experiment={exp_name} | strategy={strategy} "
-                    f"| coordinated={coordinated} | seed={seed}")
+                    f"| coordinated={coordinated} | algo={coord_algo} | seed={seed}")
 
                 set_seed(rep, seed)
                 write_run_config(exp_name, strategy, seed, scalar,
-                                 coordinated, RUN_CONFIG_PATH)
+                                 coordinated, coord_algo, RUN_CONFIG_PATH)
 
                 # Purge .pyc so Aimsun re-reads the patched controller
                 _purge_pyc(CONTROLLER_PATH)
@@ -972,6 +1336,23 @@ def main():
         log(f"WARNING: could not write manifest: {e}")
 
     log(f"Master metrics CSV: {MASTER_CSV_PATH}")
+
+    # ── Generate HTML comparison dashboard ────────────────────────────────────
+    try:
+        import importlib, sys as _sys
+        if _SCRIPT_DIR not in _sys.path:
+            _sys.path.insert(0, _SCRIPT_DIR)
+        import generate_dashboard as _gd
+        importlib.reload(_gd)
+        _html = _gd.generate(
+            batch_csv=MASTER_CSV_PATH,
+            log_dir=_os.path.join(PROJECT_DIR, "logs"),
+        )
+        if _html:
+            log(f"HTML dashboard: {_html}")
+    except Exception as _dbe:
+        log(f"WARNING: HTML dashboard generation failed: {_dbe}")
+
     print("=" * 68)
 
 

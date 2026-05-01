@@ -14,10 +14,17 @@
 # =============================================================================
 
 import os
+import sys
 import json
 import glob as _glob
 import pandas as pd
 import numpy as np
+
+# Add Aimsun packages path before importing matplotlib
+_AIMSUN_PACKAGES = r"C:\AimsunPackages"
+if os.path.isdir(_AIMSUN_PACKAGES) and _AIMSUN_PACKAGES not in sys.path:
+    sys.path.insert(0, _AIMSUN_PACKAGES)
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt

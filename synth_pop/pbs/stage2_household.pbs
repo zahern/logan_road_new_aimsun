@@ -1,0 +1,44 @@
+#!/bin/bash -l
+#PBS -N synth_stage2_household
+#PBS -l walltime=12:00:00
+#PBS -l select=1:ncpus=4:mem=64GB
+#PBS -j oe
+#PBS -m abe
+#PBS -r y
+
+# Stage 2 — Greedy household assignment (SA refinement) + consistency repair
+# CPU only; high memory because the full synthetic population is kept in RAM.
+
+set -euo pipefail
+echo "===== Stage 2: Household matching ====="
+echo "Host : $(hostname)"
+echo "Start: $(date)"
+
+module purge
+module load Anaconda3/2024.02-1
+source /home/ahernz/miniconda3/etc/profile.d/conda.sh
+conda activate syn_env
+
+SYNTH_POP=/home/ahernz/github_for_aimsun/logan_road_new/synth_pop
+POP_SYNTH=/home/ahernz/Population_Synth
+HH_MATCH=/home/ahernz/Household_Match
+
+# Copy GAN output into Household_Match working dir
+DATGAN_OUT="${POP_SYNTH}/core_brisbane/data/DATGAN.csv"
+if [ ! -f "$DATGAN_OUT" ]; then
+  echo "ERROR: DATGAN.csv not found at $DATGAN_OUT — did Stage 1 complete?"
+  exit 1
+fi
+cp "$DATGAN_OUT" "${HH_MATCH}/DATGAN_samples.csv"
+echo "Copied DATGAN.csv -> DATGAN_samples.csv"
+
+cd "$HH_MATCH"
+
+echo "--- 2a: Household assignment + SA refinement ---"
+python houehold_family_match_c.py
+
+echo "--- 2b: Household consistency repair ---"
+python household_repairs_e.py
+
+echo "End: $(date)"
+echo "Output: $(ls -lh cleaned_dataset_hhid.csv 2>/dev/null || echo 'NOT FOUND')"

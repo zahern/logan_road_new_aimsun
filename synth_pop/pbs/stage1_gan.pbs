@@ -1,0 +1,38 @@
+#!/bin/bash -l
+#PBS -N synth_stage1_gan
+#PBS -l walltime=24:00:00
+#PBS -l select=1:ncpus=4:mem=40GB:ngpus=1
+#PBS -j oe
+#PBS -m abe
+#PBS -r y
+
+# Stage 1 — Train DATGAN and generate synthetic microdata
+# Requires GPU (popgangpu conda env).
+# Submitted by submit_pipeline.sh; do not run manually unless re-running Stage 1 alone.
+
+set -euo pipefail
+echo "===== Stage 1: GAN training  ====="
+echo "Host : $(hostname)"
+echo "Start: $(date)"
+
+cd /home/ahernz/Population_Synth
+
+module purge
+module load Anaconda3/2024.02-1
+module load CUDA/12.6.0
+
+source /home/ahernz/miniconda3/etc/profile.d/conda.sh
+conda activate popgangpu
+export PATH=/home/ahernz/miniconda3/envs/popgangpu/bin:$PATH
+
+# Clean stale lock / log files
+rm -f *.o* *.e* 2>/dev/null || true
+
+python step1_dag_main_micro-arg.py \
+  --data_source_name census \
+  --epoch-size       100    \
+  --batch-size       128    \
+  --sample-multiplier 50
+
+echo "End: $(date)"
+echo "GAN output: $(ls -lh core_brisbane/data/DATGAN.csv 2>/dev/null || echo 'NOT FOUND')"

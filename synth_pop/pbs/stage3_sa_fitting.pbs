@@ -1,0 +1,46 @@
+#!/bin/bash -l
+#PBS -N synth_stage3_sa
+#PBS -l walltime=94:00:00
+#PBS -l select=1:ncpus=1:mem=4GB
+#PBS -j oe
+#PBS -m abe
+#PBS -r y
+
+# Stage 3 — SA-GAN zone fitting (one PBS job per chunk of zones)
+#
+# This script is meant to be submitted as an array or in a loop via submit_pipeline.sh.
+# INDICES and DICT_OPTS are passed via qsub -v.
+#
+# Example single-zone test:
+#   qsub -v INDICES="0-9",DICT_OPTS=5 pbs/stage3_sa_fitting.pbs
+
+set -euo pipefail
+echo "===== Stage 3: SA-GAN fitting  INDICES=${INDICES:-0-9} ====="
+echo "Host : $(hostname)"
+echo "Start: $(date)"
+
+module purge
+module load Anaconda3/2024.02-1
+source /home/ahernz/miniconda3/etc/profile.d/conda.sh
+conda activate syn_env
+
+HH_MATCH=/home/ahernz/Household_Match
+SA_DIR=/home/ahernz/sa_run_again_n
+
+# Copy repaired population into SA working dir
+HH_OUT="${HH_MATCH}/cleaned_dataset_hhid.csv"
+if [ ! -f "$HH_OUT" ]; then
+  echo "ERROR: cleaned_dataset_hhid.csv not found — did Stage 2 complete?"
+  exit 1
+fi
+cp "$HH_OUT" "${SA_DIR}/cleaned_dataset_hhid.csv"
+
+cd "$SA_DIR"
+
+INDICES="${INDICES:-0-9}"
+DICT_OPTS="${DICT_OPTS:-5}"
+
+echo "Running SA_2_level.py with INDICES=$INDICES DICT_OPTS=$DICT_OPTS"
+python SA_2_level.py --indices "$INDICES" --dictionary_opts $DICT_OPTS
+
+echo "End: $(date)"

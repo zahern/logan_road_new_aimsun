@@ -28,40 +28,110 @@ from PyANGKernel import GKSystem
 # =============================================================================
 # ── EXPERIMENT DEFINITIONS ────────────────────────────────────────────────────
 # =============================================================================
+# 
+# Supported strategies:
+#   NORMAL              - Fixed-time signal plan (no TSP)
+#   URTSP               - Unrestricted TSP (green extension + phase insertion)
+#   HARMONY             - Harmony search optimized TSP
+#   GROUP_BASED         - Group-based signal control with bus priority
+#   GROUP_BASED_URTSP   - Group-based + URTSP upstream detection
+#   GROUP_BASED_HARMONY - Group-based + Harmony search optimization
+#   DYNAOPAC            - DynaROPAC adaptive control (joint phase/green optimization)
+#   DYNAOPAC_COORD      - DynaROPAC with corridor coordination
+#   DYNAOPAC_INDEP      - DynaROPAC independent intersections
+#
 EXPERIMENTS = [
     {
         "name":                 "NORMAL",
         "strategy":             "NORMAL",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
+    # ── Harmony: coordinated vs independent ──────────────────────────────────
     {
-        "name":                 "URTSP",
-        "strategy":             "URTSP",
-        "active_intersections": None,
-    },
-    {
-        "name":                 "HARMONY",
+        "name":                 "HARMONY_COORD",
         "strategy":             "HARMONY",
+        "coordinated":          True,
+        "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
     {
-        "name":                 "GROUP_BASED",
-        "strategy":             "GROUP_BASED",
+        "name":                 "HARMONY_COORD_SHOCKWAVE",
+        "strategy":             "HARMONY",
+        "coordinated":          True,
+        "coordination_algo":    "SHOCKWAVE",
         "active_intersections": None,
     },
     {
-        "name":                 "GROUP_BASED_URTSP",
-        "strategy":             "GROUP_BASED_URTSP",
+        "name":                 "HARMONY_COORD_ADAPTIVE",
+        "strategy":             "HARMONY",
+        "coordinated":          True,
+        "coordination_algo":    "ADAPTIVE",
         "active_intersections": None,
     },
     {
-        "name":                 "GROUP_BASED_HARMONY",
-        "strategy":             "GROUP_BASED_HARMONY",
+        "name":                 "HARMONY_INDEP",
+        "strategy":             "HARMONY",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
+    # ── Reward-TSP ────────────────────────────────────────────────────────────
+    {
+        "name":                 "REWARD_TSP_COORD",
+        "strategy":             "REWARD_TSP",
+        "coordinated":          True,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    {
+        "name":                 "REWARD_TSP_INDEP",
+        "strategy":             "REWARD_TSP",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    # ── DynaROPAC experiments (joint phase/green optimization) ───────────────
+    {
+        "name":                 "DYNAOPAC_COORD",
+        "strategy":             "DYNAOPAC",
+        "coordinated":          True,
+        "coordination_algo":    "ADAPTIVE",
+        "active_intersections": None,
+    },
+    {
+        "name":                 "DYNAOPAC_INDEP",
+        "strategy":             "DYNAOPAC",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    {
+        "name":                 "DYNAOPAC_COORD_SHOCKWAVE",
+        "strategy":             "DYNAOPAC",
+        "coordinated":          True,
+        "coordination_algo":    "SHOCKWAVE",
+        "active_intersections": None,
+    },
+    # Group-based runs disabled by default. Uncomment to include:
+    # {
+    #     "name":                 "GROUP_BASED_HARMONY",
+    #     "strategy":             "GROUP_BASED_HARMONY",
+    #     "coordinated":          True,
+    #     "coordination_algo":    "KALMAN",
+    #     "active_intersections": None,
+    # },
+    # {
+    #     "name":                 "GROUP_BASED_HARMONY_INDEP",
+    #     "strategy":             "GROUP_BASED_HARMONY",
+    #     "coordinated":          False,
+    #     "coordination_algo":    "KALMAN",
+    #     "active_intersections": None,
+    # },
 ]
 
-SEEDS           = [300, 201, 102, 103, 104]
+SEEDS           = [300]
 DEMAND_SCALARS  = [1.0]           # e.g. [0.8, 1.0, 1.2] for demand sweeps
 SCALE_TRUCKS    = False
 
@@ -423,6 +493,19 @@ def main():
 
             try:
                 set_control_mode(strategy, CONTROLLER_PATH, active_int)
+                if strategy == "DYNAOPAC":
+                    coord_val = "True" if exp.get("coordinated", False) else "False"
+                    with open(CONTROLLER_PATH, 'r', encoding='utf-8') as _f:
+                        _ct = _f.read()
+                    _ct, _n = re.subn(
+                        r'^COORDINATED_TSP\s*=\s*(True|False)',
+                        'COORDINATED_TSP = ' + coord_val,
+                        _ct, flags=re.MULTILINE)
+                    if _n == 0:
+                        log("WARNING: COORDINATED_TSP not found in controller.")
+                    with open(CONTROLLER_PATH, 'w', encoding='utf-8') as _f:
+                        _f.write(_ct)
+                    log(f"COORDINATED_TSP -> {coord_val} ({exp.get('coordination_algo','')})")
             except Exception as e:
                 log(f"FATAL: cannot patch strategy {strategy}: {e}")
                 for seed in SEEDS:

@@ -107,6 +107,54 @@ class SimulationStats:
         self.sim_truck_delay      = 0.0
         self.sim_truck_passengers = 0.0
 
+        # ── pre-arm coordination stats (populated via record_prearm_stats) ──
+        self._prearm_stats: dict = {
+            "fired": 0,
+            "success": 0,
+            "missed": 0,
+            "expired": 0,
+            "discarded": 0,
+            "late_success": 0,
+            "late_success_delay_s": 0,
+        }
+
+        # ── network-level section stats (populated via collect_network_stats_at_finish)
+        self._net_total_flow_veh:  int   = 0
+        self._net_avg_density_vkm: float = 0.0
+        self._net_avg_speed_kmh:   float = 0.0
+        self._net_debug: dict = {
+            'sim_time_s': 0.0,
+            'section_count': 0,
+            'stats_ok_sections': 0,
+            'snapshot_ok_sections': 0,
+            'snapshot_sections_with_vehicles': 0,
+            'stats_zero_sections': 0,
+            'snapshot_zero_sections': 0,
+            'sections_missing_length': 0,
+            'source': 'none',
+        }
+
+        # ── incremental network stats accumulator (sampled every N steps) ──
+        # These are populated by accumulate_network_step() called from
+        # AAPIPostManage and used by collect_network_stats_at_finish as a
+        # fallback when the AKIEst API returns zeros at finish time.
+        self._incr_net_sections: set = set()
+        self._incr_net_flow_sum:    float = 0.0   # cumulative veh/h sum
+        self._incr_net_density_sum: float = 0.0   # cumulative veh/km sum
+        self._incr_net_speed_sum:   float = 0.0   # cumulative km/h sum
+        self._incr_net_samples:     int   = 0     # number of sample steps
+
+        # ── per-intersection density/speed/flow/queue accumulators ──
+        # Keyed by intersection ID.  Populated by accumulate_intersection_step().
+        self._inter_dsf: dict = {}   # {iid: {density_sum, speed_sum, flow_sum, queue_sum, samples}}
+
+        # ── per-section density/speed/flow/queue accumulators ──
+        # Keyed by section ID.  Populated alongside intersection accumulation.
+        self._section_dsf: dict = {}  # {sec_id: {density_sum, speed_sum, flow_sum, queue_sum, samples, length_km, inter_id}}
+        self._section_dsf_last_t: float = -999.0  # last sample time
+        self._incr_net_sec_ok:      int   = 0     # sections with data across all samples
+        self._incr_net_last_t:      float = -999.0  # last sample time
+
         # analytical objective (from harmony search / URTSP objective fn)
         self.obj_bus_delay          = 0.0
         self.obj_other_delay        = 0.0
@@ -146,7 +194,7 @@ class SimulationStats:
         if iid in self._inter:
             return   # already registered
 
-        car_occ = float(config.get('CarOcc', 1.5))
+        car_occ = float(config.get('CarOcc', 1.2))
         bus_occ = float(config.get('BusOcc', 40.0))
         truck_occ = float(config.get('TruckOcc', car_occ))
 
@@ -161,6 +209,22 @@ class SimulationStats:
         # come from topology, not an arbitrary split of detector sections.
         if not main_sections and all_sections:
             main_sections = list(all_sections)
+
+        # When a junction has NO detectors and NO explicit MainSections (e.g.
+        # 19363), we still want side delay.  Use topology to discover ALL
+        # incoming sections, classify the corridor ones as main (via BusPhase
+        # approach heuristic) and the rest as side.
+        if not main_sections and not side_sections:
+            all_incoming = self._side_sections_from_topology(iid, [])
+            if all_incoming:
+                # With no main exclusion list, _side_sections_from_topology
+                # returns ALL incoming sections.  We'll treat them all as side
+                # sections so side delay is at least tracked.
+                side_sections = list(all_incoming)
+                self._print(
+                    f"[STATS] No detectors for inter={iid} — treating all "
+                    f"{len(side_sections)} topology sections as side: {side_sections}"
+                )
 
         # if side_sections still empty (single detector group covers only the
         # main corridor), derive side-street sections from junction topology
@@ -192,6 +256,19 @@ class SimulationStats:
                 exit_sections = self._auto_exit_sections(iid, call_sections)
                 if not exit_sections or exit_sections == call_sections:
                     exit_sections = call_sections  # final fallback
+
+            # No call detectors configured (e.g. junction only has detection_zone_m):
+            # fall back to the main approach sections derived from topology.
+            # Any bus present on a main approach section is treated as having
+            # entered the TT measurement window.
+            if not call_sections and main_sections:
+                call_sections = list(main_sections)
+                self._print(
+                    f"[STATS] inter={iid}: no BusCallDetectors — using "
+                    f"{len(call_sections)} topology approach section(s) for bus TT"
+                )
+                if not exit_sections:
+                    exit_sections = list(main_sections)
         except Exception as _e:
             self._print(
                 f"[STATS] WARNING inter={iid}: could not resolve bus detector "
@@ -255,6 +332,14 @@ class SimulationStats:
             'n_skipped_ge':   0,   # harmony returned GE ≤ 0.5 s (not worth extending)
             'n_skipped_ins':  0,   # harmony returned BP ≤ 0.5 s (not worth inserting)
             'n_detected_no_action': 0,   # NORMAL mode: bus detected, no TSP applied
+            'n_natural_green': 0,  # bus will naturally clear on green — no TSP needed
+            # Duration accumulators for average GE / insertion reporting
+            'total_extension_s': 0.0,   # sum of all granted GE durations
+            'total_insertion_s': 0.0,   # sum of all granted insertion durations
+            # Delay between insertion grant and bus arrival at stopline.
+            # Captures "insertion granted but bus not immediately at green" outcomes.
+            'total_insertion_wait_s': 0.0,
+            'n_insertion_wait_samples': 0,
         }
         self._print(
             f"[STATS] Registered intersection {iid} | "
@@ -487,6 +572,9 @@ class SimulationStats:
 
     
     def track_bus_positions(self, time: float):
+        # Close stale zone-tracking entries (bus not seen for 60 s = zone exit)
+        self._flush_stale_pt_detections(time)
+
         call_sec_to_inter = {}
         exit_sec_to_inter = {}
         for iid, d in self._inter.items():
@@ -725,26 +813,53 @@ class SimulationStats:
             return
         d = self._inter[intersection_id]
         key = {
-            'ge_trivial':  'n_skipped_ge',
-            'ins_trivial': 'n_skipped_ins',
-            'no_action':   'n_detected_no_action',
+            'ge_trivial':       'n_skipped_ge',
+            'ins_trivial':      'n_skipped_ins',
+            'no_action':        'n_detected_no_action',
+            'reward_no_action': 'n_detected_no_action',   # REWARD_TSP mode
+            'natural_green':    'n_natural_green',
         }.get(skip_type)
         if key:
             d[key] += 1
 
+    def record_tsp_extension_duration(self, intersection_id: int, duration_s: float):
+        """Accumulate the granted GE duration (seconds) for average reporting."""
+        if intersection_id not in self._inter:
+            return
+        self._inter[intersection_id]['total_extension_s'] += max(0.0, float(duration_s))
+
+    def record_tsp_insertion_duration(self, intersection_id: int, duration_s: float):
+        """Accumulate the granted insertion phase duration (seconds) for average reporting."""
+        if intersection_id not in self._inter:
+            return
+        self._inter[intersection_id]['total_insertion_s'] += max(0.0, float(duration_s))
+
+    def record_tsp_insertion_wait(self, intersection_id: int, wait_s: float):
+        """
+        Record time from insertion grant until expected bus stopline arrival.
+        This is a direct visibility metric for delayed insertion outcomes.
+        """
+        if intersection_id not in self._inter:
+            return
+        wait_s = max(0.0, float(wait_s))
+        d = self._inter[intersection_id]
+        d['total_insertion_wait_s'] += wait_s
+        d['n_insertion_wait_samples'] += 1
+
     def record_pt_bus_detection(self, intersection_id: int, veh_id: int, time: float):
         """
-        Called by the controller whenever a PT bus is newly detected approaching
-        this intersection (i.e. BusPresence just went 0→1 for this vehicle).
+        Called by the controller every sim-step while a PT bus is within the
+        detection radius of this intersection.
 
         This supplements section-based bus travel time tracking for intersections
         where buses travel on transit-link sections that are invisible to
         AKIVehStateGetVehicleInfSection (those sections return report<0).
 
-        The bus is recorded as 'entering' the intersection window.  When the same
-        vehicle is later detected again at the NEXT call (or never re-detected),
-        the trip is closed and travel time recorded as the gap between successive
-        detections.  This gives a coarse but valid TT per intersection passage.
+        Zone-exit and trip recording is handled by two complementary calls:
+          • record_pt_bus_exit()        — called explicitly by _track_all_bus_positions
+                                          on zone_exit events (preferred path).
+          • _flush_stale_pt_detections() — sweeps entries not refreshed in 60 s
+                                          (fallback for when zone_exit is missed).
         """
         if intersection_id not in self._inter:
             return
@@ -753,21 +868,57 @@ class SimulationStats:
         # Mark bus as seen (distinct headcount)
         d['_seen_bus_ids'].add(veh_id)
 
-        # If this vehicle hasn't been seen yet at this intersection, start its timer
+        # Zone-entry: record first-seen time; update last-seen on every call
         pt_entry = d.setdefault('_pt_bus_entry', {})
+        pt_last  = d.setdefault('_pt_last_seen', {})
         if veh_id not in pt_entry:
-            pt_entry[veh_id] = time
-        else:
-            # Already seen — close previous trip and start a new one
-            entry_t  = pt_entry[veh_id]
-            travel_t = time - entry_t
-            # Accept trips between 5 s and 600 s as valid corridor traversals
-            if 5.0 < travel_t < 600.0:
-                d['bus_trips'].append((entry_t, time, travel_t))
-                bus_occ = d.get('bus_occ', 40.0)
-                d['traj_bus_veh_passages']  = d.get('traj_bus_veh_passages', 0) + 1
-                d['traj_bus_passengers']    = d.get('traj_bus_passengers', 0.0) + bus_occ
-            pt_entry[veh_id] = time   # reset timer for the next passage
+            pt_entry[veh_id] = time   # zone entry
+        pt_last[veh_id] = time        # refresh last-seen on every detection call
+
+    def record_pt_bus_exit(self, intersection_id: int, veh_id: int, time: float):
+        """
+        Called by _track_all_bus_positions on a zone_exit event for (veh_id, jid).
+        Closes the pending bus-TT entry and records the trip if travel time is valid.
+        """
+        if intersection_id not in self._inter:
+            return
+        d = self._inter[intersection_id]
+        pt_entry = d.get('_pt_bus_entry', {})
+        if veh_id not in pt_entry:
+            return
+        entry_t  = pt_entry.pop(veh_id)
+        d.get('_pt_last_seen', {}).pop(veh_id, None)
+        travel_t = time - entry_t
+        if 5.0 < travel_t < 600.0:
+            d['bus_trips'].append((entry_t, time, travel_t))
+            bus_occ = float(d.get('bus_occ', 40.0))
+            d['traj_bus_veh_passages'] = d.get('traj_bus_veh_passages', 0) + 1
+            d['traj_bus_passengers']   = d.get('traj_bus_passengers', 0.0) + bus_occ
+
+    def _flush_stale_pt_detections(self, time: float, stale_gap_s: float = 60.0):
+        """
+        Sweep all intersections and close bus-TT entries for vehicles not seen
+        in >= stale_gap_s seconds (zone exit missed by track_all_bus_positions).
+        Called at the start of track_bus_positions every sim step.
+        """
+        for iid, d in self._inter.items():
+            pt_entry = d.get('_pt_bus_entry')
+            pt_last  = d.get('_pt_last_seen')
+            if not pt_entry or not pt_last:
+                continue
+            bus_occ = float(d.get('bus_occ', 40.0))
+            stale = [
+                vid for vid, last_t in list(pt_last.items())
+                if vid in pt_entry and (time - last_t) >= stale_gap_s
+            ]
+            for vid in stale:
+                entry_t = pt_entry.pop(vid)
+                last_t  = pt_last.pop(vid)
+                travel_t = last_t - entry_t
+                if 5.0 < travel_t < 600.0:
+                    d['bus_trips'].append((entry_t, last_t, travel_t))
+                    d['traj_bus_veh_passages'] = d.get('traj_bus_veh_passages', 0) + 1
+                    d['traj_bus_passengers']   = d.get('traj_bus_passengers', 0.0) + bus_occ
 
     # =========================================================================
     # KPI COMPUTATION
@@ -863,15 +1014,41 @@ class SimulationStats:
             'n_skipped_ge':          d.get('n_skipped_ge', 0),
             'n_skipped_ins':         d.get('n_skipped_ins', 0),
             'n_detected_no_action':  d.get('n_detected_no_action', 0),
+            'n_natural_green':       d.get('n_natural_green', 0),
+            'total_extension_s':     d.get('total_extension_s', 0.0),
+            'total_insertion_s':     d.get('total_insertion_s', 0.0),
+            'total_insertion_wait_s': d.get('total_insertion_wait_s', 0.0),
+            'n_insertion_wait_samples': d.get('n_insertion_wait_samples', 0),
+            'avg_extension_s': (
+                d.get('total_extension_s', 0.0) / d['n_extensions']
+                if d['n_extensions'] > 0 else 0.0),
+            'avg_insertion_s': (
+                d.get('total_insertion_s', 0.0) / d['n_insertions']
+                if d['n_insertions'] > 0 else 0.0),
+            'avg_insertion_wait_s': (
+                d.get('total_insertion_wait_s', 0.0) / d.get('n_insertion_wait_samples', 0)
+                if d.get('n_insertion_wait_samples', 0) > 0 else 0.0),
             'total_vehicles':        d['vehicles'] + added_bus_veh_passages,
             'n_main_sections':       len(d.get('main_sections', [])),
             'n_side_sections':       len(d.get('side_sections', [])),
             'side_sections_resolved': bool(d.get('side_sections_resolved', False)),
             'main_sections':         list(d.get('main_sections', [])),
             'side_sections':         list(d.get('side_sections', [])),
+            # Density / speed / flow / queue (from incremental vehicle-state sampling)
+            'avg_density_vkm':       self._inter_dsf_avg(iid, 'density_sum'),
+            'avg_speed_kmh':         self._inter_dsf_avg(iid, 'speed_sum'),
+            'avg_flow_veh_h':        self._inter_dsf_avg(iid, 'flow_sum'),
+            'avg_queue_veh':         self._inter_dsf_avg(iid, 'queue_sum'),
             # Objective
             'objective':             inter_objective,
         }
+
+    def _inter_dsf_avg(self, iid: int, key: str) -> float:
+        """Return time-averaged density/speed/flow for an intersection."""
+        acc = self._inter_dsf.get(iid)
+        if acc and acc['samples'] > 0:
+            return round(float(acc.get(key, 0.0)) / acc['samples'], 4)
+        return 0.0
 
     def _global_kpis(self) -> dict:
         """Sum KPIs across all intersections."""
@@ -883,12 +1060,20 @@ class SimulationStats:
         total_distinct_buses = 0
         total_distinct_cars  = 0
         total_distinct_trucks = 0
+        all_distinct_bus_ids = set()
+        all_distinct_car_ids = set()
+        all_distinct_truck_ids = set()
         total_dets         = 0
         total_exts         = 0
         total_ins          = 0
         total_skipped_ge   = 0
         total_skipped_ins  = 0
         total_no_action    = 0
+        total_natural_green = 0
+        total_extension_s  = 0.0
+        total_insertion_s  = 0.0
+        total_insertion_wait_s = 0.0
+        total_insertion_wait_n = 0
         sim_total_delay    = 0.0
         sim_bus_delay      = 0.0
         sim_car_delay      = 0.0
@@ -899,21 +1084,27 @@ class SimulationStats:
         truck_passengers   = 0.0
 
         for iid in self._inter:
+            d = self._inter[iid]
             k = self._kpis_for(iid)
             total_bus_tt_hrs    += k['bus_total_tt_hrs']
             total_pass_delay    += k['total_pass_delay_hrs']
             total_main_delay    += k['main_pass_delay_hrs']
             total_side_delay    += k['side_pass_delay_hrs']
             total_n_buses       += k['n_buses']
-            total_distinct_buses += k['n_distinct_buses']
-            total_distinct_cars  += k['n_distinct_cars']
-            total_distinct_trucks += k['n_distinct_trucks']
+            all_distinct_bus_ids.update(d.get('_seen_bus_ids', set()))
+            all_distinct_car_ids.update(d.get('_seen_car_ids', set()))
+            all_distinct_truck_ids.update(d.get('_seen_truck_ids', set()))
             total_dets          += k['n_detections']
             total_exts          += k['n_extensions']
             total_ins           += k['n_insertions']
             total_skipped_ge    += k['n_skipped_ge']
             total_skipped_ins   += k['n_skipped_ins']
             total_no_action     += k['n_detected_no_action']
+            total_natural_green += k['n_natural_green']
+            total_extension_s   += k['total_extension_s']
+            total_insertion_s   += k['total_insertion_s']
+            total_insertion_wait_s += k.get('total_insertion_wait_s', 0.0)
+            total_insertion_wait_n += k.get('n_insertion_wait_samples', 0)
             sim_total_delay     += k['delay_total_pax_s']
             sim_bus_delay       += k['delay_bus_pax_s']
             sim_car_delay       += k['delay_car_pax_s']
@@ -923,17 +1114,21 @@ class SimulationStats:
             car_passengers      += k['car_passengers']
             truck_passengers    += k['truck_passengers']
 
+        total_distinct_buses = len(all_distinct_bus_ids)
+        total_distinct_cars = len(all_distinct_car_ids)
+        total_distinct_trucks = len(all_distinct_truck_ids)
+
         avg_bus_tt_s = (
             (total_bus_tt_hrs * 3600.0 / total_n_buses)
             if total_n_buses > 0 else 0.0
         )
-        avg_obj_delay = (
-            self.obj_avg_passenger_delay / self.obj_steps
-            if self.obj_steps > 0 else 0.0
-        )
         avg_pass_delay_s = (
             sim_total_delay / total_passengers
             if total_passengers > 0 else 0.0
+        )
+        avg_obj_delay = (
+            self.obj_avg_passenger_delay / self.obj_steps
+            if self.obj_steps > 0 else avg_pass_delay_s
         )
         avg_bus_pass_delay_s = (
             sim_bus_delay / bus_passengers
@@ -989,9 +1184,564 @@ class SimulationStats:
             'n_tsp_skipped_ge':          total_skipped_ge,
             'n_tsp_skipped_ins':         total_skipped_ins,
             'n_tsp_detected_no_action':  total_no_action,
+            'n_tsp_natural_green':       total_natural_green,
+            'total_extension_s':         total_extension_s,
+            'total_insertion_s':         total_insertion_s,
+            'avg_extension_s': (total_extension_s / total_exts if total_exts > 0 else 0.0),
+            'avg_insertion_s': (total_insertion_s / total_ins  if total_ins  > 0 else 0.0),
+            'avg_insertion_wait_s': (
+                total_insertion_wait_s / total_insertion_wait_n
+                if total_insertion_wait_n > 0 else 0.0),
             # Objective
             'throughput_per_delay_hr':   throughput_per_delay_hr,
         }
+
+    # =========================================================================
+    # COORDINATION PRE-ARM STATS
+    # =========================================================================
+
+    def record_prearm_stats(self, prearm_dict: dict):
+        """
+        Called from AAPIFinish after aggregating _prearm_stats from all
+        CorridorCoordinator instances.
+        Keys: fired, success, missed, expired, discarded,
+              late_success, late_success_delay_s
+        """
+        for k in self._prearm_stats:
+            if k == "late_success_delay_s":
+                self._prearm_stats[k] = float(prearm_dict.get(k, 0.0))
+            else:
+                self._prearm_stats[k] = int(prearm_dict.get(k, 0))
+
+    # =========================================================================
+    # INCREMENTAL NETWORK STATS (called every ~30s from AAPIPostManage)
+    # =========================================================================
+
+    def accumulate_network_step(self, section_ids: list, time: float):
+        """
+        Sample section density/speed/flow periodically during the simulation.
+
+        Called from AAPIPostManage every INCR_NET_INTERVAL_S seconds (default 30).
+        Uses live vehicle state snapshots (AKIVehStateGet*) to compute density
+        and speed, plus AKIEstGetParcialStatisticsSection .count for flow.
+
+        The .flow/.density/.speed attributes on AKIEst structs are always zero
+        in this Aimsun build, but .DTa and .count work fine.  So we derive:
+          - density  = n_vehicles_on_section / section_length_km
+          - speed    = mean vehicle CurrentSpeed (km/h)
+          - flow     = sum of .count across all types / interval_hours  (veh/h)
+        """
+        INCR_NET_INTERVAL_S = 30.0
+        if time - self._incr_net_last_t < INCR_NET_INTERVAL_S:
+            return
+        self._incr_net_last_t = time
+
+        if not section_ids:
+            return
+
+        self._incr_net_sections.update(section_ids)
+
+        step_density_w = 0.0   # sum(k_i * L_i)
+        step_speed_w = 0.0     # sum(v_i * L_i)
+        step_flow_w = 0.0      # sum(q_i * L_i)
+        step_len = 0.0
+        step_n = 0
+
+        for sec in section_ids:
+            try:
+                # Section length in km
+                sec_info = AKIInfNetGetSectionANGInf(sec)
+                sec_len_km = max(float(getattr(sec_info, 'length', 0.0)) / 1000.0, 0.001)
+                sec_len_m  = sec_len_km * 1000.0
+
+                # ── Primary: AKIEst time-averaged stats (match Aimsun output) ────
+                # .count = vehicles that COMPLETED the section in [0, time]
+                # .DTa   = mean travel time per vehicle (seconds)  — works in this build
+                # .flow/.density/.speed are always 0 in this build — do NOT use them
+                sec_flow    = 0.0
+                sec_speed   = 0.0
+                sec_density = 0.0
+                _akiest_ok  = False
+                # Use timSta = time - INCR_NET_INTERVAL_S so we get the last 30-second window.
+                # timSta=time (as before) returned 0 vehicles (empty future window).
+                _incr_window_start = max(0.0, time - INCR_NET_INTERVAL_S)
+                try:
+                    st = AKIEstGetParcialStatisticsSection(sec, _incr_window_start, -1)
+                    if st.report == 0:
+                        _count = float(getattr(st, 'count', 0) or 0)
+                        _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)  # mean travel time s
+                        if _count > 0:
+                            sec_flow = _count * 3600.0 / max(INCR_NET_INTERVAL_S, 1.0)  # veh/h
+                        if _dta > 0.0 and sec_len_m > 0.0:
+                            sec_speed = (sec_len_m / _dta) * 3.6  # km/h
+                        if sec_flow > 0.0 and sec_speed > 0.0:
+                            sec_density = sec_flow / sec_speed   # veh/km  (q = k·v)
+                            _akiest_ok = True
+                        elif _count > 0 and sec_len_km > 0.0:
+                            _n_snap = max(int(AKIVehStateGetNbVehiclesSection(sec, False)), 0)
+                            sec_density = float(_n_snap) / sec_len_km
+                            _akiest_ok = True
+                except Exception:
+                    pass
+
+                # ── Fallback: live vehicle snapshot (less accurate — snapshot bias) ──
+                if not _akiest_ok:
+                    n_veh = max(int(AKIVehStateGetNbVehiclesSection(sec, False)), 0)
+                    # Density = vehicles / section_length_km  (Aimsun standard: veh/km total)
+                    sec_density = float(n_veh) / sec_len_km
+                    # Space-mean speed via harmonic mean of vehicle CurrentSpeed
+                    inv_spd_sum = 0.0
+                    spd_n = 0
+                    for vi in range(n_veh):
+                        try:
+                            vinf = AKIVehStateGetVehicleInfSection(sec, vi)
+                            s = float(getattr(vinf, 'CurrentSpeed', 0.0) or 0.0)
+                            if s > 0:
+                                inv_spd_sum += 1.0 / s
+                                spd_n += 1
+                        except Exception:
+                            continue
+                    sec_speed = (float(spd_n) / inv_spd_sum) if inv_spd_sum > 0 else 0.0
+                    # Flow from fundamental relation q = k·v if speed known
+                    if sec_density > 0 and sec_speed > 0:
+                        sec_flow = sec_density * sec_speed
+
+                step_density_w += sec_density * sec_len_km
+                step_speed_w   += sec_speed   * sec_len_km
+                step_flow_w    += sec_flow    * sec_len_km
+                step_len += sec_len_km
+                step_n   += 1
+            except Exception:
+                pass
+
+        if step_n > 0 and step_len > 0.0:
+            # Store length-weighted network averages for this sample.
+            self._incr_net_flow_sum += step_flow_w / step_len
+            self._incr_net_density_sum += step_density_w / step_len
+            self._incr_net_speed_sum += step_speed_w / step_len
+            self._incr_net_samples += 1
+            self._incr_net_sec_ok = max(self._incr_net_sec_ok, step_n)
+
+    def accumulate_intersection_step(self, time: float):
+        """
+        Sample density/speed/flow per intersection and per section.
+
+        Called from AAPIPostManage every 30 s (same cadence as network stats).
+        For each registered intersection, scans its main + side sections and
+        accumulates running averages of density (veh/km), speed (km/h),
+        flow (veh/h) using vehicle-state snapshots and .count from AKIEst.
+
+        Also populates per-section accumulators in self._section_dsf so a
+        corridor-level per-section CSV can be written at save time.
+        """
+        INTERVAL_S = 30.0
+        if time - self._section_dsf_last_t < INTERVAL_S:
+            return
+        self._section_dsf_last_t = time
+
+        for iid, d in self._inter.items():
+            all_secs = list(d.get('main_sections', [])) + list(d.get('side_sections', []))
+            if not all_secs:
+                continue
+
+            inter_density_w = 0.0
+            inter_speed_w = 0.0
+            inter_flow_w = 0.0
+            inter_queue = 0.0
+            inter_len = 0.0
+            inter_n = 0
+
+            for sec in all_secs:
+                try:
+                    sec_info = AKIInfNetGetSectionANGInf(sec)
+                    sec_len_km = max(float(getattr(sec_info, 'length', 0.0)) / 1000.0, 0.001)
+                    sec_len_m  = sec_len_km * 1000.0
+
+                    # ── Primary: AKIEst time-averaged stats ────────────────────
+                    # AKIEstGetParcialStatisticsSection(sec, timSta, type) returns
+                    # stats for vehicles that traversed the section SINCE timSta.
+                    # Use timSta = time - INTERVAL_S to get the last 30-second window.
+                    # .flow / .density / .speed are always 0 — derive from count+DTa.
+                    sec_flow    = 0.0
+                    sec_speed   = 0.0
+                    sec_density = 0.0
+                    _akiest_ok  = False
+                    queued_veh  = 0
+                    _window_start = max(0.0, time - INTERVAL_S)
+                    try:
+                        st = AKIEstGetParcialStatisticsSection(sec, _window_start, -1)
+                        if st.report == 0:
+                            _count = float(getattr(st, 'count', 0) or 0)
+                            _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)
+                            if _count > 0:
+                                # Flow = vehicles completing section in last INTERVAL_S (veh/h)
+                                sec_flow = _count * 3600.0 / max(INTERVAL_S, 1.0)
+                            if _dta > 0.0 and sec_len_m > 0.0:
+                                # Space-mean speed from mean travel time (DTa = mean TT, not delay)
+                                sec_speed = (sec_len_m / _dta) * 3.6  # km/h
+                            if sec_flow > 0.0 and sec_speed > 0.0:
+                                sec_density = sec_flow / sec_speed    # veh/km (q=kv)
+                                _akiest_ok = True
+                    except Exception:
+                        pass
+
+                    # Snapshot needed for queue count (vehicles moving <5 km/h)
+                    # and as fallback for density/speed when AKIEst is insufficient
+                    n_veh = max(int(AKIVehStateGetNbVehiclesSection(sec, False)), 0)
+                    inv_spd_sum = 0.0
+                    spd_n = 0
+                    for vi in range(n_veh):
+                        try:
+                            vinf = AKIVehStateGetVehicleInfSection(sec, vi)
+                            s = float(getattr(vinf, 'CurrentSpeed', 0.0) or 0.0)
+                            if s < 5.0:
+                                queued_veh += 1
+                            if s > 0:
+                                inv_spd_sum += 1.0 / s
+                                spd_n += 1
+                        except Exception:
+                            continue
+
+                    # ── Fallback: snapshot-based density/speed ─────────────────
+                    if not _akiest_ok:
+                        # Density: veh/km (total vehicles on section, Aimsun standard)
+                        sec_density = float(n_veh) / sec_len_km
+                        # Space-mean speed: harmonic mean of vehicle speeds
+                        sec_speed   = (float(spd_n) / inv_spd_sum) if inv_spd_sum > 0 else 0.0
+                        if sec_density > 0 and sec_speed > 0:
+                            sec_flow = sec_density * sec_speed
+
+                    # Per-section accumulator
+                    if sec not in self._section_dsf:
+                        self._section_dsf[sec] = {
+                            'density_sum': 0.0, 'speed_sum': 0.0,
+                            'flow_sum': 0.0, 'queue_sum': 0.0, 'samples': 0,
+                            'length_km': sec_len_km, 'inter_id': iid,
+                            'is_main': sec in set(d.get('main_sections', [])),
+                        }
+                    sd = self._section_dsf[sec]
+                    sd['density_sum'] += sec_density
+                    sd['speed_sum'] += sec_speed
+                    sd['flow_sum'] += sec_flow
+                    sd['queue_sum'] += queued_veh
+                    sd['samples'] += 1
+
+                    inter_density_w += sec_density * sec_len_km
+                    inter_speed_w += sec_speed * sec_len_km
+                    inter_flow_w += sec_flow * sec_len_km
+                    inter_queue += queued_veh
+                    inter_len += sec_len_km
+                    inter_n += 1
+                except Exception:
+                    continue
+
+            if inter_n > 0 and inter_len > 0.0:
+                if iid not in self._inter_dsf:
+                    self._inter_dsf[iid] = {
+                        'density_sum': 0.0, 'speed_sum': 0.0,
+                        'flow_sum': 0.0, 'queue_sum': 0.0, 'samples': 0,
+                    }
+                acc = self._inter_dsf[iid]
+                acc['density_sum'] += inter_density_w / inter_len
+                acc['speed_sum'] += inter_speed_w / inter_len
+                acc['flow_sum'] += inter_flow_w / inter_len
+                acc['queue_sum'] += inter_queue / inter_n
+                acc['samples'] += 1
+
+    # =========================================================================
+    # NETWORK SECTION STATISTICS (collected at AAPIFinish)
+    # =========================================================================
+
+    def collect_network_stats_at_finish(self, section_ids: list):
+        """
+        Collect cumulative network-level stats (flow, density, speed) across
+        all corridor approach sections.
+
+        Strategy (in priority order):
+        1. AKIEstGetParcialStatisticsSection(sec, sim_time, vehTypePos) — queries
+           stats accumulated over the window [0, sim_time].  This is the same API
+           used by collect_delay every step, so it reliably returns data at finish.
+        2. AKIEstGetCurrentStatisticsSection(sec, sim_time, vehTypePos) — legacy
+           fallback for Aimsun builds where partial stats aren't available.
+          3. If stats are unavailable, keep network KPIs at 0 (do not substitute
+              delay-passage counts as flow; those are different quantities).
+
+        vehTypePos is tried as -1 (all types), then car_pos, then bus_pos.
+        Results stored in self._net_* attributes and written by save_results().
+        """
+        if not section_ids:
+            self._net_debug.update({
+                'sim_time_s': 0.0,
+                'section_count': 0,
+                'stats_ok_sections': 0,
+                'snapshot_ok_sections': 0,
+                'snapshot_sections_with_vehicles': 0,
+                'stats_zero_sections': 0,
+                'snapshot_zero_sections': 0,
+                'sections_missing_length': 0,
+                'source': 'none',
+            })
+            return
+
+        sim_time = 0.0
+        # At AAPIFinish, AKIGetSimulationTime() can resolve to 0 in some builds,
+        # which would force Net_* metrics to 0. Prefer current sim time first.
+        try:
+            sim_time = float(AKIGetCurrentSimulationTime())
+        except Exception:
+            sim_time = 0.0
+        if sim_time <= 0.0:
+            try:
+                sim_time = float(AKIGetSimulationTime())
+            except Exception:
+                sim_time = 0.0
+        if sim_time <= 0:
+            self._net_total_flow_veh = 0
+            self._net_avg_density_vkm = 0.0
+            self._net_avg_speed_kmh = 0.0
+            self._net_debug.update({
+                'sim_time_s': sim_time,
+                'section_count': len(section_ids),
+                'stats_ok_sections': 0,
+                'snapshot_ok_sections': 0,
+                'snapshot_sections_with_vehicles': 0,
+                'stats_zero_sections': 0,
+                'snapshot_zero_sections': 0,
+                'sections_missing_length': 0,
+                'source': 'no-sim-time',
+            })
+            return
+
+        sim_hours = sim_time / 3600.0
+
+        # Per-vehicle-type network accumulators (length-weighted)
+        # Indexed as: [all, car, bus, truck] in that order
+        _tp_list = [-1, self._car_pos, self._bus_pos, self._truck_pos]
+        _tp_keys = ['all', 'car', 'bus', 'truck']
+        _tp_flow  = {k: 0.0 for k in _tp_keys}
+        _tp_dens  = {k: 0.0 for k in _tp_keys}
+        _tp_spd   = {k: 0.0 for k in _tp_keys}
+        _tp_dly   = {k: 0.0 for k in _tp_keys}  # delay time sec/km (DTa/sec_len_m)
+        _tp_cnt   = {k: 0.0 for k in _tp_keys}  # vehicle count (weighting denominator)
+
+        # Count-weighted accumulators — Aimsun exit-based statistics average per
+        # completed vehicle (not per km of section length).
+        total_length_km    = 0.0   # sum of section lengths (km) — density fallback
+        total_count_veh    = 0.0   # total vehicle-completions across all sections
+        total_flow_veh_h   = 0.0   # Σ(flow_i * count_i)  — divided by total_count_veh
+        total_density_vkm  = 0.0   # Σ(density_i * count_i)
+        total_speed_kmh    = 0.0   # Σ(speed_i * count_i)
+        n_ok = 0
+        stats_zero_sections = 0
+
+        def _read_section_cumul(sec, tp):
+            """
+            Read CUMULATIVE stats for the full simulation (timSta=0.0).
+            Aimsun: AKIEstGetParcialStatisticsSection(sec, timSta, type)
+            With timSta=0.0, returns all vehicles entering the section since
+            simulation start.  count and DTa (mean travel time s) are reliable
+            in this Aimsun build; .flow/.density/.speed fields are always 0.
+            """
+            try:
+                st = AKIEstGetParcialStatisticsSection(sec, 0.0, tp)
+                if getattr(st, 'report', -1) == 0:
+                    return st
+            except Exception:
+                pass
+            try:
+                st = AKIEstGetCurrentStatisticsSection(sec, 0.0, tp)
+                if getattr(st, 'report', -1) == 0:
+                    return st
+            except Exception:
+                pass
+            return None
+
+        for sec in section_ids:
+            # Get section geometry
+            sec_len_km = 0.0
+            sec_len_m  = 0.0
+            sec_speed_limit_kmh = 0.0
+            try:
+                _si = AKIInfNetGetSectionANGInf(sec)
+                _raw_len = getattr(_si, 'length', 0.0)
+                sec_len_km = max(float(_raw_len or 0.0) / 1000.0, 0.0)
+                sec_len_m  = sec_len_km * 1000.0
+                sec_speed_limit_kmh = float(getattr(_si, 'speed', 0.0) or 0.0)
+            except Exception:
+                pass
+            if sec_len_km <= 0.0:
+                continue
+
+            # Snapshot: current vehicles on section (for density fallback)
+            try:
+                _n_snap = max(int(AKIVehStateGetNbVehiclesSection(sec, False)), 0)
+            except Exception:
+                _n_snap = 0
+
+            sec_flow    = 0.0
+            sec_density = 0.0
+            sec_speed   = 0.0
+            sec_got     = False
+            _cnt        = 0.0   # vehicles completing this section (count-weighting)
+
+            # ── Primary: cumulative AKIEst stats (timSta=0.0) ────────────────
+            # .count = total vehicles completing section since sim start
+            # .DTa   = mean travel time (s/veh) — NOT delay, full travel time
+            # Entry-Based Flow  = count / sim_hours
+            # Entry-Based Speed = (section_length_m / DTa) * 3.6 (km/h)
+            # Entry-Based Density = flow / speed (from fundamental relation)
+            sec_delay_skm = 0.0  # all-vehicle Entry-Based Delay Time (sec/km)
+            st_all = _read_section_cumul(sec, -1)
+            if st_all is not None:
+                _cnt = float(getattr(st_all, 'count', 0) or 0)
+                _dta = float(getattr(st_all, 'DTa',   0.0) or 0.0)
+                if _cnt > 0 and sim_hours > 0:
+                    sec_flow = _cnt / sim_hours   # veh/h (Entry-Based Flow)
+                    if _dta > 0.0 and sec_len_m > 0.0:
+                        sec_speed = (sec_len_m / _dta) * 3.6  # km/h
+                        # Delay Time per km: (mean_TT - free_flow_TT) / length_km
+                        # Use actual section speed limit; fallback to 40 km/h.
+                        _ff_spd_ms = max(sec_speed_limit_kmh or 40.0, 1.0) / 3.6
+                        _ff_tt_all = sec_len_m / _ff_spd_ms
+                        sec_delay_skm = max(0.0, (_dta - _ff_tt_all) / max(sec_len_km, 0.001))
+                    if sec_flow > 0.0 and sec_speed > 0.0:
+                        sec_density = sec_flow / sec_speed     # veh/km
+                    elif _n_snap >= 0:
+                        sec_density = float(_n_snap) / sec_len_km
+                    sec_got = True
+                elif _n_snap > 0:
+                    sec_density = float(_n_snap) / sec_len_km
+                    sec_got = True
+
+            if sec_got and sec_flow > 0:
+                # Per-vehicle-type collection
+                for tp, key in zip(_tp_list, _tp_keys):
+                    if tp is None or tp < -1:
+                        continue
+                    if key == 'all':
+                        _t_flow = sec_flow
+                        _t_spd  = sec_speed
+                        _t_dens = sec_density
+                        _t_dly  = sec_delay_skm   # use pre-computed all-veh delay
+                        _t_cnt  = _cnt
+                    else:
+                        _st = _read_section_cumul(sec, tp)
+                        if _st is None:
+                            continue
+                        _c = float(getattr(_st, 'count', 0) or 0)
+                        _d = float(getattr(_st, 'DTa',   0.0) or 0.0)
+                        if _c <= 0 or sim_hours <= 0:
+                            continue
+                        _t_flow = _c / sim_hours
+                        _t_spd  = (sec_len_m / _d) * 3.6 if (_d > 0 and sec_len_m > 0) else 0.0
+                        _t_dens = _t_flow / _t_spd if (_t_flow > 0 and _t_spd > 0) else 0.0
+                        # Delay Time (sec/km) = (DTa - free_flow_TT) / sec_len_km
+                        # Use actual section speed limit; fallback to 40 km/h.
+                        _ff_spd_ms_t = max(sec_speed_limit_kmh or 40.0, 1.0) / 3.6
+                        _ff_tt = sec_len_m / _ff_spd_ms_t
+                        _t_dly = max(0.0, (_d - _ff_tt) / max(sec_len_km, 0.001)) if _d > _ff_tt else 0.0
+                        _t_cnt  = _c
+                    # Count-weighted accumulation: per-vehicle average matches
+                    # Aimsun's exit-based statistics.
+                    _tp_flow[key] += _t_flow * _t_cnt
+                    _tp_dens[key] += _t_dens * _t_cnt
+                    _tp_spd[key]  += _t_spd  * _t_cnt
+                    _tp_dly[key]  += _t_dly  * _t_cnt
+                    _tp_cnt[key]  += _t_cnt
+            else:
+                # Fallback: snapshot-based density for sections where AKIEst gave 0
+                if _n_snap > 0 and sec_len_km > 0:
+                    sec_density = float(_n_snap) / sec_len_km
+                    sec_got = True
+
+            if sec_got:
+                total_length_km   += sec_len_km
+                # Count-weighted: Aimsun exit-based statistics average per
+                # completed vehicle, not per km of section length.
+                if _cnt > 0:
+                    total_flow_veh_h  += sec_flow    * _cnt
+                    total_density_vkm += sec_density * _cnt
+                    total_speed_kmh   += sec_speed   * _cnt
+                    total_count_veh   += _cnt
+                n_ok += 1
+                if sec_flow <= 0.0 and sec_density <= 0.0 and sec_speed <= 0.0:
+                    stats_zero_sections += 1
+
+        if n_ok > 0 and (total_count_veh > 0 or total_length_km > 0.0):
+            # Count-weighted averages — matches Aimsun's exit-based statistics
+            # which average per completed vehicle.  Sections with more traffic
+            # get proportionally more weight than long low-volume sections.
+            if total_count_veh > 0:
+                avg_flow_veh_h  = total_flow_veh_h  / total_count_veh   # veh/h (mean per-section rate)
+                avg_density_vkm = total_density_vkm / total_count_veh   # veh/km
+                avg_speed_kmh   = total_speed_kmh   / total_count_veh   # km/h
+            else:
+                # No vehicles completed any section — density from snapshot only
+                avg_flow_veh_h  = 0.0
+                avg_density_vkm = (total_density_vkm / total_length_km
+                                   if total_length_km > 0 else 0.0)
+                avg_speed_kmh   = 0.0
+
+            # Check if all-vehicle stats returned zero (count-based path failed).
+            # Fall back to incremental mid-simulation samples in that case.
+            all_zero = (avg_flow_veh_h <= 0 and avg_density_vkm <= 0 and avg_speed_kmh <= 0)
+            if all_zero and self._incr_net_samples > 0:
+                _n = self._incr_net_samples
+                avg_flow_veh_h  = self._incr_net_flow_sum  / _n
+                avg_density_vkm = self._incr_net_density_sum / _n
+                avg_speed_kmh   = self._incr_net_speed_sum   / _n
+                _src = f'incremental({_n}samples)'
+            else:
+                _src = 'akiest-cumul-count/sim_h'
+
+            self._net_total_flow_veh  = int(round(avg_flow_veh_h))
+            self._net_avg_density_vkm = round(avg_density_vkm, 4)
+            self._net_avg_speed_kmh   = round(avg_speed_kmh,   3)
+
+            # Store per-vehicle-type network stats (written to CSV by save_results)
+            for _key in _tp_keys:
+                _w = _tp_cnt[_key]
+                if _w > 0 and _tp_flow[_key] > 0:
+                    setattr(self, f'_net_flow_{_key}',    round(_tp_flow[_key] / _w, 2))
+                    setattr(self, f'_net_density_{_key}', round(_tp_dens[_key] / _w, 4))
+                    setattr(self, f'_net_speed_{_key}',   round(_tp_spd[_key]  / _w, 3))
+                    setattr(self, f'_net_delay_{_key}',   round(_tp_dly[_key]  / _w, 2))
+
+            self._net_debug.update({
+                'sim_time_s': round(sim_time, 3),
+                'section_count': len(section_ids),
+                'stats_ok_sections': n_ok,
+                'total_length_km': round(total_length_km, 3),
+                'snapshot_ok_sections': 0,
+                'snapshot_sections_with_vehicles': 0,
+                'stats_zero_sections': stats_zero_sections,
+                'snapshot_zero_sections': 0,
+                'sections_missing_length': 0,
+                'source': _src,
+            })
+        else:
+            # No sections had valid length — fall back to incremental samples
+            if self._incr_net_samples > 0:
+                _n = self._incr_net_samples
+                self._net_total_flow_veh  = int(round(self._incr_net_flow_sum / _n))
+                self._net_avg_density_vkm = round(self._incr_net_density_sum / _n, 4)
+                self._net_avg_speed_kmh   = round(self._incr_net_speed_sum   / _n, 3)
+                self._net_debug.update({
+                    'sim_time_s': round(sim_time, 3),
+                    'section_count': len(section_ids),
+                    'stats_ok_sections': 0,
+                    'source': f'incremental-fallback({_n}samples)',
+                })
+            else:
+                self._net_total_flow_veh  = 0
+                self._net_avg_density_vkm = 0.0
+                self._net_avg_speed_kmh   = 0.0
+                self._net_debug.update({
+                    'sim_time_s': round(sim_time, 3),
+                    'section_count': len(section_ids),
+                    'stats_ok_sections': 0,
+                    'source': 'no-data',
+                })
 
     # =========================================================================
     # REPORTING
@@ -1233,6 +1983,7 @@ class SimulationStats:
 
         strategy = 'unknown'
         seed     = '0'
+        experiment_label = 'manual'
         try:
             _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      'run_config.py')
@@ -1241,10 +1992,15 @@ class SimulationStats:
                 exec(_f.read(), _ns)
             strategy = str(_ns.get('CURRENT_STRATEGY', 'unknown'))
             seed     = str(_ns.get('CURRENT_SEED',     '0'))
+            experiment_label = str(_ns.get('CURRENT_EXPERIMENT', 'manual'))
         except Exception:
             pass  # run_config absent — manual run, use defaults
 
-        folder_name = f"{strategy}_seed{seed}_{s}_{e}_{r}"
+        safe_exp = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in experiment_label).strip('_')
+        if not safe_exp:
+            safe_exp = strategy
+
+        folder_name = f"{safe_exp}_seed{seed}_{s}_{e}_{r}"
 
         # Candidate base directories — tried in order until one succeeds
         try:
@@ -1297,9 +2053,23 @@ class SimulationStats:
                 "AvgPassDelay_s", "AvgBusPassDelay_s", "AvgCarPassDelay_s", "AvgTruckPassDelay_s",
                 "AvgObjPassDelay",
                 "TSP_Detections", "TSP_Extensions", "TSP_Insertions",
-                "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction",
+                "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction", "TSP_NaturalGreen",
+                "TSP_TotalExtension_s", "TSP_TotalInsertion_s",
+                "TSP_AvgExtension_s", "TSP_AvgInsertion_s", "TSP_AvgInsertionWait_s",
                 # Objective metric
                 "Objective_PaxPerDelayHr",
+                # Corridor coordinator pre-arm outcomes
+                "Prearm_Fired", "Prearm_Success", "Prearm_Missed",
+                "Prearm_Expired", "Prearm_Discarded",
+                "Prearm_LateSuccess", "Prearm_LateSuccessDelay_s",
+                # Network-level stats — Entry-Based (count/sim_h), length-weighted
+                "Net_TotalFlowVeh", "Net_AvgDensity_vkm", "Net_AvgSpeed_kmh",
+                # All-vehicle Entry-Based Delay Time (sec/km, from DTa-freeflow)/length
+                "Net_Delay_All",
+                # Per-type network stats: Car, Bus, Truck (flow veh/h, density veh/km, speed km/h, delay sec/km)
+                "Net_Flow_Car",   "Net_Density_Car",   "Net_Speed_Car",   "Net_Delay_Car",
+                "Net_Flow_Bus",   "Net_Density_Bus",   "Net_Speed_Bus",   "Net_Delay_Bus",
+                "Net_Flow_Truck", "Net_Density_Truck", "Net_Speed_Truck", "Net_Delay_Truck",
             ],
             row=[
                 self.scenario_id, self.experiment_id, self.replication_id,
@@ -1332,7 +2102,40 @@ class SimulationStats:
                 g['n_tsp_skipped_ge'],
                 g['n_tsp_skipped_ins'],
                 g['n_tsp_detected_no_action'],
+                g['n_tsp_natural_green'],
+                round(g['total_extension_s'], 2),
+                round(g['total_insertion_s'], 2),
+                round(g['avg_extension_s'], 2),
+                round(g['avg_insertion_s'], 2),
+                round(g['avg_insertion_wait_s'], 2),
                 round(g['throughput_per_delay_hr'], 3),
+                # Pre-arm coordination stats
+                self._prearm_stats.get("fired",     0),
+                self._prearm_stats.get("success",   0),
+                self._prearm_stats.get("missed",    0),
+                self._prearm_stats.get("expired",   0),
+                self._prearm_stats.get("discarded", 0),
+                self._prearm_stats.get("late_success", 0),
+                round(float(self._prearm_stats.get("late_success_delay_s", 0.0)), 2),
+                # Network section stats (all-vehicle, Entry-Based from count/sim_h)
+                self._net_total_flow_veh,
+                self._net_avg_density_vkm,
+                self._net_avg_speed_kmh,
+                # All-vehicle Entry-Based Delay Time
+                getattr(self, '_net_delay_all',   0.0),
+                # Per-vehicle-type network stats (veh/km, veh/h, km/h, sec/km)
+                getattr(self, '_net_flow_car',    0.0),
+                getattr(self, '_net_density_car', 0.0),
+                getattr(self, '_net_speed_car',   0.0),
+                getattr(self, '_net_delay_car',   0.0),
+                getattr(self, '_net_flow_bus',    0.0),
+                getattr(self, '_net_density_bus', 0.0),
+                getattr(self, '_net_speed_bus',   0.0),
+                getattr(self, '_net_delay_bus',   0.0),
+                getattr(self, '_net_flow_truck',  0.0),
+                getattr(self, '_net_density_truck',0.0),
+                getattr(self, '_net_speed_truck', 0.0),
+                getattr(self, '_net_delay_truck', 0.0),
             ],
         )
 
@@ -1366,8 +2169,8 @@ class SimulationStats:
                     # (denominator for AvgPassDelay; CarOcc=1.5 pax/car, BusOcc=40 pax/bus)
                     "PaxEquivPassages",     # sum(veh_count × occ) across bus+car+truck
                     "BusPaxEquivPassages",  # bus vehicle passages × BusOcc
-                    "CarPaxEquivPassages",  # car vehicle passages × CarOcc
-                    "TruckPaxEquivPassages",# truck passages × TruckOcc (0 if none)
+                    "CarPaxEquivPassages",  # car vehicle passages × CarOcc (1.2 pax/car)
+                    "TruckPaxEquivPassages",# truck passages × TruckOcc
                     # Average delay per passenger
                     "AvgPassDelay_s",       # total delay / total passengers (s/pax)
                     "AvgBusPassDelay_s",    # bus delay / bus passengers (s/pax)
@@ -1376,6 +2179,11 @@ class SimulationStats:
                     # Section metadata
                     "N_MainSections", "N_SideSections", "SideSectionsResolved",
                     "MainSectionIDs", "SideSectionIDs",
+                    # Density / speed / flow (time-averaged from vehicle-state sampling)
+                    "AvgDensity_vkm",   # mean density across approach sections (veh/km)
+                    "AvgSpeed_kmh",     # mean speed across approach sections (km/h)
+                    "AvgFlow_veh_h",    # mean flow across approach sections (veh/h)
+                    "AvgQueue_veh",     # mean queued vehicles (speed<5 km/h) across sections
                     # Occupancy / type config
                     "CarOcc",  # passengers per car
                     "BusOcc",  # passengers per bus
@@ -1390,6 +2198,11 @@ class SimulationStats:
                     "TSP_Skipped_GE",        # harmony GE opt ≤ 0.5 s
                     "TSP_Skipped_Ins",       # harmony BP opt ≤ 0.5 s
                     "TSP_Detected_NoAction", # NORMAL mode detections
+                    "TSP_NaturalGreen",      # bus naturally clears on green
+                    # Duration averages
+                    "TSP_AvgExtension_s",    # mean granted GE per extension event
+                    "TSP_AvgInsertion_s",    # mean granted BP per insertion event
+                    "TSP_AvgInsertionWait_s",# mean wait from insertion grant to bus arrival
                     # Objective metric
                     "Objective_PaxPerDelayHr",
                 ],
@@ -1421,6 +2234,10 @@ class SimulationStats:
                     int(k['side_sections_resolved']),
                     "|".join(str(x) for x in k['main_sections']),
                     "|".join(str(x) for x in k['side_sections']),
+                    round(k['avg_density_vkm'], 4),
+                    round(k['avg_speed_kmh'], 3),
+                    round(k['avg_flow_veh_h'], 2),
+                    round(k['avg_queue_veh'], 2),
                     d['car_occ'],
                     d['bus_occ'],
                     d.get('truck_occ', d['car_occ']),
@@ -1435,6 +2252,10 @@ class SimulationStats:
                     k['n_skipped_ge'],
                     k['n_skipped_ins'],
                     k['n_detected_no_action'],
+                    k['n_natural_green'],
+                    round(k['avg_extension_s'], 2),
+                    round(k['avg_insertion_s'], 2),
+                    round(k['avg_insertion_wait_s'], 2),
                     round(k['objective'], 3),
                 ],
             )
@@ -1458,6 +2279,33 @@ class SimulationStats:
                     ],
                 )
                 total_trips += 1
+
+        # ── 3b. Per-section (corridor) CSV ──────────────────────────────────
+        if self._section_dsf:
+            section_csv = os.path.join(run_path, "section_stats.csv")
+            for sec_id in sorted(self._section_dsf.keys()):
+                sd = self._section_dsf[sec_id]
+                n = sd['samples']
+                self._append_csv(
+                    section_csv,
+                    headers=[
+                        "ScenarioID", "ExperimentID", "ReplicationID",
+                        "TSP_Strategy", "SectionID", "IntersectionID",
+                        "IsMain", "Length_km",
+                        "AvgDensity_vkm", "AvgSpeed_kmh", "AvgFlow_veh_h", "AvgQueue_veh",
+                        "N_Samples",
+                    ],
+                    row=[
+                        self.scenario_id, self.experiment_id, self.replication_id,
+                        self.tsp_strategy, sec_id, sd['inter_id'],
+                        int(sd['is_main']), round(sd['length_km'], 4),
+                        round(sd['density_sum'] / n, 4) if n > 0 else 0.0,
+                        round(sd['speed_sum'] / n, 3) if n > 0 else 0.0,
+                        round(sd['flow_sum'] / n, 2) if n > 0 else 0.0,
+                        round(sd.get('queue_sum', 0.0) / n, 2) if n > 0 else 0.0,
+                        n,
+                    ],
+                )
 
         # ── 4. JSON summary ─────────────────────────────────────────────────
         inter_list = []
@@ -1490,6 +2338,9 @@ class SimulationStats:
                 'tsp_insertions':       k['n_insertions'],
                 'tsp_exit_clears':      k['n_exit_clears'],
                 'tsp_cap_clears':       k['n_cap_clears'],
+                'avg_density_vkm':      round(k['avg_density_vkm'], 4),
+                'avg_speed_kmh':        round(k['avg_speed_kmh'], 3),
+                'avg_flow_veh_h':       round(k['avg_flow_veh_h'], 2),
                 'bus_trips': [
                     {'entry_s': round(e, 1), 'exit_s': round(x, 1),
                      'travel_time_s': round(t, 1)}
