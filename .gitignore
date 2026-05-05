@@ -1,7 +1,5 @@
 # Aimsun model files (binary / large)
-*.ang
 *.sang
-*.apa
 *.sqlite
 *.ang.lck
 *.ang.old
