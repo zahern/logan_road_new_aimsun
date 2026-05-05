@@ -39,7 +39,7 @@ for _vsp in [
         sys.path.insert(1, _vsp)
         break
 del _THIS_DIR, _vsp
-
+sys.path.insert(0, r"C:\AimsunPackages")
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go

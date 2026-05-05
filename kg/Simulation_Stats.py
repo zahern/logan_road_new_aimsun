@@ -1692,8 +1692,12 @@ class SimulationStats:
                             continue
                         _cnt_d = float(getattr(_st_d, 'count', 0) or 0)
                         _dta_d = float(getattr(_st_d, 'DTa', 0.0) or 0.0)
-                        # DTa is ALREADY the mean delay per vehicle (seconds);
-                        # divide by section length (km) to get s/km.
+                        _tta_d = float(getattr(_st_d, 'TTa', 0.0) or 0.0)
+                        # DTa is often 0 from section stats in this Aimsun build.
+                        # Fallback: compute delay as TTa - free-flow TT.
+                        if _dta_d <= 0.0 and _tta_d > 0.0 and _slen_m_d > 0.0:
+                            _ff_tt_d = _slen_m_d / max(_slim_d / 3.6, 1.0)
+                            _dta_d = max(_tta_d - _ff_tt_d, 0.0)
                         if _cnt_d > 0 and _dta_d > 0.0 and _slen_km_d > 0.0:
                             _sec_dly = _dta_d / max(_slen_km_d, 0.001)
                             _sec_dly_sum += _sec_dly * _cnt_d
@@ -1821,8 +1825,12 @@ class SimulationStats:
                     sec_flow = _cnt / sim_hours   # veh/h (Entry-Based Flow)
                     if _tta > 0.0 and sec_len_m > 0.0:
                         sec_speed = (sec_len_m / _tta) * 3.6  # km/h from mean travel time
+                    # DTa is often 0 from section stats in this Aimsun build.
+                    # Fallback: compute delay as TTa - free-flow TT.
+                    if _dta <= 0.0 and _tta > 0.0 and sec_len_m > 0.0:
+                        _ff_tt = sec_len_m / max(sec_speed_limit_kmh / 3.6, 1.0)
+                        _dta = max(_tta - _ff_tt, 0.0)
                     if _dta > 0.0 and sec_len_km > 0.0:
-                        # DTa is already mean delay per vehicle (s); divide by km for s/km
                         sec_delay_skm = _dta / max(sec_len_km, 0.001)
                     if sec_flow > 0.0 and sec_speed > 0.0:
                         sec_density = sec_flow / sec_speed     # veh/km

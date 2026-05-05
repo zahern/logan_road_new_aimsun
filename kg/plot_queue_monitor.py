@@ -34,7 +34,7 @@ for _vsp in [
         sys.path.insert(1, _vsp)
         break
 del _THIS_DIR, _vsp
-
+sys.path.insert(0, r"C:\AimsunPackages")
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt

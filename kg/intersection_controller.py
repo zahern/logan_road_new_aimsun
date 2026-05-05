@@ -8150,10 +8150,14 @@ class IntersectionController:
                 return True
 
         # ── No GE or INS was applied this call ───────────────────────────────
-        # If this junction is the wave origin and took no action, the bus is
-        # gone or undetectable — cancel the coordination wave so downstream
-        # junctions are immediately freed for independent detection.
-        if self._corridor_coord is not None and COORDINATED_TSP:
+        # Only cancel the coordination wave if NO bus was detected at all this
+        # call.  If a bus was detected but got natural green (or was focus-
+        # suppressed), the wave must continue so downstream junctions keep
+        # their pre-arms.  Only cancel when the wave origin is truly "empty"
+        # (no bus presence at all → bus has passed or was never there).
+        if (not _detection_recorded_this_call and
+                not _coord_notified_this_call and
+                self._corridor_coord is not None and COORDINATED_TSP):
             if (self._corridor_coord._wave_active and
                     self._corridor_coord._wave_origin == self.id):
                 self._corridor_coord._wave_active     = False
@@ -8163,7 +8167,7 @@ class IntersectionController:
                 self._corridor_coord._pre_requests.clear()
                 log_to_file(
                     f"[HARMONY WAVE CANCEL] inter={self.id} t={time:.1f} "
-                    f"no GE/INS applied at wave origin — wave cancelled",
+                    f"no bus detected at wave origin — wave cancelled",
                     force=True)
         return False
 
@@ -8301,7 +8305,7 @@ class IntersectionController:
                         * (self.JamDensity - self.HSUpDenList[i][j]) / 1000
                         + (self.HSQueueDissTime[i][j] - self.HSGreenStartTimeList[i][j])
                         * self.HSMaxQueueLength[i][j] / 2
-                        * (self.SaturationDensity - self.HSUpDenList[i][j])))
+                        * (self.SaturationDensity - self.HSUpDenList[i][j]) / 1000))
                 else:
                     if abs(w3) > 1e-6 and abs(w4) > 1e-6:
                         self.HSMinQueueLength[i][j] = (
