@@ -131,11 +131,12 @@ def _wave_events_from_csv(path: str) -> list:
       for r in csv.DictReader(f):
         try:
           out.append({
-            "t": float(r.get("sim_time_s", "0") or 0.0),
-            "event": str(r.get("event", "")).strip(),
+            "t":          float(r.get("sim_time_s", "0") or 0.0),
+            "event":      str(r.get("event", "")).strip(),
             "source_jct": int(float(r.get("source_jct", "-1") or -1)),
             "target_jct": int(float(r.get("target_jct", "-1") or -1)),
-            "veh_id": int(float(r.get("veh_id", "-1") or -1)),
+            "veh_id":     int(float(r.get("veh_id", "-1") or -1)),
+            "note":       str(r.get("note", "") or ""),
           })
         except Exception:
           continue
@@ -569,6 +570,65 @@ def _match_queue_snapshot_csv_by_name(exp_name: str, all_csvs: list) -> str:
     return None
 
 
+def _dynaropac_csvs(log_dir: str) -> list:
+    """Return dynaropac_decisions CSV paths sorted by mtime."""
+    return sorted(glob.glob(os.path.join(log_dir, "dynaropac_decisions_*.csv")),
+                  key=os.path.getmtime)
+
+
+def _match_dynaropac_csv_by_name(exp_name: str, all_csvs: list) -> str:
+    exp_lower = (exp_name or "").strip().lower()
+    if not exp_lower:
+        return None
+    for p in reversed(all_csvs):
+        stem = os.path.splitext(os.path.basename(p))[0].lower()
+        if not stem.startswith("dynaropac_decisions_"):
+            continue
+        payload = stem[len("dynaropac_decisions_"):]
+        parts = payload.split("_")
+        if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+            exp_token = "_".join(parts[:-2]).strip().lower()
+            if exp_token == exp_lower:
+                return p
+    return None
+
+
+def _dynaropac_decisions_from_csv(path: str) -> list:
+    """Load dynaropac_decisions CSV. Returns list of decision rows."""
+    if not path or not os.path.isfile(path):
+        return []
+    out = []
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                try:
+                    # Parse string-encoded lists back
+                    _ext_raw   = r.get("extensions_s", "[]")
+                    _delay_raw = r.get("delays_paxs", "[]")
+                    import ast
+                    extensions = ast.literal_eval(_ext_raw)
+                    delays     = ast.literal_eval(_delay_raw)
+                    out.append({
+                        "t":              float(r.get("sim_time_s", 0) or 0),
+                        "jct":            int(float(r.get("junction_id", 0) or 0)),
+                        "cur_phase":      int(float(r.get("cur_phase", 1) or 1)),
+                        "before_dur":     float(r.get("before_dur_s", 0) or 0),
+                        "extensions":     extensions,
+                        "delays":         delays,
+                        "best_ext":       float(r.get("best_ext_s", 0) or 0),
+                        "best_delay":     float(r.get("best_delay", 0) or 0),
+                        "baseline_delay": float(r.get("baseline_delay", 0) or 0),
+                        "saving":         float(r.get("saving_paxs", 0) or 0),
+                        "bus_detected":   int(float(r.get("bus_detected", 0) or 0)),
+                        "applied":        int(float(r.get("applied", 0) or 0)),
+                    })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
 def _queue_snapshot_from_csv(path: str) -> list:
     """Load queue_snapshot CSV into list of dicts."""
     if not path or not os.path.isfile(path):
@@ -918,6 +978,11 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
             "bus_tt":        _flt(r.get("BusTotalTT_hrs")),
             "avg_bus_delay": _flt(r.get("AvgBusPassDelay_s")),
             "avg_car_delay": _flt(r.get("AvgCarPassDelay_s")),
+            "avg_truck_delay": _flt(r.get("AvgTruckPassDelay_s")),
+            "avg_main_delay_per_hr": _flt(r.get("AvgMainPassDelay_pax_h_per_sim_h")),
+            "avg_side_delay_per_hr": _flt(r.get("AvgSidePassDelay_pax_h_per_sim_h")),
+            "avg_total_delay_per_hr": _flt(r.get("AvgTotalPassDelay_pax_h_per_sim_h")),
+            "sim_duration_hrs": _flt(r.get("SimDuration_hrs")),
             "tsp_det":       _flt(r.get("TSP_Detections")),
             "tsp_ext":       _flt(r.get("TSP_Extensions")),
             "tsp_ins":       _flt(r.get("TSP_Insertions")),
@@ -1274,6 +1339,7 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     all_bus_track_csvs = _bus_tracking_csvs(log_dir) if log_dir else []
     all_focus_csvs = _focus_history_csvs(log_dir) if log_dir else []
     all_queue_snap_csvs = _queue_snapshot_csvs(log_dir) if log_dir else []
+    all_dynaropac_csvs = _dynaropac_csvs(log_dir) if log_dir else []
 
     for row in batch_rows:
         label       = _run_label(row)
@@ -1302,6 +1368,11 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
                                       "inter_avg_AvgCarPassDelay_s"])
         avg_truck_delay = _pick(row, ["stats_AvgTruckPassDelay_s",
                                       "inter_avg_AvgTruckPassDelay_s"])
+        # Avg pax delay per simulation-hour (pax·hrs of delay per sim-hour)
+        avg_main_delay_per_hr  = _pick(row, ["stats_AvgMainPassDelay_pax_h_per_sim_h"])
+        avg_side_delay_per_hr  = _pick(row, ["stats_AvgSidePassDelay_pax_h_per_sim_h"])
+        avg_total_delay_per_hr = _pick(row, ["stats_AvgTotalPassDelay_pax_h_per_sim_h"])
+        sim_duration_hrs       = _pick(row, ["stats_SimDuration_hrs"])
         # TSP event counts — prefer stats_ (from global simulation_results.csv, single-run)
         # over inter_sum_ (from per-intersection CSV, which can include prior runs if
         # ScenarioID filtering fails).  This prevents the "1500 vs 530" discrepancy
@@ -1410,6 +1481,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # ── Queue snapshot data (60-second snapshots per junction) ─────────────
         queue_snap_csv = _match_queue_snapshot_csv_by_name(exp_name, all_queue_snap_csvs)
         queue_snapshots = _queue_snapshot_from_csv(queue_snap_csv) if queue_snap_csv else []
+
+        # ── DYNAOPAC decision log (phase-duration search candidates + delays) ──
+        dyn_csv = _match_dynaropac_csv_by_name(exp_name, all_dynaropac_csvs)
+        dynaropac_decisions = _dynaropac_decisions_from_csv(dyn_csv) if dyn_csv else []
         per_inter = _merge_per_intersection_coverage(
             per_inter,
             det_jct_stats,
@@ -1445,7 +1520,12 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             # per-pax delays (s)
             "avg_bus_delay":   _rnd(avg_bus_delay,   2),
             "avg_car_delay":   _rnd(avg_car_delay,   2),
-            "avg_truck_delay": _rnd(avg_truck_delay, 2),
+            "avg_truck_delay":        _rnd(avg_truck_delay,       2),
+            # Avg pax delay per simulation-hour (pax·hrs/sim-hr) — independent of sim length
+            "avg_main_delay_per_hr":  _rnd(avg_main_delay_per_hr,  3),
+            "avg_side_delay_per_hr":  _rnd(avg_side_delay_per_hr,  3),
+            "avg_total_delay_per_hr": _rnd(avg_total_delay_per_hr, 3),
+            "sim_duration_hrs":       _rnd(sim_duration_hrs,        2),
             # tsp events — full breakdown
             "tsp_det":          _int(tsp_det),
             "tsp_det_unique":   int(det_pair_stats.get("pair_count", 0)),
@@ -1530,12 +1610,21 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "focus_bus_ids": sorted(focus_bus_ids),
             # queue snapshots (list of {t, jct, buses_in_zone, queue_main, queue_side, queue_total, tsp_state})
             "queue_snapshots": queue_snapshots,
+            # DYNAOPAC decisions (list of {t, jct, before_dur, extensions, delays, best_ext, applied, ...})
+            "dynaropac_decisions": dynaropac_decisions,
         }
         runs_data.append(run_obj)
 
-    # ── Ordered junction list ────────────────────────────────────────────────
-    jct_list = sorted(int(j) for j in all_jct_ids
-                      if str(j).lstrip("-").isdigit())
+    # ── Ordered junction list ─────────────────────────────────────────────────
+    # Restrict to the 12 intersections defined in INTERSECTIONS_CONFIG only.
+    # Data from detections / bus tracking may include junctions outside the
+    # controlled corridor — exclude those to keep the dashboard focused.
+    _cfg_jct_set = set(_ALL_CONFIG_JCTS) if _ALL_CONFIG_JCTS else None
+    jct_list = sorted(
+        int(j) for j in all_jct_ids
+        if str(j).lstrip("-").isdigit()
+        and (_cfg_jct_set is None or str(j) in _cfg_jct_set)
+    )
     try:
         from plot_green_wave import _geographic_junction_order as _gjo
         jct_list = [j for j in _gjo({j: (0, j) for j in jct_list}, jct_list)]
@@ -1554,6 +1643,7 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     LOWER_IS_BETTER = {"total_delay", "main_delay", "side_delay", "bus_tt",
                         "avg_bus_delay", "avg_car_delay", "avg_truck_delay", "density",
                         "net_delay_all", "net_delay_car", "net_delay_bus", "net_delay_truck",
+                        "avg_main_delay_per_hr", "avg_side_delay_per_hr", "avg_total_delay_per_hr",
                         "tracked_only_bus_count"}
     HIGHER_IS_BETTER = {"speed", "flow", "tsp_det_unique", "mean_green",
                         "tracked_bus_count", "tracking_coverage_pct"}
@@ -1695,7 +1785,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Logan Road TSP — Simulation Dashboard</title>
+<title>Kelvin Grove TSP — Simulation Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <style>
 :root {
@@ -1759,6 +1849,8 @@ tr:hover td { background: #1a1a30; }
 .bubble-r { background: #ff525220; border: 2px solid var(--red); color: var(--red); }
 /* Prearm fired but priority not activated — signal was aware, chose not to intervene */
 .bubble-p { background: #ab47bc20; border: 2px dashed var(--purple); color: var(--purple); }
+/* Detected + TSP evaluated but not optimal — harmony decided not worth extending, phase ended */
+.bubble-y { background: #f9a82520; border: 2px dashed #f9a825; color: #f9a825; }
 /* Delay-optimisation skip: orange with slash symbol (legacy, now replaced by bubble-p) */
 .bubble-opt { background: #ffb30015; border: 2px dashed var(--orange); color: var(--orange); }
 /* Per-bus route view: junctions not on this bus's route */
@@ -1783,7 +1875,7 @@ tr:hover td { background: #1a1a30; }
 </head>
 <body>
 
-<h1>🚌 Logan Road TSP — Simulation Comparison Dashboard</h1>
+<h1>🚌 Kelvin Grove TSP — Simulation Comparison Dashboard</h1>
 <p class="subtitle" id="gen-time"></p>
 
 <!-- ── KPI summary (vs NORMAL baseline) ─────────────────────────────── -->
@@ -2054,6 +2146,26 @@ tr:hover td { background: #1a1a30; }
   <div style="margin-top:4px;font-size:11px;color:var(--muted)" id="focus-summary"></div>
 </div>
 
+<!-- ── Per-Bus Corridor KPI Comparison ───────────────────────────── -->
+<p class="section-hdr">Per-Bus Corridor KPI Comparison <span style="font-size:0.78rem;color:var(--muted)">(priority-granted buses vs normal; total corridor delay, travel time, priority count per junction)</span></p>
+<div class="card">
+  <div class="run-tabs" id="buscomp-run-tabs"></div>
+  <div style="margin-top:4px;font-size:11px;color:var(--muted)">
+    <strong style="color:var(--green)">Blue bars</strong> = buses that received at least one priority grant &nbsp;|&nbsp;
+    <strong style="color:var(--orange)">Orange bars</strong> = buses that never received priority &nbsp;|&nbsp;
+    Corridor delay = sum of per-junction stop-times for that bus across the run.
+  </div>
+  <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label><input type="checkbox" id="buscomp-show-delay" checked> Total corridor delay (s)</label>
+    <label><input type="checkbox" id="buscomp-show-tt" checked> Total travel time (s)</label>
+    <label><input type="checkbox" id="buscomp-show-count" checked> Priority grants per junction</label>
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="buscomp-canvas" height="280" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="buscomp-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No bus journey data available for this run.</div>
+</div>
+
 <!-- ── Decision Space (TSP Corridor Timeline) ─────────────────────── -->
 <p class="section-hdr">Decision Space <span style="font-size:0.78rem;color:var(--muted)">(when each junction is under TSP control and how long until it returns to normal)</span></p>
 <div class="card">
@@ -2092,8 +2204,12 @@ tr:hover td { background: #1a1a30; }
         <option value="total_delay">Total delay (hrs)</option>
         <option value="main_delay">Main delay (hrs)</option>
         <option value="side_delay">Side delay (hrs)</option>
+        <option value="avg_main_delay_per_hr">Main avg delay/sim-hr (pax·h/h)</option>
+        <option value="avg_side_delay_per_hr">Side avg delay/sim-hr (pax·h/h)</option>
+        <option value="avg_total_delay_per_hr">Total avg delay/sim-hr (pax·h/h)</option>
         <option value="avg_bus_delay">Avg bus delay (s)</option>
         <option value="avg_car_delay">Avg car delay (s)</option>
+        <option value="avg_truck_delay">Avg truck delay (s)</option>
         <option value="distinct_buses">Distinct buses (stats)</option>
         <option value="tracked_buses">Known buses (union of all sources)</option>
         <option value="position_tracked_buses">Position-tracked buses (GPS scan)</option>
@@ -2137,6 +2253,37 @@ tr:hover td { background: #1a1a30; }
   <div style="margin-top:8px;font-size:11px;color:var(--muted)" id="sec-no-data" style="display:none">No per-section data available for this run.</div>
   <div class="tbl-wrap" style="margin-top:8px">
     <table id="sec-table"><thead></thead><tbody></tbody></table>
+  </div>
+</div>
+
+<!-- ── Same-Bus Cross-Experiment Comparison ──────────────────────────── -->
+<p class="section-hdr">Same-Bus Cross-Experiment Comparison <span style="font-size:0.78rem;color:var(--muted)">(tracks identical bus IDs across runs — NORMAL baseline vs TSP strategies for priority-granted buses)</span></p>
+<div class="card">
+  <div style="margin-top:4px;font-size:11px;color:var(--muted)">
+    Compares the same bus vehicle IDs that were granted priority in TSP runs against their behaviour in the NORMAL (no-TSP) baseline.
+    Green extensions granted = junctions where the bus received a priority action. Red arrivals = junctions where the bus hit a red.
+  </div>
+  <div id="xcomp-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">Requires ≥2 runs including a NORMAL baseline.</div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="xcomp-canvas" height="240" style="width:100%;min-width:420px;display:none"></canvas>
+  </div>
+</div>
+
+<!-- ── DYNAOPAC Phase Optimisation Decisions ─────────────────────────── -->
+<p class="section-hdr">DYNAOPAC Phase Optimisation <span style="font-size:0.78rem;color:var(--muted)">(delay vs green-extension candidates searched each step — only visible for DYNAOPAC_HARMONY runs)</span></p>
+<div class="card" id="dynaropac-section">
+  <div class="run-tabs" id="dyn-run-tabs"></div>
+  <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="dyn-jct-sel" style="font-size:11px"><option value="">All (avg)</option></select></label>
+    <label><input type="checkbox" id="dyn-show-applied" checked> Highlight applied decisions</label>
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="dyn-canvas" height="260" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="dyn-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No DYNAOPAC decision data (run a DYNAOPAC_HARMONY experiment to populate).</div>
+  <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+    Each point = one phase-duration search step. X-axis = extension tried (s). Y-axis = total person-delay for that duration.
+    Orange dashed line = no-action baseline. Stars = applied decisions. Hover for junction and time detail.
   </div>
 </div>
 
@@ -2584,11 +2731,14 @@ if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
 
 // ── KPI cards (best/worst highlighted) ───────────────────────────────────
 const kpiDefs = [
-  { key:'total_delay',   label:'Total pax delay',  unit:'hrs', lb:true },
-  { key:'main_delay',    label:'Main-st delay',     unit:'hrs', lb:true },
-  { key:'bus_tt',        label:'Bus TT',            unit:'hrs', lb:true },
-  { key:'avg_bus_delay', label:'Avg bus delay',     unit:'s',   lb:true },
-  { key:'avg_car_delay', label:'Avg car delay',     unit:'s',   lb:true },
+  { key:'total_delay',            label:'Total pax delay',       unit:'hrs',   lb:true },
+  { key:'avg_total_delay_per_hr', label:'Total pax delay/sim-hr',unit:'pax·h/h',lb:true },
+  { key:'main_delay',             label:'Main-st delay',          unit:'hrs',   lb:true },
+  { key:'avg_main_delay_per_hr',  label:'Main delay/sim-hr',     unit:'pax·h/h',lb:true },
+  { key:'avg_side_delay_per_hr',  label:'Side delay/sim-hr',     unit:'pax·h/h',lb:true },
+  { key:'bus_tt',                 label:'Bus TT',                 unit:'hrs',   lb:true },
+  { key:'avg_bus_delay',          label:'Avg bus delay',          unit:'s',     lb:true },
+  { key:'avg_car_delay',          label:'Avg car delay',          unit:'s',     lb:true },
   { key:'tracked_bus_count', label:'Tracked buses', unit:'',    lb:false },
   { key:'tracking_coverage_pct', label:'Detection coverage', unit:'%', lb:false },
   { key:'tsp_natural_green_rate_pct', label:'Natural green share (unique bus×jct)', unit:'%', lb:false },
@@ -2730,7 +2880,12 @@ function renderCoordFlow(ri, filterVid) {
       `Bus ${filterVid}  route: ${busRouteJcts.join(' \u2192 ')}  |  ` +
       `<span style="color:${allGreen?'var(--green)':'var(--orange)'}">${greenStatus}</span>` +
       `<span style="color:var(--muted)">${focusNote}</span>` +
-      `  |  Greyed junctions = not on this bus\u2019s route`;
+      `  |  Greyed = not on route  |  ` +
+      `<span style="color:var(--green)">\u2713 green</span>  ` +
+      `<span style="color:#f9a825">\u25c7 TSP skip (detected, not optimal)</span>  ` +
+      `<span style="color:var(--purple)">\u2298 coord skip (prearm fired)</span>  ` +
+      `<span style="color:var(--orange)">! late arrival</span>  ` +
+      `<span style="color:var(--red)">\u2715 red</span>`;
   } else {
     summary.textContent =
       `Natural green share (unique bus\u00d7jct, only buses that visited each junction): ${ngShare}` +
@@ -2743,7 +2898,10 @@ function renderCoordFlow(ri, filterVid) {
   flow.appendChild(summary);
 
   const busRouteSet = busRouteJcts ? new Set(busRouteJcts) : null;
-  jcts.forEach((j, idx) => {
+  // When a specific bus is selected, only render junctions on that bus's route.
+  // In aggregate view, render all corridor junctions.
+  const renderJcts = (filterVid && busRouteJcts) ? busRouteJcts : jcts;
+  renderJcts.forEach((j, idx) => {
     const onRoute    = !busRouteSet || busRouteSet.has(j);
     const isPassiveJ = PASSIVE_JCTS.has(String(j));
     let pct = r.green_rates[j] ?? null;
@@ -2766,6 +2924,7 @@ function renderCoordFlow(ri, filterVid) {
       : [];
     const hadPrearmSuccess = busWaveAtJct.some(w => w.event === 'prearm_success');
     const hadPrearmFired   = busWaveAtJct.some(w => w.event === 'prearm_fired');
+    const hadTspSkip       = busWaveAtJct.some(w => w.event === 'tsp_skip');
     const hadPrearmSkipped = busWaveAtJct.some(w => w.event === 'prearm_skipped');
 
     if (filterVid && perJctBusStats) {
@@ -2798,6 +2957,11 @@ function renderCoordFlow(ri, filterVid) {
             // Purple: coord system was aware of this bus but did not activate priority (not delay-optimal)
             bClass = 'bubble-p'; sym = '\u2298'; extraLabel = 'coord skip';
             tooltipText = 'Prearm fired \u2014 signal was aware of this bus but did not activate priority (not delay-optimal at this junction)';
+          } else if (hadTspSkip) {
+            // Amber: bus detected at this junction, TSP evaluated GE/insertion, decided not optimal
+            // \u2014 harmony objective found cross-traffic cost > bus benefit, phase ended naturally
+            bClass = 'bubble-y'; sym = '\u25c7'; extraLabel = 'TSP skip';
+            tooltipText = 'Bus detected \u2014 TSP evaluated priority but decided not delay-optimal; phase ended naturally';
           } else {
             bClass = 'bubble-r'; sym = '\u2715'; extraLabel = 'red';
             tooltipText = selectedBusIsFocus
@@ -2836,7 +3000,7 @@ function renderCoordFlow(ri, filterVid) {
       <div class="bubble ${bClass}">${sym}</div>
       <div class="name">${flowLabel}</div>`;
     flow.appendChild(el);
-    if (idx < jcts.length - 1) {
+    if (idx < renderJcts.length - 1) {
       const arr = document.createElement('div');
       arr.className = 'flow-arrow' + (filterVid && !effectiveOnRoute ? ' flow-arrow-skip' : '');
       arr.textContent = r.coordinated ? '\u27f9' : '->';
@@ -4200,6 +4364,375 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   if (runs.length) renderFocusTable(initialRunIdx);
 }
 
+// ── Per-Bus Corridor KPI Comparison ──────────────────────────────────────────
+{
+  let _buscompChart = null;
+
+  function renderBusCompChart(ri) {
+    const r = runs[ri];
+    const noDataEl = document.getElementById('buscomp-no-data');
+    const ctx = document.getElementById('buscomp-canvas');
+    if (_buscompChart) { _buscompChart.destroy(); _buscompChart = null; }
+
+    const journeys = (r.bus_journeys || []).filter(j => j.n_jcts >= 2);
+    const fh = r.focus_history || [];
+    const focusBusSet = new Set((r.focus_bus_ids || []).map(v => Number(v)));
+    // Also pull grant events from wave events on each journey
+    const grantedBusSet = new Set();
+    journeys.forEach(j => {
+      const waves = j.wave || [];
+      if (waves.some(w => w.event === 'grant' || w.event === 'prearm_success')) {
+        grantedBusSet.add(j.vid);
+      }
+    });
+    // Focus history: buses that were granted at least once
+    fh.forEach(f => { if (f.veh_id > 0) grantedBusSet.add(f.veh_id); });
+
+    if (!journeys.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      if (ctx) ctx.style.display = 'none';
+      return;
+    }
+    if (noDataEl) noDataEl.style.display = 'none';
+    if (ctx) ctx.style.display = '';
+
+    const showDelay = document.getElementById('buscomp-show-delay')?.checked;
+    const showTT    = document.getElementById('buscomp-show-tt')?.checked;
+    const showCount = document.getElementById('buscomp-show-count')?.checked;
+
+    // Build per-bus aggregate stats from journey stops
+    // stops: [{jct, t, on_green, tier, x, y}]
+    // Approximate corridor time = last_stop.t - first_stop.t
+    // Priority count = stops where on_green (and not natural green — proxy: on_green)
+    const grantedJourneys = journeys.filter(j => grantedBusSet.has(j.vid));
+    const normalJourneys  = journeys.filter(j => !grantedBusSet.has(j.vid));
+
+    function aggJourneys(list) {
+      if (!list.length) return { delay_avg: 0, tt_avg: 0, priority_avg: 0 };
+      let totalDelay = 0, totalTT = 0, totalPriority = 0;
+      list.forEach(j => {
+        const stops = j.stops || [];
+        if (stops.length < 2) return;
+        const tt = (stops[stops.length-1].t || 0) - (stops[0].t || 0);
+        totalTT += Math.max(0, tt);
+        // Priority grants: stops where on_green AND wave has grant/success
+        const waves = j.wave || [];
+        const grantJcts = new Set(waves.filter(w => w.event === 'grant' || w.event === 'prearm_success').map(w => String(w.jct)));
+        totalPriority += grantJcts.size;
+        // Approximate delay: junctions arrived on red (not on_green)
+        totalDelay += stops.filter(s => !s.on_green).length * 30; // rough 30s per red arrival
+      });
+      const n = list.length;
+      return { delay_avg: totalDelay / n, tt_avg: totalTT / n, priority_avg: totalPriority / n };
+    }
+
+    const aggGranted = aggJourneys(grantedJourneys);
+    const aggNormal  = aggJourneys(normalJourneys);
+
+    const labels = [];
+    const grantedData = [];
+    const normalData  = [];
+    if (showDelay) {
+      labels.push('Avg corridor delay (×30s/red)');
+      grantedData.push(aggGranted.delay_avg);
+      normalData.push(aggNormal.delay_avg);
+    }
+    if (showTT) {
+      labels.push('Avg corridor travel time (s)');
+      grantedData.push(aggGranted.tt_avg);
+      normalData.push(aggNormal.tt_avg);
+    }
+    if (showCount) {
+      labels.push('Avg priority grants (junctions)');
+      grantedData.push(aggGranted.priority_avg * 100); // scale for visibility
+      normalData.push(aggNormal.priority_avg  * 100);
+    }
+
+    // Per-junction priority count breakdown
+    const jctGrantCount = {};
+    const jctNormalCount = {};
+    jcts.forEach(j => { jctGrantCount[j] = 0; jctNormalCount[j] = 0; });
+    if (showCount) {
+      journeys.forEach(j => {
+        const isGranted = grantedBusSet.has(j.vid);
+        const waves = j.wave || [];
+        const grantJcts = new Set(waves.filter(w => w.event === 'grant' || w.event === 'prearm_success').map(w => String(w.jct)));
+        (j.stops || []).forEach(s => {
+          const jid = String(s.jct);
+          if (isGranted) jctGrantCount[jid] = (jctGrantCount[jid]||0) + (grantJcts.has(jid) ? 1 : 0);
+          else           jctNormalCount[jid] = (jctNormalCount[jid]||0) + (s.on_green ? 1 : 0);
+        });
+      });
+    }
+
+    const datasets = [
+      {
+        label: `Priority buses (n=${grantedJourneys.length})`,
+        data: grantedData,
+        backgroundColor: 'rgba(41,182,246,0.7)',
+        borderColor: '#29b6f6',
+        borderWidth: 1,
+      },
+      {
+        label: `Normal buses (n=${normalJourneys.length})`,
+        data: normalData,
+        backgroundColor: 'rgba(255,179,0,0.7)',
+        borderColor: '#ffb300',
+        borderWidth: 1,
+      },
+    ];
+
+    _buscompChart = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        animation: false,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          tooltip: {
+            backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+            borderColor: '#2a2a50', borderWidth: 1,
+          },
+          title: {
+            display: true,
+            text: `${r.label} — ${grantedJourneys.length} priority buses, ${normalJourneys.length} normal buses`,
+            color: '#7070a0', font: { size: 11 },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' } },
+          y: { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, min: 0 },
+        },
+      },
+    });
+  }
+
+  buildRunTabs('buscomp-run-tabs', (i) => renderBusCompChart(i));
+  ['buscomp-show-delay','buscomp-show-tt','buscomp-show-count'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => {
+      const ri = runs.findIndex((r,i) => document.querySelector(`#buscomp-run-tabs .run-tab.active`)?.textContent === r.label);
+      renderBusCompChart(ri >= 0 ? ri : initialRunIdx);
+    });
+  });
+  if (runs.length) renderBusCompChart(initialRunIdx);
+}
+
+// ── Same-Bus Cross-Experiment Comparison ─────────────────────────────────
+{
+  const normalRun = runs.find(r => (r.label || '').toLowerCase().includes('normal'));
+  const tspRuns   = runs.filter(r => r !== normalRun);
+  const noDataEl  = document.getElementById('xcomp-no-data');
+  const ctx       = document.getElementById('xcomp-canvas');
+
+  if (!normalRun || !tspRuns.length) {
+    if (noDataEl) noDataEl.textContent = 'Requires ≥2 runs including a NORMAL baseline run.';
+  } else {
+    // Build veh_id → journey map for NORMAL run
+    const normalJourneyMap = {};
+    (normalRun.bus_journeys || []).forEach(j => { normalJourneyMap[j.vid] = j; });
+
+    // For each TSP run, find buses that were granted priority and compare
+    const xcompLabels  = [];  // bus vid labels
+    const normalRedArr = [];  // NORMAL red-arrival count for these buses
+    const tspRedArr    = [];  // TSP red-arrival count (best TSP run)
+    const tspTTArr     = [];  // TSP travel time
+    const normalTTArr  = [];  // NORMAL travel time
+    const grantCountArr = []; // Number of priority grants in TSP run
+
+    // Use the first TSP run with any priority grants
+    const focusRun = tspRuns.find(r => (r.prearm_fired || 0) > 0 || (r.tsp_ext || 0) > 0) || tspRuns[0];
+    const fh = focusRun.focus_history || [];
+    const grantedVids = new Set([
+      ...fh.map(f => f.veh_id).filter(v => v > 0),
+      ...(focusRun.bus_journeys || []).filter(j => {
+        const waves = j.wave || [];
+        return waves.some(w => w.event === 'grant' || w.event === 'prearm_success');
+      }).map(j => j.vid),
+    ]);
+
+    grantedVids.forEach(vid => {
+      const tspJ    = (focusRun.bus_journeys || []).find(j => j.vid === vid);
+      const normalJ = normalJourneyMap[vid];
+      if (!tspJ || !normalJ) return;
+
+      const tspStops    = tspJ.stops    || [];
+      const normalStops = normalJ.stops || [];
+      if (tspStops.length < 2 || normalStops.length < 2) return;
+
+      const tspTT    = (tspStops[tspStops.length-1].t    || 0) - (tspStops[0].t    || 0);
+      const normalTT = (normalStops[normalStops.length-1].t || 0) - (normalStops[0].t || 0);
+      const tspRed    = tspStops.filter(s => !s.on_green).length;
+      const normalRed = normalStops.filter(s => !s.on_green).length;
+      const grants    = (tspJ.wave || []).filter(w => w.event === 'grant' || w.event === 'prearm_success').length;
+
+      xcompLabels.push(`Bus ${vid}`);
+      tspTTArr.push(Math.max(0, tspTT));
+      normalTTArr.push(Math.max(0, normalTT));
+      tspRedArr.push(tspRed);
+      normalRedArr.push(normalRed);
+      grantCountArr.push(grants);
+    });
+
+    if (xcompLabels.length && ctx) {
+      if (noDataEl) noDataEl.style.display = 'none';
+      ctx.style.display = '';
+      // Compute delay savings: positive = TSP faster (NORMAL_TT - TSP_TT)
+      const ttSavingArr = normalTTArr.map((n, i) => Math.round(n - tspTTArr[i]));
+      new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: xcompLabels,
+          datasets: [
+            { label: `NORMAL — corridor travel time (s)`,       data: normalTTArr, backgroundColor: 'rgba(255,82,82,0.7)',   yAxisID: 'y' },
+            { label: `${focusRun.label} — corridor travel time (s)`, data: tspTTArr,    backgroundColor: 'rgba(41,182,246,0.7)', yAxisID: 'y' },
+            { label: 'Travel time saving vs NORMAL (s)',        data: ttSavingArr, backgroundColor: 'rgba(0,230,118,0.6)',  yAxisID: 'y2',
+              type: 'bar', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
+          ],
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+            tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
+            title: { display: true, text: `Same buses: NORMAL vs ${focusRun.label} — corridor travel time (${xcompLabels.length} buses)`, color: '#7070a0', font: { size: 11 } },
+          },
+          scales: {
+            x: { ticks: { color: '#9090cc', maxRotation: 60 }, grid: { color: '#1e1e38' } },
+            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Corridor total time (s)', color: '#7070a0' }, min: 0 },
+            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Time saving (s)', color: '#00e676' } },
+          },
+        },
+      });
+    } else if (noDataEl) {
+      noDataEl.textContent = `No matching buses found between NORMAL and ${focusRun?.label || 'TSP'} runs.`;
+    }
+  }
+}
+
+// ── DYNAOPAC Phase Optimisation chart ─────────────────────────────────────
+{
+  let _dynChart = null;
+
+  function renderDynChart(ri) {
+    const r = runs[ri];
+    const decisions = r.dynaropac_decisions || [];
+    const noDataEl = document.getElementById('dyn-no-data');
+    const ctx = document.getElementById('dyn-canvas');
+    const jctSel = document.getElementById('dyn-jct-sel');
+    const showApplied = document.getElementById('dyn-show-applied')?.checked;
+    if (_dynChart) { _dynChart.destroy(); _dynChart = null; }
+
+    if (!decisions.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      if (ctx) ctx.style.display = 'none';
+      return;
+    }
+    if (noDataEl) noDataEl.style.display = 'none';
+    if (ctx) ctx.style.display = '';
+
+    // Populate junction selector
+    const allJcts = [...new Set(decisions.map(d => d.jct))].sort((a,b)=>a-b);
+    if (jctSel) {
+      const prevVal = jctSel.value;
+      jctSel.innerHTML = '<option value="">All (scatter)</option>';
+      allJcts.forEach(j => {
+        const o = document.createElement('option');
+        o.value = j; o.textContent = `jct ${j}`;
+        jctSel.appendChild(o);
+      });
+      jctSel.value = prevVal;
+    }
+    const filterJct = jctSel && jctSel.value ? parseInt(jctSel.value) : null;
+    const filtered = filterJct ? decisions.filter(d => d.jct === filterJct) : decisions;
+
+    // Build scatter data: one point per (extension, delay) candidate
+    const allPts    = [];  // {x: ext_s, y: delay, applied, jct, t, baseline}
+    const appliedPts = [];
+    const baselinePts = [];
+    filtered.forEach(d => {
+      (d.extensions || []).forEach((ext, i) => {
+        const pt = { x: ext, y: (d.delays || [])[i] ?? 0, jct: d.jct, t: d.t, baseline: d.baseline_delay };
+        if (ext === 0) baselinePts.push(pt);
+        if (d.applied && ext === d.best_ext) appliedPts.push(pt);
+        else allPts.push(pt);
+      });
+    });
+
+    const datasets = [
+      {
+        label: 'Candidate delays',
+        data: allPts,
+        backgroundColor: 'rgba(41,182,246,0.25)',
+        pointRadius: 2,
+        pointHoverRadius: 4,
+      },
+      {
+        label: 'No-action baseline',
+        data: baselinePts,
+        backgroundColor: 'rgba(255,179,0,0.7)',
+        pointRadius: 4,
+        pointStyle: 'dash',
+      },
+    ];
+    if (showApplied) {
+      datasets.push({
+        label: 'Applied (selected best)',
+        data: appliedPts,
+        backgroundColor: 'rgba(0,230,118,0.9)',
+        pointRadius: 7,
+        pointStyle: 'star',
+      });
+    }
+
+    _dynChart = new Chart(ctx.getContext('2d'), {
+      type: 'scatter',
+      data: { datasets },
+      options: {
+        responsive: true,
+        animation: false,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          tooltip: {
+            backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+            borderColor: '#2a2a50', borderWidth: 1,
+            callbacks: {
+              label: item => {
+                const d = item.raw;
+                return `ext=${d.x}s delay=${d.y?.toFixed(1)}pax-s jct=${d.jct} t=${d.t}s`;
+              },
+            },
+          },
+          title: {
+            display: true,
+            text: `${r.label} — DYNAOPAC phase extension candidates (${filtered.length} decisions, ${allJcts.length} junctions)`,
+            color: '#7070a0', font: { size: 11 },
+          },
+        },
+        scales: {
+          x: { title: { display: true, text: 'Extension searched (s)', color: '#7070a0' }, ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' } },
+          y: { title: { display: true, text: 'Person-delay (pax-s)', color: '#7070a0' }, ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' } },
+        },
+      },
+    });
+  }
+
+  buildRunTabs('dyn-run-tabs', (i) => renderDynChart(i));
+  const dynJctSel = document.getElementById('dyn-jct-sel');
+  if (dynJctSel) dynJctSel.addEventListener('change', () => {
+    const ri = parseInt(document.querySelector('#dyn-run-tabs .run-tab.active')?.dataset?.ri ?? '0');
+    renderDynChart(ri >= 0 ? ri : initialRunIdx);
+  });
+  const dynApplied = document.getElementById('dyn-show-applied');
+  if (dynApplied) dynApplied.addEventListener('change', () => {
+    const ri = parseInt(document.querySelector('#dyn-run-tabs .run-tab.active')?.dataset?.ri ?? '0');
+    renderDynChart(ri >= 0 ? ri : initialRunIdx);
+  });
+  if (runs.length) renderDynChart(initialRunIdx);
+}
+
 // ── Decision Space — TSP corridor timeline (Gantt) ─────────────────────────
 {
   let _dsChart = null;
@@ -4480,10 +5013,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     {key:'main_delay',   hdr:'Main (hrs)',         lb:true,  dec:3},
     {key:'side_delay',   hdr:'Side (hrs)',         lb:true,  dec:3},
     {key:'bus_tt',       hdr:'Bus TT (hrs)',       lb:true,  dec:3},
-    {key:'avg_bus_delay',  hdr:'Avg bus (s)',        lb:true,  dec:1},
-    {key:'avg_car_delay',  hdr:'Avg car (s)',        lb:true,  dec:1},
-    {key:'avg_truck_delay',hdr:'Avg truck (s)',      lb:true,  dec:1},
-    {key:'tsp_det',        hdr:'Det (raw)',          lb:false, dec:0},
+    {key:'avg_bus_delay',          hdr:'Avg bus (s)',          lb:true,  dec:1},
+    {key:'avg_car_delay',          hdr:'Avg car (s)',          lb:true,  dec:1},
+    {key:'avg_truck_delay',        hdr:'Avg truck (s)',        lb:true,  dec:1},
+    {key:'avg_main_delay_per_hr',  hdr:'Main delay/h (pax·h)',lb:true,  dec:3},
+    {key:'avg_side_delay_per_hr',  hdr:'Side delay/h (pax·h)',lb:true,  dec:3},
+    {key:'avg_total_delay_per_hr', hdr:'Total delay/h (pax·h)',lb:true, dec:3},
+    {key:'sim_duration_hrs',       hdr:'Sim duration (h)',    lb:false, dec:2},
+    {key:'tsp_det',                hdr:'Det (raw)',            lb:false, dec:0},
     {key:'tsp_ext',      hdr:'Ext (raw)',          lb:false, dec:0},
     {key:'tsp_ins',      hdr:'Ins (raw)',          lb:false, dec:0},
     {key:'tsp_natural_green',hdr:'Nat green (raw)', lb:false, dec:0},
@@ -4622,7 +5159,11 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const metricLabel = {
       total_delay: 'Total delay (hrs)', main_delay: 'Main delay (hrs)',
       side_delay: 'Side delay (hrs)', avg_bus_delay: 'Avg bus delay (s)',
-      avg_car_delay: 'Avg car delay (s)', distinct_buses: 'Distinct buses (stats)',
+      avg_car_delay: 'Avg car delay (s)', avg_truck_delay: 'Avg truck delay (s)',
+      avg_main_delay_per_hr: 'Main avg delay/sim-hr (pax·h/h)',
+      avg_side_delay_per_hr: 'Side avg delay/sim-hr (pax·h/h)',
+      avg_total_delay_per_hr: 'Total avg delay/sim-hr (pax·h/h)',
+      distinct_buses: 'Distinct buses (stats)',
       tracked_buses: 'Known buses (all sources)',
       position_tracked_buses: 'Position-tracked buses',
       detected_buses: 'Detected buses',

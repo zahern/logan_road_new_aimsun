@@ -254,6 +254,14 @@ INTERSECTION_GROUPS = {
     "logan_south": [19196, 19474, 19882, 21895],
 }
 
+# Full corridor route order (including unmanaged system junctions between managed nodes).
+CORRIDOR_ROUTE_GROUPS = {
+    "logan_north": [17249, 17308, 17383, 17498, 17628, 17963, 18044, 18942],
+    "logan_south": [19196, 19363, 19474, 19882, 21895],
+}
+
+TSP_ACTIVE_INTERSECTIONS = None   # None = all intersections active
+
 
 
 

@@ -1,10 +1,32 @@
-*.md
-.claude
-*.apa
+# Aimsun model files (binary / large)
 *.ang
 *.sang
+*.apa
 *.sqlite
-*.txt
+*.ang.lck
+*.ang.old
+
+# Logs and generated outputs
 *.log
 *.csv
 *.json
+*.txt
+*.md
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Claude agent workspace notes
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

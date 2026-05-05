@@ -241,6 +241,15 @@ class DynaROPACOptimizer:
             phase_sequence, switching_times, num_intervals, stage_length
         )
         
+        # Track queue state across intervals — queue grows when red, drains when green.
+        # Without this, side-street delay is underestimated and extension always wins
+        # because the static queue_length never reflects accumulation during extended
+        # main-road green.
+        queue_state = {
+            aid: float(approach.queue_length)
+            for aid, approach in intersection_state.approaches.items()
+        }
+        
         # Calculate delay for each interval
         for interval in range(num_intervals):
             active_phase = phase_active[interval]
@@ -249,21 +258,25 @@ class DynaROPACOptimizer:
                 # Check if this approach is served by the active phase
                 is_served = approach_id in phase_approaches.get(active_phase, [])
                 
+                arrivals = approach.upstream_flow * self.time_interval / 3600.0
+                
                 # Calculate arrivals and departures
                 if is_served:
                     # Phase is green for this approach - vehicles can depart
                     departures = min(
-                        approach.queue_length + approach.arrivals,
+                        queue_state[approach_id] + arrivals,
                         approach.saturation_flow * self.time_interval / 3600.0
                     )
-                    arrivals = approach.upstream_flow * self.time_interval / 3600.0
                 else:
-                    # Phase is red - no departures
+                    # Phase is red - no departures; queue accumulates
                     departures = 0.0
-                    arrivals = approach.upstream_flow * self.time_interval / 3600.0
                 
-                # Delay = queue at start + arrivals - departures
-                interval_delay = (approach.queue_length + arrivals - departures) * self.time_interval
+                # Delay = vehicles waiting × interval duration
+                # Use current queue state (not static approach.queue_length)
+                interval_delay = max(0.0, queue_state[approach_id] + arrivals - departures) * self.time_interval
+                
+                # Update queue state for next interval
+                queue_state[approach_id] = max(0.0, queue_state[approach_id] + arrivals - departures)
                 
                 # Weight by occupancy (person-delay)
                 if include_bus_priority:
