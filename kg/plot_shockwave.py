@@ -1,7 +1,7 @@
 """
 plot_shockwave.py
 =================
-Shockwave / queue profile dashboard for Logan Rd TSP simulations.
+Shockwave / queue profile dashboard for Kelvin Grove TSP simulations.
 
 Generates an HTML dashboard with:
   - Animated bar charts of main/side section queues per intersection
@@ -37,10 +37,20 @@ for _vsp in [
 del _THIS_DIR, _vsp
 sys.path.insert(0, r"C:\AimsunPackages")
 import numpy as np
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
+
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    from plotly.subplots import make_subplots
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -459,7 +469,6 @@ def build_shockwave_profile_figure(
             x=jq['sim_time_s'], y=_w_back,
             name='Backward wave speed (km/h)',
             mode='lines', line=dict(color='darkred', width=1.2),
-            visible='legendonly',
         ), row=2, col=1)
 
     fig.update_yaxes(title_text="Queue (vehicles)", row=1, col=1)
@@ -740,7 +749,7 @@ def _build_html(figures: dict, experiments: list, junctions: list,
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>Shockwave Dashboard — Logan Road</title>
+  <title>Shockwave Dashboard — Kelvin Grove</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; }
     .header { background: #1a3a5c; color: white; padding: 16px 24px; }
@@ -761,7 +770,7 @@ def _build_html(figures: dict, experiments: list, junctions: list,
 </head>
 <body>
   <div class="header">
-    <h1>Shockwave Dashboard — Logan Road Corridor</h1>
+    <h1>Shockwave Dashboard — Kelvin Grove Corridor</h1>
   </div>
 
   <div class="controls">
@@ -911,6 +920,85 @@ function onSelChange() {
 
     with open(out_html, 'w', encoding='utf-8') as f:
         f.write(''.join(html_parts))
+
+
+# ---------------------------------------------------------------------------
+# Matplotlib fallback — used when plotly or pandas is unavailable
+# ---------------------------------------------------------------------------
+
+def _matplotlib_fallback(det_csv, junc_csv, out_dir):
+    """Produce simple static PNG plots from detector CSV using matplotlib only."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        import csv as _csv
+
+        if not det_csv or not os.path.isfile(det_csv):
+            print("[SHOCKWAVE] No detector CSV for matplotlib fallback")
+            return
+
+        rows = []
+        with open(det_csv, newline='', encoding='utf-8') as f:
+            reader = _csv.DictReader(f)
+            for r in reader:
+                rows.append(r)
+
+        if not rows:
+            print("[SHOCKWAVE] Detector CSV is empty")
+            return
+
+        # Collect per-junction detection counts over time
+        jct_times = {}
+        for r in rows:
+            jid = r.get('junction_id', r.get('jct_id', ''))
+            try:
+                t = float(r.get('sim_time', r.get('time', 0)))
+            except (ValueError, TypeError):
+                continue
+            jct_times.setdefault(jid, []).append(t)
+
+        os.makedirs(out_dir, exist_ok=True)
+        out_png = os.path.join(out_dir, 'shockwave_detections.png')
+
+        fig, ax = plt.subplots(figsize=(14, 5))
+        for jid, times in sorted(jct_times.items())[:12]:
+            ax.scatter(times, [jid] * len(times), s=10, alpha=0.6, label=str(jid))
+        ax.set_xlabel('Simulation time (s)')
+        ax.set_ylabel('Junction ID')
+        ax.set_title('Bus detections by junction — Logan Rd')
+        ax.legend(loc='upper right', fontsize=7, ncol=2)
+        plt.tight_layout()
+        plt.savefig(out_png, dpi=120)
+        plt.close()
+        print(f"[SHOCKWAVE] Matplotlib fallback PNG written: {out_png}")
+    except Exception as e:
+        print(f"[SHOCKWAVE] Matplotlib fallback failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Public run() — called from AAPIFinish
+# ---------------------------------------------------------------------------
+
+def run(det_csv=None, junc_csv=None, wave_csv=None):
+    """Entry point called from AAPIFinish in intersection_controller.py."""
+    log_dir  = LOG_DIR
+    out_html = OUT_HTML
+
+    # Derive log_dir from det_csv path if provided
+    if det_csv and os.path.isfile(det_csv):
+        log_dir = os.path.dirname(det_csv)
+
+    if not HAS_PLOTLY or not HAS_PANDAS:
+        missing = []
+        if not HAS_PLOTLY: missing.append('plotly')
+        if not HAS_PANDAS: missing.append('pandas')
+        print(f"[SHOCKWAVE] {', '.join(missing)} unavailable — using matplotlib fallback")
+        out_dir = os.path.join(os.path.dirname(out_html), 'shockwave_plots')
+        _matplotlib_fallback(det_csv, junc_csv, out_dir)
+        return
+
+    build_dashboard(log_dir, out_html)
 
 
 # ---------------------------------------------------------------------------

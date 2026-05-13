@@ -21,6 +21,7 @@ import json
 import math
 import datetime
 import collections
+import html as _html
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
@@ -102,6 +103,22 @@ def _pick(row: dict, candidates: list, default=None):
             except (TypeError, ValueError):
                 pass
     return default
+
+
+def _first_valid_metric(*values, allow_zero=True):
+    for v in values:
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(fv):
+            continue
+        if not allow_zero and abs(fv) <= 1e-9:
+            continue
+        return fv
+    return None
 
 
 def _detect_csvs(log_dir: str) -> list:
@@ -246,15 +263,34 @@ def _green_rates_from_csv_fallback(det_csv: str, allowed_vids: set | None = None
 
 def _run_label(row: dict) -> str:
     """Human-readable run label from batch row."""
-    exp   = row.get("run_experiment", "")
-    strat = row.get("run_strategy", "")
+    exp   = (row.get("run_experiment", "") or "").upper()
+    strat = (row.get("run_strategy",   "") or "").upper()
     seed  = row.get("run_seed", "")
     coord = str(row.get("run_coordinated", "")).lower() in ("true", "1", "yes")
-    coord_tag = "coord" if coord else "indep"
-    label_parts = [p for p in [exp or strat, coord_tag] if p]
-    label = "_".join(label_parts) if label_parts else "Run"
+
+    # Friendly display names keyed on experiment name first, then strategy
+    _FRIENDLY = {
+        "NO_TSP":           "No TSP",
+        "NORMAL":           "No TSP",
+        "HARMONY_INDEP":    "Phase-Based Uncoordinated",
+        "HARMONY_COORD":    "Phase-Based Coordinated",
+        "DYNAOPAC_HARMONY": "Discrete-Time Best-Action",
+        "DYNAOPAC_COORD":   "Discrete-Time Best-Action",
+        "DYNAOPAC_INDEP":   "Discrete-Time Best-Action (Indep)",
+    }
+    if exp in _FRIENDLY:
+        label = _FRIENDLY[exp]
+    elif strat == "NORMAL":
+        label = "No TSP"
+    elif strat == "HARMONY":
+        label = "Phase-Based Coordinated" if coord else "Phase-Based Uncoordinated"
+    elif strat in ("DYNAOPAC", "DYNAOPAC_HARMONY"):
+        label = "Discrete-Time Best-Action"
+    else:
+        label = exp or strat or "Run"
+
     if seed not in (None, "", "0", 0):
-        label += f"_s{seed}"
+        label += f" (s{seed})"
     return label
 
 
@@ -403,9 +439,12 @@ def _detection_junction_stats_from_csv(det_csv: str) -> dict:
     if not det_csv or not os.path.isfile(det_csv):
         return {}
 
+    # Use the project intersection config as the canonical filter.
+    # ALL_CORRIDOR_JCTS comes from plot_green_wave and can refer to a different
+    # corridor definition, which can zero-out detected_buses in the dashboard.
     allowed_jcts = (
-        set(int(j) for j in ALL_CORRIDOR_JCTS)
-        if HAS_GW and ALL_CORRIDOR_JCTS else None
+        set(int(j) for j in _ALL_CONFIG_JCTS)
+        if _ALL_CONFIG_JCTS else None
     )
     stats: dict = {}
     try:
@@ -651,6 +690,14 @@ def _queue_snapshot_from_csv(path: str) -> list:
                         "delay_total_s": float(r.get("delay_total_s", 0) or 0),
                         "delay_bus_s":   float(r.get("delay_bus_s",   0) or 0),
                         "delay_car_s":   float(r.get("delay_car_s",   0) or 0),
+                        "sw_q_main":    float(r.get("sw_q_main",    0) or 0),
+                        "sw_q_side":    float(r.get("sw_q_side",    0) or 0),
+                        "sw_flow_main": float(r.get("sw_flow_main", 0) or 0),
+                        "sw_density_main": float(r.get("sw_density_main", 0) or 0),
+                        "sw_red_s":     float(r.get("sw_red_s",     0) or 0),
+                        "sw_flow_side": float(r.get("sw_flow_side", 0) or 0),
+                        "sw_strat_main": str(r.get("sw_strat_main", "") or ""),
+                        "sw_strat_side": str(r.get("sw_strat_side", "") or ""),
                     })
                 except Exception:
                     continue
@@ -746,9 +793,11 @@ def _focus_junction_summary(rows: list) -> dict:
     if not rows:
         return {"focus_bus_count": 0, "per_jct": {}}
 
+    # Use the project's own junction config (not the green-wave corridor list,
+    # which may belong to a different network, e.g. Logan Road vs KG).
     allowed_jcts = (
-        set(int(j) for j in ALL_CORRIDOR_JCTS)
-        if HAS_GW and ALL_CORRIDOR_JCTS else None
+        set(int(j) for j in _ALL_CONFIG_JCTS)
+        if _ALL_CONFIG_JCTS else None
     )
     focus_bus_ids = set()
     per_jct: dict = {}
@@ -807,8 +856,8 @@ def _merge_per_intersection_coverage(per_inter: list,
     all_iids.update(det_stats.keys())
     all_iids.update((track_summary or {}).get("per_jct", {}).keys())
     all_iids.update((focus_summary or {}).get("per_jct", {}).keys())
-    if HAS_GW and ALL_CORRIDOR_JCTS:
-        all_iids.update(str(j) for j in ALL_CORRIDOR_JCTS)
+    if _ALL_CONFIG_JCTS:
+        all_iids.update(str(j) for j in _ALL_CONFIG_JCTS)
 
     for iid in all_iids:
         row = row_map.setdefault(iid, {"iid": iid})
@@ -863,7 +912,21 @@ def _merge_per_intersection_coverage(per_inter: list,
         except Exception:
             return (1, str(v))
 
-    return sorted(row_map.values(), key=lambda x: _iid_sort_key(x.get("iid", "")))
+    def _valid_merge_iid(v):
+        try:
+            jid = int(float(str(v)))
+            return not (12000 <= jid <= 21999)
+        except Exception:
+            return True
+
+    # If we know the KG config junctions, restrict to those only
+    if _ALL_CONFIG_JCTS:
+        _cfg_set = set(str(j) for j in _ALL_CONFIG_JCTS)
+        filtered = {k: v for k, v in row_map.items() if k in _cfg_set}
+    else:
+        filtered = {k: v for k, v in row_map.items() if _valid_merge_iid(k)}
+
+    return sorted(filtered.values(), key=lambda x: _iid_sort_key(x.get("iid", "")))
 
 
 def _latest_rows_by_section(rows: list) -> list:
@@ -1005,6 +1068,26 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
         except Exception:
             return (1, str(v))
 
+    # Exclude junction IDs that belong to other networks (e.g. Logan Road
+    # junctions 17249–21895 which share this results folder via legacy data).
+    # Junctions in the 12000–21999 range are not part of the KG network.
+    def _valid_iid(v):
+        try:
+            jid = int(float(str(v)))
+            return not (12000 <= jid <= 21999)
+        except Exception:
+            return True   # keep non-numeric IDs
+
+    if _ALL_CONFIG_JCTS:
+        _cfg_int_set = set(int(j) for j in _ALL_CONFIG_JCTS if str(j).lstrip("-").isdigit())
+        result = [
+            row for row in result
+            if _valid_iid(row.get("iid", ""))
+            and (not _cfg_int_set or _intish(row.get("iid", -1), -1) in _cfg_int_set)
+        ]
+    else:
+        result = [row for row in result if _valid_iid(row.get("iid", ""))]
+
     result = sorted(result, key=lambda x: _iid_sort_key(x.get("iid", "")))
 
     return result
@@ -1107,6 +1190,152 @@ def _load_per_section_data(batch_row: dict, log_dir: str) -> list:
     return result
 
 
+def _load_simulation_results_row(batch_row: dict, log_dir: str) -> dict:
+    """Load the single-row simulation_results.csv record for this run, if present."""
+    results_folder = batch_row.get("stats_results_folder", "")
+    if not results_folder or not os.path.isdir(results_folder):
+        strategy = batch_row.get("run_strategy", "")
+        seed = batch_row.get("run_seed", "0")
+        if strategy and log_dir:
+            results_base = os.path.join(os.path.dirname(log_dir), "results")
+            prefix = f"{strategy}_seed{seed}"
+            try:
+                candidates = [
+                    d for d in os.scandir(results_base)
+                    if d.is_dir() and d.name.startswith(prefix)
+                ] if os.path.isdir(results_base) else []
+                if candidates:
+                    results_folder = max(candidates, key=lambda d: d.stat().st_mtime).path
+            except Exception:
+                pass
+    if not results_folder:
+        return {}
+
+    sim_csv = os.path.join(results_folder, "simulation_results.csv")
+    if not os.path.isfile(sim_csv):
+        return {}
+
+    try:
+        with open(sim_csv, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    except Exception:
+        return {}
+
+    if not rows:
+        return {}
+
+    scen = str(batch_row.get("stats_ScenarioID", "")).strip()
+    exp = str(batch_row.get("stats_ExperimentID", "")).strip()
+    rep = str(batch_row.get("stats_ReplicationID", "")).strip()
+    strategy = str(batch_row.get("run_strategy", "")).strip()
+
+    for r in rows:
+        if scen and exp and rep:
+            if (
+                str(r.get("ScenarioID", "")).strip() == scen
+                and str(r.get("ExperimentID", "")).strip() == exp
+                and str(r.get("ReplicationID", "")).strip() == rep
+            ):
+                return r
+    for r in rows:
+        if strategy and str(r.get("TSP_Strategy", "")).strip() == strategy:
+            return r
+    return rows[0]
+
+
+def _normalize_wave_events_for_journey(stops: list, wave_events: list) -> list:
+    """
+    Collapse noisy controller events into a single readable story per bus/junction.
+
+    The raw wave log can emit repeated grants/successes and, in some cases, events
+    after the bus has already been detected at the stop line. For the dashboard we
+    keep the earliest meaningful event and suppress obviously stale repeats.
+    """
+    if not wave_events:
+        return []
+
+    # Build arrival times ONLY from physical presence rows — IC-detect, harmony
+    # decision rows, and track-zone rows.  coord-prearm rows fire BEFORE the bus
+    # physically reaches the next junction and must NOT set arr_t, otherwise
+    # prearm_success events (which fire 0.1–0.5 s later at the same sim time)
+    # would be incorrectly dropped by the strict_pre_arrival_only gate.
+    _PHYSICAL_TIERS = ("IC-detect", "PT-coord", "harmony-", "track-zone", "sec-", "det-")
+    arrival_by_jct = {}
+    for s in sorted(stops or [], key=lambda x: x.get("t", 0)):
+        tier = str(s.get("tier", "") or "")
+        if not any(tier.startswith(p) for p in _PHYSICAL_TIERS):
+            continue
+        jid = int(s.get("jct", -1) or -1)
+        if jid > 0 and str(jid) not in arrival_by_jct:
+            arrival_by_jct[str(jid)] = float(s.get("t", 0) or 0.0)
+
+    dedupe_window_s = 1.5
+    single_per_jct = {
+        "grant",
+        "prearm_fired",
+        "prearm_success",
+        "prearm_missed",
+        "prearm_expired",
+        "prearm_skipped",
+        "tsp_skip",
+    }
+    pre_arrival_only = {
+        "grant",
+        "prearm_fired",
+        "prearm_success",
+        "prearm_queued",
+        "prearm_retarget",
+    }
+    strict_pre_arrival_only = {"grant", "prearm_success"}
+
+    last_seen = {}
+    kept_single = set()
+    out = []
+    for w in sorted(wave_events, key=lambda e: float(e.get("t", 0) or 0.0)):
+        evt = str(w.get("event", "") or "").strip()
+        if not evt:
+            continue
+        target_jct = int(w.get("target_jct", -1) or -1)
+        source_jct = int(w.get("source_jct", -1) or -1)
+        jct = target_jct if target_jct > 0 else source_jct
+        if jct <= 0:
+            continue
+        t = round(float(w.get("t", 0) or 0.0), 1)
+        arr_t = arrival_by_jct.get(str(jct))
+        if arr_t is not None:
+            if evt in strict_pre_arrival_only and t >= (arr_t - 0.05):
+                continue
+            if evt in pre_arrival_only and t > (arr_t + 0.5):
+                continue
+        if evt in single_per_jct and (evt, jct) in kept_single:
+            continue
+        last_t = last_seen.get((evt, jct))
+        if last_t is not None and (t - last_t) <= dedupe_window_s:
+            continue
+        last_seen[(evt, jct)] = t
+        if evt in single_per_jct:
+            kept_single.add((evt, jct))
+        out.append({
+            "jct": jct,
+            "t": t,
+            "event": evt,
+            "source_jct": source_jct,
+            "target_jct": target_jct,
+        })
+    # Post-filter: prearm_missed / prearm_expired should only appear at
+    # junctions that actually had a prearm_fired for this bus.  Without this
+    # guard they can show up on junctions the coordinator never pre-armed
+    # (e.g. when _wave_origin changes between waves) and can appear long after
+    # the bus has already left the junction.
+    _fired_jcts = {e["jct"] for e in out if e["event"] == "prearm_fired"}
+    out = [
+        e for e in out
+        if e["event"] not in ("prearm_missed", "prearm_expired", "prearm_discarded")
+        or e["jct"] in _fired_jcts
+    ]
+    return out
+
+
 def _bus_journeys_from_csv(det_csv: str, wave_events: list = None) -> list:
     """
     Extract per-bus corridor journeys from a detection CSV, optionally
@@ -1137,18 +1366,25 @@ def _bus_journeys_from_csv(det_csv: str, wave_events: list = None) -> list:
             vid = w.get("veh_id", -1)
             if vid <= 0:
                 continue
+            tgt = int(w.get("target_jct", -1) or -1)
+            src = int(w.get("source_jct", -1) or -1)
             we_by_vid.setdefault(vid, []).append({
-                "jct": w.get("target_jct", w.get("source_jct", -1)),
-                "t":   round(w["t"], 1),
+                "jct": tgt if tgt > 0 else src,
+                "t": round(w["t"], 1),
                 "event": w["event"],
+                "source_jct": src,
+                "target_jct": tgt,
             })
 
+    # Keep only rows that represent physical bus presence at/near the junction.
+    # Synthetic prearm marker tiers (coord-prearm*) are control events, not
+    # movement stops, and should not influence selected-bus corridor route flow.
+    _PHYSICAL_TIERS = ("IC-detect", "PT-coord", "harmony-", "track-zone", "track-section", "sec-", "det-")
+
     # Minimum plausible travel time between two different junctions (seconds).
-    # Logan Rd junctions are ~200–400 m apart; at 40 km/h that is ~18–36 s.
-    # Any two consecutive stops at DIFFERENT junctions closer than this in time
-    # are artefacts of overlapping detection zones or section-map detections
-    # firing simultaneously, not real bus movement — drop them.
-    _MIN_INTER_JCT_S = 10.0
+    # Use a small anti-teleport gate to suppress overlapping-zone artefacts
+    # while still preserving legitimate short inter-junction transitions.
+    _MIN_INTER_JCT_S = 4.0
 
     journeys = []
     for vid, stops in by_vid.items():
@@ -1158,22 +1394,25 @@ def _bus_journeys_from_csv(det_csv: str, wave_events: list = None) -> list:
         sorted_stops = sorted(stops, key=lambda s: s["t"])
         journey_stops = []
         for s in sorted_stops:
-            p = _phase_at_stopline(s)
-            stop = {
-                "jct": s["jct"],
-                "t": round(s["t"], 1),
-                "on_green": 1 if p in ("green", "orange") else 0,
-                "tier": s.get("tier", ""),
-                "x": round(s.get("x", 0) or 0, 1),
-                "y": round(s.get("y", 0) or 0, 1),
-            }
-            # Drop stops where the bus "teleports" — a different junction appears
-            # within _MIN_INTER_JCT_S of the previous stop.  This removes artefacts
-            # from overlapping detection zones or simultaneous section-map triggers.
-            if journey_stops and stop["jct"] != journey_stops[-1]["jct"]:
-                if stop["t"] - journey_stops[-1]["t"] < _MIN_INTER_JCT_S:
-                    continue  # implausible travel time — skip this stop
-            journey_stops.append(stop)
+          _tier = str(s.get("tier", "") or "")
+          if not any(_tier.startswith(p) for p in _PHYSICAL_TIERS):
+            continue
+          p = _phase_at_stopline(s)
+          stop = {
+            "jct": s["jct"],
+            "t": round(s["t"], 1),
+            "on_green": 1 if p in ("green", "orange") else 0,
+            "tier": s.get("tier", ""),
+            "x": round(s.get("x", 0) or 0, 1),
+            "y": round(s.get("y", 0) or 0, 1),
+          }
+          # Drop stops where the bus "teleports" — a different junction appears
+          # within _MIN_INTER_JCT_S of the previous stop.  This removes artefacts
+          # from overlapping detection zones or simultaneous section-map triggers.
+          if journey_stops and stop["jct"] != journey_stops[-1]["jct"]:
+            if stop["t"] - journey_stops[-1]["t"] < _MIN_INTER_JCT_S:
+              continue  # implausible travel time — skip this stop
+          journey_stops.append(stop)
         # Recalculate jcts_visited after filtering
         jcts_visited_filtered = set(s["jct"] for s in journey_stops)
         if len(jcts_visited_filtered) < 2:
@@ -1187,7 +1426,7 @@ def _bus_journeys_from_csv(det_csv: str, wave_events: list = None) -> list:
             "cls": cls,
         }
         # Attach wave events for this vehicle (prearm / grant)
-        vwe = we_by_vid.get(vid, [])
+        vwe = _normalize_wave_events_for_journey(journey_stops, we_by_vid.get(vid, []))
         if vwe:
             j_obj["wave"] = sorted(vwe, key=lambda e: e["t"])
         journeys.append(j_obj)
@@ -1201,7 +1440,8 @@ def _phase_samples_from_csv(det_csv: str) -> list:
     Extract phase-state samples from detection_points CSV.
 
     Returns rows:
-      {t, jct, vid, signal_phase, bus_phase, on_green}
+      {t, jct, vid, signal_phase, bus_phase, on_green, tier,
+       prearm_status, prearm_note, focus_role}
 
     Note: these are detection snapshots (not continuous per-second phase traces).
     """
@@ -1230,6 +1470,10 @@ def _phase_samples_from_csv(det_csv: str) -> list:
                     "signal_phase": sig,
                     "bus_phase": bus,
                     "on_green": on_green,
+                  "tier": str(r.get("tier", "") or ""),
+                  "prearm_status": str(r.get("prearm_status", "") or ""),
+                  "prearm_note": str(r.get("prearm_note", "") or ""),
+                  "focus_role": str(r.get("focus_role", "") or ""),
                 })
     except Exception:
         return []
@@ -1392,11 +1636,25 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
                                         "inter_sum_TSP_Skipped_Ins"])
         tsp_no_action     = _pick(row, ["stats_TSP_Detected_NoAction",
                                         "inter_sum_TSP_Detected_NoAction"])
-        # Network stats — stats_Net_* written by collect_network_stats_at_finish (AAPI);
-        # aimsun_* written by _collect_aimsun_network_stats (PyANGKernel post-run).
-        density = _pick(row, ["stats_Net_AvgDensity_vkm", "aimsun_avg_density_vkm"])
-        speed   = _pick(row, ["stats_Net_AvgSpeed_kmh",   "aimsun_avg_speed_kmh"])
-        flow    = _pick(row, ["stats_Net_TotalFlowVeh",   "aimsun_total_flow_veh"])
+        sim_row = _load_simulation_results_row(row, log_dir)
+
+        # Network stats — prefer batch_results values, then per-run simulation_results.csv,
+        # then older PyANGKernel fallback keys.
+        density = _first_valid_metric(
+            _pick(row, ["stats_Net_AvgDensity_vkm", "aimsun_avg_density_vkm"]),
+            _pick(sim_row, ["Net_AvgDensity_vkm"]),
+            allow_zero=False,
+        )
+        speed = _first_valid_metric(
+            _pick(row, ["stats_Net_AvgSpeed_kmh", "aimsun_avg_speed_kmh"]),
+            _pick(sim_row, ["Net_AvgSpeed_kmh"]),
+            allow_zero=False,
+        )
+        flow = _first_valid_metric(
+            _pick(row, ["stats_Net_TotalFlowVeh", "aimsun_total_flow_veh"]),
+            _pick(sim_row, ["Net_TotalFlowVeh"]),
+            allow_zero=False,
+        )
         elapsed = _pick(row, ["run_elapsed_s"])
         # Per-vehicle-type network stats from PyANGKernel (length-weighted, collected after run)
         net_flow_car    = _pick(row, ["aimsun_flow_car"])
@@ -1410,19 +1668,71 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         net_spd_truck   = _pick(row, ["aimsun_speed_truck"])
         # Per-type network stats — prefer stats_Net_* from simulation_results.csv (via AAPI at finish)
         # Fall back to aimsun_* from PyANGKernel post-run collection
-        net_flow_car    = _pick(row, ["stats_Net_Flow_Car",   "aimsun_flow_car"])
-        net_flow_bus    = _pick(row, ["stats_Net_Flow_Bus",   "aimsun_flow_bus"])
-        net_flow_truck  = _pick(row, ["stats_Net_Flow_Truck", "aimsun_flow_truck"])
-        net_dens_car    = _pick(row, ["stats_Net_Density_Car",   "aimsun_density_car"])
-        net_dens_bus    = _pick(row, ["stats_Net_Density_Bus",   "aimsun_density_bus"])
-        net_dens_truck  = _pick(row, ["stats_Net_Density_Truck", "aimsun_density_truck"])
-        net_spd_car     = _pick(row, ["stats_Net_Speed_Car",   "aimsun_speed_car"])
-        net_spd_bus     = _pick(row, ["stats_Net_Speed_Bus",   "aimsun_speed_bus"])
-        net_spd_truck   = _pick(row, ["stats_Net_Speed_Truck", "aimsun_speed_truck"])
-        net_delay_all   = _pick(row, ["stats_Net_Delay_All", "aimsun_avg_delay_s_km"])
-        net_delay_car   = _pick(row, ["stats_Net_Delay_Car",   "aimsun_delay_car"])
-        net_delay_bus   = _pick(row, ["stats_Net_Delay_Bus",   "aimsun_delay_bus"])
-        net_delay_truck = _pick(row, ["stats_Net_Delay_Truck", "aimsun_delay_truck"])
+        net_flow_car = _first_valid_metric(
+            _pick(row, ["stats_Net_Flow_Car", "aimsun_flow_car"]),
+            _pick(sim_row, ["Net_Flow_Car"]),
+            allow_zero=False,
+        )
+        net_flow_bus = _first_valid_metric(
+            _pick(row, ["stats_Net_Flow_Bus", "aimsun_flow_bus"]),
+            _pick(sim_row, ["Net_Flow_Bus"]),
+            allow_zero=False,
+        )
+        net_flow_truck = _first_valid_metric(
+            _pick(row, ["stats_Net_Flow_Truck", "aimsun_flow_truck"]),
+            _pick(sim_row, ["Net_Flow_Truck"]),
+            allow_zero=False,
+        )
+        net_dens_car = _first_valid_metric(
+            _pick(row, ["stats_Net_Density_Car", "aimsun_density_car"]),
+            _pick(sim_row, ["Net_Density_Car"]),
+            allow_zero=False,
+        )
+        net_dens_bus = _first_valid_metric(
+            _pick(row, ["stats_Net_Density_Bus", "aimsun_density_bus"]),
+            _pick(sim_row, ["Net_Density_Bus"]),
+            allow_zero=False,
+        )
+        net_dens_truck = _first_valid_metric(
+            _pick(row, ["stats_Net_Density_Truck", "aimsun_density_truck"]),
+            _pick(sim_row, ["Net_Density_Truck"]),
+            allow_zero=False,
+        )
+        net_spd_car = _first_valid_metric(
+            _pick(row, ["stats_Net_Speed_Car", "aimsun_speed_car"]),
+            _pick(sim_row, ["Net_Speed_Car"]),
+            allow_zero=False,
+        )
+        net_spd_bus = _first_valid_metric(
+            _pick(row, ["stats_Net_Speed_Bus", "aimsun_speed_bus"]),
+            _pick(sim_row, ["Net_Speed_Bus"]),
+            allow_zero=False,
+        )
+        net_spd_truck = _first_valid_metric(
+            _pick(row, ["stats_Net_Speed_Truck", "aimsun_speed_truck"]),
+            _pick(sim_row, ["Net_Speed_Truck"]),
+            allow_zero=False,
+        )
+        net_delay_all = _first_valid_metric(
+            _pick(row, ["stats_Net_Delay_All", "aimsun_avg_delay_s_km"]),
+            _pick(sim_row, ["Net_Delay_All"]),
+            allow_zero=False,
+        )
+        net_delay_car = _first_valid_metric(
+            _pick(row, ["stats_Net_Delay_Car", "aimsun_delay_car"]),
+            _pick(sim_row, ["Net_Delay_Car"]),
+            allow_zero=False,
+        )
+        net_delay_bus = _first_valid_metric(
+            _pick(row, ["stats_Net_Delay_Bus", "aimsun_delay_bus"]),
+            _pick(sim_row, ["Net_Delay_Bus"]),
+            allow_zero=False,
+        )
+        net_delay_truck = _first_valid_metric(
+            _pick(row, ["stats_Net_Delay_Truck", "aimsun_delay_truck"]),
+            _pick(sim_row, ["Net_Delay_Truck"]),
+            allow_zero=False,
+        )
 
         # Prearm coordination stats — written by record_prearm_stats in AAPIFinish
         # (only non-zero for GROUP_BASED modes that use CorridorCoordinator)
@@ -1624,6 +1934,7 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         int(j) for j in all_jct_ids
         if str(j).lstrip("-").isdigit()
         and (_cfg_jct_set is None or str(j) in _cfg_jct_set)
+        and not (12000 <= int(j) <= 21999)
     )
     try:
         from plot_green_wave import _geographic_junction_order as _gjo
@@ -1878,6 +2189,8 @@ tr:hover td { background: #1a1a30; }
 <h1>🚌 Kelvin Grove TSP — Simulation Comparison Dashboard</h1>
 <p class="subtitle" id="gen-time"></p>
 
+TEMPLATE_FALLBACK_HTML
+
 <!-- ── KPI summary (vs NORMAL baseline) ─────────────────────────────── -->
 <div id="kpi-row" class="kpi-row"></div>
 
@@ -1944,16 +2257,32 @@ tr:hover td { background: #1a1a30; }
     <canvas id="chart-flow" height="220"></canvas>
   </div>
   <div class="card" id="card-density">
-    <h2>Network Density (veh/km)</h2>
+    <h2>Network Density (veh/km/lane)</h2>
     <canvas id="chart-density" height="220"></canvas>
   </div>
   <div class="card">
     <h2>Bus Total Travel Time (hrs)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      Sum of all bus zone-crossing times across all monitored junctions. TSP can make this
+      <em>higher</em> than the baseline because: (1) faster buses complete more corridor
+      traversals in the same simulation window, adding more trips to the sum; (2) buses
+      arriving at additional junctions get detected and counted. The per-passenger delay
+      metrics (below) are the correct indicator of TSP benefit.
+    </div>
     <canvas id="chart-bus-tt" height="220"></canvas>
   </div>
   <div class="card" id="card-speed">
     <h2>Network Speed (km/h)</h2>
     <canvas id="chart-speed" height="220"></canvas>
+  </div>
+  <div class="card" id="card-pax-delay">
+    <h2>Avg Delay per Passenger (s)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      All-passenger, bus-passenger, and car-passenger average delay.
+      TSP improves bus/all-pax delay at the cost of slightly higher car delay —
+      this is why network speed may appear lower under coordinated TSP.
+    </div>
+    <canvas id="chart-pax-delay" height="220"></canvas>
   </div>
 </div>
 
@@ -1974,6 +2303,33 @@ tr:hover td { background: #1a1a30; }
 <div class="card">
   <canvas id="chart-harmony-timing" height="160"></canvas>
   <div id="harmony-timing-note" style="color:var(--muted);font-size:12px;margin-top:8px;display:none"></div>
+</div>
+
+<!-- ── No-action reason breakdown ─────────────────────────────────────── -->
+<p class="section-hdr">No-Action Reasons by Junction <span style="font-size:0.78rem;color:var(--muted)">(stacked counts from harmony decision rows)</span></p>
+<div class="card" id="card-noaction-reasons">
+  <div class="run-tabs" id="noaction-run-tabs"></div>
+  <div style="margin-top:4px;margin-bottom:4px;font-size:11px;color:var(--muted)">
+    <label>Sample rows:
+      <select id="noaction-sample-mode" style="font-size:11px;padding:1px 4px">
+        <option value="earliest" selected>Earliest</option>
+        <option value="latest">Latest</option>
+        <option value="both">Both (earliest + latest)</option>
+      </select>
+    </label>
+    <button id="noaction-export-btn" style="margin-left:12px;font-size:11px;padding:2px 8px">Export selected as CSV</button>
+  </div>
+  <canvas id="chart-noaction-reasons" height="220"></canvas>
+  <div id="noaction-reasons-note" style="color:var(--muted);font-size:12px;margin-top:8px;display:none"></div>
+  <div id="noaction-reasons-drilldown" style="margin-top:8px;display:none">
+    <div id="noaction-reasons-drilldown-title" style="font-size:11px;color:var(--muted);margin-bottom:6px"></div>
+    <div class="tbl-wrap">
+      <table id="noaction-reasons-drilldown-table">
+        <thead></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <!-- ── Run selector / Coord flow ─────────────────────────────────────── -->
@@ -2029,7 +2385,7 @@ tr:hover td { background: #1a1a30; }
     <label>Bus: <select id="coordex-bus-select" style="font-size:11px;padding:1px 4px"><option value="">— select a bus —</option></select></label>
     <span id="coordex-bus-info" style="font-size:11px;color:var(--muted)"></span>
   </div>
-  <div style="margin-top:8px;font-size:11px;color:var(--muted)" id="coordex-no-data">Select a bus with prearm events to see the coordination example.</div>
+  <div style="margin-top:8px;font-size:11px;color:var(--muted)" id="coordex-no-data">Select a bus to see the coordination example.</div>
   <div style="overflow-x:auto;margin-top:8px">
     <canvas id="coordex-canvas" height="360" style="width:100%;min-width:700px;display:none"></canvas>
   </div>
@@ -2112,7 +2468,7 @@ tr:hover td { background: #1a1a30; }
 </div>
 
 <!-- ── Queue Lengths & Delay Over Time ───────────────────────────────── -->
-<p class="section-hdr">Queue Lengths &amp; Delay Over Time <span style="font-size:0.78rem;color:var(--muted)">(60-second snapshots, all intersections — main approach + side street vehicles &lt; 5 km/h)</span></p>
+<p class="section-hdr">Queue Lengths &amp; Delay Over Time <span style="font-size:0.78rem;color:var(--muted)">(60-second snapshots, all intersections — queue here is a local controller snapshot, not an Aimsun network mean-queue statistic)</span></p>
 <div class="card">
   <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted)">
     <label>Run:
@@ -2128,7 +2484,7 @@ tr:hover td { background: #1a1a30; }
     <canvas id="queue-canvas" height="300" style="width:100%;min-width:500px"></canvas>
   </div>
   <div style="margin-top:6px;font-size:11px;color:var(--muted)">
-    Solid lines = queue length per junction (left y-axis, vehicles). Coloured dashed lines = buses in detection zone per junction (right y-axis).<br>
+    Solid lines = local queue snapshot per junction (left y-axis, vehicles). Coloured dashed lines = buses in detection zone per junction (right y-axis).<br>
     Dotted lines = cumulative pax-seconds delay per junction (right y-axis, ÷1000) when delay overlay is enabled.<br>
     White dashed line = total PT buses on the corridor network (right y-axis) — this is the ground truth of how many buses exist at each moment.<br>
     Each colour = one junction. TSP state background bands: blue=GE, purple=INS.
@@ -2147,13 +2503,14 @@ tr:hover td { background: #1a1a30; }
 </div>
 
 <!-- ── Per-Bus Corridor KPI Comparison ───────────────────────────── -->
-<p class="section-hdr">Per-Bus Corridor KPI Comparison <span style="font-size:0.78rem;color:var(--muted)">(priority-granted buses vs normal; total corridor delay, travel time, priority count per junction)</span></p>
+<p class="section-hdr">Per-Bus Corridor KPI Comparison <span style="font-size:0.78rem;color:var(--muted)">(priority-granted buses are a hard-case subset, not a random sample)</span></p>
 <div class="card">
   <div class="run-tabs" id="buscomp-run-tabs"></div>
   <div style="margin-top:4px;font-size:11px;color:var(--muted)">
-    <strong style="color:var(--green)">Blue bars</strong> = buses that received at least one priority grant &nbsp;|&nbsp;
+    <strong style="color:var(--green)">Blue bars</strong> = buses that received at least one priority grant in the coordinated run &nbsp;|&nbsp;
     <strong style="color:var(--orange)">Orange bars</strong> = buses that never received priority &nbsp;|&nbsp;
-    Corridor delay = sum of per-junction stop-times for that bus across the run.
+    Corridor delay = sum of per-junction stop-times for that bus across the run.<br>
+    <span style="color:var(--muted)">Important: priority buses are usually the late / hard cases that triggered TSP, so they can still have worse raw delay than the non-priority group. Use the same-bus cross-experiment comparison below to judge benefit.</span>
   </div>
   <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
     <label><input type="checkbox" id="buscomp-show-delay" checked> Total corridor delay (s)</label>
@@ -2164,6 +2521,7 @@ tr:hover td { background: #1a1a30; }
     <canvas id="buscomp-canvas" height="280" style="width:100%;min-width:420px"></canvas>
   </div>
   <div id="buscomp-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No bus journey data available for this run.</div>
+  <div id="buscomp-summary" style="margin-top:6px;font-size:11px;color:var(--muted)"></div>
 </div>
 
 <!-- ── Decision Space (TSP Corridor Timeline) ─────────────────────── -->
@@ -2218,7 +2576,7 @@ tr:hover td { background: #1a1a30; }
         <option value="coverage_pct">TSP coverage of position-tracked buses (%)</option>
         <option value="focus_buses">Focus (global-tracked) buses</option>
         <option value="bus_passages">Bus passages</option>
-        <option value="avg_density">Density (v/km)</option>
+        <option value="avg_density">Density (veh/km/lane)</option>
         <option value="avg_speed">Speed (km/h)</option>
         <option value="avg_flow">Flow (v/h)</option>
         <option value="avg_queue">Queue (veh)</option>
@@ -2241,14 +2599,13 @@ tr:hover td { background: #1a1a30; }
 </div>
 
 <!-- ── Per-section (corridor) breakdown ──────────────────────────────── -->
-<p class="section-hdr">Per-Section Density / Speed / Flow <span style="font-size:0.78rem;color:var(--muted)">(select run above)</span></p>
+<p class="section-hdr">Per-Section Density / Speed / Flow <span style="font-size:0.78rem;color:var(--muted)">(Aimsun section-stat style, select run above)</span></p>
 <div class="card">
   <div class="run-tabs" id="sec-run-tabs"></div>
   <div style="margin-top:6px;padding:6px 10px;background:#1a1a30;border-radius:4px;font-size:11px;color:#9090cc">
-    <strong>Note:</strong> Speed shown is the <em>approach-section space-mean speed</em> sampled every 30 s.
-    Low values (e.g. 2–8 km/h) are normal for main approach sections during AM peak — vehicles queue at red and
-    only the last 30-s window of completions is used. This is NOT the corridor free-flow speed.
-    Flow and density are from the same 30-s AKIEst window (requires new simulation run after code update to show corrected values).
+    <strong>Note:</strong> These rows are intended to read like Aimsun section statistics:
+    density is vehicles per kilometer of lane, flow is vehicles per hour, speed is section speed, and queue is a time-averaged queue measure.
+    Low approach speeds during peak are still expected because queued vehicles dominate the section state near signals.
   </div>
   <div style="margin-top:8px;font-size:11px;color:var(--muted)" id="sec-no-data" style="display:none">No per-section data available for this run.</div>
   <div class="tbl-wrap" style="margin-top:8px">
@@ -2257,7 +2614,7 @@ tr:hover td { background: #1a1a30; }
 </div>
 
 <!-- ── Same-Bus Cross-Experiment Comparison ──────────────────────────── -->
-<p class="section-hdr">Same-Bus Cross-Experiment Comparison <span style="font-size:0.78rem;color:var(--muted)">(tracks identical bus IDs across runs — NORMAL baseline vs TSP strategies for priority-granted buses)</span></p>
+<p class="section-hdr">Same-Bus Cross-Experiment Comparison <span style="font-size:0.78rem;color:var(--muted)">(buses granted GE or Phase Insertion in the Coordinated run, tracked across all run types)</span></p>
 <div class="card">
   <div style="margin-top:4px;font-size:11px;color:var(--muted)">
     Compares the same bus vehicle IDs that were granted priority in TSP runs against their behaviour in the NORMAL (no-TSP) baseline.
@@ -2266,6 +2623,15 @@ tr:hover td { background: #1a1a30; }
   <div id="xcomp-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">Requires ≥2 runs including a NORMAL baseline.</div>
   <div style="overflow-x:auto;margin-top:8px">
     <canvas id="xcomp-canvas" height="240" style="width:100%;min-width:420px;display:none"></canvas>
+  </div>
+  <div style="overflow-x:auto;margin-top:16px">
+    <h3 style="font-size:13px;color:var(--muted);margin:0 0 6px">Per-Bus Corridor Delay Comparison (stops at red × 30 s estimate)</h3>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      Each bar = estimated total delay for one bus journey (number of red-phase arrivals × 30 s).
+      Lower = fewer red arrivals. Saving lines (right axis) show delay saved vs No-TSP baseline.
+    </div>
+    <canvas id="xcomp-delay-canvas" height="200" style="width:100%;min-width:420px;display:none"></canvas>
+    <div id="xcomp-delay-no-data" style="font-size:11px;color:var(--muted);display:none"></div>
   </div>
 </div>
 
@@ -2288,18 +2654,17 @@ tr:hover td { background: #1a1a30; }
 </div>
 
 <!-- ── Aimsun-format Network Statistics ───────────────────────────────── -->
-<p class="section-hdr">Network Statistics <span style="font-size:0.78rem;color:var(--muted)">(Aimsun-format — density, delay, flow, speed, travel time, queues per vehicle class)</span></p>
+<p class="section-hdr">Network Statistics <span style="font-size:0.78rem;color:var(--muted)">(Aimsun-format — network density, entry-based delay/flow/speed, and corridor passenger-delay overlays)</span></p>
 <div class="card">
   <div style="margin-bottom:8px;padding:6px 10px;background:#1a1028;border-left:3px solid #9b59b6;border-radius:4px;font-size:11px;color:#b090cc">
-    <strong>Important:</strong> Network statistics (density, flow, speed, delay time) require a <strong>new simulation run</strong>
-    to reflect the corrected AAPI stats collection (using cumulative count/sim_h for flow, 30-s window for speed).
-    Values shown from old runs may be zeros or snapshot-only approximations.
+    <strong>Important:</strong> Network statistics require a <strong>new simulation run</strong>
+    to reflect the corrected collection logic. Values from older runs may still contain zeros or older fallback approximations.
     NORMAL run reference values are shown in the <em>Notes</em> column.
   </div>
   <div style="margin-bottom:8px;font-size:11px;color:var(--muted)">
-    Values shown match Aimsun's Time Series Statistics output format.
-    Entry-Based = all vehicles that entered the network during the simulation period.
-    Exit-Based = all vehicles that exited. N/A = not collected for this run.
+    Values shown follow Aimsun's statistical definitions as closely as this dashboard can reproduce from the available outputs.
+    Entry-Based metrics refer to vehicles that entered during the interval, including vehicles still inside at the end of the interval where Aimsun defines them that way.
+    Density is reported per kilometer of lane. N/A = not collected for this run.
   </div>
   <div class="tbl-wrap">
     <table id="aimsun-stats-table"><thead></thead><tbody></tbody></table>
@@ -2351,6 +2716,21 @@ const PALETTE_EDGE = PALETTE.map(c => c.replace('0.82','1'));
 
 function color(i)     { return PALETTE[i % PALETTE.length]; }
 function colorEdge(i) { return PALETTE_EDGE[i % PALETTE.length]; }
+
+const CHART_READY = (typeof window.Chart !== 'undefined');
+if (!CHART_READY) {
+  // Keep the rest of the dashboard functional when CDN/script loading is blocked.
+  const warn = document.createElement('div');
+  warn.style.cssText = 'margin:0 0 12px 0;padding:10px 12px;border:1px solid #6b4c20;border-radius:8px;background:#1a1210;color:#f0c080;font-size:12px;';
+  warn.textContent = 'Chart.js failed to load (offline/CDN blocked). Summary charts are disabled, but tables and diagnostics remain available.';
+  const anchor = document.querySelector('.kpi-row') || document.body.firstChild;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(warn, anchor);
+
+  window.Chart = function() {
+    return { destroy() {} };
+  };
+  window.Chart.defaults = { font: {} };
+}
 
 Chart.defaults.color = '#9090cc';
 Chart.defaults.borderColor = '#2a2a50';
@@ -2604,7 +2984,7 @@ if (jcts.length > 0) {
     barChart('chart-density',
       runs.map(r => r.label),
       [{
-        label: 'Density (veh/km)',
+        label: 'Density (veh/km/lane)',
         data: runs.map(r => r.density),
         backgroundColor: runs.map((_,i) => color(i)),
         borderColor: runs.map((_,i) => colorEdge(i)),
@@ -2627,6 +3007,35 @@ barChart('chart-bus-tt',
   }],
   { plugins:{ legend:{display:false} } }
 );
+
+// ── Avg delay per passenger (contextualises raw flow/speed) ───────────────
+{
+  const delayCtx = document.getElementById('chart-pax-delay');
+  if (delayCtx) {
+    barChart('chart-pax-delay',
+      runs.map(r => r.label),
+      [
+        { label: 'All pax (s/pax)',  data: runs.map(r => r.avg_pass_delay   ?? null),
+          backgroundColor: runs.map((_,i) => color(i)), borderWidth: 1 },
+        { label: 'Bus pax (s/pax)',  data: runs.map(r => r.avg_bus_delay    ?? null),
+          backgroundColor: runs.map((_,i) => color(i) + '99'), borderWidth: 1,
+          borderColor: runs.map((_,i) => colorEdge(i)), borderDash: [4,2] },
+        { label: 'Car pax (s/pax)',  data: runs.map(r => r.avg_car_delay    ?? null),
+          backgroundColor: runs.map((_,i) => colorEdge(i) + '55'), borderWidth: 1 },
+      ],
+      {
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          subtitle: {
+            display: true,
+            text: 'Lower = better  ·  Raw network flow/speed may drop under TSP due to signal disruption — avg pax delay shows the true benefit',
+            color: '#6060aa', font: { size: 9 }, padding: { bottom: 4 },
+          },
+        },
+      }
+    );
+  }
+}
 
 // ── Speed ─────────────────────────────────────────────────────────────────
 if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
@@ -2678,13 +3087,18 @@ if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
 // ── Harmony timing averages ──────────────────────────────────────────────
 {
   const hasAnyTiming = runs.some(r => (r.avg_extension_s||0) > 0 || (r.avg_insertion_s||0) > 0 || (r.avg_insertion_wait_s||0) > 0);
+  const timingNote = document.getElementById('harmony-timing-note');
+  if (timingNote) {
+    timingNote.style.display = 'block';
+    timingNote.textContent = 'Avg INS wait (s) = average bus ETA (seconds to arrival) at the moment the insertion phase fires — how far in advance of bus arrival the insertion is triggered. A value of ~10 s means the insertion fires ~10 s before the bus reaches the stop line. This is NOT the frequency between insertions.';
+  }
   if (!hasAnyTiming) {
-    const note = document.getElementById('harmony-timing-note');
-    if (note) { note.style.display = 'block';
-      note.textContent = 'No GE/insertion duration data yet — requires re-run with updated code.'; }
+    if (timingNote) {
+      timingNote.textContent = 'No GE/insertion duration data yet — requires re-run with updated code.';
+    }
   } else {
     barChart('chart-harmony-timing',
-      ['Avg green extension (s)', 'Avg insertion phase (s)', 'Avg insertion wait (s)'],
+      ['Avg green extension (s)', 'Avg insertion phase (s)', 'Avg INS lead to arrival (s)'],
       runs.map((r, i) => ({
         label: r.label,
         data: [r.avg_extension_s ?? 0, r.avg_insertion_s ?? 0, r.avg_insertion_wait_s ?? 0],
@@ -2694,6 +3108,312 @@ if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
         scales: { x: SCALE_X, y: { ...SCALE_Y,
           title: { display: true, text: 'seconds', color: '#7070a0', font: { size: 10 } } } } }
     );
+  }
+}
+
+// ── No-action reasons by junction (stacked) ─────────────────────────────
+{
+  let noActionReasonChart = null;
+  let noActionCurrentSelection = {
+    runLabel: '',
+    jct: '',
+    reasonKey: '',
+    rowsAll: [],
+  };
+
+  function _csvCell(v) {
+    const s = String(v == null ? '' : v);
+    return `"${s.replaceAll('"', '""')}"`;
+  }
+
+  function _formatTimeForNoAction(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 'n/a';
+    return n.toFixed(1);
+  }
+
+  function _sampleRowsForNoAction(rows, mode, k = 8) {
+    const all = (rows || []).slice().sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+    if (!all.length) return [];
+    if (mode === 'latest') return all.slice(Math.max(0, all.length - k));
+    if (mode === 'both') {
+      const half = Math.max(1, Math.floor(k / 2));
+      const first = all.slice(0, half).map(r => ({ ...r, _sample_window: 'earliest' }));
+      const last = all.slice(Math.max(0, all.length - half)).map(r => ({ ...r, _sample_window: 'latest' }));
+      const seen = new Set();
+      const merged = [];
+      [...first, ...last].forEach(r => {
+        const key = `${r.t}|${r.vid}|${r.tier}|${r.note}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged.push(r);
+      });
+      return merged;
+    }
+    return all.slice(0, k);
+  }
+
+  function _setNoActionDrilldown(rows, jct, reasonKey, runLabel, totalCount, mode) {
+    const box = document.getElementById('noaction-reasons-drilldown');
+    const title = document.getElementById('noaction-reasons-drilldown-title');
+    const table = document.getElementById('noaction-reasons-drilldown-table');
+    const exportBtn = document.getElementById('noaction-export-btn');
+    if (!box || !title || !table) return;
+
+    const thead = table.querySelector('thead');
+    const tbody = table.querySelector('tbody');
+    if (!thead || !tbody) return;
+
+    if (!rows || !rows.length) {
+      box.style.display = 'none';
+      title.textContent = '';
+      thead.innerHTML = '';
+      tbody.innerHTML = '';
+      if (exportBtn) exportBtn.disabled = true;
+      return;
+    }
+
+    box.style.display = 'block';
+    title.textContent = `${runLabel} | jct ${jct} | ${_reasonLabel(reasonKey)} | sample: ${mode} | showing ${rows.length} of ${totalCount} raw rows`;
+    if (exportBtn) exportBtn.disabled = false;
+
+    thead.innerHTML = '<tr><th>Time (s)</th><th>Bus</th><th>Tier</th><th>Window</th><th>Raw note</th></tr>';
+    tbody.innerHTML = '';
+
+    rows.forEach(rw => {
+      const tr = document.createElement('tr');
+
+      const tdT = document.createElement('td');
+      tdT.textContent = _formatTimeForNoAction(rw.t);
+      tr.appendChild(tdT);
+
+      const tdBus = document.createElement('td');
+      tdBus.textContent = String(rw.vid || 'n/a');
+      tr.appendChild(tdBus);
+
+      const tdTier = document.createElement('td');
+      tdTier.textContent = String(rw.tier || 'n/a');
+      tr.appendChild(tdTier);
+
+      const tdW = document.createElement('td');
+      tdW.textContent = String(rw._sample_window || mode);
+      tr.appendChild(tdW);
+
+      const tdNote = document.createElement('td');
+      tdNote.textContent = String(rw.note || '');
+      tr.appendChild(tdNote);
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function _reasonTokenFromNote(note, prefix) {
+    const raw = String(note || '');
+    let body = raw;
+    if (prefix && body.startsWith(prefix)) body = body.slice(prefix.length);
+    // Notes use '|' as field separator (e.g. "natural_green_future_bus_phase | eta_s=6.9 | ...");
+    // also guard against legacy ';' separator.
+    const head = (body.split(';')[0] || body).split('|')[0];
+    return head.trim();
+  }
+
+  function _normalizeReason(token) {
+    const t = String(token || '').trim();
+    if (!t) return 'unspecified';
+    if (t === 'natural_green_future_bus_phase' || t === 'natural_green_current_phase') return 'natural_catchable';
+    if (t === 'impractical_upper_bound') return 'impractical_upper_bound';
+    if (t === 'not_optimal' || t === 'not_optimal_too_short' || t === 'too_short') return 'objective_rejected';
+    if (t === 'over_max_extension') return 'over_max_extension';
+    if (t === 'insufficient_cycle_headroom') return 'insufficient_cycle_headroom';
+    if (t === 'harmony_nan') return 'optimizer_nan';
+    if (t === 'no_bus_detected') return 'no_bus_detected';
+    if (t === 'cooldown') return 'cooldown';
+    return t;
+  }
+
+  function _reasonLabel(key) {
+    if (key === 'natural_catchable') return 'Natural phase catchable';
+    if (key === 'objective_rejected') return 'Objective rejected';
+    if (key === 'impractical_upper_bound') return 'ETA > insertion upper bound';
+    if (key === 'over_max_extension') return 'Over max extension';
+    if (key === 'insufficient_cycle_headroom') return 'Insufficient cycle headroom';
+    if (key === 'optimizer_nan') return 'Optimizer NaN';
+    if (key === 'cooldown') return 'Cooldown active';
+    if (key === 'no_bus_detected') return 'No bus detected';
+    if (key === 'unspecified') return 'Unspecified';
+    return key.replaceAll('_', ' ');
+  }
+
+  function renderNoActionReasons(ri) {
+    const r = runs[ri];
+    const noteEl = document.getElementById('noaction-reasons-note');
+    const canvas = document.getElementById('chart-noaction-reasons');
+    const modeSel = document.getElementById('noaction-sample-mode');
+    const sampleMode = modeSel ? String(modeSel.value || 'earliest') : 'earliest';
+    if (!canvas) return;
+    _setNoActionDrilldown([], '', '', '', 0, sampleMode);
+    noActionCurrentSelection = { runLabel: '', jct: '', reasonKey: '', rowsAll: [] };
+    if (noActionReasonChart) { noActionReasonChart.destroy(); noActionReasonChart = null; }
+
+    const rows = (r.phase_samples || []).filter(p => {
+      const tier = String(p.tier || '');
+      return tier === 'harmony-no-ge-local' || tier === 'harmony-no-ins-local';
+    });
+
+    if (!rows.length) {
+      if (noteEl) {
+        noteEl.style.display = 'block';
+        noteEl.textContent = 'No harmony no-action decision rows found for this run.';
+      }
+      const c2d = canvas.getContext('2d');
+      c2d.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    const byJctReason = {};
+    const byJctReasonRows = {};
+    const reasonSet = new Set();
+    rows.forEach(p => {
+      const j = String(p.jct || '');
+      if (!j) return;
+      const tier = String(p.tier || '');
+      const pref = tier === 'harmony-no-ge-local' ? 'NO_GE ' : 'NO_INS ';
+      const tok = _reasonTokenFromNote(p.prearm_note, pref);
+      const reason = _normalizeReason(tok);
+      reasonSet.add(reason);
+      if (!byJctReason[j]) byJctReason[j] = {};
+      byJctReason[j][reason] = (byJctReason[j][reason] || 0) + 1;
+
+      const k = `${j}||${reason}`;
+      if (!byJctReasonRows[k]) byJctReasonRows[k] = [];
+      byJctReasonRows[k].push({
+        t: p.t ?? p.time ?? p.sim_time,
+        vid: p.vid ?? p.bus_id,
+        tier,
+        note: p.prearm_note,
+      });
+    });
+
+    const jcts = Object.keys(byJctReason).sort((a, b) => Number(a) - Number(b));
+    const reasonOrder = [
+      'natural_catchable', 'objective_rejected', 'impractical_upper_bound',
+      'over_max_extension', 'insufficient_cycle_headroom',
+      'cooldown', 'optimizer_nan', 'no_bus_detected', 'unspecified'
+    ];
+    const reasons = [
+      ...reasonOrder.filter(k => reasonSet.has(k)),
+      ...Array.from(reasonSet).filter(k => !reasonOrder.includes(k)).sort(),
+    ];
+
+    const palette = ['#66bb6a', '#ffb300', '#ef5350', '#ab47bc', '#42a5f5', '#8d6e63', '#90a4ae', '#ec407a'];
+    const datasets = reasons.map((reason, idx) => ({
+      label: _reasonLabel(reason),
+      data: jcts.map(j => Number((byJctReason[j] || {})[reason] || 0)),
+      backgroundColor: palette[idx % palette.length],
+      borderColor: palette[idx % palette.length],
+      borderWidth: 1,
+      stack: 'reason',
+    }));
+
+    noActionReasonChart = new Chart(canvas.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: jcts.map(j => `jct ${j}`),
+        datasets,
+      },
+      options: {
+        responsive: true,
+        animation: false,
+        onClick: (_evt, elements) => {
+          if (!elements || !elements.length) return;
+          const el = elements[0];
+          const datasetIndex = Number(el.datasetIndex);
+          const dataIndex = Number(el.index);
+          if (!Number.isFinite(datasetIndex) || !Number.isFinite(dataIndex)) return;
+          const reasonKey = reasons[datasetIndex];
+          const jct = jcts[dataIndex];
+          if (!reasonKey || !jct) return;
+          const key = `${jct}||${reasonKey}`;
+          const all = (byJctReasonRows[key] || []).slice().sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+          noActionCurrentSelection = { runLabel: r.label, jct, reasonKey, rowsAll: all };
+          const modeSelNow = document.getElementById('noaction-sample-mode');
+          const mode = modeSelNow ? String(modeSelNow.value || 'earliest') : 'earliest';
+          const sample = _sampleRowsForNoAction(all, mode, 8);
+          _setNoActionDrilldown(sample, jct, reasonKey, r.label, all.length, mode);
+        },
+        plugins: {
+          legend: { labels: { color: '#aaaacc', font: { size: 10 } }, position: 'bottom' },
+          tooltip: {
+            backgroundColor:'#0a0a22', titleColor:'#ccccee', bodyColor:'#9090cc', borderColor:'#2a2a50', borderWidth:1,
+          },
+          title: {
+            display: true,
+            text: `${r.label} — no-action decision reasons by junction`,
+            color: '#7070a0',
+            font: { size: 11 },
+          },
+        },
+        scales: {
+          x: { stacked: true, ticks: { color:'#9090cc' }, grid: { color:'#1e1e38' } },
+          y: { stacked: true, ticks: { color:'#9090cc' }, grid: { color:'#1e1e38' }, min: 0,
+            title: { display: true, text: 'No-action decision count', color: '#7070a0', font: { size: 10 } } },
+        },
+      },
+    });
+
+    if (noteEl) {
+      noteEl.style.display = 'block';
+      noteEl.textContent = `Rows counted: ${rows.length}. Includes harmony-no-ge-local and harmony-no-ins-local decision rows only.`;
+    }
+  }
+
+  const card = document.getElementById('card-noaction-reasons');
+  if (!runs.length) {
+    if (card) card.style.display = 'none';
+  } else {
+    const exportBtn = document.getElementById('noaction-export-btn');
+    if (exportBtn) {
+      exportBtn.disabled = true;
+      exportBtn.addEventListener('click', () => {
+        const sel = noActionCurrentSelection;
+        if (!sel || !sel.rowsAll || !sel.rowsAll.length) return;
+        const modeSel = document.getElementById('noaction-sample-mode');
+        const mode = modeSel ? String(modeSel.value || 'earliest') : 'earliest';
+        const sampled = _sampleRowsForNoAction(sel.rowsAll, mode, 8);
+        const lines = [
+          ['run_label','junction','reason','sample_mode','sample_window','time_s','bus','tier','raw_note'].map(_csvCell).join(','),
+          ...sampled.map(rw => [
+            sel.runLabel, sel.jct, sel.reasonKey, mode, (rw._sample_window || mode),
+            _formatTimeForNoAction(rw.t), (rw.vid || ''), (rw.tier || ''), (rw.note || '')
+          ].map(_csvCell).join(','))
+        ];
+        const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a');
+        const reasonSafe = String(sel.reasonKey || 'reason').replaceAll(/[^a-zA-Z0-9_-]/g, '_');
+        a.href = URL.createObjectURL(blob);
+        a.download = `noaction_${sel.runLabel}_j${sel.jct}_${reasonSafe}_${mode}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          URL.revokeObjectURL(a.href);
+          a.remove();
+        }, 0);
+      });
+    }
+
+    const modeSel = document.getElementById('noaction-sample-mode');
+    if (modeSel) {
+      modeSel.addEventListener('change', () => {
+        const sel = noActionCurrentSelection;
+        if (!sel || !sel.rowsAll || !sel.rowsAll.length) return;
+        const mode = String(modeSel.value || 'earliest');
+        const sampled = _sampleRowsForNoAction(sel.rowsAll, mode, 8);
+        _setNoActionDrilldown(sampled, sel.jct, sel.reasonKey, sel.runLabel, sel.rowsAll.length, mode);
+      });
+    }
+
+    buildRunTabs('noaction-run-tabs', (i) => renderNoActionReasons(i));
+    renderNoActionReasons(initialRunIdx);
   }
 }
 
@@ -2776,10 +3496,56 @@ function renderCoordFlow(ri, filterVid) {
   const flow = document.getElementById('coord-flow');
   flow.innerHTML = '';
 
+  // Runtime health banner: quick integrity checks for wiring/data issues.
+  const flowHealth = {
+    high: [],
+    med: [],
+    info: [],
+  };
+  const healthEl = document.createElement('div');
+  healthEl.className = 'metric-note';
+  healthEl.style.marginBottom = '8px';
+  healthEl.style.padding = '6px 8px';
+  healthEl.style.borderRadius = '6px';
+  healthEl.style.background = '#121827';
+  healthEl.style.border = '1px solid #2a3555';
+  healthEl.style.fontSize = '11px';
+  healthEl.style.color = 'var(--muted)';
+  flow.appendChild(healthEl);
+
   // ── Populate bus dropdown ──────────────────────────────────────────────
   const sel = document.getElementById('bus-flow-select');
   const allJ = r.bus_journeys || [];
   const focusBusIds = new Set(r.focus_bus_ids || []);
+  const _phaseSampleCount = (r.phase_samples || []).length;
+  const _greenRateJctCount = Object.keys(r.green_rates || {}).length;
+  const _waveEventCount = allJ.reduce((n, j) => n + ((j.wave || []).length), 0);
+  const _statsDistinctBusCount = Number(r.stats_distinct_buses_raw || 0);
+  const _knownTrackedBusCount = Number(r.tracked_bus_count || 0);
+  const _journeyBusCount = Number(r.journey_bus_count || 0);
+
+  if (allJ.length === 0) {
+    flowHealth.high.push('No bus_journeys loaded for this run');
+  }
+  if (_greenRateJctCount === 0) {
+    flowHealth.high.push('No green-rate junction metrics loaded');
+  }
+  if (r.coordinated && _phaseSampleCount === 0) {
+    flowHealth.high.push('Coordinated run has no phase_samples');
+  }
+  if (r.coordinated && _waveEventCount === 0) {
+    flowHealth.high.push('Coordinated run has no wave events in journey data');
+  }
+  if (_statsDistinctBusCount > 0 && _knownTrackedBusCount > 0 && _knownTrackedBusCount < 0.60 * _statsDistinctBusCount) {
+    flowHealth.high.push(
+      `Known tracked buses (${_knownTrackedBusCount}) << stats distinct buses (${_statsDistinctBusCount})`
+    );
+  }
+  if (_knownTrackedBusCount > 0 && _journeyBusCount > 0 && _journeyBusCount < 0.60 * _knownTrackedBusCount) {
+    flowHealth.med.push(
+      `Journey buses (${_journeyBusCount}) are much lower than tracked buses (${_knownTrackedBusCount}); some buses may not traverse enough junctions to form journeys`
+    );
+  }
   // Keep current selection stable across re-renders
   if (!filterVid) {
     sel.innerHTML = '<option value="">All buses (aggregate)</option>';
@@ -2803,6 +3569,9 @@ function renderCoordFlow(ri, filterVid) {
   let busJ           = null;  // full journey object for selected bus (for wave events)
   if (filterVid) {
     busJ = allJ.find(j => j.vid == filterVid) || null;
+    if (!busJ) {
+      flowHealth.high.push(`Selected bus ${filterVid} not found in bus_journeys`);
+    }
     if (busJ) {
       perJctBusStats = {};
       busJ.stops.forEach(s => {
@@ -2810,6 +3579,9 @@ function renderCoordFlow(ri, filterVid) {
         perJctBusStats[String(s.jct)] = { det: 1, green: s.on_green };
       });
       busRouteJcts = busJ.stops.map(s => String(s.jct));
+      if (busRouteJcts.length < 2) {
+        flowHealth.med.push(`Selected bus ${filterVid} has sparse route (${busRouteJcts.length} stop)`);
+      }
     }
   }
 
@@ -2897,6 +3669,52 @@ function renderCoordFlow(ri, filterVid) {
   }
   flow.appendChild(summary);
 
+  // Debug strip for focused bus: shows raw wave + harmony decision rows by jct.
+  // Each row is {text, severity} where severity drives line highlight color.
+  let flowDebugRows = [];
+  let bubbleCounts = {};
+  let flowDebugStats = {
+    jcts: 0,
+    anomaly_total: 0,
+    fired_without_success: 0,
+    success_without_fired: 0,
+    wave_without_decision: 0,
+    wave_without_detection_stop: 0,
+    decision_without_wave: 0,
+  };
+  let flowDebugBody = null;
+  let flowDebugToggleBtn = null;
+  if (filterVid && busRouteJcts) {
+    const dbg = document.createElement('div');
+    dbg.className = 'metric-note';
+    dbg.style.marginTop = '6px';
+    dbg.style.whiteSpace = 'normal';
+    dbg.innerHTML = `<strong>Debug (bus ${filterVid})</strong> — wave events + harmony decision at each junction `;
+    const dbgLegend = document.createElement('span');
+    dbgLegend.style.marginLeft = '8px';
+    dbgLegend.style.fontSize = '11px';
+    dbgLegend.style.color = 'var(--muted)';
+    dbgLegend.innerHTML =
+      `<span style="color:#ff8a80">High</span>: fired/success mismatch  |  ` +
+      `<span style="color:#ffd180">Med</span>: wave without decision/detection  |  ` +
+      `<span style="color:#fff59d">Low</span>: decision without wave`;
+    flowDebugToggleBtn = document.createElement('button');
+    flowDebugToggleBtn.className = 'run-tab';
+    flowDebugToggleBtn.style.marginLeft = '8px';
+    flowDebugToggleBtn.style.padding = '2px 8px';
+    flowDebugToggleBtn.style.fontSize = '11px';
+    flowDebugToggleBtn.textContent = 'Show debug';
+    flowDebugToggleBtn.onclick = () => {
+      if (!flowDebugBody) return;
+      const hidden = flowDebugBody.style.display === 'none';
+      flowDebugBody.style.display = hidden ? 'block' : 'none';
+      flowDebugToggleBtn.textContent = hidden ? 'Hide debug' : 'Show debug';
+    };
+    dbg.appendChild(dbgLegend);
+    dbg.appendChild(flowDebugToggleBtn);
+    flow.appendChild(dbg);
+  }
+
   const busRouteSet = busRouteJcts ? new Set(busRouteJcts) : null;
   // When a specific bus is selected, only render junctions on that bus's route.
   // In aggregate view, render all corridor junctions.
@@ -2909,6 +3727,23 @@ function renderCoordFlow(ri, filterVid) {
     let bClass = 'bubble-r', sym = '\u2715';
     let extraLabel = '';
     let tooltipText = '';
+    let busWaveAtJct = [];
+    let decisionRow = null;
+    let decisionNote = '';
+    let decisionTier = '';
+    let decisionStatus = '';
+    let decisionIsNoGe = false;
+    let decisionIsNoIns = false;
+    let decisionIsGeAction = false;
+    let decisionIsInsAction = false;
+    let hadPrearmSuccess = false;
+    let hadPrearmFired = false;
+    let hadGrant = false;
+    let hadTspSkip = false;
+    let hadPrearmSkipped = false;
+    let hadGrantOnly = false;
+    let hadNoIntervention = true;
+    let bsForDebug = null;
 
     // Passive/fixed junction: show different bubble, no TSP info
     if (isPassiveJ) {
@@ -2919,20 +3754,53 @@ function renderCoordFlow(ri, filterVid) {
     } else {
 
     // Wave events for selected bus at this junction (prearm chain data)
-    const busWaveAtJct = (filterVid && busJ)
+    busWaveAtJct = (filterVid && busJ)
       ? (busJ.wave || []).filter(w => String(w.jct) === String(j))
       : [];
-    const hadPrearmSuccess = busWaveAtJct.some(w => w.event === 'prearm_success');
-    const hadPrearmFired   = busWaveAtJct.some(w => w.event === 'prearm_fired');
-    const hadTspSkip       = busWaveAtJct.some(w => w.event === 'tsp_skip');
-    const hadPrearmSkipped = busWaveAtJct.some(w => w.event === 'prearm_skipped');
+    const busDecisionRows = filterVid
+      ? (r.phase_samples || []).filter(p =>
+          Number(p.vid) === Number(filterVid)
+          && String(p.jct) === String(j)
+          && typeof p.tier === 'string'
+          && p.tier.startsWith('harmony-')
+        )
+      : [];
+    decisionRow = busDecisionRows.length ? busDecisionRows[busDecisionRows.length - 1] : null;
+    decisionNote = String(decisionRow?.prearm_note || '');
+    decisionTier = String(decisionRow?.tier || '');
+    decisionStatus = String(decisionRow?.prearm_status || '');
+    decisionIsNoGe = decisionNote.startsWith('NO_GE');
+    decisionIsNoIns = decisionNote.startsWith('NO_INS');
+    decisionIsGeAction = decisionTier === 'harmony-ge-local' && decisionStatus === 'action';
+    decisionIsInsAction = decisionTier === 'harmony-ins-local' && decisionStatus === 'action';
+    hadPrearmSuccess = busWaveAtJct.some(w => w.event === 'prearm_success');
+    hadPrearmFired   = busWaveAtJct.some(w => w.event === 'prearm_fired');
+    hadGrant         = busWaveAtJct.some(w => w.event === 'grant');
+    hadTspSkip       = busWaveAtJct.some(w => w.event === 'tsp_skip');
+    hadPrearmSkipped = busWaveAtJct.some(w => w.event === 'prearm_skipped');
+    hadGrantOnly     = hadGrant && !hadPrearmSuccess && !hadPrearmFired;
+    hadNoIntervention = !hadPrearmSuccess && !hadPrearmFired && !hadTspSkip && !hadGrant;
+    bsForDebug = (filterVid && perJctBusStats) ? (perJctBusStats[j] || null) : null;
 
     if (filterVid && perJctBusStats) {
       if (!onRoute) {
         bClass = 'bubble-skip'; sym = '\u00b7'; extraLabel = 'not on route';
       } else {
-        const bs = perJctBusStats[j];
-        if (!bs) {
+        const bs = bsForDebug;
+        if (decisionIsGeAction || decisionIsInsAction) {
+          bClass = (bs && !bs.green) ? 'bubble-o' : 'bubble-g';
+          sym = '\u2713';
+          extraLabel = decisionNote || (decisionIsInsAction ? 'INS action' : 'GE action');
+          tooltipText = decisionIsInsAction
+            ? `Phase insertion applied here${decisionNote ? ` — ${decisionNote}` : ''}`
+            : `Green extension applied here${decisionNote ? ` — ${decisionNote}` : ''}`;
+        } else if (decisionIsNoGe || decisionIsNoIns) {
+          bClass = 'bubble-y'; sym = '\u25c7';
+          extraLabel = decisionIsNoIns ? 'no INS' : 'no GE';
+          tooltipText = decisionIsNoIns
+            ? `Focused-bus decision: no phase insertion here${decisionNote ? ` — ${decisionNote}` : ''}`
+            : `Focused-bus decision: no green extension here${decisionNote ? ` — ${decisionNote}` : ''}`;
+        } else if (!bs) {
           // No detection entry \u2014 check if coordinator skipped this junction
           if (hadPrearmSkipped) {
             bClass = 'bubble-p'; sym = '\u2298'; extraLabel = 'ignored (cooldown)';
@@ -2941,15 +3809,26 @@ function renderCoordFlow(ri, filterVid) {
             bClass = 'bubble-o'; sym = '?'; extraLabel = 'in zone / no det';
             tooltipText = 'Bus detected near junction but phase not captured';
           }
+        } else if (hadGrantOnly) {
+          bClass = 'bubble-y'; sym = '\u25c7'; extraLabel = 'detected';
+          tooltipText = bs.green
+            ? 'Bus detected at this junction and arrived on green naturally \u2014 no prearm or phase action was started because priority was not delay-optimal'
+            : 'Bus detected at this junction, but no prearm or phase action was started because priority was not delay-optimal';
+        } else if (hadNoIntervention) {
+          // Detected this bus but chose not to intervene (or no local action required).
+          bClass = 'bubble-p'; sym = '\u2298'; extraLabel = 'detected / no action';
+          tooltipText = bs.green
+            ? 'Bus detected at this junction and arrived on green; controller did not apply GE/INS here'
+            : 'Bus detected at this junction, but no GE/INS intervention was applied here';
         } else if (bs.green) {
           bClass = 'bubble-g'; sym = '\u2713'; extraLabel = 'green';
           tooltipText = hadPrearmSuccess
-            ? 'Green \u2014 prearm success (signal was prepared for this bus)'
+            ? 'Green \u2014 controller accepted the prearm and the bus arrived during the prepared window'
             : 'Arrived on green phase';
         } else {
           if (hadPrearmSuccess) {
             bClass = 'bubble-o'; sym = '!'; extraLabel = 'red (late)';
-            tooltipText = 'Signal was prepared (prearm success) but bus arrived outside the extended window \u2014 ETA prediction miss';
+            tooltipText = 'Controller accepted the prearm, but the bus still reached the stop line on red \u2014 the prepared window did not line up with arrival';
           } else if (hadPrearmSkipped) {
             bClass = 'bubble-p'; sym = '\u2298'; extraLabel = 'ignored (cooldown)';
             tooltipText = 'Coordinator saw this bus but skipped priority \u2014 junction in cooldown (same bus served recently)';
@@ -2996,6 +3875,7 @@ function renderCoordFlow(ri, filterVid) {
           : 'no data');
     const jctLbl = isPassiveJ ? `jct ${j}<br><small>(fixed)</small>` : `jct ${j}`;
     const flowLabel = isPassiveJ ? 'fixed signal' : label;
+    bubbleCounts[flowLabel] = (bubbleCounts[flowLabel] || 0) + 1;
     el.innerHTML = `<div class="name">${jctLbl}</div>
       <div class="bubble ${bClass}">${sym}</div>
       <div class="name">${flowLabel}</div>`;
@@ -3006,7 +3886,123 @@ function renderCoordFlow(ri, filterVid) {
       arr.textContent = r.coordinated ? '\u27f9' : '->';
       flow.appendChild(arr);
     }
+
+    // Collect a one-line debug entry per rendered junction when a bus is selected.
+    if (filterVid && busRouteJcts && !isPassiveJ) {
+      flowDebugStats.jcts += 1;
+      const anomalies = [];
+      if (hadPrearmFired && !hadPrearmSuccess) {
+        anomalies.push('fired_without_success');
+        flowDebugStats.fired_without_success += 1;
+      }
+      if (hadPrearmSuccess && !hadPrearmFired) {
+        anomalies.push('success_without_fired');
+        flowDebugStats.success_without_fired += 1;
+      }
+      if ((hadPrearmFired || hadPrearmSuccess || hadGrant || hadPrearmSkipped) && !decisionRow) {
+        anomalies.push('wave_without_decision');
+        flowDebugStats.wave_without_decision += 1;
+      }
+      if ((hadPrearmFired || hadPrearmSuccess || hadGrant) && !bsForDebug) {
+        anomalies.push('wave_without_detection_stop');
+        flowDebugStats.wave_without_detection_stop += 1;
+      }
+      if (decisionRow && !hadPrearmFired && !hadPrearmSuccess && !hadGrant && !hadTspSkip && !hadPrearmSkipped) {
+        anomalies.push('decision_without_wave');
+        flowDebugStats.decision_without_wave += 1;
+      }
+      flowDebugStats.anomaly_total += anomalies.length;
+
+      const waveTxt = (busWaveAtJct || []).length
+        ? busWaveAtJct.map(w => `${w.event}@${Number(w.t).toFixed(1)}`).join(', ')
+        : 'none';
+      const decisionTxt = decisionRow
+        ? `${decisionTier || 'n/a'}:${decisionStatus || 'n/a'}${decisionNote ? ` (${decisionNote})` : ''}`
+        : 'none';
+      const stateTxt = `state=[green=${bsForDebug ? Number(bsForDebug.green) : 'na'}, fired=${hadPrearmFired ? 1 : 0}, success=${hadPrearmSuccess ? 1 : 0}, grant=${hadGrant ? 1 : 0}, tsp_skip=${hadTspSkip ? 1 : 0}, prearm_skipped=${hadPrearmSkipped ? 1 : 0}]`;
+      const anomalyTxt = anomalies.length ? ` anomalies=[${anomalies.join(', ')}]` : '';
+      let sev = 'ok';
+      if (anomalies.some(a => a === 'fired_without_success' || a === 'success_without_fired')) {
+        sev = 'high';
+      } else if (anomalies.some(a => a === 'wave_without_decision' || a === 'wave_without_detection_stop')) {
+        sev = 'med';
+      } else if (anomalies.some(a => a === 'decision_without_wave')) {
+        sev = 'low';
+      }
+      flowDebugRows.push({
+        text: `jct ${j}: bubble=${extraLabel || bClass}; ${stateTxt}; wave=[${waveTxt}]; decision=[${decisionTxt}]${anomalyTxt}`,
+        severity: sev,
+      });
+    }
   });
+
+  if (filterVid && busRouteJcts && flowDebugRows.length) {
+    flowDebugRows.unshift({
+      text: `summary: jcts=${flowDebugStats.jcts}, anomalies=${flowDebugStats.anomaly_total}, ` +
+        `fired_without_success=${flowDebugStats.fired_without_success}, ` +
+        `success_without_fired=${flowDebugStats.success_without_fired}, ` +
+        `wave_without_decision=${flowDebugStats.wave_without_decision}, ` +
+        `wave_without_detection_stop=${flowDebugStats.wave_without_detection_stop}, ` +
+        `decision_without_wave=${flowDebugStats.decision_without_wave}`,
+      severity: flowDebugStats.anomaly_total > 0 ? 'med' : 'ok',
+    });
+
+    const _escHtml = (s) => String(s)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+    const _lineStyle = (sev) => {
+      if (sev === 'high') return 'color:#ff8a80;background:#3a1212;border-left:3px solid #ff5252;padding-left:6px;';
+      if (sev === 'med')  return 'color:#ffd180;background:#2f210f;border-left:3px solid #ffb74d;padding-left:6px;';
+      if (sev === 'low')  return 'color:#fff59d;background:#2c2a12;border-left:3px solid #ffee58;padding-left:6px;';
+      return 'color:#b0bec5;';
+    };
+
+    const dbgBody = document.createElement('div');
+    dbgBody.className = 'metric-note';
+    dbgBody.style.marginTop = '4px';
+    dbgBody.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+    dbgBody.style.fontSize = '11px';
+    dbgBody.style.display = 'none';
+    dbgBody.innerHTML = flowDebugRows
+      .map(rw => `<div style="${_lineStyle(rw.severity)}">${_escHtml(rw.text)}</div>`)
+      .join('');
+    flowDebugBody = dbgBody;
+    flow.appendChild(dbgBody);
+  }
+
+  // Finalize and render runtime health summary after all counts are known.
+  if (filterVid && busRouteJcts) {
+    if (flowDebugStats.jcts === 0) {
+      flowHealth.high.push('No active corridor junctions rendered for selected bus');
+    }
+    if (flowDebugStats.anomaly_total > 0) {
+      flowHealth.med.push(`Debug anomalies detected: ${flowDebugStats.anomaly_total}`);
+    }
+    const _coordSkipCnt = bubbleCounts['coord skip'] || 0;
+    if (flowDebugStats.jcts > 0 && _coordSkipCnt === flowDebugStats.jcts) {
+      flowHealth.med.push('All rendered junctions are coord skip (check prearm/decision gating)');
+    }
+  }
+
+  if (!flowHealth.high.length && !flowHealth.med.length) {
+    flowHealth.info.push('Runtime health: OK');
+  }
+  const _pill = (txt, bg, fg, br) => `<span style="display:inline-block;margin-right:6px;margin-bottom:4px;padding:1px 6px;border-radius:10px;background:${bg};color:${fg};border:1px solid ${br}">${txt}</span>`;
+  const parts = [];
+  if (flowHealth.high.length) {
+    parts.push(_pill(`HIGH ${flowHealth.high.length}`, '#3a1212', '#ff8a80', '#ff5252'));
+    flowHealth.high.forEach(x => parts.push(`<div style="color:#ff8a80">• ${x}</div>`));
+  }
+  if (flowHealth.med.length) {
+    parts.push(_pill(`MED ${flowHealth.med.length}`, '#2f210f', '#ffd180', '#ffb74d'));
+    flowHealth.med.forEach(x => parts.push(`<div style="color:#ffd180">• ${x}</div>`));
+  }
+  if (flowHealth.info.length) {
+    parts.push(_pill('INFO', '#1f2a35', '#b0bec5', '#607d8b'));
+    flowHealth.info.forEach(x => parts.push(`<div style="color:#b0bec5">• ${x}</div>`));
+  }
+  healthEl.innerHTML = `<strong>Runtime Health</strong><div style="margin-top:4px">${parts.join('')}</div>`;
 }
 
 const tabsDiv = document.getElementById('run-tabs');
@@ -3516,14 +4512,19 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
   function _populateCoordExBusSelect(ri) {
     const r = runs[ri];
-    const allJ = (r.bus_journeys || []).filter(j => j.wave && j.wave.length > 0);
-    coordExBusSel.innerHTML = '<option value="">— select a bus with prearms —</option>';
+    const allJ = (r.bus_journeys || []).filter(j => (j.stops || []).length >= 2);
+    coordExBusSel.innerHTML = '<option value="">— select a bus —</option>';
     allJ.sort((a,b) => (a.stops[0]?.t||0) - (b.stops[0]?.t||0)).forEach(j => {
       const opt = document.createElement('option');
       opt.value = j.vid;
       const gc = j.stops.filter(s => s.on_green).length;
       const nPrearm = (j.wave||[]).filter(w => w.event === 'prearm_fired').length;
-      opt.textContent = `Bus ${j.vid}  (${j.cls}, ${j.n_jcts} jcts, ${gc}/${j.stops.length} green, ${nPrearm} prearms)`;
+      const nActions = (r.phase_samples || []).filter(p =>
+        Number(p.vid) === Number(j.vid)
+        && (p.tier === 'harmony-ge-local' || p.tier === 'harmony-ins-local')
+        && p.prearm_status === 'action'
+      ).length;
+      opt.textContent = `Bus ${j.vid}  (${j.cls}, ${j.n_jcts} jcts, ${gc}/${j.stops.length} green, ${nPrearm} prearms, ${nActions} actions)`;
       coordExBusSel.appendChild(opt);
     });
     // Auto-select first bus with wave events
@@ -3544,7 +4545,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     if (!journey) {
       if (coordExNoData) { coordExNoData.textContent = allJ.length ?
-        'Select a bus with prearm events above.' :
+        'Select a bus above.' :
         'No bus journey data available for this run.';
         coordExNoData.style.display = ''; }
       coordExCanvas.style.display = 'none';
@@ -3556,6 +4557,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     const stops    = journey.stops || [];
     const wave     = (journey.wave || []).slice().sort((a,b) => a.t - b.t);
+    const focusRows = (r.focus_history || []).filter(f => Number(f.veh_id) === Number(journey.vid));
+    const allFocusRows = (r.focus_history || []);
     const jctSet   = new Set(stops.map(s => String(s.jct)));
     const drawJcts = coordExJcts.filter(j => jctSet.has(String(j)));
     if (!drawJcts.length) { coordExCanvas.style.display = 'none'; return; }
@@ -3579,7 +4582,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     coordExCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     coordExCtx.clearRect(0, 0, W, H);
 
-    const padL = 74, padR = 24, padT = 30, padB = 38;
+    const hasFocusBand = focusRows.length > 0;
+    const padL = 74, padR = 24, padT = 30, padB = hasFocusBand ? 68 : 38;
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
@@ -3629,10 +4633,51 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const arrivalByJct = {};
     stops.forEach(s => { arrivalByJct[String(s.jct)] = s; });
 
+    // ── Per-junction decision data from phase_samples ────────────────────
+    // Build a lookup: jct -> list of harmony decision rows for this bus,
+    // sorted by sim time so we can find the latest decision before arrival.
+    const decisionsByJct = {};
+    (r.phase_samples || []).forEach(p => {
+      if (Number(p.vid) !== Number(journey.vid)) return;
+      if (typeof p.tier !== 'string' || !p.tier.startsWith('harmony-')) return;
+      const key = String(p.jct);
+      if (!decisionsByJct[key]) decisionsByJct[key] = [];
+      decisionsByJct[key].push(p);
+    });
+    Object.values(decisionsByJct).forEach(arr =>
+      arr.sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0)));
+
+    // Helper: format seconds as mm:ss
+    function fmtT(s) {
+      const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+      return m + ':' + String(sec).padStart(2, '0');
+    }
+
+    function _decisionReasonToken(note, prefix) {
+      const raw = String(note || '');
+      let body = raw;
+      if (prefix && body.startsWith(prefix)) body = body.slice(prefix.length);
+      const head = body.split(';')[0] || body;
+      return head.trim();
+    }
+
+    function _decisionReasonText(tok, isGe) {
+      const t = String(tok || '').trim();
+      if (!t) return isGe ? 'GE not applied (unspecified)' : 'INS not applied (unspecified)';
+      if (t === 'natural_green_future_bus_phase') return 'Natural future bus phase catchable; no forced action';
+      if (t === 'natural_green_current_phase') return 'Current phase already serves bus movement; no intervention needed';
+      if (t === 'impractical_upper_bound') return 'Bus ETA exceeds insertion upper bound; insertion not practical';
+      if (t === 'not_optimal' || t === 'not_optimal_too_short' || t === 'too_short') return 'Objective evaluated but rejected as not beneficial';
+      if (t === 'harmony_nan') return 'Optimizer returned NaN; action skipped for safety';
+      if (t === 'no_bus_detected') return 'No valid bus detected at decision step';
+      if (t === 'cooldown') return 'Junction cooldown active after recent serve';
+      return t.replaceAll('_', ' ');
+    }
+
     // Draw signal-phase bands: green band around each prearm target junction's
     // green window (estimated from prearm ETA), red on either side.
-    // We approximate green-window from the prearm_fired→arrival gap.
-    // If the bus actually arrived on green, shade arrival region green.
+    // For each junction we also draw explicit harmony decisions, GE/INS windows,
+    // and start/end time labels.
     drawJcts.forEach((jid, ji) => {
       const y0 = padT + (ji / drawJcts.length) * plotH + 2;
       const y1 = padT + ((ji+1) / drawJcts.length) * plotH - 2;
@@ -3640,9 +4685,37 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       const rowH = (y1 - y0);
       const bandH = Math.max(6, rowH * 0.35);
 
-      // Find prearm events targeting this junction
-      const jPrearms = wave.filter(w => String(w.jct) === String(jid) && w.event === 'prearm_fired');
+      // Find prearm/wave events targeting this junction
+      const jWave = wave.filter(w => String(w.jct) === String(jid));
+      const jPrearms = jWave.filter(w => w.event === 'prearm_fired');
       const arrSt = arrivalByJct[String(jid)];
+      const arrIsFocusAtJct = arrSt ? allFocusRows.some(f =>
+        Number(f.veh_id) === Number(journey.vid)
+        && Number(f.jct_id) === Number(jid)
+        && Number(arrSt.t) >= (Number(f.start_t) - 1.0)
+        && Number(arrSt.t) <= (Number(f.end_t) + 1.0)
+      ) : false;
+      const otherFocusRow = arrSt ? allFocusRows.find(f =>
+        Number(f.veh_id) !== Number(journey.vid)
+        && Number(arrSt.t) >= (Number(f.start_t) - 1.0)
+        && Number(arrSt.t) <= (Number(f.end_t) + 1.0)
+      ) : null;
+
+      // Decision rows for this junction
+      const jDecisions = decisionsByJct[String(jid)] || [];
+      // Pick the last decision before the bus arrival (or last overall)
+      const arrT_jct = arrSt ? arrSt.t : Infinity;
+      const decisionsBeforeArr = jDecisions.filter(d => Number(d.t) <= arrT_jct + 2);
+      const latestDecision = decisionsBeforeArr.length
+        ? decisionsBeforeArr[decisionsBeforeArr.length - 1]
+        : (jDecisions.length ? jDecisions[jDecisions.length - 1] : null);
+
+      const hasPrearmChain = jWave.some(w =>
+        w.event === 'prearm_fired' ||
+        w.event === 'prearm_success' ||
+        w.event === 'prearm_missed' ||
+        w.event === 'prearm_expired'
+      );
 
       // Draw a thin horizontal guide line
       coordExCtx.strokeStyle = '#1a1a3a';
@@ -3651,14 +4724,54 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       coordExCtx.moveTo(padL, midY); coordExCtx.lineTo(W - padR, midY);
       coordExCtx.stroke();
 
-      // Draw arrival phase band around bus arrival (if known)
+      // ── GE / INS action window ────────────────────────────────────────
+      // For GE: use harmony-ge-local detection row as GE-start; bus arrival
+      // or arrival + grace as GE-end.  Draw a filled green band over the row.
+      // For INS: use harmony-ins-local row time and mark with a cyan band.
+      if (latestDecision) {
+        const dn = String(latestDecision.prearm_note || '');
+        const dt = Number(latestDecision.t) || 0;
+        const dTier = String(latestDecision.tier || '');
+        const isGe = dTier === 'harmony-ge-local';
+        const isIns = dTier === 'harmony-ins-local';
+        if (isGe || isIns) {
+          // Action window: start = decision time, end = bus arrival (or +30s estimate)
+          const windowEnd = arrSt ? arrSt.t : dt + 30;
+          const wx0 = xOf(dt);
+          const wx1 = xOf(Math.min(windowEnd, tMax - 1));
+          const wColor = isIns ? 'rgba(0,188,212,0.13)' : 'rgba(46,204,113,0.13)';
+          const wBorder = isIns ? 'rgba(0,188,212,0.55)' : 'rgba(46,204,113,0.55)';
+          coordExCtx.fillStyle = wColor;
+          coordExCtx.fillRect(wx0, y0, wx1 - wx0, y1 - y0);
+          // Left border = action start
+          coordExCtx.strokeStyle = wBorder;
+          coordExCtx.lineWidth = 2;
+          coordExCtx.beginPath(); coordExCtx.moveTo(wx0, y0); coordExCtx.lineTo(wx0, y1); coordExCtx.stroke();
+          // Right border = action end
+          coordExCtx.strokeStyle = wBorder;
+          coordExCtx.lineWidth = 1.5;
+          coordExCtx.setLineDash([3, 2]);
+          coordExCtx.beginPath(); coordExCtx.moveTo(wx1, y0); coordExCtx.lineTo(wx1, y1); coordExCtx.stroke();
+          coordExCtx.setLineDash([]);
+          // Start time label above left border
+          coordExCtx.fillStyle = isIns ? '#00bcd4' : '#2ecc71';
+          coordExCtx.font = 'bold 9px system-ui';
+          coordExCtx.textAlign = 'left';
+          coordExCtx.textBaseline = 'bottom';
+          coordExCtx.fillText((isIns ? 'INS ▶' : 'GE ▶') + fmtT(dt), wx0 + 2, midY - bandH/2 - 1);
+          // End time label above right border
+          coordExCtx.textAlign = 'right';
+          coordExCtx.fillText('◀' + fmtT(windowEnd), wx1 - 2, midY - bandH/2 - 1);
+        }
+      }
+
+      // ── Arrival marker ───────────────────────────────────────────────
       if (arrSt) {
         const ax = xOf(arrSt.t);
-        // Green or red fill for ±10s around arrival
+        const arrIsFocus = arrIsFocusAtJct;
         const phaseW = Math.max(4, plotW * (20 / tRange));
         coordExCtx.fillStyle = arrSt.on_green ? 'rgba(46,204,113,0.18)' : 'rgba(231,76,60,0.18)';
         coordExCtx.fillRect(ax - phaseW/2, midY - bandH/2, phaseW, bandH);
-        // Vertical arrival marker
         coordExCtx.strokeStyle = arrSt.on_green ? '#2ecc71' : '#e74c3c';
         coordExCtx.lineWidth = 1.5;
         coordExCtx.setLineDash([3,2]);
@@ -3666,7 +4779,6 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         coordExCtx.moveTo(ax, y0); coordExCtx.lineTo(ax, y1);
         coordExCtx.stroke();
         coordExCtx.setLineDash([]);
-        // Dot
         coordExCtx.beginPath();
         coordExCtx.arc(ax, midY, 5, 0, Math.PI*2);
         coordExCtx.fillStyle = arrSt.on_green ? '#2ecc71' : '#e74c3c';
@@ -3674,21 +4786,89 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         coordExCtx.strokeStyle = '#000';
         coordExCtx.lineWidth = 1;
         coordExCtx.stroke();
-        // Time label
+        if (arrIsFocus) {
+          coordExCtx.beginPath();
+          coordExCtx.arc(ax, midY, 8, 0, Math.PI * 2);
+          coordExCtx.strokeStyle = '#f1c40f';
+          coordExCtx.lineWidth = 1.6;
+          coordExCtx.stroke();
+        }
         coordExCtx.fillStyle = '#ccc';
         coordExCtx.font = '9px system-ui';
         coordExCtx.textAlign = 'center';
         coordExCtx.textBaseline = 'bottom';
-        coordExCtx.fillText('arr ' + Math.round(arrSt.t) + 's', ax, midY - bandH/2 - 1);
+        coordExCtx.fillText((arrIsFocus ? 'focus ' : 'arr ') + fmtT(arrSt.t), ax, midY - bandH/2 - 1);
       }
 
-      // Draw prearm markers
+      // ── Decision label (right-hand side of row) ─────────────────────
+      // Show what the Harmony controller decided at this junction.
+      // Priority: explicit local action rows > prearm chain > grant/detected.
+      {
+        let decLabel = '';
+        let decColor = '#7777aa';
+        if (latestDecision) {
+          const dn = String(latestDecision.prearm_note || '');
+          const dTier = String(latestDecision.tier || '');
+          const dStatus = String(latestDecision.prearm_status || '');
+          if (dTier === 'harmony-ge-local')  { decLabel = '→ GE applied'; decColor = '#2ecc71'; }
+          else if (dTier === 'harmony-ins-local') { decLabel = '→ INS applied'; decColor = '#00bcd4'; }
+          else if (dTier === 'harmony-no-ge-local')  {
+            const reason = _decisionReasonText(_decisionReasonToken(dn, 'NO_GE '), true);
+            decLabel = 'no GE: ' + reason.substring(0, 46);
+            decColor = '#f1c40f';
+          } else if (dTier === 'harmony-no-ins-local') {
+            const reason = _decisionReasonText(_decisionReasonToken(dn, 'NO_INS '), false);
+            decLabel = 'no INS: ' + reason.substring(0, 46);
+            decColor = '#e67e22';
+          } else if (dStatus === 'skip') {
+            decLabel = 'detected, skipped by local controller';
+            decColor = '#f39c12';
+          }
+        }
+        if (!decLabel && otherFocusRow && !arrIsFocusAtJct) {
+          decLabel = `not focus (bus ${otherFocusRow.veh_id} held corridor priority)`;
+          decColor = '#9b59b6';
+        }
+        if (!decLabel && hasPrearmChain) {
+          const hadPrearmFired = jWave.some(w => w.event === 'prearm_fired');
+          const hadPrearmSuccess = jWave.some(w => w.event === 'prearm_success');
+          const hadPrearmMissed = jWave.some(w => w.event === 'prearm_missed' || w.event === 'prearm_expired');
+          if (hadPrearmSuccess) {
+            decLabel = 'prearm accepted; bus still arrived late';
+          } else if (hadPrearmMissed) {
+            decLabel = 'prearm fired but window missed/expired';
+          } else if (hadPrearmFired) {
+            decLabel = 'prearm fired; no local GE/INS decision row';
+          } else {
+            decLabel = 'coordinator observed bus; no local action row';
+          }
+          decColor = '#9b59b6';
+        }
+        if (!decLabel) {
+          const firstGrant = jWave.find(w => w.event === 'grant');
+          if (firstGrant) { decLabel = 'detected at stopline; no GE/INS row'; decColor = '#7f8c8d'; }
+        }
+        if (!decLabel && arrSt) {
+          decLabel = arrSt.on_green
+            ? 'natural green; no intervention required'
+            : 'arrived on red; no controller decision row found';
+          decColor = arrSt.on_green ? '#2ecc71' : '#e74c3c';
+        }
+        if (!decLabel && !arrSt) { decLabel = 'not visited'; decColor = '#444466'; }
+        if (decLabel) {
+          coordExCtx.fillStyle = decColor;
+          coordExCtx.font = '9px system-ui';
+          coordExCtx.textAlign = 'right';
+          coordExCtx.textBaseline = 'top';
+          coordExCtx.fillText(decLabel, W - padR - 2, y0 + 2);
+        }
+      }
+
+      // ── Prearm markers ───────────────────────────────────────────────
       jPrearms.forEach(w => {
         const px = xOf(w.t);
-        // Arrow from prearm time toward arrival
         const arrT = arrSt ? arrSt.t : (w.t + 30);
         const arrX = xOf(Math.min(arrT, tMax - 1));
-        // Dashed line: prearm issued → predicted arrival
         coordExCtx.strokeStyle = 'rgba(241,196,15,0.5)';
         coordExCtx.lineWidth = 1;
         coordExCtx.setLineDash([4,3]);
@@ -3696,22 +4876,22 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         coordExCtx.moveTo(px, midY); coordExCtx.lineTo(arrX, midY);
         coordExCtx.stroke();
         coordExCtx.setLineDash([]);
-        // Diamond at prearm issue time
+        // Diamond
         coordExCtx.fillStyle = '#f1c40f';
         coordExCtx.beginPath();
         coordExCtx.moveTo(px, midY - 7); coordExCtx.lineTo(px + 6, midY);
         coordExCtx.lineTo(px, midY + 7); coordExCtx.lineTo(px - 6, midY);
         coordExCtx.closePath(); coordExCtx.fill();
-        // Label
+        // Label: 'prearm Xm:Ys'
         coordExCtx.fillStyle = '#f1c40f';
         coordExCtx.font = '9px system-ui';
         coordExCtx.textAlign = 'center';
         coordExCtx.textBaseline = 'top';
-        coordExCtx.fillText('prearm', px, midY + 8);
+        coordExCtx.fillText('prearm ' + fmtT(w.t), px, midY + 8);
       });
 
-      // prearm_success
-      wave.filter(w => String(w.jct) === String(jid) && w.event === 'prearm_success').forEach(w => {
+      // prearm_success star
+      jWave.filter(w => w.event === 'prearm_success').forEach(w => {
         const sx = xOf(w.t);
         coordExCtx.fillStyle = '#2ecc71';
         coordExCtx.font = 'bold 15px sans-serif';
@@ -3719,24 +4899,113 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         coordExCtx.fillText('★', sx, midY - 12);
       });
 
-      // prearm_missed / expired
-      wave.filter(w => String(w.jct) === String(jid) && (w.event === 'prearm_missed' || w.event === 'prearm_expired')).forEach(w => {
+      // prearm_missed / expired (only for junctions that had a prearm_fired)
+      jWave.filter(w => (w.event === 'prearm_missed' || w.event === 'prearm_expired')).forEach(w => {
         const mx = xOf(w.t);
         coordExCtx.strokeStyle = '#e74c3c'; coordExCtx.lineWidth = 2;
         coordExCtx.beginPath(); coordExCtx.moveTo(mx-5,midY-5); coordExCtx.lineTo(mx+5,midY+5); coordExCtx.stroke();
         coordExCtx.beginPath(); coordExCtx.moveTo(mx+5,midY-5); coordExCtx.lineTo(mx-5,midY+5); coordExCtx.stroke();
+        coordExCtx.fillStyle = '#e74c3c';
+        coordExCtx.font = '9px system-ui';
+        coordExCtx.textAlign = 'center';
+        coordExCtx.textBaseline = 'top';
+        coordExCtx.fillText(w.event === 'prearm_missed' ? 'missed' : 'expired', mx, midY + 8);
       });
 
-      // grant marker (blue triangle) — show only the first grant per junction
-      const _grantEvts = wave.filter(w => String(w.jct) === String(jid) && w.event === 'grant');
+      // grant marker (blue triangle)
+      const _grantEvts = jWave.filter(w => w.event === 'grant');
       (_grantEvts.length > 0 ? [_grantEvts[0]] : []).forEach(w => {
         const gx = xOf(w.t);
-        coordExCtx.fillStyle = '#3498db';
-        coordExCtx.beginPath();
-        coordExCtx.moveTo(gx, midY - 7); coordExCtx.lineTo(gx + 6, midY + 4);
-        coordExCtx.lineTo(gx - 6, midY + 4); coordExCtx.closePath(); coordExCtx.fill();
+        if (hasPrearmChain) {
+          coordExCtx.fillStyle = '#3498db';
+          coordExCtx.beginPath();
+          coordExCtx.moveTo(gx, midY - 7); coordExCtx.lineTo(gx + 6, midY + 4);
+          coordExCtx.lineTo(gx - 6, midY + 4); coordExCtx.closePath(); coordExCtx.fill();
+        } else {
+          coordExCtx.strokeStyle = '#f39c12'; coordExCtx.lineWidth = 2;
+          coordExCtx.beginPath(); coordExCtx.arc(gx, midY - 10, 5, 0, Math.PI * 2); coordExCtx.stroke();
+          coordExCtx.fillStyle = '#f39c12';
+          coordExCtx.font = '9px system-ui';
+          coordExCtx.textAlign = 'center'; coordExCtx.textBaseline = 'top';
+          coordExCtx.fillText('detected', gx, midY + 8);
+        }
       });
     });
+
+    // ── Focus + Unfocused time bars ───────────────────────────────────────
+    if (hasFocusBand) {
+      const focusY    = H - padB + 14;
+      const unfocusY  = H - padB + 32;
+
+      // Focus label
+      coordExCtx.fillStyle = '#f1c40f';
+      coordExCtx.font = '10px system-ui';
+      coordExCtx.textAlign = 'right';
+      coordExCtx.textBaseline = 'middle';
+      coordExCtx.fillText('focus', padL - 6, focusY);
+
+      // Unfocused label
+      coordExCtx.fillStyle = '#7777aa';
+      coordExCtx.textBaseline = 'middle';
+      coordExCtx.fillText('unfocused', padL - 6, unfocusY);
+
+      // Thin guide lines
+      coordExCtx.strokeStyle = 'rgba(241,196,15,0.10)';
+      coordExCtx.lineWidth = 1;
+      coordExCtx.beginPath(); coordExCtx.moveTo(padL, focusY); coordExCtx.lineTo(W - padR, focusY); coordExCtx.stroke();
+      coordExCtx.strokeStyle = 'rgba(119,119,170,0.10)';
+      coordExCtx.beginPath(); coordExCtx.moveTo(padL, unfocusY); coordExCtx.lineTo(W - padR, unfocusY); coordExCtx.stroke();
+
+      // Draw focus intervals
+      focusRows.forEach(f => {
+        const segStart = Math.max(tMin, Number(f.start_t));
+        const segEnd = Math.min(tMax, Number(f.end_t));
+        if (!(segEnd > segStart)) return;
+        const x0 = xOf(segStart), x1 = xOf(segEnd);
+        coordExCtx.strokeStyle = '#f1c40f';
+        coordExCtx.lineWidth = 4;
+        coordExCtx.lineCap = 'round';
+        coordExCtx.beginPath(); coordExCtx.moveTo(x0, focusY); coordExCtx.lineTo(x1, focusY); coordExCtx.stroke();
+        // Start dot
+        coordExCtx.fillStyle = '#f1c40f';
+        coordExCtx.beginPath(); coordExCtx.arc(x0, focusY, 3, 0, Math.PI * 2); coordExCtx.fill();
+        // End open circle
+        coordExCtx.fillStyle = '#0a0a1a';
+        coordExCtx.beginPath(); coordExCtx.arc(x1, focusY, 4, 0, Math.PI * 2); coordExCtx.fill();
+        coordExCtx.strokeStyle = '#f1c40f'; coordExCtx.lineWidth = 2;
+        coordExCtx.beginPath(); coordExCtx.arc(x1, focusY, 4, 0, Math.PI * 2); coordExCtx.stroke();
+        // Outcome label
+        coordExCtx.fillStyle = '#f1c40f';
+        coordExCtx.font = '9px system-ui';
+        coordExCtx.textAlign = 'left'; coordExCtx.textBaseline = 'bottom';
+        coordExCtx.fillText(String(f.outcome || 'focus off'), Math.min(x1 + 6, W - padR - 42), focusY - 4);
+      });
+
+      // Draw UN-focused intervals (gaps between focus segments within [tMin,tMax])
+      // Collect sorted focus intervals clipped to plot range
+      const fSegs = focusRows
+        .map(f => [Math.max(tMin, Number(f.start_t)), Math.min(tMax, Number(f.end_t))])
+        .filter(([a,b]) => b > a)
+        .sort((a,b) => a[0] - b[0]);
+      // Build complement segments
+      let cursor = tMin;
+      fSegs.forEach(([a, b]) => {
+        if (cursor < a) {
+          // unfocused gap [cursor, a]
+          const ux0 = xOf(cursor), ux1 = xOf(a);
+          coordExCtx.strokeStyle = '#555577';
+          coordExCtx.lineWidth = 3;
+          coordExCtx.lineCap = 'round';
+          coordExCtx.beginPath(); coordExCtx.moveTo(ux0, unfocusY); coordExCtx.lineTo(ux1, unfocusY); coordExCtx.stroke();
+        }
+        cursor = Math.max(cursor, b);
+      });
+      if (cursor < tMax) {
+        const ux0 = xOf(cursor), ux1 = xOf(tMax);
+        coordExCtx.strokeStyle = '#555577'; coordExCtx.lineWidth = 3; coordExCtx.lineCap = 'round';
+        coordExCtx.beginPath(); coordExCtx.moveTo(ux0, unfocusY); coordExCtx.lineTo(ux1, unfocusY); coordExCtx.stroke();
+      }
+    }
 
     // Title
     const nPrearms = wave.filter(w => w.event === 'prearm_fired').length;
@@ -4371,26 +5640,67 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   function renderBusCompChart(ri) {
     const r = runs[ri];
     const noDataEl = document.getElementById('buscomp-no-data');
+    const summaryEl = document.getElementById('buscomp-summary');
     const ctx = document.getElementById('buscomp-canvas');
     if (_buscompChart) { _buscompChart.destroy(); _buscompChart = null; }
 
     const journeys = (r.bus_journeys || []).filter(j => j.n_jcts >= 2);
     const fh = r.focus_history || [];
-    const focusBusSet = new Set((r.focus_bus_ids || []).map(v => Number(v)));
-    // Also pull grant events from wave events on each journey
-    const grantedBusSet = new Set();
+    const phaseSamples = r.phase_samples || [];
+
+    // Build focus_history junction count per bus: vid → Set of jct_ids
+    // This is the authoritative grant count — sourced from ACTUAL GE/INS events
+    // written by _acquire_focus(), not from wave-event CSV which can be spammed.
+    const fhJctsByVid = {};
+    fh.forEach(f => {
+      if (f.veh_id > 0 && f.jct_id > 0) {
+        if (!fhJctsByVid[f.veh_id]) fhJctsByVid[f.veh_id] = new Set();
+        fhJctsByVid[f.veh_id].add(f.jct_id);
+      }
+    });
+
+    // Fallback grant source: explicit local action rows in phase samples.
+    // This covers runs where focus history is sparse or omitted.
+    const actionJctsByVid = {};
+    phaseSamples.forEach(p => {
+      const vid = Number(p.vid || 0);
+      const jid = Number(p.jct || 0);
+      const tier = String(p.tier || '');
+      const status = String(p.prearm_status || '');
+      if (vid <= 0 || jid <= 0) return;
+      if ((tier === 'harmony-ge-local' || tier === 'harmony-ins-local') && status === 'action') {
+        if (!actionJctsByVid[vid]) actionJctsByVid[vid] = new Set();
+        actionJctsByVid[vid].add(jid);
+      }
+    });
+
+    const mergedGrantJctsByVid = {};
+    const allGrantVidKeys = new Set([
+      ...Object.keys(fhJctsByVid),
+      ...Object.keys(actionJctsByVid),
+    ]);
+    allGrantVidKeys.forEach(k => {
+      const vid = Number(k);
+      const merged = new Set();
+      (fhJctsByVid[vid] || new Set()).forEach(v => merged.add(v));
+      (actionJctsByVid[vid] || new Set()).forEach(v => merged.add(v));
+      mergedGrantJctsByVid[vid] = merged;
+    });
+
+    // grantedBusSet: any bus seen in focus_history (got at least one GE or INS)
+    const grantedBusSet = new Set(Object.keys(mergedGrantJctsByVid).map(Number));
+    // Also add buses whose journey wave events show an actual grant (COORD only)
     journeys.forEach(j => {
       const waves = j.wave || [];
-      if (waves.some(w => w.event === 'grant' || w.event === 'prearm_success')) {
+      if (waves.some(w => w.event === 'grant')) {
         grantedBusSet.add(j.vid);
       }
     });
-    // Focus history: buses that were granted at least once
-    fh.forEach(f => { if (f.veh_id > 0) grantedBusSet.add(f.veh_id); });
 
     if (!journeys.length) {
       if (noDataEl) noDataEl.style.display = '';
       if (ctx) ctx.style.display = 'none';
+      if (summaryEl) summaryEl.textContent = '';
       return;
     }
     if (noDataEl) noDataEl.style.display = 'none';
@@ -4400,10 +5710,6 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const showTT    = document.getElementById('buscomp-show-tt')?.checked;
     const showCount = document.getElementById('buscomp-show-count')?.checked;
 
-    // Build per-bus aggregate stats from journey stops
-    // stops: [{jct, t, on_green, tier, x, y}]
-    // Approximate corridor time = last_stop.t - first_stop.t
-    // Priority count = stops where on_green (and not natural green — proxy: on_green)
     const grantedJourneys = journeys.filter(j => grantedBusSet.has(j.vid));
     const normalJourneys  = journeys.filter(j => !grantedBusSet.has(j.vid));
 
@@ -4415,10 +5721,11 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         if (stops.length < 2) return;
         const tt = (stops[stops.length-1].t || 0) - (stops[0].t || 0);
         totalTT += Math.max(0, tt);
-        // Priority grants: stops where on_green AND wave has grant/success
-        const waves = j.wave || [];
-        const grantJcts = new Set(waves.filter(w => w.event === 'grant' || w.event === 'prearm_success').map(w => String(w.jct)));
-        totalPriority += grantJcts.size;
+        // Priority grants: count unique junctions from focus_history for this bus.
+        // Using fhJctsByVid avoids wave-event spam (prearm_success fired per step)
+        // and works for both INDEP (no wave CSV) and COORD runs.
+        const fhJcts = mergedGrantJctsByVid[j.vid];
+        totalPriority += fhJcts ? fhJcts.size : 0;
         // Approximate delay: junctions arrived on red (not on_green)
         totalDelay += stops.filter(s => !s.on_green).length * 30; // rough 30s per red arrival
       });
@@ -4428,6 +5735,51 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     const aggGranted = aggJourneys(grantedJourneys);
     const aggNormal  = aggJourneys(normalJourneys);
+
+    // Same-bus baseline context for this selected run.
+    // This avoids reading granted-vs-never-granted as a causal A/B split.
+    let matchedBusCount = 0;
+    let matchedTtDeltaS = null;
+    let matchedDelayDeltaS = null;
+    const noTspRun = runs.find(rr => (rr.strategy || '').toUpperCase() === 'NORMAL'
+      || (rr.exp_name || '').toUpperCase() === 'NO_TSP');
+    if (noTspRun && r !== noTspRun) {
+      const noTspByVid = {};
+      (noTspRun.bus_journeys || []).forEach(j => { noTspByVid[j.vid] = j; });
+      let sumTtDelta = 0;
+      let sumDelayDelta = 0;
+      grantedJourneys.forEach(j => {
+        const b = noTspByVid[j.vid];
+        if (!b) return;
+        const s = j.stops || [];
+        const sb = b.stops || [];
+        if (s.length < 2 || sb.length < 2) return;
+        const tt = (s[s.length - 1].t || 0) - (s[0].t || 0);
+        const ttBase = (sb[sb.length - 1].t || 0) - (sb[0].t || 0);
+        const delay = s.filter(x => !x.on_green).length * 30;
+        const delayBase = sb.filter(x => !x.on_green).length * 30;
+        sumTtDelta += (tt - ttBase);
+        sumDelayDelta += (delay - delayBase);
+        matchedBusCount += 1;
+      });
+      if (matchedBusCount > 0) {
+        matchedTtDeltaS = sumTtDelta / matchedBusCount;
+        matchedDelayDeltaS = sumDelayDelta / matchedBusCount;
+      }
+    }
+
+    if (summaryEl) {
+      let txt =
+        `Granted hard-case cohort: avg TT ${aggGranted.tt_avg.toFixed(1)}s, avg delay proxy ${aggGranted.delay_avg.toFixed(1)}s; ` +
+        `Never-priority cohort: avg TT ${aggNormal.tt_avg.toFixed(1)}s, avg delay proxy ${aggNormal.delay_avg.toFixed(1)}s.`;
+      txt += ' This split is not causal because granted buses are selected hard cases.';
+      if (matchedBusCount > 0 && matchedTtDeltaS !== null && matchedDelayDeltaS !== null) {
+        const ttDir = matchedTtDeltaS <= 0 ? 'better' : 'worse';
+        const dDir = matchedDelayDeltaS <= 0 ? 'better' : 'worse';
+        txt += ` Same-bus vs No-TSP (n=${matchedBusCount}): TT ${Math.abs(matchedTtDeltaS).toFixed(1)}s ${ttDir}, delay proxy ${Math.abs(matchedDelayDeltaS).toFixed(1)}s ${dDir}.`;
+      }
+      summaryEl.textContent = txt;
+    }
 
     const labels = [];
     const grantedData = [];
@@ -4443,12 +5795,12 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       normalData.push(aggNormal.tt_avg);
     }
     if (showCount) {
-      labels.push('Avg priority grants (junctions)');
-      grantedData.push(aggGranted.priority_avg * 100); // scale for visibility
-      normalData.push(aggNormal.priority_avg  * 100);
+      labels.push('Avg junctions granted per bus');
+      grantedData.push(aggGranted.priority_avg);
+      normalData.push(aggNormal.priority_avg);
     }
 
-    // Per-junction priority count breakdown
+    // Per-junction priority count breakdown (how many buses got a grant at each jct)
     const jctGrantCount = {};
     const jctNormalCount = {};
     jcts.forEach(j => { jctGrantCount[j] = 0; jctNormalCount[j] = 0; });
@@ -4456,10 +5808,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       journeys.forEach(j => {
         const isGranted = grantedBusSet.has(j.vid);
         const waves = j.wave || [];
-        const grantJcts = new Set(waves.filter(w => w.event === 'grant' || w.event === 'prearm_success').map(w => String(w.jct)));
+        const fhJcts = mergedGrantJctsByVid[j.vid] || new Set();
         (j.stops || []).forEach(s => {
           const jid = String(s.jct);
-          if (isGranted) jctGrantCount[jid] = (jctGrantCount[jid]||0) + (grantJcts.has(jid) ? 1 : 0);
+          if (isGranted) jctGrantCount[jid] = (jctGrantCount[jid]||0) + (fhJcts.has(Number(jid)) ? 1 : 0);
           else           jctNormalCount[jid] = (jctNormalCount[jid]||0) + (s.on_green ? 1 : 0);
         });
       });
@@ -4467,14 +5819,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     const datasets = [
       {
-        label: `Priority buses (n=${grantedJourneys.length})`,
+        label: `Priority-granted hard cases (n=${grantedJourneys.length})`,
         data: grantedData,
         backgroundColor: 'rgba(41,182,246,0.7)',
         borderColor: '#29b6f6',
         borderWidth: 1,
       },
       {
-        label: `Normal buses (n=${normalJourneys.length})`,
+        label: `Never-priority buses (n=${normalJourneys.length})`,
         data: normalData,
         backgroundColor: 'rgba(255,179,0,0.7)',
         borderColor: '#ffb300',
@@ -4521,74 +5873,145 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
 // ── Same-Bus Cross-Experiment Comparison ─────────────────────────────────
 {
-  const normalRun = runs.find(r => (r.label || '').toLowerCase().includes('normal'));
-  const tspRuns   = runs.filter(r => r !== normalRun);
+  // Identify the three run roles:
+  //   noTspRun  — baseline (strategy=NORMAL / exp_name=NO_TSP)
+  //   coordRun  — Phase-Based Coordinated (coordinated===true && not NORMAL)
+  //   indepRun  — Phase-Based Uncoordinated (coordinated===false && not NORMAL)
+  const noTspRun  = runs.find(r => (r.strategy || '').toUpperCase() === 'NORMAL'
+                                || (r.exp_name  || '').toUpperCase() === 'NO_TSP');
+  const coordRun  = runs.find(r => r.coordinated === true && r !== noTspRun);
+  const indepRun  = runs.find(r => r.coordinated === false && r !== noTspRun);
   const noDataEl  = document.getElementById('xcomp-no-data');
   const ctx       = document.getElementById('xcomp-canvas');
 
-  if (!normalRun || !tspRuns.length) {
-    if (noDataEl) noDataEl.textContent = 'Requires ≥2 runs including a NORMAL baseline run.';
+  if (!noTspRun || !coordRun) {
+    if (noDataEl) noDataEl.textContent = 'Requires a No-TSP baseline and a Coordinated run.';
   } else {
-    // Build veh_id → journey map for NORMAL run
-    const normalJourneyMap = {};
-    (normalRun.bus_journeys || []).forEach(j => { normalJourneyMap[j.vid] = j; });
+    // Build veh_id → journey maps keyed by run
+    function _journeyMap(run) {
+      const m = {};
+      (run ? run.bus_journeys || [] : []).forEach(j => { m[j.vid] = j; });
+      return m;
+    }
+    const noTspJMap  = _journeyMap(noTspRun);
+    const coordJMap  = _journeyMap(coordRun);
+    const indepJMap  = _journeyMap(indepRun);
 
-    // For each TSP run, find buses that were granted priority and compare
-    const xcompLabels  = [];  // bus vid labels
-    const normalRedArr = [];  // NORMAL red-arrival count for these buses
-    const tspRedArr    = [];  // TSP red-arrival count (best TSP run)
-    const tspTTArr     = [];  // TSP travel time
-    const normalTTArr  = [];  // NORMAL travel time
-    const grantCountArr = []; // Number of priority grants in TSP run
+    // Buses granted GE or Phase Insertion in the COORDINATED run.
+    // _acquire_focus() is called exactly when GE or INS fires, so the
+    // focus_history contains only buses that received one of these actions.
+    const coordFH = coordRun.focus_history || [];
+    const grantedVids = new Set(coordFH.map(f => f.veh_id).filter(v => v > 0));
+    // Also include buses whose journey wave-events show 'grant'/'prearm_success'
+    (coordRun.bus_journeys || []).forEach(j => {
+      if ((j.wave || []).some(w => w.event === 'grant' || w.event === 'prearm_success')) {
+        grantedVids.add(j.vid);
+      }
+    });
 
-    // Use the first TSP run with any priority grants
-    const focusRun = tspRuns.find(r => (r.prearm_fired || 0) > 0 || (r.tsp_ext || 0) > 0) || tspRuns[0];
-    const fh = focusRun.focus_history || [];
-    const grantedVids = new Set([
-      ...fh.map(f => f.veh_id).filter(v => v > 0),
-      ...(focusRun.bus_journeys || []).filter(j => {
-        const waves = j.wave || [];
-        return waves.some(w => w.event === 'grant' || w.event === 'prearm_success');
-      }).map(j => j.vid),
-    ]);
+    const xcompLabels  = [];
+    const noTspTTArr   = [];
+    const indepTTArr   = [];
+    const coordTTArr   = [];
+    const ttSavCoordArr = [];  // noTsp_TT - coord_TT  (positive = coord faster)
+    const ttSavIndepArr = [];  // noTsp_TT - indep_TT
+
+    function _journeyTT(journeyObj) {
+      const stops = (journeyObj || {}).stops || [];
+      if (stops.length < 2) return null;
+      return (stops[stops.length-1].t || 0) - (stops[0].t || 0);
+    }
 
     grantedVids.forEach(vid => {
-      const tspJ    = (focusRun.bus_journeys || []).find(j => j.vid === vid);
-      const normalJ = normalJourneyMap[vid];
-      if (!tspJ || !normalJ) return;
+      const coordJ  = coordJMap[vid];
+      const noTspJ  = noTspJMap[vid];
+      if (!coordJ || !noTspJ) return;   // must have journeys in both baseline and coordinated
 
-      const tspStops    = tspJ.stops    || [];
-      const normalStops = normalJ.stops || [];
-      if (tspStops.length < 2 || normalStops.length < 2) return;
+      const coordTT = _journeyTT(coordJ);
+      const noTspTT = _journeyTT(noTspJ);
+      if (coordTT === null || noTspTT === null) return;
 
-      const tspTT    = (tspStops[tspStops.length-1].t    || 0) - (tspStops[0].t    || 0);
-      const normalTT = (normalStops[normalStops.length-1].t || 0) - (normalStops[0].t || 0);
-      const tspRed    = tspStops.filter(s => !s.on_green).length;
-      const normalRed = normalStops.filter(s => !s.on_green).length;
-      const grants    = (tspJ.wave || []).filter(w => w.event === 'grant' || w.event === 'prearm_success').length;
+      const indepTT = _journeyTT(indepJMap[vid]);  // may be null if bus not seen
 
       xcompLabels.push(`Bus ${vid}`);
-      tspTTArr.push(Math.max(0, tspTT));
-      normalTTArr.push(Math.max(0, normalTT));
-      tspRedArr.push(tspRed);
-      normalRedArr.push(normalRed);
-      grantCountArr.push(grants);
+      noTspTTArr.push(Math.max(0, noTspTT));
+      coordTTArr.push(Math.max(0, coordTT));
+      indepTTArr.push(indepTT !== null ? Math.max(0, indepTT) : null);
+      ttSavCoordArr.push(Math.round(noTspTT - coordTT));
+      ttSavIndepArr.push(indepTT !== null ? Math.round(noTspTT - indepTT) : null);
     });
+
+    const nLabel = noTspRun.label  || 'No TSP';
+    const cLabel = coordRun.label  || 'Coordinated';
+    const iLabel = indepRun ? (indepRun.label || 'Uncoordinated') : 'Uncoordinated';
 
     if (xcompLabels.length && ctx) {
       if (noDataEl) noDataEl.style.display = 'none';
       ctx.style.display = '';
-      // Compute delay savings: positive = TSP faster (NORMAL_TT - TSP_TT)
-      const ttSavingArr = normalTTArr.map((n, i) => Math.round(n - tspTTArr[i]));
+      const datasets = [
+        { label: `${nLabel} — corridor TT (s)`,   data: noTspTTArr,   backgroundColor: 'rgba(255,82,82,0.7)',   yAxisID: 'y' },
+        { label: `${iLabel} — corridor TT (s)`,   data: indepTTArr,   backgroundColor: 'rgba(255,179,0,0.7)',   yAxisID: 'y' },
+        { label: `${cLabel} — corridor TT (s)`,   data: coordTTArr,   backgroundColor: 'rgba(41,182,246,0.7)',  yAxisID: 'y' },
+        { label: `TT saving: ${cLabel} vs ${nLabel} (s)`,  data: ttSavCoordArr, backgroundColor: 'rgba(0,230,118,0.6)',  yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
+        { label: `TT saving: ${iLabel} vs ${nLabel} (s)`,  data: ttSavIndepArr, backgroundColor: 'rgba(255,235,59,0.4)',  yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(255,235,59,0.8)' },
+      ];
       new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: { labels: xcompLabels, datasets },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+            tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
+            title: {
+              display: true,
+              text: `Buses granted GE/INS in ${cLabel} run — corridor TT across all runs (${xcompLabels.length} buses)`,
+              color: '#7070a0', font: { size: 11 },
+            },
+          },
+          scales: {
+            x:  { ticks: { color: '#9090cc', maxRotation: 60 }, grid: { color: '#1e1e38' } },
+            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Corridor total time (s)', color: '#7070a0' }, min: 0 },
+            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Time saving vs baseline (s)', color: '#00e676' } },
+          },
+        },
+      });
+    } else if (noDataEl) {
+      noDataEl.textContent = `No buses found that were granted GE/INS in the ${cLabel} run.`;
+    }
+
+    // ── Delay comparison chart (same bus set, red-stop estimate) ──────────
+    // Delay proxy: n_red_stops × 30s  (same approach as buscomp "red arrivals")
+    const delayCtxEl  = document.getElementById('xcomp-delay-canvas');
+    const delayNoData = document.getElementById('xcomp-delay-no-data');
+
+    function _busDelay(journeyMap, vid) {
+      const j = journeyMap[vid];
+      if (!j) return null;
+      const reds = (j.stops || []).filter(s => !s.on_green).length;
+      return reds * 30;   // s  (rough 30s per red-phase arrival)
+    }
+
+    if (xcompLabels.length && delayCtxEl) {
+      const noTspDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(noTspJMap, vid); });
+      const coordDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(coordJMap, vid); });
+      const indepDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(indepJMap, vid); });
+      const delSavCoord   = noTspDelArr.map((d, i) => d !== null && coordDelArr[i] !== null ? Math.round(d - coordDelArr[i]) : null);
+      const delSavIndep   = noTspDelArr.map((d, i) => d !== null && indepDelArr[i] !== null ? Math.round(d - indepDelArr[i]) : null);
+
+      delayCtxEl.style.display = '';
+      if (delayNoData) delayNoData.style.display = 'none';
+      new Chart(delayCtxEl.getContext('2d'), {
         type: 'bar',
         data: {
           labels: xcompLabels,
           datasets: [
-            { label: `NORMAL — corridor travel time (s)`,       data: normalTTArr, backgroundColor: 'rgba(255,82,82,0.7)',   yAxisID: 'y' },
-            { label: `${focusRun.label} — corridor travel time (s)`, data: tspTTArr,    backgroundColor: 'rgba(41,182,246,0.7)', yAxisID: 'y' },
-            { label: 'Travel time saving vs NORMAL (s)',        data: ttSavingArr, backgroundColor: 'rgba(0,230,118,0.6)',  yAxisID: 'y2',
-              type: 'bar', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
+            { label: `${nLabel} — est. delay (s)`,   data: noTspDelArr,  backgroundColor: 'rgba(255,82,82,0.7)',  yAxisID: 'y' },
+            { label: `${iLabel} — est. delay (s)`,   data: indepDelArr,  backgroundColor: 'rgba(255,179,0,0.7)',  yAxisID: 'y' },
+            { label: `${cLabel} — est. delay (s)`,   data: coordDelArr,  backgroundColor: 'rgba(41,182,246,0.7)', yAxisID: 'y' },
+            { label: `Delay saving: ${cLabel} vs ${nLabel} (s)`, data: delSavCoord, backgroundColor: 'rgba(0,230,118,0.6)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
+            { label: `Delay saving: ${iLabel} vs ${nLabel} (s)`, data: delSavIndep, backgroundColor: 'rgba(255,235,59,0.4)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(255,235,59,0.8)' },
           ],
         },
         options: {
@@ -4597,17 +6020,19 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           plugins: {
             legend: { labels: { color: '#9090cc', font: { size: 10 } } },
             tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
-            title: { display: true, text: `Same buses: NORMAL vs ${focusRun.label} — corridor travel time (${xcompLabels.length} buses)`, color: '#7070a0', font: { size: 11 } },
+            title: {
+              display: true,
+              text: `Same buses — estimated corridor delay (red-stop × 30s proxy, ${xcompLabels.length} buses)`,
+              color: '#7070a0', font: { size: 11 },
+            },
           },
           scales: {
-            x: { ticks: { color: '#9090cc', maxRotation: 60 }, grid: { color: '#1e1e38' } },
-            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Corridor total time (s)', color: '#7070a0' }, min: 0 },
-            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Time saving (s)', color: '#00e676' } },
+            x:  { ticks: { color: '#9090cc', maxRotation: 60 }, grid: { color: '#1e1e38' } },
+            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Est. delay (s)', color: '#7070a0' }, min: 0 },
+            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Delay saving vs baseline (s)', color: '#00e676' } },
           },
         },
       });
-    } else if (noDataEl) {
-      noDataEl.textContent = `No matching buses found between NORMAL and ${focusRun?.label || 'TSP'} runs.`;
     }
   }
 }
@@ -4745,6 +6170,20 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const phaseSamples = r.phase_samples || [];
     const journeys = r.bus_journeys || [];
     const focusBusSet = new Set((r.focus_bus_ids || []).map(v => Number(v)));
+    const focusWindows = fh.map(f => ({
+      veh: Number(f.veh_id),
+      jct: Number(f.jct_id),
+      t0: Number(f.start_t),
+      t1: Number(f.end_t),
+    })).filter(f => f.veh > 0 && f.jct > 0 && Number.isFinite(f.t0) && Number.isFinite(f.t1));
+    function inFocusWindow(sample) {
+      const sv = Number(sample.vid);
+      const sj = Number(sample.jct);
+      const st = Number(sample.t);
+      return focusWindows.some(f =>
+        f.veh === sv && f.jct === sj && st >= (f.t0 - 1.0) && st <= (f.t1 + 1.0)
+      );
+    }
     const noData = document.getElementById('decision-no-data');
     const summ = document.getElementById('decision-summary');
     const canvas = document.getElementById('decision-chart');
@@ -4769,7 +6208,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       let summaryTxt = `Loaded ${fh.length} focus segments across ${nJctsFocus || nJctsPhase} junctions`;
       if (fh.length) summaryTxt += ` | avg held ${avgHeld}s`;
       if (phaseSamples.length) {
-        const focusPhase = phaseSamples.filter(p => focusBusSet.has(Number(p.vid)));
+        const focusPhase = phaseSamples.filter(p => inFocusWindow(p));
         const g = focusPhase.filter(p => Number(p.on_green) === 1).length;
         const tot = focusPhase.length;
         summaryTxt += ` | focus-bus green hits ${g}/${tot}`;
@@ -4866,8 +6305,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       });
     }
 
-    if (showFocus && phaseSamples.length && focusBusSet.size) {
-      const focusPts = phaseSamples.filter(p => focusBusSet.has(Number(p.vid)) && jctIds.includes(Number(p.jct)));
+    if (showFocus && phaseSamples.length && focusWindows.length) {
+      const focusPts = phaseSamples.filter(p => inFocusWindow(p) && jctIds.includes(Number(p.jct)));
       const focusGreen = focusPts.filter(p => Number(p.on_green) === 1).map(p => ({
         x: Number(p.t), y: String(p.jct), _vid: Number(p.vid), _sig: Number(p.signal_phase), _bus: Number(p.bus_phase),
       }));
@@ -5029,8 +6468,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     {key:'tsp_no_action',hdr:'No action (raw)',    lb:false, dec:0},
     {key:'avg_extension_s', hdr:'Avg GE (s)',      lb:false, dec:1},
     {key:'avg_insertion_s', hdr:'Avg INS (s)',     lb:false, dec:1},
-    {key:'avg_insertion_wait_s', hdr:'Avg INS wait (s)', lb:false, dec:1},
-    {key:'avg_density',  hdr:'Density (v/km)',    lb:false, dec:2},
+    {key:'avg_insertion_wait_s', hdr:'Avg INS lead (s)', lb:false, dec:1},
+    {key:'avg_density',  hdr:'Density (veh/km/lane)',    lb:false, dec:2},
     {key:'avg_speed',    hdr:'Speed (km/h)',       lb:false, dec:1},
     {key:'avg_flow',     hdr:'Flow (v/h)',         lb:false, dec:0},
     {key:'avg_queue',    hdr:'Queue (veh)',        lb:true,  dec:1},
@@ -5169,7 +6608,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       detected_buses: 'Detected buses',
       tracked_only_buses: 'Tracked-only buses', coverage_pct: 'Detection coverage (%)',
       focus_buses: 'Focus buses', bus_passages: 'Bus passages',
-      avg_density: 'Density (v/km)', avg_speed: 'Speed (km/h)',
+      avg_density: 'Density (veh/km/lane)', avg_speed: 'Speed (km/h)',
       avg_flow: 'Flow (v/h)', avg_queue: 'Queue (veh)',
     }[metric] || metric;
 
@@ -5292,7 +6731,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     {key:'iid',      hdr:'Junction'},
     {key:'is_main',  hdr:'Main?',        dec:0},
     {key:'length_km',hdr:'Length (km)',   dec:3},
-    {key:'density',  hdr:'Density (v/km)',dec:2},
+    {key:'density',  hdr:'Density (veh/km/lane)',dec:2},
     {key:'speed',    hdr:'Speed (km/h)',  dec:1},
     {key:'flow',     hdr:'Flow (v/h)',    dec:0},
     {key:'queue',    hdr:'Queue (veh)',   dec:1},
@@ -5371,35 +6810,35 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     // label: Aimsun display name
     // unit: Aimsun unit string
     // dec: decimal places
-    // Aimsun 26 Time Series output format — last run NORMAL reference values shown in notes.
+    // Aimsun 26 statistical output format — NORMAL reference values shown in notes.
     //   All: Density=24.05, Flow=10946, Speed=6.15, Delay=247.76
     //   Car: Density=23.15, Flow=10521, Speed=6.14, Delay=248.40
     //   Truck: Density=0.62, Flow=298, Speed=6.61, Delay=246.31
     //   Bus: Density=0.29, Flow=127, Speed=5.51, Delay=194.07
-    // Entry-Based Delay Time (sec/km) = veh·delay·s / veh·km. Computed as (DTa-freeTT)/length.
+    // Entry-Based Delay Time in Aimsun is average delay per vehicle per kilometer and excludes virtual queue time.
     // Pax delay (s/pax) = pax·s of delay / passenger-passages — DIFFERENT metric (shown below).
     // Car occupancy: 1.2 pax/car  |  Bus occupancy: 40 pax/bus
     const AIMSUN_ROWS = [
-      // ── Density (veh/km) — length-weighted, all network sections ──────────
-      { label:'Density - All',              key:'density',        unit:'veh/km', dec:2, note:'NORMAL ref: 24.05' },
-      { label:'Density - Car',              key:'net_dens_car',   unit:'veh/km', dec:2, note:'NORMAL ref: 23.15' },
-      { label:'Density - Truck',            key:'net_dens_truck', unit:'veh/km', dec:2, note:'NORMAL ref: 0.62' },
-      { label:'Density - Std Bus',          key:'net_dens_bus',   unit:'veh/km', dec:2, note:'NORMAL ref: 0.29' },
-      // ── Entry-Based Delay Time (sec/km) = (DTa – free-flow TT) / length ──
-      { label:'Entry-Based Delay Time - All',      key:'net_delay_all',   unit:'sec/km', dec:2, note:'NORMAL ref: 247.76' },
-      { label:'Entry-Based Delay Time - Car',      key:'net_delay_car',   unit:'sec/km', dec:2, note:'NORMAL ref: 248.40' },
-      { label:'Entry-Based Delay Time - Truck',    key:'net_delay_truck', unit:'sec/km', dec:2, note:'NORMAL ref: 246.31' },
-      { label:'Entry-Based Delay Time - Std Bus',  key:'net_delay_bus',   unit:'sec/km', dec:2, note:'NORMAL ref: 194.07' },
-      // ── Entry-Based Flow (count/sim_h, veh/h) ─────────────────────────────
-      { label:'Entry-Based Flow - All',     key:'flow',           unit:'veh/h',  dec:0, note:'NORMAL ref: 10946' },
-      { label:'Entry-Based Flow - Car',     key:'net_flow_car',   unit:'veh/h',  dec:0, note:'NORMAL ref: 10521' },
-      { label:'Entry-Based Flow - Truck',   key:'net_flow_truck', unit:'veh/h',  dec:0, note:'NORMAL ref: 298' },
-      { label:'Entry-Based Flow - Std Bus', key:'net_flow_bus',   unit:'veh/h',  dec:0, note:'NORMAL ref: 127' },
-      // ── Entry-Based Speed (length / DTa × 3.6, km/h) ─────────────────────
-      { label:'Entry-Based Speed - All',    key:'speed',          unit:'km/h',   dec:2, note:'NORMAL ref: 6.15' },
-      { label:'Entry-Based Speed - Car',    key:'net_spd_car',    unit:'km/h',   dec:2, note:'NORMAL ref: 6.14' },
-      { label:'Entry-Based Speed - Truck',  key:'net_spd_truck',  unit:'km/h',   dec:2, note:'NORMAL ref: 6.61' },
-      { label:'Entry-Based Speed - Std Bus',key:'net_spd_bus',    unit:'km/h',   dec:2, note:'NORMAL ref: 5.51' },
+      // ── Density (veh/km/lane) — Aimsun network density is per kilometer of lane ──
+      { label:'Density - All',              key:'density',        unit:'veh/km/lane', dec:2, note:'Aimsun network density; NORMAL ref: 24.05' },
+      { label:'Density - Car',              key:'net_dens_car',   unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 23.15' },
+      { label:'Density - Truck',            key:'net_dens_truck', unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 0.62' },
+      { label:'Density - Std Bus',          key:'net_dens_bus',   unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 0.29' },
+      // ── Entry-Based Delay Time — average delay per vehicle per kilometer; excludes virtual queue ──
+      { label:'Entry-Based Delay Time - All',      key:'net_delay_all',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay; excludes virtual queue. NORMAL ref: 247.76' },
+      { label:'Entry-Based Delay Time - Car',      key:'net_delay_car',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 248.40' },
+      { label:'Entry-Based Delay Time - Truck',    key:'net_delay_truck', unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 246.31' },
+      { label:'Entry-Based Delay Time - Std Bus',  key:'net_delay_bus',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 194.07' },
+      // ── Entry-Based Flow — vehicles that entered during the interval, with Aimsun including vehicles still inside at interval end ──
+      { label:'Entry-Based Flow - All',     key:'flow',           unit:'veh/h',  dec:0, note:'Aimsun entry-based flow. NORMAL ref: 10946' },
+      { label:'Entry-Based Flow - Car',     key:'net_flow_car',   unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 10521' },
+      { label:'Entry-Based Flow - Truck',   key:'net_flow_truck', unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 298' },
+      { label:'Entry-Based Flow - Std Bus', key:'net_flow_bus',   unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 127' },
+      // ── Entry-Based Speed — total distance travelled divided by total travel time ──
+      { label:'Entry-Based Speed - All',    key:'speed',          unit:'km/h',   dec:2, note:'Aimsun entry-based speed. NORMAL ref: 6.15' },
+      { label:'Entry-Based Speed - Car',    key:'net_spd_car',    unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 6.14' },
+      { label:'Entry-Based Speed - Truck',  key:'net_spd_truck',  unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 6.61' },
+      { label:'Entry-Based Speed - Std Bus',key:'net_spd_bus',    unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 5.51' },
       // ── Pax-weighted delay (s/pax) — different from Aimsun sec/km ─────────
       { label:'Avg Bus Pax Delay',          key:'avg_bus_delay',  unit:'s/pax',  dec:2, note:'bus pax·s ÷ bus passengers — NOT sec/km' },
       { label:'Avg Car Pax Delay',          key:'avg_car_delay',  unit:'s/pax',  dec:2, note:'car pax·s ÷ car passengers — NOT sec/km' },
@@ -5437,7 +6876,11 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       });
       const numVals = vals.filter(v => v !== null);
       // For delay/density metrics lower is better; for speed/flow higher is better
-      const lowerBetter = ['avg_car_delay','avg_bus_delay','total_delay','main_delay','side_delay','density'].includes(row.key);
+      const lowerBetter = [
+        'avg_car_delay','avg_bus_delay','total_delay','main_delay','side_delay','density',
+        'net_dens_car','net_dens_bus','net_dens_truck',
+        'net_delay_all','net_delay_car','net_delay_bus','net_delay_truck'
+      ].includes(row.key);
       const best  = numVals.length ? (lowerBetter ? Math.min(...numVals) : Math.max(...numVals)) : null;
       const worst = numVals.length ? (lowerBetter ? Math.max(...numVals) : Math.min(...numVals)) : null;
 
@@ -5497,13 +6940,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     {key:'tsp_natural_green_rate_pct',hdr:'Natural green % (unique)', lb:false},
     {key:'avg_extension_s', hdr:'Avg GE (s)',             lb:false},
     {key:'avg_insertion_s', hdr:'Avg INS (s)',            lb:false},
-    {key:'avg_insertion_wait_s', hdr:'Avg INS wait (s)',  lb:false},
+    {key:'avg_insertion_wait_s', hdr:'Avg INS lead (s)',  lb:false},
     {key:'tsp_skip_ge',      hdr:'GE skipped (raw diag)',       lb:false},
     {key:'tsp_skip_ins',     hdr:'INS skipped (raw diag)',      lb:false},
     {key:'tsp_no_action',    hdr:'No action (raw diag)',        lb:false},
     {key:'mean_green',       hdr:'Mean green %',            lb:false},
     {key:'flow',             hdr:'Flow (veh/h)',             lb:false},
-    {key:'density',          hdr:'Density (v/km)',          lb:true},
+    {key:'density',          hdr:'Density (veh/km/lane)',          lb:true},
     {key:'speed',            hdr:'Speed (km/h)',             lb:false},
     {key:'prearm_fired',     hdr:'Prearm fired',             lb:false},
     {key:'prearm_success',   hdr:'Prearm success',           lb:false},
@@ -5575,6 +7018,59 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 # Main entry point
 # =============================================================================
 
+def _build_static_fallback_html(data: dict) -> str:
+  """
+  Build a server-rendered fallback block so the dashboard still shows core
+  run data when JavaScript is disabled or blocked.
+  """
+  runs = data.get("runs") or []
+  if not runs:
+    return (
+      '<div class="card" style="margin-bottom:12px">'
+      '<h2>Static Summary</h2>'
+      '<div style="font-size:12px;color:#b08080">No run rows available.</div>'
+      '</div>'
+    )
+
+  rows = []
+  for r in runs:
+    label = _html.escape(str(r.get("label", "—")))
+    strategy = _html.escape(str(r.get("strategy", "—")))
+    coordinated = "Coord" if r.get("coordinated") else "Indep"
+
+    def _fmt_num(v, dec=1):
+      try:
+        return f"{float(v):.{dec}f}"
+      except Exception:
+        return "—"
+
+    rows.append(
+      "<tr>"
+      f"<td>{label}</td>"
+      f"<td>{strategy}</td>"
+      f"<td>{coordinated}</td>"
+      f"<td>{_fmt_num(r.get('total_delay'), 1)}</td>"
+      f"<td>{_fmt_num(r.get('bus_delay'), 1)}</td>"
+      f"<td>{_fmt_num(r.get('mean_green'), 1)}</td>"
+      f"<td>{_fmt_num(r.get('flow'), 0)}</td>"
+      "</tr>"
+    )
+
+  return (
+    '<div class="card" style="margin-bottom:12px">'
+    '<h2>Static Summary (No JavaScript Required)</h2>'
+    '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">'
+    'If charts are blank, this confirms the dashboard data is present.'
+    '</div>'
+    '<div class="tbl-wrap">'
+    '<table><thead><tr>'
+    '<th>Run</th><th>Strategy</th><th>Mode</th>'
+    '<th>Total Delay (hrs)</th><th>Bus Delay (s)</th><th>Mean Green (%)</th><th>Flow (veh/h)</th>'
+    '</tr></thead><tbody>'
+    + "".join(rows) +
+    '</tbody></table></div></div>'
+  )
+
 def generate(batch_csv: str = None, out_html: str = None,
              log_dir: str = None) -> str:
     """
@@ -5612,6 +7108,7 @@ def generate(batch_csv: str = None, out_html: str = None,
         out_html = os.path.join(os.path.dirname(batch_csv), "tsp_dashboard.html")
 
     html = _HTML_TEMPLATE.replace("TEMPLATE_DATA_JSON", json.dumps(data, indent=2))
+    html = html.replace("TEMPLATE_FALLBACK_HTML", _build_static_fallback_html(data))
 
     out_dir = os.path.dirname(out_html)
     if out_dir:

@@ -519,5 +519,24 @@ def main():
     print("=" * 80)
 
 
+def run(queue_csv=None, junc_csv=None):
+    """Entry point called from AAPIFinish in intersection_controller.py.
+
+    Parameters
+    ----------
+    queue_csv : str or None
+        Path to the queue snapshot CSV produced by the simulation.
+        If None, ``main()`` falls back to scanning RESULTS_ROOT.
+    junc_csv : str or None
+        Path to the junction summary CSV.  Not currently consumed by this
+        module but accepted so the call signature matches the controller.
+    """
+    if queue_csv and os.path.isfile(queue_csv):
+        global RESULTS_ROOT, PLOTS_OUT
+        RESULTS_ROOT = os.path.dirname(queue_csv)
+        PLOTS_OUT = os.path.join(RESULTS_ROOT, "queue_monitor")
+    main()
+
+
 if __name__ == "__main__":
     main()

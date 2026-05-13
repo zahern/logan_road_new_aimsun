@@ -10,27 +10,27 @@ Panels
 
 Key design decisions
 --------------------
-• Only TSP-prioritised buses are shown.  A bus qualifies if it:
+â€¢ Only TSP-prioritised buses are shown.  A bus qualifies if it:
     (a) has a coord-prearm event (explicitly wave-coordinated), OR
-    (b) was detected at ≥ 2 unique corridor junctions (traversed the corridor).
+    (b) was detected at â‰¥ 2 unique corridor junctions (traversed the corridor).
   Side-street buses detected at only one junction are filtered out.
 
-• Junctions are ordered by their geographic Y coordinate (north at top), NOT
+â€¢ Junctions are ordered by their geographic Y coordinate (north at top), NOT
   by the INTERSECTIONS_CONFIG insertion order.  This prevents the visual
   zig-zag that occurs when config order does not match geography.
 
-• Equal Y-spacing (one slot per junction, constant spacing) avoids overlapping
+â€¢ Equal Y-spacing (one slot per junction, constant spacing) avoids overlapping
   junction labels for closely-spaced intersections.
 
-• An "ideal green-wave" reference line is drawn from every green-window start
+â€¢ An "ideal green-wave" reference line is drawn from every green-window start
   at the southernmost junction, showing the diagonal trajectory a perfectly
-  coordinated bus should follow at free-flow speed (11 m/s ≈ 40 km/h).
+  coordinated bus should follow at free-flow speed (11 m/s â‰ˆ 40 km/h).
 
-• Each trajectory segment between consecutive detection events is coloured
+â€¢ Each trajectory segment between consecutive detection events is coloured
   by the bus's phase state AT STOP-LINE ARRIVAL (not at detection time):
-    GREEN   – bus arrived at stop line during its bus-compatible phase
-    ORANGE  – was in red when detected but TSP/coord pre-armed → phase changed
-    RED     – arrived (or predicted to arrive) during red, no TSP action evident
+    GREEN   â€“ bus arrived at stop line during its bus-compatible phase
+    ORANGE  â€“ was in red when detected but TSP/coord pre-armed â†’ phase changed
+    RED     â€“ arrived (or predicted to arrive) during red, no TSP action evident
 
 Usage
 -----
@@ -84,10 +84,10 @@ try:
 except ImportError:
     INTERSECTIONS_CONFIG = {}
 
-# ── Corridor group definitions (mirrors intersection_controller.py) ────────────
+# â”€â”€ Corridor group definitions (mirrors intersection_controller.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 CORRIDOR_GROUPS = {
-    "logan_north": [17249, 17383, 17963, 18942],
-    "logan_south": [19196, 19363, 19474, 19882, 21895],
+    "kg_corridor_a": [39606, 39590, 36393, 36385, 39593],
+    "kg_corridor_b": [39576, 39578, 39587, 1043762, 39569, 39572, 38339],
 }
 # All corridor junction IDs in a flat set
 ALL_CORRIDOR_JCTS = set(jid for ids in CORRIDOR_GROUPS.values() for jid in ids)
@@ -95,7 +95,7 @@ ALL_CORRIDOR_JCTS = set(jid for ids in CORRIDOR_GROUPS.values() for jid in ids)
 # Equal Y-spacing between junctions on the plot (metres, visual only)
 JUNCTION_SPACING_M = 500.0
 # Free-flow reference speed for the ideal-wave diagonal (m/s)
-FREE_FLOW_MS = 11.0   # ≈ 40 km/h
+FREE_FLOW_MS = 11.0   # â‰ˆ 40 km/h
 
 # Tier prefixes that confirm the bus was explicitly TSP-coordinated
 _COORD_TIERS = ("coord-prearm",)
@@ -138,6 +138,9 @@ def _load_detections(path: str) -> list:
                     "tier":         row.get("tier", "").strip(),
                     "signal_phase": int(sp_raw) if sp_raw.lstrip("-").isdigit() else -1,
                     "bus_phase":    int(bp_raw) if bp_raw.lstrip("-").isdigit() else -1,
+                    "prearm_status": (row.get("prearm_status") or "").strip().lower(),
+                    "prearm_eta_s":  float(row.get("prearm_eta_s") or 0.0),
+                    "focus_role":    (row.get("focus_role") or "").strip(),
                 })
             except (KeyError, ValueError):
                 continue
@@ -162,7 +165,7 @@ def _junctions_from_detections(rows: list) -> dict:
     """
     Derive junction centroids from detection event positions.
     Detections occur upstream of the stop line but their mean position gives
-    a reliable geographic ordering (same Y ordering, ~50–300 m offset).
+    a reliable geographic ordering (same Y ordering, ~50â€“300 m offset).
     """
     sums: dict = {}
     counts: dict = {}
@@ -200,7 +203,7 @@ def _find_tsp_vehicles(rows: list) -> set:
     not bias the green-wave assessment.
 
     If no vehicles meet the criteria (e.g., a non-coordinated run with many
-    single-junction detections), fall back to all vehicles seen at ≥ 2
+    single-junction detections), fall back to all vehicles seen at â‰¥ 2
     junctions of any type, and then to all vehicles.
     """
     # (a) explicitly wave-coordinated
@@ -220,17 +223,17 @@ def _find_tsp_vehicles(rows: list) -> set:
     if tsp_vids:
         return tsp_vids
 
-    # Fallback: any bus seen at ≥ 2 junctions
+    # Fallback: any bus seen at â‰¥ 2 junctions
     all_jct: dict = {}
     for r in rows:
         all_jct.setdefault(r["vid"], set()).add(r["jct"])
     fallback = {vid for vid, s in all_jct.items() if len(s) >= 2}
     if fallback:
-        print("[plot_green_wave] No coord-prearm or multi-corridor buses — "
+        print("[plot_green_wave] No coord-prearm or multi-corridor buses â€” "
               "showing all multi-junction buses.")
         return fallback
 
-    print("[plot_green_wave] WARNING: cannot identify TSP buses — showing all.")
+    print("[plot_green_wave] WARNING: cannot identify TSP buses â€” showing all.")
     return set(r["vid"] for r in rows)
 
 
@@ -246,7 +249,7 @@ def _geographic_junction_order(junctions: dict, candidate_ids: list) -> list:
     """
     with_y   = [(jid, junctions[jid][1]) for jid in candidate_ids if jid in junctions]
     without_y = [jid for jid in candidate_ids if jid not in junctions]
-    # Sort south → north (ascending Y) so index 0 = southernmost
+    # Sort south â†’ north (ascending Y) so index 0 = southernmost
     with_y.sort(key=lambda t: t[1])
     return [jid for jid, _ in with_y] + without_y
 
@@ -254,7 +257,7 @@ def _geographic_junction_order(junctions: dict, candidate_ids: list) -> list:
 def _equal_spacing(ordered_jcts: list, spacing_m: float = JUNCTION_SPACING_M) -> dict:
     """
     Assign plot Y-positions with equal spacing.
-    Index 0 (southernmost) → y=0, index n-1 (northernmost) → y=n*spacing.
+    Index 0 (southernmost) â†’ y=0, index n-1 (northernmost) â†’ y=n*spacing.
     """
     return {jid: i * spacing_m for i, jid in enumerate(ordered_jcts)}
 
@@ -327,12 +330,18 @@ def _phase_at_stopline(row: dict) -> str:
       2. Estimate stop-line arrival time from detection time + det_dist/speed,
          then check against the planned cycle.
 
-    Returns 'green', 'orange' (TSP coord-prearm → should be green), or 'red'.
+    Returns 'green', 'orange' (TSP coord-prearm â†’ should be green), or 'red'.
     """
     tier = row.get("tier", "")
+    prearm_status = str(row.get("prearm_status", "") or "").lower()
+    if prearm_status in ("fired", "queued"):
+        return "prearm"
+    if prearm_status == "missed":
+        return "red"
+    if prearm_status == "success":
+        return "orange"
     if any(tier.startswith(p) for p in _COORD_TIERS):
-        # Coordinator explicitly pre-armed this junction → bus should arrive green
-        return "orange"   # orange = coordinated pre-arm (different from organic green)
+        return "prearm"
 
     sp = row.get("signal_phase", -1)
     bp = row.get("bus_phase", -1)
@@ -393,7 +402,7 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
     y_max  = max(y_vals)
     bar_h  = JUNCTION_SPACING_M * 0.30   # height of signal band (visual)
 
-    # ── Signal timing bands ───────────────────────────────────────────────────
+    # â”€â”€ Signal timing bands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     t_band_start = max(0.0, t_min - 180.0)
     t_band_end   = t_max + 180.0
     for jct_id in ordered_jcts:
@@ -412,7 +421,7 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
                 va="center", ha="right", fontsize=8.0,
                 color="#aaaadd", fontweight="bold", clip_on=False)
 
-    # ── Ideal green-wave reference lines ─────────────────────────────────────
+    # â”€â”€ Ideal green-wave reference lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Draw from each green-window start at the southernmost junction upward
     # at FREE_FLOW_MS.  Clipped to the axis so they don't dominate.
     if len(ordered_jcts) >= 2:
@@ -430,7 +439,7 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
             ax.plot([t_on, t_ideal_end], [y_first, y_last],
                     "--", color="#ffea00", alpha=0.20, lw=1.0, zorder=2)
 
-    # ── Bus trajectories ──────────────────────────────────────────────────────
+    # â”€â”€ Bus trajectories â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     tsp_rows  = [r for r in rows if r["vid"] in tsp_vids and r["jct"] in plot_pos]
     all_vids  = sorted(set(r["vid"] for r in tsp_rows))
     n_buses   = max(len(all_vids), 1)
@@ -444,9 +453,11 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
         vrows = sorted([r for r in tsp_rows if r["vid"] == vid],
                        key=lambda r: r["t"])
 
-        # Draw trajectory line connecting consecutive detections
-        pts_t = [r["t"]              for r in vrows]
-        pts_y = [plot_pos[r["jct"]] for r in vrows]
+        # Draw trajectory through observed arrivals only. Pre-arm-fired rows are
+        # request evidence at the target junction, not proof that the bus arrived.
+        traj_rows = [r for r in vrows if _phase_at_stopline(r) != "prearm"]
+        pts_t = [r["t"]              for r in traj_rows]
+        pts_y = [plot_pos[r["jct"]] for r in traj_rows]
         if len(pts_t) > 1:
             ax.plot(pts_t, pts_y, "-", color=vcol, lw=1.8, alpha=0.55,
                     zorder=3, solid_capstyle="round")
@@ -455,9 +466,8 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
         for i, r in enumerate(vrows):
             phase = _phase_at_stopline(r)
             # Collect stats per junction
-            if r["jct"] in phase_stats:
-                phase_stats[r["jct"]][phase if phase in ("green","red","orange")
-                                      else "red"] += 1
+            if r["jct"] in phase_stats and phase in ("green", "red", "orange"):
+                phase_stats[r["jct"]][phase] += 1
 
             if phase == "green":
                 mk, fc, ec, ms = "o", vcol, "#ffffff", 10
@@ -465,6 +475,8 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
                 mk, fc, ec, ms = "^", "#ffaa00", "#ffffff", 10
             elif phase == "red":
                 mk, fc, ec, ms = "X", "#ff3030", "#ffffff", 10
+            elif phase == "prearm":
+                mk, fc, ec, ms = "v", "#8e24aa", "#ffffff", 9
             else:
                 mk, fc, ec, ms = "D", "#aaaaaa", "#ffffff", 8
 
@@ -473,11 +485,11 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
                     markersize=ms, zorder=6,
                     label=f"Bus {vid}" if i == 0 else "")
 
-    # ── Axes ──────────────────────────────────────────────────────────────────
+    # â”€â”€ Axes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ax.set_xlim(t_min - t_pad, t_max + t_pad)
     y_margin = JUNCTION_SPACING_M * 0.5
     ax.set_ylim(y_min - y_margin, y_max + y_margin)
-    ax.set_ylabel("← South   |   Corridor (N↑)   |   North →",
+    ax.set_ylabel("â† South   |   Corridor (Nâ†‘)   |   North â†’",
                   fontsize=9, color="#aaaadd", labelpad=10)
     ax.set_xlabel("Simulation time (s)", fontsize=10, color="#ccccee", labelpad=8)
 
@@ -491,18 +503,20 @@ def _draw_corridor_panel(ax, rows: list, tsp_vids: set,
         spine.set_color("#2a2a50")
     ax.grid(axis="x", color="#2a2a44", lw=0.5, alpha=0.5, zorder=0)
 
-    # ── Legend ────────────────────────────────────────────────────────────────
+    # â”€â”€ Legend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     handles = [
         mpatches.Patch(color="#00c853", alpha=0.55,
                        label="Green phase (bus-compatible)"),
         mpatches.Patch(color="#d50000", alpha=0.35,
                        label="Red / other phase"),
         plt.Line2D([0],[0], marker="o", color="w", markerfacecolor="#66bb6a",
-                   markersize=9, label="● Green on arrival"),
+                   markersize=9, label="â— Green on arrival"),
         plt.Line2D([0],[0], marker="^", color="w", markerfacecolor="#ffaa00",
-                   markersize=9, label="▲ Coord pre-arm (orange)"),
+                   markersize=9, label="â–² Coord pre-arm (orange)"),
+        plt.Line2D([0],[0], marker="v", color="w", markerfacecolor="#8e24aa",
+                   markersize=9, label="Pre-arm fired/requested"),
         plt.Line2D([0],[0], marker="X", color="w", markerfacecolor="#ff3030",
-                   markersize=9, label="✕ Red on arrival"),
+                   markersize=9, label="âœ• Red on arrival"),
         plt.Line2D([0],[0], linestyle="--", color="#ffea00", alpha=0.55,
                    lw=1.5, label=f"Ideal wave ({FREE_FLOW_MS*3.6:.0f} km/h)"),
     ]
@@ -527,10 +541,10 @@ def _draw_stats_panel(ax_left, ax_right,
                       rows: list, tsp_vids: set,
                       ordered_jcts: list, phase_stats: dict) -> None:
     """
-    Left:  green-pass rate bar chart per junction (south → north, bottom→top).
+    Left:  green-pass rate bar chart per junction (south â†’ north, bottomâ†’top).
     Right: per-bus corridor statistics (journey time, # junctions hit, green%).
     """
-    # ── Left: green pass rate ──────────────────────────────────────────────
+    # â”€â”€ Left: green pass rate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if ordered_jcts and phase_stats:
         labels   = [f"jct {j}" for j in ordered_jcts]
         greens   = [phase_stats.get(j, {}).get("green",  0) for j in ordered_jcts]
@@ -566,7 +580,7 @@ def _draw_stats_panel(ax_left, ax_right,
     for sp in ax_left.spines.values():
         sp.set_color("#2a2a50")
 
-    # ── Right: per-bus journey stats ──────────────────────────────────────
+    # â”€â”€ Right: per-bus journey stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     tsp_rows = [r for r in rows if r["vid"] in tsp_vids]
     by_vid: dict = {}
     for r in tsp_rows:
@@ -576,7 +590,7 @@ def _draw_stats_panel(ax_left, ax_right,
     for vid in sorted(by_vid.keys()):
         vrows = sorted(by_vid[vid], key=lambda r: r["t"])
         n_jct  = len(set(r["jct"] for r in vrows))
-        phases = [_phase_at_stopline(r) for r in vrows]
+        phases = [p for p in (_phase_at_stopline(r) for r in vrows) if p != "prearm"]
         n_green = sum(1 for p in phases if p in ("green", "orange"))
         pct     = 100 * n_green / len(phases) if phases else 0
         bus_labels.append(f"Bus {vid}")
@@ -625,20 +639,20 @@ def plot_green_wave(rows: list, junctions: dict, out_path: str,
     """
     _ensure_mpl()
     if not rows:
-        print("[plot_green_wave] No detection rows — nothing to plot")
+        print("[plot_green_wave] No detection rows â€” nothing to plot")
         return
 
-    # ── Identify TSP-prioritised vehicles ────────────────────────────────────
+    # â”€â”€ Identify TSP-prioritised vehicles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     tsp_vids = _find_tsp_vehicles(rows)
     print(f"[plot_green_wave] TSP vehicles: {sorted(tsp_vids)} "
           f"({len(tsp_vids)} of {len(set(r['vid'] for r in rows))} detected)")
 
     tsp_rows = [r for r in rows if r["vid"] in tsp_vids]
     if not tsp_rows:
-        print("[plot_green_wave] No TSP rows after filtering — nothing to plot")
+        print("[plot_green_wave] No TSP rows after filtering â€” nothing to plot")
         return
 
-    # ── Determine corridor junctions present in data ──────────────────────────
+    # â”€â”€ Determine corridor junctions present in data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     jcts_in_data = set(r["jct"] for r in tsp_rows)
     # Prefer junctions that appear in INTERSECTIONS_CONFIG
     cfg_jcts  = set(INTERSECTIONS_CONFIG.keys())
@@ -646,14 +660,14 @@ def plot_green_wave(rows: list, junctions: dict, out_path: str,
     if not plot_jcts:
         plot_jcts = list(jcts_in_data)
 
-    # ── Derive geographic positions if not provided ───────────────────────────
+    # â”€â”€ Derive geographic positions if not provided â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if not junctions:
         junctions = _junctions_from_detections(rows)
         if junctions:
             print(f"[plot_green_wave] Using {len(junctions)} derived junction "
                   "positions from detection coordinates")
 
-    # ── Geographic ordering (south → north, bottom → top of Y-axis) ──────────
+    # â”€â”€ Geographic ordering (south â†’ north, bottom â†’ top of Y-axis) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     ordered_jcts = _geographic_junction_order(junctions, plot_jcts)
     plot_pos     = _equal_spacing(ordered_jcts)
 
@@ -665,7 +679,7 @@ def plot_green_wave(rows: list, junctions: dict, out_path: str,
     t_min = min(r["t"] for r in tsp_rows_jct)
     t_max = max(r["t"] for r in tsp_rows_jct)
 
-    # ── Figure layout (GridSpec) ──────────────────────────────────────────────
+    # â”€â”€ Figure layout (GridSpec) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fig = plt.figure(figsize=(24, 14))
     fig.patch.set_facecolor("#12122a")
     gs  = gridspec.GridSpec(
@@ -681,13 +695,13 @@ def plot_green_wave(rows: list, junctions: dict, out_path: str,
 
     ax_main.set_facecolor("#1a1a30")
 
-    # ── Draw panels ───────────────────────────────────────────────────────────
+    # â”€â”€ Draw panels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     phase_stats = _draw_corridor_panel(
         ax_main, rows, tsp_vids, ordered_jcts, plot_pos, t_min, t_max)
     _draw_stats_panel(
         ax_stats_l, ax_stats_r, rows, tsp_vids, ordered_jcts, phase_stats)
 
-    # ── Title and meta info ───────────────────────────────────────────────────
+    # â”€â”€ Title and meta info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     n_tsp   = len(tsp_vids)
     n_total = len(set(r["vid"] for r in rows))
     has_sig = any(r["signal_phase"] > 0 for r in rows)
@@ -715,15 +729,15 @@ def plot_green_wave_compare(run_specs: list, out_path: str) -> None:
     Parameters
     ----------
     run_specs : list of (label, csv_path) pairs.
-                csv_path can be None if a pre-loaded rows list is preferred —
+                csv_path can be None if a pre-loaded rows list is preferred â€”
                 pass (label, rows_list) to use raw data.
     out_path  : PNG output path
 
     Key metrics shown per run:
-      • Green arrival rate (%) per junction
-      • Mean green arrival rate across all corridor junctions
-      • Number of TSP buses
-      • (if available) passenger delay, bus delay, main delay, side delay
+      â€¢ Green arrival rate (%) per junction
+      â€¢ Mean green arrival rate across all corridor junctions
+      â€¢ Number of TSP buses
+      â€¢ (if available) passenger delay, bus delay, main delay, side delay
     """
     _ensure_mpl()
     if not run_specs:
@@ -762,7 +776,7 @@ def plot_green_wave_compare(run_specs: list, out_path: str) -> None:
             "mean_green": sum(green_pct.values()) / len(green_pct) if green_pct else 0,
         })
 
-    # ── All corridor junctions across all runs ────────────────────────────────
+    # â”€â”€ All corridor junctions across all runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     all_jcts = sorted(set(j for d in all_data for j in d["jcts"]))
 
     fig, axes = plt.subplots(
@@ -775,7 +789,7 @@ def plot_green_wave_compare(run_specs: list, out_path: str) -> None:
     ax_bar   = axes[0]
     ax_summ  = axes[1]
 
-    # ── Left: grouped bar chart — green rate per junction per run ─────────────
+    # â”€â”€ Left: grouped bar chart â€” green rate per junction per run â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     n_runs = len(all_data)
     width  = 0.75 / max(n_runs, 1)
     colors = [_get_cmap("tab10", max(n_runs, 2))(i / max(n_runs - 1, 1))
@@ -801,7 +815,7 @@ def plot_green_wave_compare(run_specs: list, out_path: str) -> None:
     ax_bar.set_facecolor("#1a1a30")
     ax_bar.tick_params(colors="#9090cc")
 
-    # ── Right: summary table (mean green%, TSP bus count) ────────────────────
+    # â”€â”€ Right: summary table (mean green%, TSP bus count) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     row_labels  = [d["label"]              for d in all_data]
     mean_greens = [f"{d['mean_green']:.1f}%" for d in all_data]
     n_tsps      = [str(d["n_tsp"])         for d in all_data]

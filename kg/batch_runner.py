@@ -51,25 +51,28 @@ _SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
 EXPERIMENTS = [
     {
-        "name":                 "NORMAL",
+        "name":                 "NO_TSP",
         "strategy":             "NORMAL",
-        "coordinated":          False,      # independent intersections, no TSP
+        "coordinated":          False,
         "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
-    # ── Harmony: coordinated vs independent (shows value of corridor coordination)
-    # In current controller logic, coordinated HARMONY runs use CorridorCoordinator
-    # pre-arm propagation (wave scheduling + downstream ETA-based preparation).
+    # ── Phase-based uncoordinated: each junction acts independently ───────────
+    {
+        "name":                 "HARMONY_INDEP",
+        "strategy":             "HARMONY",
+        "coordinated":          False,
+        "coordination_algo":    "KALMAN",
+        "active_intersections": None,
+    },
+    # ── Phase-based coordinated: corridor coordinator pre-arms downstream ─────
     {
         "name":                 "HARMONY_COORD",
         "strategy":             "HARMONY",
-        "coordinated":          True,       # COORDINATED_TSP=True (corridor flag set)
+        "coordinated":          True,
         "coordination_algo":    "KALMAN",
         "active_intersections": None,
     },
-  
-   
-    
     # Group-based runs are disabled by default for this batch profile.
     # Uncomment if you want them in a separate sweep.
     # {
@@ -101,18 +104,14 @@ EXPERIMENTS = [
     # },
     # ── Reward-TSP: action-reward based TSP (delay cost-benefit analysis) ─────
 
-    # ── DynaROPAC experiments ─────────────────────────────────────────────────
-    # DYNAOPAC_HARMONY: network-wide delay-optimal selection — each step
-    # evaluates all intersections and applies TSP only at the junction that
-    # yields the greatest passenger-delay saving.
-    {
-        "name":                 "DYNAOPAC_HARMONY",
-        "strategy":             "DYNAOPAC_HARMONY",
-        "coordinated":          True,
-        "coordination_algo":    "KALMAN",
-        "active_intersections": None,
-    },
-    # ── Classic DYNAOPAC variants (uncomment to enable) ──────────────────────
+    # ── DynaROPAC experiments (disabled) ─────────────────────────────────────
+    # {
+    #     "name":                 "DYNAOPAC_HARMONY",
+    #     "strategy":             "DYNAOPAC_HARMONY",
+    #     "coordinated":          True,
+    #     "coordination_algo":    "KALMAN",
+    #     "active_intersections": None,
+    # },
     # {
     #     "name":                 "DYNAOPAC_COORD",
     #     "strategy":             "DYNAOPAC",
@@ -125,13 +124,6 @@ EXPERIMENTS = [
     #     "strategy":             "DYNAOPAC",
     #     "coordinated":          False,
     #     "coordination_algo":    "KALMAN",
-    #     "active_intersections": None,
-    # },
-    # {
-    #     "name":                 "DYNAOPAC_COORD_SHOCKWAVE",
-    #     "strategy":             "DYNAOPAC",
-    #     "coordinated":          True,
-    #     "coordination_algo":    "SHOCKWAVE",
     #     "active_intersections": None,
     # },
 ]

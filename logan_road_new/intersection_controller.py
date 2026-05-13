@@ -878,13 +878,24 @@ def _write_queue_snapshot(time: float):
                     continue
 
             # TSP state string
+            # Prefer explicit local phase-based action flag when active
+            # so Harmony GE/INS does not appear as IDLE in diagnostics.
             tsp_state = "NORMAL"
+            _flag = int(getattr(ctrl, 'flag', 0) or 0)
+            _flag_state = {1: 'GE', 2: 'INS'}.get(_flag, None)
             gb = getattr(ctrl, 'gb', None)
             if gb is not None:
-                ts = getattr(gb, 'tsp_strategy', 0)
-                tsp_state = {0: 'IDLE', 1: 'GE', 2: 'INS_COMPAT', 3: 'INS_FORCED'}.get(ts, 'IDLE')
-            elif getattr(ctrl, 'flag', 0) != 0:
-                tsp_state = 'ACTIVE'
+                ts = int(getattr(gb, 'tsp_strategy', 0) or 0)
+                if ts in (1, 2, 3):
+                    tsp_state = {1: 'GE', 2: 'INS_COMPAT', 3: 'INS_FORCED'}[ts]
+                elif _flag_state is not None:
+                    tsp_state = _flag_state
+                elif getattr(ctrl, '_harmony_prearm', None) is not None:
+                    tsp_state = 'PREARM'
+                else:
+                    tsp_state = 'IDLE'
+            elif _flag_state is not None:
+                tsp_state = _flag_state
 
             try:
                 cur_phase = ECIGetCurrentPhase(getattr(ctrl, 'node_id', -1))
@@ -1526,7 +1537,7 @@ COORDINATION_ALGO   = "KALMAN"   # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPT
 COORD_OBJ_ALPHA     = 1.0        # weight on bus person-delay savings
 COORD_OBJ_BETA      = 0.5        # weight on displaced normal-traffic throughput
 PREARM_MAX_SIGMA_S  = 60.0       # floor sigma threshold (s); actual gate is max(60, 0.5*ETA)
-MAX_PREARM_HORIZON_S = 240.0     # max look-ahead horizon for queued prearms
+MAX_PREARM_HORIZON_S = 90.0      # max look-ahead horizon for queued prearms
 
 from Simulation_Stats import SimulationStats
 stats = SimulationStats(CONTROL_MODE, verbose=VERBOSE)
@@ -3467,6 +3478,22 @@ class CorridorCoordinator:
                     note=f"old={inter_id}",
                     old_target_jct=inter_id,
                     expected_target_jct=expected_next,
+                )
+                continue
+
+            _max_prearm_horizon_s = float(
+                getattr(self, '_max_prearm_horizon_s', float(globals().get('MAX_PREARM_HORIZON_S', 90.0) or 90.0))
+            )
+            if (eta_t - time) > _max_prearm_horizon_s:
+                del self._pre_requests[inter_id]
+                self._record_prearm_discarded(inter_id)
+                _record_wave_event(
+                    time, self.name, "prearm_discarded",
+                    source_jct=self._wave_origin,
+                    target_jct=inter_id,
+                    veh_id=veh_id,
+                    eta_s=max(0.0, eta_t - time),
+                    note=f"over_horizon>{_max_prearm_horizon_s:.0f}s",
                 )
                 continue
 
@@ -7822,7 +7849,9 @@ class IntersectionController:
 
                     # Block local Harmony Search while coordinator wave is active.
                     if self._corridor_coord is not None and COORDINATED_TSP:
-                        if self._corridor_coord._wave_active:
+                        _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
+                        _this_bus = int(self.last_detected_bus_id or -1)
+                        if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
                             return False
 
                     opt_GE = harmony_search(
@@ -8053,7 +8082,9 @@ class IntersectionController:
 
                 # Block local Harmony Search while coordinator wave is active.
                 if self._corridor_coord is not None and COORDINATED_TSP:
-                    if self._corridor_coord._wave_active:
+                    _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
+                    _this_bus = int(self.last_detected_bus_id or -1)
+                    if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
                         return False
 
                 opt_BP = harmony_search(
