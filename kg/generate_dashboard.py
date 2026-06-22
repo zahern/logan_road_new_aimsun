@@ -59,6 +59,7 @@ try:
   _PASSIVE_JCTS     = [j for j in _ALL_INTER_JCTS if j not in _ACTIVE_SET]
   _ALL_CONFIG_JCTS  = _ALL_INTER_JCTS   # full set for seeding all_jct_ids
 except ImportError:
+  _IC = {}
   _ACTIVE_JCTS = []
   _PASSIVE_JCTS = []
   _ALL_CONFIG_JCTS = []
@@ -137,6 +138,230 @@ def _bus_tracking_csvs(log_dir: str) -> list:
   """Return bus_positions CSV paths sorted by mtime (oldest first)."""
   return sorted(glob.glob(os.path.join(log_dir, "bus_positions_*.csv")),
           key=os.path.getmtime)
+
+
+def _objective_trace_csvs(log_dir: str) -> list:
+  """Return objective_trace CSV paths sorted by mtime (oldest first)."""
+  return sorted(glob.glob(os.path.join(log_dir, "objective_trace_*.csv")),
+          key=os.path.getmtime)
+
+
+def _match_objective_trace_csv_by_name(exp_name: str, all_csvs: list) -> str:
+  """Match objective_trace_<EXPERIMENT>_<ts>.csv to this experiment."""
+  exp_lower = (exp_name or "").strip().lower()
+  if not exp_lower:
+    return None
+  for p in reversed(all_csvs):
+    stem = os.path.splitext(os.path.basename(p))[0].lower()
+    if not stem.startswith("objective_trace_"):
+      continue
+    payload = stem[len("objective_trace_"):]
+    parts = payload.split("_")
+    if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+      exp_token = "_".join(parts[:-2]).strip().lower()
+      if exp_token == exp_lower:
+        return p
+  for p in reversed(all_csvs):
+    stem = os.path.basename(p).lower()
+    if exp_lower in stem:
+      return p
+  return None
+
+
+def _objective_trace_from_csv(path: str) -> list:
+  """Load objective_trace CSV into list of dicts."""
+  if not path or not os.path.isfile(path):
+    return []
+  out = []
+  try:
+    with open(path, newline="", encoding="utf-8") as f:
+      for r in csv.DictReader(f):
+        try:
+          out.append({
+            "t": float(r.get("sim_time_s", 0) or 0),
+            "jct": int(float(r.get("junction_id", 0) or 0)),
+            "vid": int(float(r.get("veh_id", -1) or -1)),
+            "mode": str(r.get("mode", "") or ""),
+            "decision": str(r.get("decision", "") or ""),
+            "reason": str(r.get("reason", "") or ""),
+            "current_phase": int(float(r.get("current_phase", -1) or -1)),
+            "bus_phase": int(float(r.get("bus_phase", -1) or -1)),
+            "bus_eta_s": float(r.get("bus_eta_s", 0) or 0),
+            "time_to_bp_s": float(r.get("time_to_bp_s", 0) or 0),
+            "natural_end_s": float(r.get("natural_end_s", 0) or 0),
+            "next_red_s": float(r.get("next_red_s", 0) or 0),
+            "ge_lb_s": float(r.get("ge_lb_s", 0) or 0),
+            "ge_ub_s": float(r.get("ge_ub_s", 0) or 0),
+            "opt_ge_s": float(r.get("opt_ge_s", 0) or 0),
+            "bp_lb_s": float(r.get("bp_lb_s", 0) or 0),
+            "bp_ub_s": float(r.get("bp_ub_s", 0) or 0),
+            "opt_bp_s": float(r.get("opt_bp_s", 0) or 0),
+            "delay_saved_pax_s": float(r.get("delay_saved_pax_s", 0) or 0),
+            "delay_delta_pax_s": float(r.get("delay_delta_pax_s", 0) or 0),
+            "delay_base_pax_s": float(r.get("delay_base_pax_s", 0) or 0),
+            "delay_with_strategy_pax_s": float(r.get("delay_with_strategy_pax_s", 0) or 0),
+            "no_strategy_delay_pax_s": float(r.get("no_strategy_delay_pax_s", r.get("delay_base_pax_s", 0)) or 0),
+            "strategy_min_delay_pax_s": float(r.get("strategy_min_delay_pax_s", r.get("delay_with_strategy_pax_s", 0)) or 0),
+            "delay_rule_pick": str(r.get("delay_rule_pick", "") or ""),
+            "wave_active": int(float(r.get("wave_active", 0) or 0)),
+            "focus_bus_id": int(float(r.get("focus_bus_id", -1) or -1)),
+            "note": str(r.get("note", "") or ""),
+          })
+        except Exception:
+          continue
+  except Exception:
+    pass
+  return out
+
+
+def _queue_entry_snapshots_from_csv(path: str) -> list:
+    """Parse a queue_snapshot_*.csv for the per-approach entry-point chart.
+
+    Reads the new-format columns: n_main_veh, main_dir, queue_side_detail
+    (format: dir:sec_id:n_veh or legacy sec_id:n_veh per section separated by |).
+    Returns a list of dicts suitable for renderQueueEntryPoints().
+    """
+    if not path or not os.path.isfile(path):
+        return []
+    out = []
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                try:
+                    t = float(r.get("sim_time_s", 0) or 0)
+                    jct = int(float(r.get("junction_id", -1) or -1))
+                    main_veh = float(r.get("n_main_veh", 0) or 0)
+                    main_dir = str(r.get("main_dir", "main") or "main")
+                    qsd = str(r.get("queue_side_detail", "") or "")
+                    sides = {}
+                    for tok in qsd.split("|"):
+                        tok = tok.strip()
+                        if not tok:
+                            continue
+                        parts = tok.split(":")
+                        if len(parts) == 3:          # dir:sec_id:n_veh  (new)
+                            d, sid, nv = parts
+                            key = d.strip() if d.strip() else f"sec{sid}"
+                        elif len(parts) == 2:         # sec_id:n_veh  (legacy)
+                            sid, nv = parts
+                            key = f"sec{sid}"
+                        else:
+                            continue
+                        try:
+                            # Aggregate by direction key (sum vehicles)
+                            sides[key] = sides.get(key, 0.0) + float(nv)
+                        except ValueError:
+                            pass
+                    out.append({"t": t, "jct": jct, "main_dir": main_dir,
+                                "main_veh": main_veh, "sides": sides})
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
+def _reward_cycle_csvs(log_dir: str) -> list:
+  """Return reward_cycle CSV paths sorted by mtime (oldest first)."""
+  return sorted(glob.glob(os.path.join(log_dir, "reward_cycle_*.csv")),
+          key=os.path.getmtime)
+
+
+def _match_reward_cycle_csv_by_name(exp_name: str, all_csvs: list) -> str:
+  """Match reward_cycle_<EXPERIMENT>_<ts>.csv to this experiment."""
+  exp_lower = (exp_name or "").strip().lower()
+  if not exp_lower:
+    return None
+  for p in reversed(all_csvs):
+    stem = os.path.splitext(os.path.basename(p))[0].lower()
+    if not stem.startswith("reward_cycle_"):
+      continue
+    payload = stem[len("reward_cycle_"):]
+    parts = payload.split("_")
+    if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+      exp_token = "_".join(parts[:-2]).strip().lower()
+      if exp_token == exp_lower:
+        return p
+  for p in reversed(all_csvs):
+    stem = os.path.basename(p).lower()
+    if exp_lower in stem:
+      return p
+  return None
+
+
+def _reward_cycle_from_csv(path: str) -> list:
+  """Load reward_cycle CSV into list of dicts."""
+  if not path or not os.path.isfile(path):
+    return []
+  out = []
+  try:
+    with open(path, newline="", encoding="utf-8") as f:
+      for r in csv.DictReader(f):
+        try:
+          out.append({
+            "t": float(r.get("sim_time_s", 0) or 0),
+            "jct": int(float(r.get("junction_id", -1) or -1)),
+            "vid": int(float(r.get("veh_id", -1) or -1)),
+            "bus_eta_s": float(r.get("bus_eta_s", 0) or 0),
+            "current_phase": int(float(r.get("current_phase", -1) or -1)),
+            "action": str(r.get("action", "") or ""),
+            "reward": float(r.get("reward", 0) or 0),
+            "bus_saved_pax_s": float(r.get("bus_saved_pax_s", 0) or 0),
+            "other_inc_pax_s": float(r.get("other_inc_pax_s", 0) or 0),
+            "side_inc_pax_s": float(r.get("side_inc_pax_s", 0) or 0),
+            "density_inc_pax_s": float(r.get("density_inc_pax_s", 0) or 0),
+            "throughput_gap_veh": float(r.get("throughput_gap_veh", 0) or 0),
+            "throughput_infeasible": int(float(r.get("throughput_infeasible", 0) or 0)),
+            "ge_inapplicable_cycle": int(float(r.get("ge_inapplicable_cycle", 0) or 0)),
+            "is_chosen": int(float(r.get("is_chosen", 0) or 0)),
+            "upflow_bus_vph": float(r.get("upflow_bus_vph", 0) or 0),
+            "max_queue_bus_veh": float(r.get("max_queue_bus_veh", 0) or 0),
+            "red_dur_bus_s": float(r.get("red_dur_bus_s", 0) or 0),
+            # Signal timing columns (present in slim old-format CSVs)
+            "sigma_in_s":  float(r.get("sigma_in_s",  0) or 0),
+            "sigma_out_s": float(r.get("sigma_out_s", 0) or 0),
+            # Raw actual reward and per-cycle delta (DCTSP-format CSVs)
+            "reward_delta":     float(r.get("reward_delta",      r.get("reward", 0)) or 0),
+            "no_action_reward": float(r.get("no_action_reward",  0) or 0),
+            # Decomposed delay columns written by DCTSP_MARL reward writer
+            "no_strategy_delay_pax_s": float(r.get("no_strategy_delay_pax_s",
+                                                    r.get("delay_base_pax_s", 0)) or 0),
+            "strategy_min_delay_pax_s": float(r.get("strategy_min_delay_pax_s",
+                                                     r.get("delay_with_strategy_pax_s", 0)) or 0),
+            # Cumulative Aimsun-measured car delay and kinematic no-action delay
+            # used for MDN calibration: predicted vs actual intersection delay chart.
+            "measured_car_pax_s_cumul": float(r.get("measured_car_pax_s_cumul", 0) or 0),
+            "no_act_delay_s":          float(r.get("no_act_delay_s", 0) or 0),
+            # Bus occupancy (pax) — used to decompose NA_total into bus/car portions
+            "bus_occ": float(r.get("bus_occ", 20) or 20),
+            # Delay validation columns (new; absent in older CSVs → default empty str)
+            "dd1_delay_s": r.get("dd1_delay_s", ""),
+            "mb_delay_s":  r.get("mb_delay_s",  ""),
+            # Cross-traffic model predictions (pax·s).
+            # other_delay_model_pax_s     — NF-amplified (used in reward decisions).
+            # other_delay_model_pax_s_nf1 — raw triangle without NF (use for validation
+            #   chart so the 45° line is meaningful; falls back to NF-divided value for
+            #   older CSVs that don't have the nf1 column).
+            "other_delay_model_pax_s":    float(r.get("other_delay_model_pax_s", 0) or 0),
+            "network_factor":             float(r.get("network_factor", 1) or 1),
+            # nf1 column: use explicit if present, else divide by network_factor
+            "other_delay_model_pax_s_nf1": (
+                float(r["other_delay_model_pax_s_nf1"])
+                if r.get("other_delay_model_pax_s_nf1", "") not in ("", None)
+                else float(r.get("other_delay_model_pax_s", 0) or 0)
+                     / max(float(r.get("network_factor", 1) or 1), 1.0)
+            ),
+            # Per-event Aimsun-measured car delay delta and observation window (s)
+            # (written by IC since v2025-05-27; older CSVs → 0).
+            "measured_car_pax_s_delta": float(r.get("measured_car_pax_s_delta", 0) or 0),
+            "interval_s":  float(r.get("interval_s",  0) or 0),
+            "bp_dur_s":    float(r.get("bp_dur_s",    0) or 0),
+          })
+        except Exception:
+          continue
+  except Exception:
+    pass
+  return out
 
 
 def _wave_events_from_csv(path: str) -> list:
@@ -307,14 +532,18 @@ def _all_zero(vals):
 
 def _dedup_batch_rows(batch_rows: list) -> list:
     """
-    Keep only the LAST (most recent) row per run_experiment name.
-    batch_results.csv accumulates rows across multiple batch_runner sessions;
-    showing all of them creates a cluttered 26-bar chart instead of 6.
+    Keep only the LAST (most recent) row per (experiment, seed) pair.
+
+    batch_results.csv accumulates rows across multiple batch_runner sessions.
+    Keying on (experiment, seed) means all seeds within the current batch are
+    preserved (so the dashboard shows per-seed bars), while re-running the same
+    experiment+seed combination replaces the old result with the newer one.
     """
     seen: dict = {}
     for row in batch_rows:
-        exp = row.get("run_experiment") or row.get("run_strategy", "UNKNOWN")
-        seen[exp] = row   # later rows overwrite earlier -> keep last
+        exp  = row.get("run_experiment") or row.get("run_strategy", "UNKNOWN")
+        seed = row.get("run_seed", "")
+        seen[(exp, seed)] = row   # later rows overwrite earlier -> keep last per (exp, seed)
     return list(seen.values())
 
 
@@ -976,7 +1205,74 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
 
     inter_csv = os.path.join(results_folder, "simulation_results_per_intersection.csv")
     if not os.path.isfile(inter_csv):
-        return []
+        # ── Fallback: build per-intersection rows from section_stats.csv ──────
+        # section_stats.csv is always written by save_results() and has per-section
+        # density/speed/flow/queue.  Aggregate sections by IntersectionID.
+        sec_csv = os.path.join(results_folder, "section_stats.csv")
+        if not os.path.isfile(sec_csv):
+            return []
+        try:
+            with open(sec_csv, newline="", encoding="utf-8") as _sf:
+                all_sec_rows = list(csv.DictReader(_sf))
+        except Exception:
+            return []
+        if not all_sec_rows:
+            return []
+        # De-duplicate: section_stats.csv is append-only across runs.
+        # Keep the LAST row per SectionID (last written = most recent run).
+        _last_by_sid = {}
+        for _r in all_sec_rows:
+            _sid = str(_r.get("SectionID", "") or "")
+            if _sid:
+                _last_by_sid[_sid] = _r   # always overwrite → keeps last
+        sec_rows = list(_last_by_sid.values()) if _last_by_sid else []
+        if not sec_rows:
+            return []
+        # Aggregate by intersection: length-weighted density/speed/flow; sum queue
+        _agg = {}
+        for _r in sec_rows:
+            _iid = str(_r.get("IntersectionID", "")).strip()
+            if not _iid or _iid == "0":
+                continue
+            _l = float(_r.get("Length_km", 0) or 0)
+            _d = float(_r.get("AvgDensity_vkm", 0) or 0)
+            _s = float(_r.get("AvgSpeed_kmh", 0) or 0)
+            _fl = float(_r.get("AvgFlow_veh_h", 0) or 0)
+            _q  = float(_r.get("AvgQueue_veh", 0) or 0)
+            if _iid not in _agg:
+                _agg[_iid] = {"wt_len":0.0,"wt_d":0.0,"wt_s":0.0,"wt_fl":0.0,"q":0.0,"n":0}
+            a = _agg[_iid]
+            if _l > 0:
+                a["wt_len"] += _l; a["wt_d"] += _d*_l
+                a["wt_s"]  += _s*_l; a["wt_fl"] += _fl*_l
+                a["q"] += _q; a["n"] += 1
+        result_fallback = []
+        for _iid, a in _agg.items():
+            _tl = max(a["wt_len"], 1e-9)
+            result_fallback.append({
+                "iid": _iid,
+                "distinct_buses": None, "distinct_cars": None, "distinct_trucks": None,
+                "bus_passages": None, "car_passages": None, "truck_passages": None,
+                "pax_equiv": None, "bus_pax_equiv": None,
+                "car_pax_equiv": None, "truck_pax_equiv": None,
+                "total_delay": None, "main_delay": None, "side_delay": None,
+                "bus_tt": None, "avg_bus_delay": None, "avg_car_delay": None,
+                "avg_truck_delay": None,
+                "avg_main_delay_per_hr": None, "avg_side_delay_per_hr": None,
+                "avg_total_delay_per_hr": None, "sim_duration_hrs": None,
+                "tsp_det": None, "tsp_ext": None, "tsp_ins": None,
+                "tsp_natural_green": None, "tsp_skip_ge": None,
+                "tsp_skip_ins": None, "tsp_no_action": None,
+                "avg_extension_s": None, "avg_insertion_s": None,
+                "avg_insertion_wait_s": None,
+                "avg_density": round(a["wt_d"] / _tl, 4),
+                "avg_speed":   round(a["wt_s"] / _tl, 3),
+                "avg_flow":    round(a["wt_fl"] / _tl, 2),
+                "avg_queue":   round(a["q"] / max(a["n"], 1), 2),
+            })
+        if result_fallback:
+            print(f"[dashboard] per-intersection: loaded {len(result_fallback)} junctions from section_stats.csv (fallback)")
+        return result_fallback
 
     try:
         with open(inter_csv, newline="", encoding="utf-8") as f:
@@ -1188,6 +1484,59 @@ def _load_per_section_data(batch_row: dict, log_dir: str) -> list:
     )
 
     return result
+
+
+def _weighted_section_metric(per_section: list, key: str):
+    """Length-weighted fallback for global network metrics from section_stats.csv."""
+    if not per_section:
+        return None
+    num = 0.0
+    den = 0.0
+    for row in per_section:
+        v = _flt(row.get(key))
+        if v is None or not math.isfinite(v):
+            continue
+        w = _flt(row.get("length_km"), 1.0)
+        if w is None or w <= 0.0:
+            w = 1.0
+        num += v * w
+        den += w
+    if den <= 0.0:
+        return None
+    return num / den
+
+
+def _signal_plan_rows() -> list:
+    """Nominal main-vs-side timing bars used by the dashboard comparison."""
+    out = []
+    for jid, cfg in sorted(_IC.items(), key=lambda kv: int(kv[0]) if str(kv[0]).lstrip("-").isdigit() else str(kv[0])):
+        try:
+            cycle = float(cfg.get("CycleTime", cfg.get("cycle_length", 0.0)) or 0.0)
+            main_green = float(cfg.get("BusPhaseDuration", 0.0) or 0.0)
+            if main_green <= 0.0:
+                phase_durs = cfg.get("PhaseDurationList") or cfg.get("phase_durations") or []
+                bus_phase = int(float(cfg.get("BusPhase", 1) or 1))
+                if phase_durs and 0 <= bus_phase - 1 < len(phase_durs):
+                    main_green = float(phase_durs[bus_phase - 1] or 0.0)
+            if cycle <= 0.0:
+                phase_durs = cfg.get("PhaseDurationList") or cfg.get("phase_durations") or []
+                cycle = sum(float(x or 0.0) for x in phase_durs)
+            if cycle <= 0.0:
+                cycle = 135.0
+            main_green = max(0.0, min(main_green or 0.0, cycle))
+            side_green = max(cycle - main_green, 0.0)
+            out.append({
+                "jct": str(jid),
+                "cycle_s": round(cycle, 1),
+                "main_green_s": round(main_green, 1),
+                "main_red_s": round(side_green, 1),
+                "side_green_s": round(side_green, 1),
+                "side_red_s": round(main_green, 1),
+                "bus_phase": int(float(cfg.get("BusPhase", 0) or 0)),
+            })
+        except Exception:
+            continue
+    return out
 
 
 def _load_simulation_results_row(batch_row: dict, log_dir: str) -> dict:
@@ -1581,6 +1930,8 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     runs_data:   list = []
     all_wave_csvs = _wave_csvs(log_dir) if log_dir else []
     all_bus_track_csvs = _bus_tracking_csvs(log_dir) if log_dir else []
+    all_obj_csvs = _objective_trace_csvs(log_dir) if log_dir else []
+    all_reward_csvs = _reward_cycle_csvs(log_dir) if log_dir else []
     all_focus_csvs = _focus_history_csvs(log_dir) if log_dir else []
     all_queue_snap_csvs = _queue_snapshot_csvs(log_dir) if log_dir else []
     all_dynaropac_csvs = _dynaropac_csvs(log_dir) if log_dir else []
@@ -1608,10 +1959,26 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
                                     "inter_sum_BusTotalTT_hrs"])
         avg_bus_delay   = _pick(row, ["stats_AvgBusPassDelay_s",
                                       "inter_avg_AvgBusPassDelay_s"])
+        avg_pass_delay  = _pick(row, ["stats_AvgPassDelay_s",
+                                      "inter_avg_AvgPassDelay_s"])
         avg_car_delay   = _pick(row, ["stats_AvgCarPassDelay_s",
                                       "inter_avg_AvgCarPassDelay_s"])
         avg_truck_delay = _pick(row, ["stats_AvgTruckPassDelay_s",
                                       "inter_avg_AvgTruckPassDelay_s"])
+        pax_equiv       = _pick(row, ["stats_PaxEquivPassages",
+                                      "inter_sum_PaxEquivPassages"])
+        bus_pax_equiv   = _pick(row, ["stats_BusPaxEquivPassages",
+                                      "inter_sum_BusPaxEquivPassages"])
+        car_pax_equiv   = _pick(row, ["stats_CarPaxEquivPassages",
+                                      "inter_sum_CarPaxEquivPassages"])
+        truck_pax_equiv = _pick(row, ["stats_TruckPaxEquivPassages",
+                                      "inter_sum_TruckPaxEquivPassages"])
+        distinct_cars   = _pick(row, ["stats_N_DistinctCars",
+                                      "inter_sum_N_DistinctCars"])
+        distinct_buses  = _pick(row, ["stats_N_DistinctBuses",
+                                      "inter_sum_N_DistinctBuses"])
+        distinct_trucks = _pick(row, ["stats_N_DistinctTrucks",
+                                      "inter_sum_N_DistinctTrucks"])
         # Avg pax delay per simulation-hour (pax·hrs of delay per sim-hour)
         avg_main_delay_per_hr  = _pick(row, ["stats_AvgMainPassDelay_pax_h_per_sim_h"])
         avg_side_delay_per_hr  = _pick(row, ["stats_AvgSidePassDelay_pax_h_per_sim_h"])
@@ -1636,25 +2003,70 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
                                         "inter_sum_TSP_Skipped_Ins"])
         tsp_no_action     = _pick(row, ["stats_TSP_Detected_NoAction",
                                         "inter_sum_TSP_Detected_NoAction"])
+        # ── TSP_Paper 4-objective values (from batch_results wobj_* columns) ─
+        # Z1 = Σ passenger delay (bus + car, pax·s) — minimise
+        # Z2 = flow-weighted green bandwidth        — MAXIMISE (higher is better)
+        # Z3 = total bus lateness Σσ+ (s)           — minimise
+        # Z4 = corridor travel time (s)             — minimise
+        wobj_Z1 = _pick(row, ["wobj_Z1_total"])
+        wobj_Z2 = _pick(row, ["wobj_Z2_total"])
+        wobj_Z3 = _pick(row, ["wobj_Z3_total"])
+        wobj_Z4 = _pick(row, ["wobj_Z4_total"])
+        wobj_total = _pick(row, ["wobj_objective_total"])
+        bus_predictor = (row.get("run_bus_predictor") or "KALMAN").strip().upper() or "KALMAN"
         sim_row = _load_simulation_results_row(row, log_dir)
+        per_section = _load_per_section_data(row, log_dir)
+        sec_density = _weighted_section_metric(per_section, "density")
+        sec_speed = _weighted_section_metric(per_section, "speed")
+        sec_flow = _weighted_section_metric(per_section, "flow")
 
         # Network stats — prefer batch_results values, then per-run simulation_results.csv,
         # then older PyANGKernel fallback keys.
         density = _first_valid_metric(
-            _pick(row, ["stats_Net_AvgDensity_vkm", "aimsun_avg_density_vkm"]),
-            _pick(sim_row, ["Net_AvgDensity_vkm"]),
-            allow_zero=False,
+          _pick(sim_row, ["Net_Density_All", "Net_AvgDensity_vkm"]),
+          _pick(row, ["stats_Net_Density_All", "stats_Net_AvgDensity_vkm", "aimsun_avg_density_vkm"]),
+          sec_density,
+          allow_zero=False,
         )
+        if density is None:
+            density = _first_valid_metric(
+                _pick(sim_row, ["Net_Density_All", "Net_AvgDensity_vkm"]),
+                _pick(row, ["stats_Net_Density_All", "stats_Net_AvgDensity_vkm", "aimsun_avg_density_vkm"]),
+                sec_density,
+                allow_zero=True,
+            )
         speed = _first_valid_metric(
-            _pick(row, ["stats_Net_AvgSpeed_kmh", "aimsun_avg_speed_kmh"]),
             _pick(sim_row, ["Net_AvgSpeed_kmh"]),
+            _pick(row, ["stats_Net_AvgSpeed_kmh", "aimsun_avg_speed_kmh"]),
+            sec_speed,
             allow_zero=False,
         )
+        if sec_speed is not None and sec_speed > 0.0 and speed is not None and 0.0 < speed < 0.5 * sec_speed:
+            speed = sec_speed
         flow = _first_valid_metric(
-            _pick(row, ["stats_Net_TotalFlowVeh", "aimsun_total_flow_veh"]),
             _pick(sim_row, ["Net_TotalFlowVeh"]),
+            _pick(row, ["stats_Net_TotalFlowVeh", "aimsun_total_flow_veh"]),
             allow_zero=False,
         )
+        # Sanity clamp: Aimsun sometimes returns a cumulative passage count
+        # (~673 M for DCTSP_MARL) instead of veh/h when the wrong statistic
+        # type is resolved.  Any value > 50 000 veh/h is physically impossible
+        # for this corridor — treat it as missing.
+        # Better fallback: estimate network throughput from (distinct cars + buses
+        # + trucks) / sim_duration_hrs.  This gives a comparable metric to the
+        # GKSystemStatistic "all types" flow that the other experiments report
+        # (N_sys_exit / I × 3600).  sec_flow is a length-weighted per-SECTION
+        # average and is a different, smaller metric — do NOT use it as a
+        # substitute for network-level throughput.
+        if flow is not None and flow > 50_000:
+            _dc = distinct_cars or 0.0
+            _db = distinct_buses or 0.0
+            _dt = distinct_trucks or 0.0
+            _dh = sim_duration_hrs or 1.25   # default 1.25 h if unknown
+            if (_dc + _db) > 0 and float(_dh) > 0:
+                flow = round((_dc + _db + _dt) / float(_dh))
+            else:
+                flow = sec_flow  # last resort: section-level weighted average
         elapsed = _pick(row, ["run_elapsed_s"])
         # Per-vehicle-type network stats from PyANGKernel (length-weighted, collected after run)
         net_flow_car    = _pick(row, ["aimsun_flow_car"])
@@ -1713,26 +2125,180 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             _pick(sim_row, ["Net_Speed_Truck"]),
             allow_zero=False,
         )
+        type_flow_sum = sum(
+            float(v) for v in (net_flow_car, net_flow_bus, net_flow_truck)
+            if v is not None and math.isfinite(float(v))
+        )
+        if type_flow_sum > 0.0 and (flow is None or flow < 0.5 * type_flow_sum):
+            flow = type_flow_sum
+        if (flow is None or flow <= 0.0) and sec_flow is not None and sec_flow > 0.0:
+            flow = sec_flow
         net_delay_all = _first_valid_metric(
             _pick(row, ["stats_Net_Delay_All", "aimsun_avg_delay_s_km"]),
             _pick(sim_row, ["Net_Delay_All"]),
-            allow_zero=False,
+          allow_zero=True,
         )
         net_delay_car = _first_valid_metric(
             _pick(row, ["stats_Net_Delay_Car", "aimsun_delay_car"]),
             _pick(sim_row, ["Net_Delay_Car"]),
-            allow_zero=False,
+          allow_zero=True,
         )
         net_delay_bus = _first_valid_metric(
             _pick(row, ["stats_Net_Delay_Bus", "aimsun_delay_bus"]),
             _pick(sim_row, ["Net_Delay_Bus"]),
-            allow_zero=False,
+          allow_zero=True,
         )
         net_delay_truck = _first_valid_metric(
             _pick(row, ["stats_Net_Delay_Truck", "aimsun_delay_truck"]),
             _pick(sim_row, ["Net_Delay_Truck"]),
-            allow_zero=False,
+          allow_zero=True,
         )
+        net_entry_delay_all = _first_valid_metric(
+          _pick(row, ["stats_Net_EntryDelay_All"]),
+          _pick(sim_row, ["Net_EntryDelay_All", "Net_Delay_All"]),
+          allow_zero=True,
+        )
+        net_exit_delay_all = _first_valid_metric(
+          _pick(row, ["stats_Net_ExitDelay_All"]),
+          _pick(sim_row, ["Net_ExitDelay_All", "Net_Delay_All"]),
+          allow_zero=True,
+        )
+        net_entry_delay_car = _first_valid_metric(
+          _pick(row, ["stats_Net_EntryDelay_Car"]),
+          _pick(sim_row, ["Net_EntryDelay_Car", "Net_Delay_Car"]),
+          allow_zero=True,
+        )
+        net_exit_delay_car = _first_valid_metric(
+          _pick(row, ["stats_Net_ExitDelay_Car"]),
+          _pick(sim_row, ["Net_ExitDelay_Car", "Net_Delay_Car"]),
+          allow_zero=True,
+        )
+        net_entry_delay_bus = _first_valid_metric(
+          _pick(row, ["stats_Net_EntryDelay_Bus"]),
+          _pick(sim_row, ["Net_EntryDelay_Bus", "Net_Delay_Bus"]),
+          allow_zero=True,
+        )
+        net_exit_delay_bus = _first_valid_metric(
+          _pick(row, ["stats_Net_ExitDelay_Bus"]),
+          _pick(sim_row, ["Net_ExitDelay_Bus", "Net_Delay_Bus"]),
+          allow_zero=True,
+        )
+        net_entry_delay_truck = _first_valid_metric(
+          _pick(row, ["stats_Net_EntryDelay_Truck"]),
+          _pick(sim_row, ["Net_EntryDelay_Truck", "Net_Delay_Truck"]),
+          allow_zero=True,
+        )
+        net_exit_delay_truck = _first_valid_metric(
+          _pick(row, ["stats_Net_ExitDelay_Truck"]),
+          _pick(sim_row, ["Net_ExitDelay_Truck", "Net_Delay_Truck"]),
+          allow_zero=True,
+        )
+        # Fallback: if system-level delay is 0 but per-type delays exist, use
+        # flow-weighted average (AKIEstGetGlobalStatisticsSystem returns 0 for DTa
+        # in some Aimsun builds/runs while per-type stats work fine).
+        if (net_delay_all is None or net_delay_all == 0.0):
+            _wt_d, _wt_f = 0.0, 0.0
+            for _d, _f in [
+                (net_delay_car,   net_flow_car),
+                (net_delay_bus,   net_flow_bus),
+                (net_delay_truck, net_flow_truck),
+            ]:
+                if _d is not None and _d > 0.0 and _f is not None and _f > 0.0:
+                    _wt_d += _d * _f
+                    _wt_f += _f
+            if _wt_f > 0.0:
+                net_delay_all = round(_wt_d / _wt_f, 2)
+                if net_entry_delay_all is None or net_entry_delay_all == 0.0:
+                    net_entry_delay_all = net_delay_all
+                if net_exit_delay_all is None or net_exit_delay_all == 0.0:
+                    net_exit_delay_all = net_delay_all
+
+        # Extended section stats from collect_extra_section_stats
+        # These map to Net_EntryTT_*/Net_ExitTT_*/Net_ExitSpd_*/etc. columns in simulation_results.csv
+        def _xpick(key):
+            """Pick a scalar float from sim_row for an extended-stats column."""
+            v = _pick(sim_row, [key])
+            if v is None:
+                return None
+            try:
+                f = float(v)
+                return f if math.isfinite(f) else None
+            except (TypeError, ValueError):
+                return None
+
+        net_entry_tt_all   = _xpick("Net_EntryTT_All")
+        net_entry_tt_car   = _xpick("Net_EntryTT_Car")
+        net_entry_tt_bus   = _xpick("Net_EntryTT_Bus")
+        net_entry_tt_hov   = _xpick("Net_EntryTT_HOV")
+        net_entry_tt_truck = _xpick("Net_EntryTT_Truck")
+
+        net_exit_tt_all    = _xpick("Net_ExitTT_All")
+        net_exit_tt_car    = _xpick("Net_ExitTT_Car")
+        net_exit_tt_bus    = _xpick("Net_ExitTT_Bus")
+        net_exit_tt_hov    = _xpick("Net_ExitTT_HOV")
+        net_exit_tt_truck  = _xpick("Net_ExitTT_Truck")
+
+        net_exit_spd_all   = _xpick("Net_ExitSpd_All")
+        net_exit_spd_car   = _xpick("Net_ExitSpd_Car")
+        net_exit_spd_bus   = _xpick("Net_ExitSpd_Bus")
+        net_exit_spd_hov   = _xpick("Net_ExitSpd_HOV")
+        net_exit_spd_truck = _xpick("Net_ExitSpd_Truck")
+
+        net_stop_time_all   = _xpick("Net_StopTime_All")
+        net_stop_time_car   = _xpick("Net_StopTime_Car")
+        net_stop_time_bus   = _xpick("Net_StopTime_Bus")
+        net_stop_time_truck = _xpick("Net_StopTime_Truck")
+
+        net_num_stops_all   = _xpick("Net_NumStops_All")
+        net_num_stops_car   = _xpick("Net_NumStops_Car")
+        net_num_stops_bus   = _xpick("Net_NumStops_Bus")
+        net_num_stops_truck = _xpick("Net_NumStops_Truck")
+
+        net_total_dist_all   = _xpick("Net_TotalDist_All")
+        net_total_dist_car   = _xpick("Net_TotalDist_Car")
+        net_total_dist_bus   = _xpick("Net_TotalDist_Bus")
+        net_total_dist_truck = _xpick("Net_TotalDist_Truck")
+
+        net_total_tt_h_all   = _xpick("Net_TotalTT_h_All")
+        net_total_tt_h_car   = _xpick("Net_TotalTT_h_Car")
+        net_total_tt_h_bus   = _xpick("Net_TotalTT_h_Bus")
+        net_total_tt_h_truck = _xpick("Net_TotalTT_h_Truck")
+
+        net_exit_count_all   = _xpick("Net_ExitCount_All")
+        net_exit_count_car   = _xpick("Net_ExitCount_Car")
+        net_exit_count_bus   = _xpick("Net_ExitCount_Bus")
+        net_exit_count_truck = _xpick("Net_ExitCount_Truck")
+
+        net_input_flow_all   = _xpick("Net_InputFlow_All")
+        net_input_flow_car   = _xpick("Net_InputFlow_Car")
+        net_input_flow_bus   = _xpick("Net_InputFlow_Bus")
+        net_input_flow_truck = _xpick("Net_InputFlow_Truck")
+
+        net_exit_flow_all    = _xpick("Net_ExitFlow_All")
+        net_exit_flow_car    = _xpick("Net_ExitFlow_Car")
+        net_exit_flow_bus    = _xpick("Net_ExitFlow_Bus")
+        net_exit_flow_truck  = _xpick("Net_ExitFlow_Truck")
+
+        net_total_lc_all    = _xpick("Net_TotalLC_All")
+        net_total_lc_car    = _xpick("Net_TotalLC_Car")
+        net_total_lc_bus    = _xpick("Net_TotalLC_Bus")
+        net_total_lc_truck  = _xpick("Net_TotalLC_Truck")
+
+        net_mean_queue_all   = _xpick("Net_MeanQueue_All")
+        net_mean_queue_car   = _xpick("Net_MeanQueue_Car")
+        net_mean_queue_bus   = _xpick("Net_MeanQueue_Bus")
+        net_mean_queue_truck = _xpick("Net_MeanQueue_Truck")
+
+        net_max_queue_all    = _xpick("Net_MaxQueue_All")
+        net_max_queue_car    = _xpick("Net_MaxQueue_Car")
+        net_max_queue_bus    = _xpick("Net_MaxQueue_Bus")
+        net_max_queue_truck  = _xpick("Net_MaxQueue_Truck")
+
+        net_vq_avg_all    = _xpick("Net_VQAvg_All")
+        net_vq_avg_bus    = _xpick("Net_VQAvg_Bus")
+        net_vq_max_all    = _xpick("Net_VQMax_All")
+        net_wait_vq_all   = _xpick("Net_WaitVQ_All")
+        net_wait_vq_bus   = _xpick("Net_WaitVQ_Bus")
 
         # Prearm coordination stats — written by record_prearm_stats in AAPIFinish
         # (only non-zero for GROUP_BASED modes that use CorridorCoordinator)
@@ -1775,6 +2341,11 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         wave_csv = _match_wave_csv_by_name(exp_name, all_wave_csvs)
         wave_evts = _wave_events_from_csv(wave_csv) if wave_csv else []
 
+        obj_csv = _match_objective_trace_csv_by_name(exp_name, all_obj_csvs)
+        objective_trace = _objective_trace_from_csv(obj_csv) if obj_csv else []
+        reward_csv = _match_reward_cycle_csv_by_name(exp_name, all_reward_csvs)
+        reward_cycle = _reward_cycle_from_csv(reward_csv) if reward_csv else []
+
         bus_journeys = _bus_journeys_from_csv(det_csv, wave_evts) if det_csv else []
         phase_samples = _phase_samples_from_csv(det_csv) if det_csv else []
         det_pair_stats = _detection_pair_stats_from_csv(det_csv) if det_csv else {
@@ -1791,6 +2362,8 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # ── Queue snapshot data (60-second snapshots per junction) ─────────────
         queue_snap_csv = _match_queue_snapshot_csv_by_name(exp_name, all_queue_snap_csvs)
         queue_snapshots = _queue_snapshot_from_csv(queue_snap_csv) if queue_snap_csv else []
+        # Per-approach entry-point detail (new format with direction labels)
+        queue_entry_snapshots = _queue_entry_snapshots_from_csv(queue_snap_csv) if queue_snap_csv else []
 
         # ── DYNAOPAC decision log (phase-duration search candidates + delays) ──
         dyn_csv = _match_dynaropac_csv_by_name(exp_name, all_dynaropac_csvs)
@@ -1828,9 +2401,18 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "side_delay":     _rnd(side_delay,  3),
             "bus_tt":         _rnd(bus_tt,      3),
             # per-pax delays (s)
+            "avg_pass_delay":  _rnd(avg_pass_delay,  2),
             "avg_bus_delay":   _rnd(avg_bus_delay,   2),
             "avg_car_delay":   _rnd(avg_car_delay,   2),
             "avg_truck_delay":        _rnd(avg_truck_delay,       2),
+            # volume behind passenger-weighted delay metrics
+            "pax_equiv":        _rnd(pax_equiv,       1),
+            "bus_pax_equiv":    _rnd(bus_pax_equiv,   1),
+            "car_pax_equiv":    _rnd(car_pax_equiv,   1),
+            "truck_pax_equiv":  _rnd(truck_pax_equiv, 1),
+            "distinct_cars":    _int(distinct_cars),
+            "distinct_buses":   _int(distinct_buses),
+            "distinct_trucks":  _int(distinct_trucks),
             # Avg pax delay per simulation-hour (pax·hrs/sim-hr) — independent of sim length
             "avg_main_delay_per_hr":  _rnd(avg_main_delay_per_hr,  3),
             "avg_side_delay_per_hr":  _rnd(avg_side_delay_per_hr,  3),
@@ -1860,6 +2442,7 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "tsp_no_action":    _int(tsp_no_action),
             # network (length-weighted averages from PyANGKernel / AAPI stats)
             "density":           _rnd(density,        3),
+            "density_all":       _rnd(density,        3),
             "speed":             _rnd(speed,           2),
             "flow":              _rnd(flow,            0),
             # per-type network stats (only populated when PyANGKernel API succeeds)
@@ -1876,6 +2459,75 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "net_delay_car":     _rnd(net_delay_car,   2),
             "net_delay_bus":     _rnd(net_delay_bus,   2),
             "net_delay_truck":   _rnd(net_delay_truck, 2),
+            "net_entry_delay_all":   _rnd(net_entry_delay_all,   2),
+            "net_exit_delay_all":    _rnd(net_exit_delay_all,    2),
+            "net_entry_delay_car":   _rnd(net_entry_delay_car,   2),
+            "net_exit_delay_car":    _rnd(net_exit_delay_car,    2),
+            "net_entry_delay_bus":   _rnd(net_entry_delay_bus,   2),
+            "net_exit_delay_bus":    _rnd(net_exit_delay_bus,    2),
+            "net_entry_delay_truck": _rnd(net_entry_delay_truck, 2),
+            "net_exit_delay_truck":  _rnd(net_exit_delay_truck,  2),
+            # Extended section stats (from collect_extra_section_stats)
+            "net_entry_tt_all":    _rnd(net_entry_tt_all,   2),
+            "net_entry_tt_car":    _rnd(net_entry_tt_car,   2),
+            "net_entry_tt_bus":    _rnd(net_entry_tt_bus,   2),
+            "net_entry_tt_hov":    _rnd(net_entry_tt_hov,   2),
+            "net_entry_tt_truck":  _rnd(net_entry_tt_truck, 2),
+            "net_exit_tt_all":     _rnd(net_exit_tt_all,    2),
+            "net_exit_tt_car":     _rnd(net_exit_tt_car,    2),
+            "net_exit_tt_bus":     _rnd(net_exit_tt_bus,    2),
+            "net_exit_tt_hov":     _rnd(net_exit_tt_hov,    2),
+            "net_exit_tt_truck":   _rnd(net_exit_tt_truck,  2),
+            "net_exit_spd_all":    _rnd(net_exit_spd_all,   2),
+            "net_exit_spd_car":    _rnd(net_exit_spd_car,   2),
+            "net_exit_spd_bus":    _rnd(net_exit_spd_bus,   2),
+            "net_exit_spd_hov":    _rnd(net_exit_spd_hov,   2),
+            "net_exit_spd_truck":  _rnd(net_exit_spd_truck, 2),
+            "net_stop_time_all":   _rnd(net_stop_time_all,  2),
+            "net_stop_time_car":   _rnd(net_stop_time_car,  2),
+            "net_stop_time_bus":   _rnd(net_stop_time_bus,  2),
+            "net_stop_time_truck": _rnd(net_stop_time_truck,2),
+            "net_num_stops_all":   _rnd(net_num_stops_all,  3),
+            "net_num_stops_car":   _rnd(net_num_stops_car,  3),
+            "net_num_stops_bus":   _rnd(net_num_stops_bus,  3),
+            "net_num_stops_truck": _rnd(net_num_stops_truck,3),
+            "net_total_dist_all":  _rnd(net_total_dist_all,  1),
+            "net_total_dist_car":  _rnd(net_total_dist_car,  1),
+            "net_total_dist_bus":  _rnd(net_total_dist_bus,  1),
+            "net_total_dist_truck":_rnd(net_total_dist_truck,1),
+            "net_total_tt_h_all":  _rnd(net_total_tt_h_all,  2),
+            "net_total_tt_h_car":  _rnd(net_total_tt_h_car,  2),
+            "net_total_tt_h_bus":  _rnd(net_total_tt_h_bus,  2),
+            "net_total_tt_h_truck":_rnd(net_total_tt_h_truck,2),
+            "net_exit_count_all":  _rnd(net_exit_count_all,  0),
+            "net_exit_count_car":  _rnd(net_exit_count_car,  0),
+            "net_exit_count_bus":  _rnd(net_exit_count_bus,  0),
+            "net_exit_count_truck":_rnd(net_exit_count_truck,0),
+            "net_input_flow_all":  _rnd(net_input_flow_all,  0),
+            "net_input_flow_car":  _rnd(net_input_flow_car,  0),
+            "net_input_flow_bus":  _rnd(net_input_flow_bus,  0),
+            "net_input_flow_truck":_rnd(net_input_flow_truck,0),
+            "net_exit_flow_all":   _rnd(net_exit_flow_all,   0),
+            "net_exit_flow_car":   _rnd(net_exit_flow_car,   0),
+            "net_exit_flow_bus":   _rnd(net_exit_flow_bus,   0),
+            "net_exit_flow_truck": _rnd(net_exit_flow_truck, 0),
+            "net_total_lc_all":    _rnd(net_total_lc_all,    0),
+            "net_total_lc_car":    _rnd(net_total_lc_car,    0),
+            "net_total_lc_bus":    _rnd(net_total_lc_bus,    0),
+            "net_total_lc_truck":  _rnd(net_total_lc_truck,  0),
+            "net_mean_queue_all":  _rnd(net_mean_queue_all,  1),
+            "net_mean_queue_car":  _rnd(net_mean_queue_car,  1),
+            "net_mean_queue_bus":  _rnd(net_mean_queue_bus,  1),
+            "net_mean_queue_truck":_rnd(net_mean_queue_truck,1),
+            "net_max_queue_all":   _rnd(net_max_queue_all,   1),
+            "net_max_queue_car":   _rnd(net_max_queue_car,   1),
+            "net_max_queue_bus":   _rnd(net_max_queue_bus,   1),
+            "net_max_queue_truck": _rnd(net_max_queue_truck, 1),
+            "net_vq_avg_all":      _rnd(net_vq_avg_all,      1),
+            "net_vq_avg_bus":      _rnd(net_vq_avg_bus,      1),
+            "net_vq_max_all":      _rnd(net_vq_max_all,      1),
+            "net_wait_vq_all":     _rnd(net_wait_vq_all,     1),
+            "net_wait_vq_bus":     _rnd(net_wait_vq_bus,     1),
             # coordination pre-arm (only non-zero for GROUP_BASED with CorridorCoordinator)
             "prearm_fired":    _int(prearm_fired),
             "prearm_success":  _int(prearm_success),
@@ -1913,6 +2565,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "bus_journeys": bus_journeys,
             # detection snapshots for decision-space overlay
             "phase_samples": phase_samples,
+            # objective trace rows (decision evaluation / skip / action)
+            "objective_trace": objective_trace,
+            # reward-cycle rows (state-action-reward decomposition per candidate)
+            "reward_cycle": reward_cycle,
             # continuous bus position tracking (list of {t,vid,x,y,jct,dist,in_zone,zone_r,event})
             "bus_tracking": bus_tracking,
             # focus priority history (list of {start_t, end_t, veh_id, jct_id, outcome, held_s})
@@ -1920,8 +2576,17 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "focus_bus_ids": sorted(focus_bus_ids),
             # queue snapshots (list of {t, jct, buses_in_zone, queue_main, queue_side, queue_total, tsp_state})
             "queue_snapshots": queue_snapshots,
+            # per-approach entry-point snapshots (list of {t, jct, main_dir, main_veh, sides:{key:n_veh}})
+            "queue_entry_snapshots": queue_entry_snapshots,
             # DYNAOPAC decisions (list of {t, jct, before_dur, extensions, delays, best_ext, applied, ...})
             "dynaropac_decisions": dynaropac_decisions,
+            # TSP_Paper objectives (Z1–Z4 + weighted total, from wobj_* batch_results columns)
+            "wobj_Z1":    _rnd(wobj_Z1,    0),
+            "wobj_Z2":    _rnd(wobj_Z2,    1),
+            "wobj_Z3":    _rnd(wobj_Z3,    0),
+            "wobj_Z4":    _rnd(wobj_Z4,    1),
+            "wobj_total": _rnd(wobj_total, 0),
+            "bus_predictor": bus_predictor,
         }
         runs_data.append(run_obj)
 
@@ -1952,8 +2617,12 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         normal_run = runs_data[0]   # fall back to first row
 
     LOWER_IS_BETTER = {"total_delay", "main_delay", "side_delay", "bus_tt",
-                        "avg_bus_delay", "avg_car_delay", "avg_truck_delay", "density",
+                        "avg_bus_delay", "avg_car_delay", "avg_truck_delay", "density", "density_all",
                         "net_delay_all", "net_delay_car", "net_delay_bus", "net_delay_truck",
+                        "net_entry_delay_all", "net_exit_delay_all",
+                        "net_entry_delay_car", "net_exit_delay_car",
+                        "net_entry_delay_bus", "net_exit_delay_bus",
+                        "net_entry_delay_truck", "net_exit_delay_truck",
                         "avg_main_delay_per_hr", "avg_side_delay_per_hr", "avg_total_delay_per_hr",
                         "tracked_only_bus_count"}
     HIGHER_IS_BETTER = {"speed", "flow", "tsp_det_unique", "mean_green",
@@ -2066,6 +2735,7 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # Passive junctions = detection-zone only (fixed signal timing, no TSP)
         "active_jcts":     _ACTIVE_JCTS,
         "passive_jcts":    _PASSIVE_JCTS,
+        "signal_plans":    _signal_plan_rows(),
     }
 
 
@@ -2194,7 +2864,62 @@ TEMPLATE_FALLBACK_HTML
 <!-- ── KPI summary (vs NORMAL baseline) ─────────────────────────────── -->
 <div id="kpi-row" class="kpi-row"></div>
 
+<!-- ── Audience summary (decision quality) ───────────────────────────── -->
+<p class="section-hdr">Audience Summary <span style="font-size:0.8rem;color:var(--muted)">(action quality and reward sanity)</span></p>
+<div id="audience-kpi-row" class="kpi-row"></div>
+
 <!-- ── Charts row 1: Delays ──────────────────────────────────────────── -->
+<!-- ── TSP_Paper 4-Objective Summary ──────────────────────────────────── -->
+<p class="section-hdr">TSP Objectives (Z1–Z4) <span style="font-size:0.78rem;color:var(--muted)">(from TSP_Paper weighted objective; lower is better for all four)</span></p>
+<div class="card" id="objectives-card">
+  <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+    <b>Z1</b> Total passenger delay (bus + car, pax·s) &nbsp;·&nbsp;
+    <b>Z2</b> Flow-weighted bandwidth (maximise) &nbsp;·&nbsp;
+    <b>Z3</b> Total bus lateness Σσ⁺ (s) &nbsp;·&nbsp;
+    <b>Z4</b> Corridor travel time (s).
+    Values normalised to NO_TSP baseline (NO_TSP = 100%). Missing bars = no objective data for that run.
+  </div>
+  <div style="font-size:10px;color:#ff9966;background:#1a0a00;border-left:3px solid #ff9966;padding:8px;margin-bottom:12px">
+    <b>Trade-offs:</b> TSP improves Z1 (passenger delay) but Z4 (total veh·h) typically increases 10–20% due to car delays. Z2 is not comparable: NO_TSP includes 334 natural-green detections, while TSP has 0 (forced intervention breaks pattern).
+  </div>
+  <canvas id="chart-objectives" height="240"></canvas>
+  <div id="objectives-na" style="display:none;margin-top:8px;font-size:11px;color:#b08080">No wobj_Z* data found — run a batch with PREDICTOR_SWEEP_ENABLED=True to populate.</div>
+  <!-- Raw Z1–Z4 values table -->
+  <div style="margin-top:14px;overflow-x:auto">
+    <div style="font-size:10px;color:#7777aa;margin-bottom:4px">
+      <span style="color:#64dc78;font-weight:700">★ green bold</span> = best across all experiments &nbsp;·&nbsp;
+      <span style="color:#f05050">red</span> = worst &nbsp;·&nbsp;
+      Z1 ↓ min &nbsp;·&nbsp; Z2 ↑ max &nbsp;·&nbsp; Z3 ↓ min &nbsp;·&nbsp; Z4 ↓ min
+    </div>
+    <table id="raw-z-table" style="width:100%;border-collapse:collapse;font-size:10.5px;color:#c0c0e0">
+      <thead>
+        <tr style="border-bottom:1px solid #333355;color:#8888cc">
+          <th style="text-align:left;padding:4px 8px">Experiment</th>
+          <th style="text-align:right;padding:4px 8px">Z1 Pax Delay ↓</th>
+          <th style="text-align:right;padding:4px 8px">Z2 Bandwidth ↑</th>
+          <th style="text-align:right;padding:4px 8px">Z3 Lateness ↓</th>
+          <th style="text-align:right;padding:4px 8px">Z4 Travel Time ↓</th>
+          <th style="text-align:right;padding:4px 8px">Weighted Obj</th>
+          <th style="text-align:right;padding:4px 8px">Avg Delay ↓</th>
+          <th style="text-align:right;padding:4px 8px">Flow (veh)</th>
+          <th style="text-align:right;padding:4px 8px">Insertions</th>
+        </tr>
+      </thead>
+      <tbody id="raw-z-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<p class="section-hdr">Predictor Comparison <span style="font-size:0.78rem;color:var(--muted)">(KALMAN / ADAPTIVE_KALMAN / LSTM_SS across algorithms — avg passenger delay s/pax)</span></p>
+<div class="card" id="predictor-card">
+  <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+    Grouped by TSP algorithm, each group shows three bars (one per predictor). Lower = better.
+    Only PRED_* experiments are shown.
+  </div>
+  <canvas id="chart-predictor-delay" height="240"></canvas>
+  <div id="predictor-na" style="display:none;margin-top:8px;font-size:11px;color:#b08080">No PRED_* experiment data found — enable PREDICTOR_SWEEP_ENABLED and re-run the batch.</div>
+</div>
+
 <p class="section-hdr">Delay Metrics</p>
 <div id="dynaopac-delay-note" style="display:none;margin-bottom:10px;padding:8px 12px;background:#1a1a38;border-left:3px solid #f0a020;border-radius:4px;font-size:12px;color:#c0c0e0">
   <strong>DYNAOPAC note:</strong> DYNAOPAC uses the <em>same GroupBased phase-based controller as HARMONY</em> — it is
@@ -2210,14 +2935,41 @@ TEMPLATE_FALLBACK_HTML
   <div class="card">
     <h2>Total Passenger Delay (hrs)</h2>
     <canvas id="chart-delay-hrs" height="240"></canvas>
+    <div id="delay-hrs-na" style="display:none;padding:12px;font-size:12px;color:#b08080;border:1px solid #3a1a1a;border-radius:6px;margin-top:8px">
+      <strong>Data not available for this batch.</strong><br>
+      Delay metrics require <code>simulation_results.csv</code> which is written at the end of each
+      simulation run. These runs either used a short simulation period or the file was not written.<br>
+      <em>Run a full simulation with the current code to populate these metrics.</em>
+    </div>
   </div>
   <div class="card">
     <h2>Per-Passenger Delays (seconds)</h2>
     <canvas id="chart-delay-s" height="240"></canvas>
+    <div id="delay-s-na" style="display:none;padding:12px;font-size:12px;color:#b08080;border:1px solid #3a1a1a;border-radius:6px;margin-top:8px">
+      <strong>Data not available.</strong> Requires <code>AvgBusPassDelay_s</code> / <code>AvgCarPassDelay_s</code>
+      from <code>simulation_results.csv</code>. See note above.
+    </div>
   </div>
 </div>
 
-<!-- ── Charts row 2: Delta vs NORMAL ─────────────────────────────────── -->
+<!-- ── Charts row 1b: Main-road vs side-street delay breakdown ─────── -->
+<p class="section-hdr">Delay Breakdown — Main Corridor vs Side Streets</p>
+<div class="grid grid-2">
+  <div class="card">
+    <h2>Bus Delay vs Car Delay (s/pax)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Average per-passenger delay in seconds. Bus passengers include PT occupancy weighting.</div>
+    <canvas id="chart-bus-car-delay" height="220"></canvas>
+    <div id="bus-car-delay-na" style="display:none;padding:10px;font-size:11px;color:#b08080">No avg bus/car delay data available.</div>
+  </div>
+  <div class="card">
+    <h2>Main vs Side Pax Delay (pax·h)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Total passenger delay on main corridor vs side streets. Larger gap between runs = more side-street reduction.</div>
+    <canvas id="chart-main-side-delay" height="220"></canvas>
+    <div id="main-side-delay-na" style="display:none;padding:10px;font-size:11px;color:#b08080">No main/side delay data available.</div>
+  </div>
+</div>
+
+
 <p class="section-hdr">% Improvement vs NORMAL Baseline <span id="baseline-note" style="font-size:0.8rem;color:var(--muted)"></span></p>
 <div class="card">
   <canvas id="chart-delta" height="180"></canvas>
@@ -2283,6 +3035,14 @@ TEMPLATE_FALLBACK_HTML
       this is why network speed may appear lower under coordinated TSP.
     </div>
     <canvas id="chart-pax-delay" height="220"></canvas>
+  </div>
+  <div class="card" id="card-volume">
+    <h2>Total Volume (pax-equivalent passages)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+      Stacked bars show the passenger-equivalent denominator used by AvgPassDelay.
+      The line is Net_TotalFlowVeh, so you can see whether lower delay came from lower demand.
+    </div>
+    <canvas id="chart-volume" height="220"></canvas>
   </div>
 </div>
 
@@ -2389,6 +3149,45 @@ TEMPLATE_FALLBACK_HTML
   <div style="overflow-x:auto;margin-top:8px">
     <canvas id="coordex-canvas" height="360" style="width:100%;min-width:700px;display:none"></canvas>
   </div>
+  <!-- ── Reward breakdown for selected bus ────────────────────────────── -->
+  <div id="coordex-reward-wrap" style="display:none;margin-top:10px">
+    <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px">
+      DCTSP Reward Breakdown — all candidates at each junction for selected bus
+      <span style="font-weight:400;color:#666">(requires reward_cycle CSV — from DCTSP_MARL/MDN/ZIG runs)</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table id="coordex-reward-table" style="font-size:10px;border-collapse:collapse;width:100%;min-width:700px">
+        <thead>
+          <tr style="color:#7070a0;border-bottom:1px solid #222">
+            <th style="text-align:left;padding:3px 6px">Junction</th>
+            <th style="text-align:right;padding:3px 6px">Sim t (s)</th>
+            <th style="text-align:right;padding:3px 6px">Bus ETA</th>
+            <th style="text-align:right;padding:3px 6px">σ_in</th>
+            <th style="text-align:right;padding:3px 6px" title="bus delay (s) / total intersection pax·s under no strategy">No-Act Delay</th>
+            <th style="text-align:right;padding:3px 6px">NO_ACTION r</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_5</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_10</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_15</th>
+            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_5</th>
+            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_10</th>
+            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_15</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_10</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_15</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_20</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_10</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_20</th>
+            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_30</th>
+            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_10</th>
+            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_20</th>
+            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_30</th>
+            <th style="text-align:left;padding:3px 6px">★ Chosen</th>
+          </tr>
+        </thead>
+        <tbody id="coordex-reward-tbody"></tbody>
+      </table>
+    </div>
+    <div id="coordex-reward-no-data" style="font-size:11px;color:var(--muted);display:none">No reward_cycle data for this bus (run a DCTSP_MARL/MDN experiment to populate).</div>
+  </div>
   <div style="margin-top:6px;font-size:11px;color:var(--muted)">
     <strong>How to read:</strong> X-axis = simulation time. Each horizontal band = one corridor junction.<br>
     <span style="background:#1a4a1a;padding:0 4px">&#9608;</span> bus phase green window &nbsp;
@@ -2491,6 +3290,18 @@ TEMPLATE_FALLBACK_HTML
   </div>
 </div>
 
+<!-- ── Queue per Entry-Point Approach ────────────────────────────── -->
+<p class="section-hdr">Queue per Entry-Point Approach <span style="font-size:0.78rem;color:var(--muted)">(vehicles queued on each incoming section, labelled by NB/EB/SB/WB approach direction)</span></p>
+<div class="card">
+  <div class="run-tabs" id="queue-entry-run-tabs"></div>
+  <div id="queue-entry-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No per-approach queue data available for this run.</div>
+  <div id="queue-entry-container" style="margin-top:8px"></div>
+  <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+    One line per entry-point section. White = bus approach (main). Coloured lines = side approaches.
+    Labels show direction (NB/EB/SB/WB) and section ID in parentheses. Y-axis = vehicles queued (instantaneous controller snapshot, 60-second intervals).
+  </div>
+</div>
+
 <!-- ── Global Bus Focus Priority History ─────────────────────────────── -->
 <p class="section-hdr">Global Bus Focus Priority <span style="font-size:0.78rem;color:var(--muted)">(one bus gets exclusive corridor-wide priority until it completes or times out)</span></p>
 <div class="card">
@@ -2544,6 +3355,16 @@ TEMPLATE_FALLBACK_HTML
 </div>
 
 <!-- ── Per-intersection breakdown ────────────────────────────────────── -->
+<p class="section-hdr">Signal Timing Comparison <span style="font-size:0.78rem;color:var(--muted)">(all runs — main vs side green/red within the signal cycle)</span></p>
+<div class="card">
+  <div style="margin-top:4px;margin-bottom:8px;font-size:11px;color:var(--muted)">
+    Each row shows where the main and side entries sit in the nominal cycle. Green/red bars include second markers at the cycle boundaries; right columns show run-specific green/red arrival samples and TSP action counts.
+  </div>
+  <div class="tbl-wrap">
+    <table id="signal-timing-table"><thead></thead><tbody></tbody></table>
+  </div>
+</div>
+
 <p class="section-hdr">Per-Intersection Breakdown <span style="font-size:0.78rem;color:var(--muted)">(select run above; combines position tracking, controller detections, and focus history)</span></p>
 <div class="card">
   <div class="run-tabs" id="inter-run-tabs"></div>
@@ -2625,14 +3446,113 @@ TEMPLATE_FALLBACK_HTML
     <canvas id="xcomp-canvas" height="240" style="width:100%;min-width:420px;display:none"></canvas>
   </div>
   <div style="overflow-x:auto;margin-top:16px">
-    <h3 style="font-size:13px;color:var(--muted);margin:0 0 6px">Per-Bus Corridor Delay Comparison (stops at red × 30 s estimate)</h3>
+    <h3 style="font-size:13px;color:var(--muted);margin:0 0 6px">Same-Bus Red-Phase Arrival Count</h3>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
-      Each bar = estimated total delay for one bus journey (number of red-phase arrivals × 30 s).
-      Lower = fewer red arrivals. Saving lines (right axis) show delay saved vs No-TSP baseline.
+      Each bar = number of corridor junctions where the bus arrived on red, for the <strong>same bus ID</strong>
+      across all three strategies. The green/yellow right-axis bars show how many fewer red stops the bus had
+      with TSP vs No-TSP — <strong>positive = improvement, negative = TSP made it worse for this bus</strong>.<br>
+      <strong>Cohort note:</strong> these buses received GE or INS in the coordinated run — they are the hardest
+      cases (late arrivals, poor wave alignment). Their raw red-stop count in NO_TSP is therefore higher than
+      the average bus. The <em>delta</em> (right axis) is the fair measure of TSP benefit.
     </div>
     <canvas id="xcomp-delay-canvas" height="200" style="width:100%;min-width:420px;display:none"></canvas>
     <div id="xcomp-delay-no-data" style="font-size:11px;color:var(--muted);display:none"></div>
   </div>
+</div>
+
+<!-- ── Reward State-Action Diagnostics ───────────────────────────────── -->
+<p class="section-hdr">Reward State-Action Diagnostics <span style="font-size:0.78rem;color:var(--muted)">(actual reward per action: INV_DELAY/V2X = 1/(cost+ε) ∈ (0,1]; MARL = Δpax·s)</span></p>
+<div class="card" id="reward-section">
+  <div class="run-tabs" id="reward-run-tabs"></div>
+  <!-- View mode toggle -->
+  <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+    <button id="reward-mode-jct" class="run-tab active" style="font-size:11px;padding:3px 10px">By Junction</button>
+    <button id="reward-mode-bus" class="run-tab" style="font-size:11px;padding:3px 10px">By Bus Journey</button>
+  </div>
+  <!-- Junction-mode controls -->
+  <div id="reward-jct-controls" style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="reward-jct-sel" style="font-size:11px"><option value="">All</option></select></label>
+    <label><input type="checkbox" id="reward-only-chosen"> Chosen actions only</label>
+  </div>
+  <!-- Bus-journey-mode controls -->
+  <div id="reward-bus-controls" style="display:none;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Bus (veh_id): <select id="reward-bus-sel" style="font-size:11px"><option value="">All buses</option></select></label>
+    <label><input type="checkbox" id="reward-bus-all-cands"> Show all candidates (not just chosen)</label>
+  </div>
+  <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+    <span id="reward-mode-hint">Actual reward value per candidate action. INV_DELAY/V2X: higher = better (0–1 scale). MARL: positive = TSP improved passenger delay. NO_ACTION baseline shown as a separate series.</span>
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="reward-canvas" height="250" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="reward-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No reward_cycle data found (run a DCTSP experiment to populate — DCTSP_MARL, DCTSP_INV_DELAY, or DCTSP_V2X).</div>
+</div>
+
+<!-- ── MDN Delay Calibration ─────────────────────────────────────────── -->
+<p class="section-hdr">Delay Calibration <span style="font-size:0.78rem;color:var(--muted)">(predicted bus delay vs actual headway change — seconds; for well-calibrated models these should align on NO_ACTION rows)</span></p>
+<div class="card" id="mdn-calib-section">
+  <div class="run-tabs" id="mdn-calib-run-tabs"></div>
+  <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="mdn-calib-jct-sel" style="font-size:11px"><option value="">All junctions</option></select></label>
+    <label><input type="checkbox" id="mdn-calib-chosen-only"> Chosen actions only</label>
+  </div>
+  <div style="margin-top:4px;font-size:11px;color:var(--muted)">
+    <span style="color:#4ecdc4">&#9632;</span> Predicted bus delay — no action (s)&nbsp;&nbsp;
+    <span style="color:#9b59b6">&#9632;</span> Incoming headway σ_in (s)&nbsp;&nbsp;
+    <span style="color:#64dc78">&#9675;</span> Actual Δheadway σ_out−σ_in: INS&nbsp;
+    <span style="color:#4ecdc4">&#9675;</span> GE&nbsp;
+    <span style="color:#ff9f43">&#9675;</span> EARLY_RED&nbsp;
+    <span style="color:#a0a0c8">&#9675;</span> NO_ACTION
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="mdn-calib-canvas" height="260" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="mdn-calib-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No MDN calibration data — run a DCTSP_MDN experiment to populate.</div>
+</div>
+
+<!-- ── Delay Method Validation ──────────────────────────────────────── -->
+<p class="section-hdr">Delay Method Validation <span style="font-size:0.78rem;color:var(--muted)">(top: cross-traffic model vs Aimsun measured pax·s — bottom: D/D/1 &amp; MB bus delay vs kinematic reference)</span></p>
+<div class="card" id="delay-val-section">
+  <div class="run-tabs" id="delay-val-run-tabs"></div>
+  <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="delay-val-jct-sel" style="font-size:11px"><option value="">All junctions</option></select></label>
+    <label><input type="checkbox" id="delay-val-dd1" checked> D/D/1 queue</label>
+    <label><input type="checkbox" id="delay-val-mb" checked> Moving bottleneck</label>
+  </div>
+  <div style="margin-top:4px;font-size:11px;color:var(--muted)">
+    <b>Top:</b> X = actual total car delay pax·s (Δ measured_car_pax_s_cumul between consecutive NO_ACTION events per junction, time-normalised to bp_dur window).
+    Y = cross-traffic cost model pax·s, <b>NF=1 raw triangle</b> (<code>other_delay_model_pax_s_nf1</code>).
+    If well-calibrated, points should follow the 45° line.
+    <em>Note: NF (NETWORK_FACTOR) is a decision bias applied in reward calculations, not a calibration target —
+    older dashboards showed the NF-amplified value (4–5× for ZIG/INV_DELAY) which caused apparent over-prediction.</em>
+    <br><b>Bottom:</b> X = kinematic bus delay (s, reference). Y = D/D/1 or moving-bottleneck alternative estimate.
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="delay-val-canvas" height="280" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="delay-val-canvas2" height="240" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="delay-val-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No delay validation data — run any DCTSP experiment with dd1_delay_s / mb_delay_s columns.</div>
+</div>
+
+<!-- ── MDN Phase Delay Decomposition ────────────────────────────────── -->
+<p class="section-hdr">Phase Delay Decomposition <span style="font-size:0.78rem;color:var(--muted)">(per-detection: bus-phase vs cross-traffic predicted pax·s — inspect MDN reward signal accuracy per phase)</span></p>
+<div class="card" id="mdn-phase-section">
+  <div class="run-tabs" id="mdn-phase-run-tabs"></div>
+  <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="mdn-phase-jct-sel" style="font-size:11px"><option value="">All junctions</option></select></label>
+  </div>
+  <div style="margin-top:4px;font-size:11px;color:var(--muted)">
+    Each bar group = one bus detection. Left pair = NO_ACTION total (bus phase pax·s in cyan / cross-traffic in grey).
+    Right pair = chosen action (bus saved in green / cross-traffic cost in red).
+    <strong style="color:#ffd632">Reward = bus_saved − car_cost</strong>.
+    Bus phase pax·s = <code>no_act_delay_s × bus_occ</code>.  Cross-traffic = <code>NA_total − bus_phase</code>.
+  </div>
+  <div style="overflow-x:auto;margin-top:8px">
+    <canvas id="mdn-phase-canvas" height="260" style="width:100%;min-width:420px"></canvas>
+  </div>
+  <div id="mdn-phase-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No phase decomposition data — run a DCTSP_MDN/ZIG experiment with reward_cycle CSV to populate.</div>
 </div>
 
 <!-- ── DYNAOPAC Phase Optimisation Decisions ─────────────────────────── -->
@@ -2694,6 +3614,7 @@ const HAS_COORD = DATA.has_coordinated || false;
 // Active junctions: TSP-controlled (SignalGroupIDList in config). Passive: fixed signal timing.
 const ACTIVE_JCTS  = new Set((DATA.active_jcts  || []).map(String));
 const PASSIVE_JCTS = new Set((DATA.passive_jcts || []).map(String));
+const SIGNAL_PLANS = DATA.signal_plans || [];
 
 document.getElementById('gen-time').textContent =
   `Generated ${DATA.generated}  •  ${runs.length} run(s)  •  ${jcts.length} corridor junction(s)`;
@@ -2765,25 +3686,313 @@ function barChart(id, labels, datasets, extraOpts={}) {
   if (noteEl && hasDynaopac) noteEl.style.display = 'block';
 }
 
+// ── TSP_Paper 4-Objective bar chart (Z1–Z4 normalised to NO_TSP) ────────────
+{
+  // Find NO_TSP baseline (first run with label containing 'NO_TSP' or NORMAL strategy)
+  const baseRun = runs.find(r => (r.exp_name || '').toUpperCase().includes('NO_TSP')
+                               || (r.strategy || '').toUpperCase() === 'NORMAL');
+  const z1Base = baseRun ? Number(baseRun.wobj_Z1) : null;
+  const z2Base = baseRun ? Number(baseRun.wobj_Z2) : null;
+  const z3Base = baseRun ? Number(baseRun.wobj_Z3) : null;
+  const z4Base = baseRun ? Number(baseRun.wobj_Z4) : null;
+  const hasObjData = runs.some(r => r.wobj_Z1 != null);
+  const objNa = document.getElementById('objectives-na');
+  const objCv = document.getElementById('chart-objectives');
+  if (!hasObjData) {
+    if (objNa) objNa.style.display = '';
+    if (objCv) objCv.style.display = 'none';
+  } else {
+    const norm = (v, base) => (v != null && base != null && base !== 0)
+      ? Math.round(Number(v) / base * 100) : null;
+    const Z1_COL = 'rgba(244,67,54,0.72)';
+    const Z2_COL = 'rgba(255,152,0,0.72)';
+    const Z3_COL = 'rgba(33,150,243,0.72)';
+    const Z4_COL = 'rgba(76,175,80,0.72)';
+    new Chart(objCv, {
+      type: 'bar',
+      data: {
+        labels: runs.map(r => r.label),
+        datasets: [
+          { label: 'Z1 Pax Delay', data: runs.map(r => norm(r.wobj_Z1, z1Base)),
+            backgroundColor: Z1_COL, borderColor: Z1_COL.replace('0.72','1'), borderWidth:1 },
+          { label: 'Z2 Bandwidth', data: runs.map(r => norm(r.wobj_Z2, z2Base)),
+            backgroundColor: Z2_COL, borderColor: Z2_COL.replace('0.72','1'), borderWidth:1 },
+          { label: 'Z3 Total Lateness', data: runs.map(r => norm(r.wobj_Z3, z3Base)),
+            backgroundColor: Z3_COL, borderColor: Z3_COL.replace('0.72','1'), borderWidth:1 },
+          { label: 'Z4 Travel Time', data: runs.map(r => norm(r.wobj_Z4, z4Base)),
+            backgroundColor: Z4_COL, borderColor: Z4_COL.replace('0.72','1'), borderWidth:1 },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          title: { display: true, text: 'Z1–Z4 normalised to NO_TSP baseline (100% = same as no-TSP)',
+                   color: '#7070a0', font: { size: 11 } },
+          tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y ?? 'N/A'}%` } },
+          annotation: {
+            annotations: {
+              baseline: { type: 'line', yMin: 100, yMax: 100,
+                borderColor: 'rgba(255,255,255,0.25)', borderWidth: 1, borderDash: [4,4] },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#8080b0', font: { size: 10 }, maxRotation: 35 }, grid: { color: '#1a1a3a' } },
+          y: { ticks: { color: '#8080b0', font: { size: 10 }, callback: v => v + '%' },
+               grid: { color: '#1a1a3a' },
+               title: { display: true, text: '% of NO_TSP', color: '#8080b0', font: { size: 10 } } },
+        },
+      },
+    });
+  }
+}
+
+// ── Raw Z1–Z4 values table ───────────────────────────────────────────────────
+{
+  const tbody = document.getElementById('raw-z-tbody');
+  if (tbody) {
+    const fmt = (v, dec=0) => {
+      if (v == null || v === '' || isNaN(Number(v))) return '—';
+      const n = Number(v);
+      if (Math.abs(n) >= 1e6) return (n/1e6).toFixed(2) + 'M';
+      if (Math.abs(n) >= 1e3) return (n/1e3).toFixed(1) + 'k';
+      return n.toFixed(dec);
+    };
+
+    // ── Per-column global best/worst (across all experiments) ────────────────
+    // Z1, Z3, Z4, delay: lower = better.  Z2: higher = better.
+    const _nums = k => runs.map(r => r[k] != null ? Number(r[k]) : null).filter(v => v !== null && !isNaN(v));
+    const _best = (k, lb) => { const vs = _nums(k); return vs.length ? (lb ? Math.min(...vs) : Math.max(...vs)) : null; };
+    const bestZ1  = _best('wobj_Z1', true);
+    const bestZ2  = _best('wobj_Z2', false);   // MAXIMISE
+    const bestZ3  = _best('wobj_Z3', true);
+    const bestZ4  = _best('wobj_Z4', true);
+    const bestDel = _best('avg_pass_delay', true);
+    const worstZ1 = _best('wobj_Z1', false);
+    const worstZ2 = _best('wobj_Z2', true);
+    const worstZ3 = _best('wobj_Z3', false);
+    const worstZ4 = _best('wobj_Z4', false);
+    const worstDel = _best('avg_pass_delay', false);
+
+    // Colour helper: vs global best/worst (±1% tolerance)
+    const cell = (v, best, worst, lb) => {
+      if (v == null || best == null) return { style: '', star: '' };
+      const eps = Math.abs(best) * 0.01;
+      const isB = lb ? v <= best + eps : v >= best - eps;
+      const isW = lb ? v >= worst - eps : v <= worst + eps;
+      return {
+        style: isB ? 'color:#64dc78;font-weight:700' : isW ? 'color:#f05050' : '',
+        star: isB ? ' ★' : '',
+      };
+    };
+
+    const rowHtml = runs.map(r => {
+      const z1 = r.wobj_Z1 != null ? Number(r.wobj_Z1) : null;
+      const z2 = r.wobj_Z2 != null ? Number(r.wobj_Z2) : null;
+      const z3 = r.wobj_Z3 != null ? Number(r.wobj_Z3) : null;
+      const z4 = r.wobj_Z4 != null ? Number(r.wobj_Z4) : null;
+      const d  = r.avg_pass_delay != null ? Number(r.avg_pass_delay) : null;
+      const cZ1 = cell(z1, bestZ1,  worstZ1,  true);
+      const cZ2 = cell(z2, bestZ2,  worstZ2,  false);  // Z2: higher = better
+      const cZ3 = cell(z3, bestZ3,  worstZ3,  true);
+      const cZ4 = cell(z4, bestZ4,  worstZ4,  true);
+      const cD  = cell(d,  bestDel, worstDel, true);
+      return `<tr style="border-bottom:1px solid #1c1c3a">
+        <td style="padding:3px 8px;font-weight:500">${r.label||r.exp_name||'—'}</td>
+        <td style="text-align:right;padding:3px 8px;${cZ1.style}">${fmt(r.wobj_Z1)}${cZ1.star}</td>
+        <td style="text-align:right;padding:3px 8px;${cZ2.style}">${fmt(r.wobj_Z2,1)}${cZ2.star}</td>
+        <td style="text-align:right;padding:3px 8px;${cZ3.style}">${fmt(r.wobj_Z3,0)}${cZ3.star}</td>
+        <td style="text-align:right;padding:3px 8px;${cZ4.style}">${fmt(r.wobj_Z4,1)}${cZ4.star}</td>
+        <td style="text-align:right;padding:3px 8px">${fmt(r.wobj_total)}</td>
+        <td style="text-align:right;padding:3px 8px;${cD.style}">${fmt(r.avg_pass_delay,1)}${cD.star}</td>
+        <td style="text-align:right;padding:3px 8px">${fmt(r.flow,0)}</td>
+        <td style="text-align:right;padding:3px 8px">${r.tsp_ins!=null?Number(r.tsp_ins):'—'}</td>
+      </tr>`;
+    }).join('');
+    tbody.innerHTML = rowHtml;
+  }
+}
+
+// ── Predictor comparison: PRED_* experiments grouped by algorithm ────────────
+{
+  const predRuns = runs.filter(r => (r.exp_name || '').toUpperCase().startsWith('PRED_'));
+  const predNa = document.getElementById('predictor-na');
+  const predCv = document.getElementById('chart-predictor-delay');
+  if (!predRuns.length) {
+    if (predNa) predNa.style.display = '';
+    if (predCv) predCv.style.display = 'none';
+  } else {
+    // Extract unique algorithm labels from experiment name: PRED_{PREDICTOR}_{ALGO}
+    const predTypes = ['KALMAN', 'ADAPTIVE_KALMAN', 'LSTM_SS'];
+    const predColors = ['rgba(0,188,212,0.75)', 'rgba(255,152,0,0.75)', 'rgba(156,39,176,0.75)'];
+    // Collect unique algo labels
+    const algoSet = new Set();
+    predRuns.forEach(r => {
+      const parts = (r.exp_name || '').replace(/^PRED_/, '');
+      const pIdx = predTypes.findIndex(p => parts.startsWith(p));
+      if (pIdx >= 0) algoSet.add(parts.slice(predTypes[pIdx].length + 1));
+    });
+    const algos = [...algoSet].sort();
+    const datasets = predTypes.map((pred, pi) => ({
+      label: pred.replace('_', ' '),
+      backgroundColor: predColors[pi],
+      borderColor: predColors[pi].replace('0.75','1'),
+      borderWidth: 1,
+      data: algos.map(algo => {
+        const r = predRuns.find(r => (r.exp_name||'').toUpperCase() === `PRED_${pred}_${algo}`.toUpperCase());
+        return r ? (r.avg_pass_delay ?? null) : null;
+      }),
+    }));
+    new Chart(predCv, {
+      type: 'bar',
+      data: { labels: algos, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          title: { display: true, text: 'Predictor type × TSP algorithm — avg passenger delay (s/pax)',
+                   color: '#7070a0', font: { size: 11 } },
+        },
+        scales: {
+          x: { ticks: { color: '#8080b0', font: { size: 10 } }, grid: { color: '#1a1a3a' } },
+          y: { ticks: { color: '#8080b0', font: { size: 10 } }, grid: { color: '#1a1a3a' },
+               title: { display: true, text: 'Avg delay (s/pax)', color: '#8080b0', font: { size: 10 } } },
+        },
+      },
+    });
+  }
+}
+
 // ── Delay chart (hrs) ────────────────────────────────────────────────────
-barChart('chart-delay-hrs',
-  ['Total pax delay', 'Main-street delay', 'Side-street delay'],
-  runs.map((r,i) => ({
-    label: r.label,
-    data: [r.total_delay, r.main_delay, r.side_delay],
-    backgroundColor: color(i), borderColor: colorEdge(i), borderWidth:1,
-  }))
-);
+{
+  const hasDelayData = runs.some(r => r.total_delay !== null && r.total_delay !== undefined);
+  const naEl = document.getElementById('delay-hrs-na');
+  if (!hasDelayData) {
+    if (naEl) naEl.style.display = '';
+    // Hide canvas so it doesn't show an empty grey box
+    const cv = document.getElementById('chart-delay-hrs');
+    if (cv) cv.style.display = 'none';
+  } else {
+    barChart('chart-delay-hrs',
+      ['Total pax delay', 'Main-street delay', 'Side-street delay'],
+      runs.map((r,i) => ({
+        label: r.label,
+        data: [r.total_delay, r.main_delay, r.side_delay],
+        backgroundColor: color(i), borderColor: colorEdge(i), borderWidth:1,
+      }))
+    );
+  }
+}
 
 // ── Per-passenger delays (seconds) ───────────────────────────────────────
-barChart('chart-delay-s',
-  ['Avg bus delay (s)', 'Avg car delay (s)'],
-  runs.map((r,i) => ({
-    label: r.label,
-    data: [r.avg_bus_delay, r.avg_car_delay],
-    backgroundColor: color(i), borderColor: colorEdge(i), borderWidth:1,
-  }))
-);
+{
+  const hasPerPaxData = runs.some(r => r.avg_bus_delay !== null && r.avg_bus_delay !== undefined);
+  const naEl2 = document.getElementById('delay-s-na');
+  if (!hasPerPaxData) {
+    if (naEl2) naEl2.style.display = '';
+    const cv2 = document.getElementById('chart-delay-s');
+    if (cv2) cv2.style.display = 'none';
+  } else {
+    barChart('chart-delay-s',
+      ['Avg bus delay (s)', 'Avg car delay (s)'],
+      runs.map((r,i) => ({
+        label: r.label,
+        data: [r.avg_bus_delay, r.avg_car_delay],
+        backgroundColor: color(i), borderColor: colorEdge(i), borderWidth:1,
+      }))
+    );
+  }
+}
+
+// ── Bus vs Car delay grouped bar (new dedicated chart) ────────────────────
+{
+  const BUS_COL  = 'rgba(0,188,212,0.75)';
+  const CAR_COL  = 'rgba(255,160,0,0.75)';
+  const hasBusCarData = runs.some(r => r.avg_bus_delay != null || r.avg_car_delay != null);
+  const bcNa = document.getElementById('bus-car-delay-na');
+  const bcCv = document.getElementById('chart-bus-car-delay');
+  if (!hasBusCarData) {
+    if (bcNa) bcNa.style.display = '';
+    if (bcCv) bcCv.style.display = 'none';
+  } else {
+    const runLabels = runs.map(r => r.label);
+    new Chart(document.getElementById('chart-bus-car-delay').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: runLabels,
+        datasets: [
+          {
+            label: 'Avg bus pax delay (s)',
+            data: runs.map(r => r.avg_bus_delay ?? null),
+            backgroundColor: BUS_COL, borderColor: BUS_COL, borderWidth: 1,
+          },
+          {
+            label: 'Avg car pax delay (s)',
+            data: runs.map(r => r.avg_car_delay ?? null),
+            backgroundColor: CAR_COL, borderColor: CAR_COL, borderWidth: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true, animation: false,
+        plugins: {
+          legend: { labels: { color: '#aaaacc', font: { size: 11 } } },
+          tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
+        },
+        scales: {
+          x: SCALE_X,
+          y: { ...SCALE_Y, title: { display: true, text: 's / pax', color: '#7070a0', font: { size: 11 } } },
+        },
+      },
+    });
+  }
+}
+
+// ── Main vs Side Pax Delay grouped bar ───────────────────────────────────
+{
+  const MAIN_COL = 'rgba(46,204,113,0.75)';
+  const SIDE_COL = 'rgba(231,76,60,0.75)';
+  const hasMainSide = runs.some(r => r.main_delay != null || r.side_delay != null);
+  const msNa = document.getElementById('main-side-delay-na');
+  const msCv = document.getElementById('chart-main-side-delay');
+  if (!hasMainSide) {
+    if (msNa) msNa.style.display = '';
+    if (msCv) msCv.style.display = 'none';
+  } else {
+    const runLabels = runs.map(r => r.label);
+    new Chart(document.getElementById('chart-main-side-delay').getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels: runLabels,
+        datasets: [
+          {
+            label: 'Main corridor (pax·h)',
+            data: runs.map(r => r.main_delay ?? null),
+            backgroundColor: MAIN_COL, borderColor: MAIN_COL, borderWidth: 1,
+          },
+          {
+            label: 'Side streets (pax·h)',
+            data: runs.map(r => r.side_delay ?? null),
+            backgroundColor: SIDE_COL, borderColor: SIDE_COL, borderWidth: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true, animation: false,
+        plugins: {
+          legend: { labels: { color: '#aaaacc', font: { size: 11 } } },
+          tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
+        },
+        scales: {
+          x: SCALE_X,
+          y: { ...SCALE_Y, title: { display: true, text: 'pax·h', color: '#7070a0', font: { size: 11 } } },
+        },
+      },
+    });
+  }
+}
+
 
 // ── Delta vs NORMAL (%) ───────────────────────────────────────────────────
 {
@@ -3038,6 +4247,67 @@ barChart('chart-bus-tt',
 }
 
 // ── Speed ─────────────────────────────────────────────────────────────────
+// Total volume behind passenger-delay metrics
+{
+  const volumeCtx = document.getElementById('chart-volume');
+  if (volumeCtx) {
+    const hasVolume = runs.some(r => r.pax_equiv !== null || r.flow !== null);
+    if (!hasVolume) {
+      const card = document.getElementById('card-volume');
+      if (card) card.style.display = 'none';
+    } else {
+      new Chart(volumeCtx.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: runs.map(r => r.label),
+          datasets: [
+            { label:'Bus pax-equivalent', data:runs.map(r => r.bus_pax_equiv ?? 0),
+              backgroundColor:'rgba(41,182,246,0.78)', borderColor:'rgba(41,182,246,1)', borderWidth:1, stack:'pax', yAxisID:'y' },
+            { label:'Car pax-equivalent', data:runs.map(r => r.car_pax_equiv ?? 0),
+              backgroundColor:'rgba(102,187,106,0.72)', borderColor:'rgba(102,187,106,1)', borderWidth:1, stack:'pax', yAxisID:'y' },
+            { label:'Truck pax-equivalent', data:runs.map(r => r.truck_pax_equiv ?? 0),
+              backgroundColor:'rgba(255,183,77,0.78)', borderColor:'rgba(255,183,77,1)', borderWidth:1, stack:'pax', yAxisID:'y' },
+            { label:'Net_TotalFlowVeh', type:'line', data:runs.map(r => r.flow ?? null),
+              borderColor:'rgba(236,64,122,1)', backgroundColor:'rgba(236,64,122,0.18)',
+              borderWidth:2, tension:0.2, pointRadius:3, yAxisID:'y2' },
+          ],
+        },
+        options: {
+          responsive: true,
+          interaction: { mode:'index', intersect:false },
+          plugins: {
+            legend: { labels:{ color:'#aaaacc', font:{size:10} }, position:'bottom' },
+            tooltip: {
+              backgroundColor:'#0a0a22', titleColor:'#ccccee',
+              bodyColor:'#9090cc', borderColor:'#2a2a50', borderWidth:1,
+              callbacks: {
+                footer: (items) => {
+                  const idx = items && items.length ? items[0].dataIndex : -1;
+                  const r = idx >= 0 ? runs[idx] : null;
+                  if (!r) return '';
+                  const veh = [
+                    r.distinct_cars != null ? `${r.distinct_cars} cars` : null,
+                    r.distinct_buses != null ? `${r.distinct_buses} buses` : null,
+                    r.distinct_trucks != null ? `${r.distinct_trucks} trucks` : null,
+                  ].filter(Boolean).join(', ');
+                  return `Total pax-equiv: ${_formatTimeForNoAction(r.pax_equiv)}${veh ? ` | Distinct: ${veh}` : ''}`;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { ...SCALE_X, stacked:true },
+            y: { ...SCALE_Y, stacked:true,
+                 title:{ display:true, text:'Pax-equivalent passages', color:'#7070a0', font:{size:10} } },
+            y2:{ position:'right', grid:{ drawOnChartArea:false }, ticks:{ color:'#6060aa', font:{size:10} },
+                 title:{ display:true, text:'Net flow vehicles', color:'#7070a0', font:{size:10} } },
+          }
+        }
+      });
+    }
+  }
+}
+
 if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
   document.getElementById('card-speed').style.display = 'none';
 } else {
@@ -3412,8 +4682,27 @@ if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
       });
     }
 
-    buildRunTabs('noaction-run-tabs', (i) => renderNoActionReasons(i));
-    renderNoActionReasons(initialRunIdx);
+    const _noActionInit = runs.findIndex(r => r.coordinated && (r.tsp_natural_green ?? 0) > 0);
+    const noActionInitialRunIdx = _noActionInit >= 0 ? _noActionInit : 0;
+
+    // Build tabs locally so this block does not depend on initialRunIdx,
+    // which is declared later in the script.
+    const noActionTabs = document.getElementById('noaction-run-tabs');
+    if (noActionTabs) {
+      noActionTabs.innerHTML = '';
+      runs.forEach((r, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'run-tab' + (i === noActionInitialRunIdx ? ' active' : '');
+        btn.textContent = r.label;
+        btn.onclick = () => {
+          noActionTabs.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          renderNoActionReasons(i);
+        };
+        noActionTabs.appendChild(btn);
+      });
+    }
+    renderNoActionReasons(noActionInitialRunIdx);
   }
 }
 
@@ -3488,6 +4777,233 @@ kpiDefs.forEach(def => {
     ${pct ? `<div class="delta-pos">Δ ${pct}% vs worst</div>` : allSame ? `<div class="delta-na">identical across runs</div>` : ''}`;
   kpiRow.appendChild(div);
 });
+
+// ── Audience summary cards (presentation-ready headline KPIs) ────────────
+function _pickAudienceRun() {
+  const ranked = runs
+    .map(r => {
+      const obj = (r.objective_trace || []);
+      const act = obj.filter(x => (x.mode === 'GE' || x.mode === 'INS') && x.decision === 'ACTION').length;
+      const rew = (r.reward_cycle || []).filter(x => Number(x.is_chosen) === 1).length;
+      return { r, score: act * 10 + rew };
+    })
+    .sort((a, b) => b.score - a.score);
+  const coordBest = ranked.find(x => x.r.coordinated && x.score > 0);
+  if (coordBest) return coordBest.r;
+  return ranked.length ? ranked[0].r : null;
+}
+
+function _num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _buildAudienceSummary() {
+  const row = document.getElementById('audience-kpi-row');
+  if (!row) return;
+  row.innerHTML = '';
+
+  const run = _pickAudienceRun();
+  if (!run) {
+    row.innerHTML = '<div class="kpi"><div class="label">Audience Summary</div><div class="val">N/A</div><div class="unit">No runs loaded</div></div>';
+    return;
+  }
+
+  const objActions = (run.objective_trace || []).filter(x =>
+    (x.mode === 'GE' || x.mode === 'INS') && x.decision === 'ACTION');
+
+  // For DCTSP_MARL runs, objective_trace is absent but reward_cycle has the
+  // decomposed delay fields (no_strategy_delay_pax_s / strategy_min_delay_pax_s).
+  // Build actionComp from objective_trace first; fall back to reward_cycle chosen
+  // GE/INS rows that have non-zero baseline delay.
+  let actionComp = objActions
+    .map(x => {
+      const base = _num(x.no_strategy_delay_pax_s) ?? _num(x.delay_base_pax_s);
+      const strat = _num(x.strategy_min_delay_pax_s) ?? _num(x.delay_with_strategy_pax_s);
+      return { base, strat };
+    })
+    .filter(x => x.base !== null && x.strat !== null);
+
+  if (actionComp.length === 0) {
+    // Fall back to reward_cycle rows — look at ALL rows (not just chosen) so we
+    // can compare the chosen action vs its NO_ACTION baseline for the same cycle.
+    const rcRows = run.reward_cycle || [];
+    // Group rows by (t, jct, vid)
+    const cycleMap = {};
+    for (const row of rcRows) {
+      const key = `${row.t}|${row.jct}|${row.vid}`;
+      if (!cycleMap[key]) cycleMap[key] = [];
+      cycleMap[key].push(row);
+    }
+    for (const rows of Object.values(cycleMap)) {
+      const naRow = rows.find(r => r.action === 'NO_ACTION');
+      const chosen = rows.find(r => Number(r.is_chosen) === 1 &&
+                                    r.action !== 'NO_ACTION' &&
+                                    (r.action.startsWith('GE') || r.action.startsWith('INS')));
+      if (!naRow || !chosen) continue;
+      // Prefer absolute delay fields (new CSV format: bus pax·s)
+      const base  = _num(chosen.no_strategy_delay_pax_s);
+      const strat = _num(chosen.strategy_min_delay_pax_s);
+      if (base !== null && strat !== null && base > 0) {
+        actionComp.push({ base, strat });
+        continue;
+      }
+      // Fallback: use bus_saved_pax_s (intermediate CSV format, only if non-zero)
+      const savedPax = _num(chosen.bus_saved_pax_s);
+      if (savedPax !== null && savedPax !== 0) {
+        actionComp.push({ base: Math.max(savedPax, 0) + 1.0, strat: 1.0, savedDirect: savedPax });
+        continue;
+      }
+      // Last resort: compare sigma_out_s (old slim CSV format, in seconds not pax·s)
+      const naOut     = _num(naRow.sigma_out_s);
+      const chosenOut = _num(chosen.sigma_out_s);
+      if (naOut !== null && chosenOut !== null) {
+        const savedSec = naOut - chosenOut;
+        actionComp.push({ base: naOut + 0.001, strat: chosenOut, savedDirect: savedSec, unitSec: true });
+      }
+    }
+  }
+
+  const anyUnitSec  = actionComp.some(x => x.unitSec);
+  const betterN = actionComp.filter(x => x.savedDirect !== undefined
+    ? x.savedDirect > 0 : x.strat < x.base).length;
+  const betterPct = actionComp.length ? (100.0 * betterN / actionComp.length) : null;
+
+  const savedVals = actionComp.map(x => x.savedDirect !== undefined
+    ? x.savedDirect : x.base - x.strat);
+  const meanSaved = savedVals.length ? (savedVals.reduce((a, b) => a + b, 0) / savedVals.length) : null;
+
+  const rewardChosen = (run.reward_cycle || []).filter(x => Number(x.is_chosen) === 1);
+  const rewardVals = rewardChosen.map(x => _num(x.reward)).filter(v => v !== null);
+  const posRewardPct = rewardVals.length
+    ? (100.0 * rewardVals.filter(v => v > 0).length / rewardVals.length)
+    : (savedVals.length ? (100.0 * savedVals.filter(v => v > 0).length / savedVals.length) : null);
+  const rewardSource = rewardVals.length ? 'reward_cycle' : (savedVals.length ? 'objective fallback' : 'no data');
+
+  const rewardCandidates = (run.reward_cycle || []).filter(x => {
+    const a = String(x.action || '');
+    return a.startsWith('GE_') || a.startsWith('INS_');
+  });
+  const gateRejectedN = rewardCandidates.filter(x => Number(x.throughput_infeasible) === 1).length;
+  const gateRejectedPct = rewardCandidates.length
+    ? (100.0 * gateRejectedN / rewardCandidates.length)
+    : null;
+
+  // Cycle-level signal: NO_ACTION chosen while at least one candidate in the
+  // same decision cycle was rejected by the throughput constraint.
+  const rewardRows = (run.reward_cycle || []);
+  const cycleMap = new Map();
+  rewardRows.forEach(x => {
+    const key = `${Number(x.t) || 0}|${Number(x.jct) || -1}|${Number(x.vid) || -1}`;
+    let c = cycleMap.get(key);
+    if (!c) {
+      c = {
+        chosenAction: null,
+        candidateCount: 0,
+        hasInfeasibleCandidate: false,
+      };
+      cycleMap.set(key, c);
+    }
+    const a = String(x.action || '');
+    if (Number(x.is_chosen) === 1) c.chosenAction = a;
+    if (a.startsWith('GE_') || a.startsWith('INS_')) {
+      c.candidateCount += 1;
+      if (Number(x.throughput_infeasible) === 1) c.hasInfeasibleCandidate = true;
+    }
+  });
+  const decisionCycles = Array.from(cycleMap.values()).filter(c => c.candidateCount > 0);
+  const forcedNoActionN = decisionCycles.filter(c => c.chosenAction === 'NO_ACTION' && c.hasInfeasibleCandidate).length;
+  const forcedNoActionPct = decisionCycles.length
+    ? (100.0 * forcedNoActionN / decisionCycles.length)
+    : null;
+
+  const geCycleMap = new Map();
+  rewardRows.forEach(x => {
+    const key = `${Number(x.t) || 0}|${Number(x.jct) || -1}|${Number(x.vid) || -1}`;
+    let c = geCycleMap.get(key);
+    if (!c) {
+      c = { hasGeCandidate: false, geInapplicable: false };
+      geCycleMap.set(key, c);
+    }
+    const a = String(x.action || '');
+    if (a.startsWith('GE_')) c.hasGeCandidate = true;
+    if (Number(x.ge_inapplicable_cycle) === 1) c.geInapplicable = true;
+  });
+  const geDecisionCycles = Array.from(geCycleMap.values()).filter(c => c.hasGeCandidate || c.geInapplicable);
+  const geInapplicableN = geDecisionCycles.filter(c => c.geInapplicable).length;
+  const geInapplicablePct = geDecisionCycles.length
+    ? (100.0 * geInapplicableN / geDecisionCycles.length)
+    : null;
+
+  function _card(label, value, unit, note, improved = true) {
+    const div = document.createElement('div');
+    div.className = 'kpi' + (improved ? ' improved' : ' worse');
+    div.innerHTML = `
+      <div class="label">${label}</div>
+      <div class="val">${value}</div>
+      <div class="unit">${unit}</div>
+      <div class="delta-na">${note}</div>`;
+    row.appendChild(div);
+  }
+
+  _card(
+    'Actions Choosing Lower Delay',
+    betterPct === null ? 'N/A' : `${betterPct.toFixed(1)}%`,
+    run.label,
+    actionComp.length ? `${betterN}/${actionComp.length} GE/INS actions had strategy < no-strategy${anyUnitSec ? ' (sigma_out proxy)' : ''}` : 'No GE/INS ACTION rows with comparable delay terms',
+    betterPct === null ? false : betterPct >= 50.0
+  );
+
+  _card(
+    'Mean pax_saved (Chosen)',
+    meanSaved === null ? 'N/A' : `${meanSaved.toFixed(1)}`,
+    anyUnitSec ? 's per chosen action (bus, proxy)' : 'pax·s per chosen action',
+    savedVals.length ? `Computed over ${savedVals.length} GE/INS cycles${anyUnitSec ? ' (sigma_out proxy, old log format)' : ''}` : 'No comparable chosen actions',
+    meanSaved === null ? false : meanSaved >= 0.0
+  );
+
+  _card(
+    'Positive Net Reward Share',
+    posRewardPct === null ? 'N/A' : `${posRewardPct.toFixed(1)}%`,
+    run.label,
+    rewardVals.length
+      ? `${rewardVals.filter(v => v > 0).length}/${rewardVals.length} chosen decisions have reward > 0 (${rewardSource})`
+      : (savedVals.length ? `Using objective fallback: ${savedVals.filter(v => v > 0).length}/${savedVals.length}` : 'No reward/objective decision data'),
+    posRewardPct === null ? false : posRewardPct >= 50.0
+  );
+
+  _card(
+    'Throughput-Gate Rejection Rate',
+    gateRejectedPct === null ? 'N/A' : `${gateRejectedPct.toFixed(1)}%`,
+    run.label,
+    rewardCandidates.length
+      ? `${gateRejectedN}/${rewardCandidates.length} GE/INS candidates were rejected by throughput constraint`
+      : 'No GE/INS candidate rows available',
+    gateRejectedPct === null ? false : gateRejectedPct <= 20.0
+  );
+
+  _card(
+    'Cycles Forced to NO_ACTION by Gate',
+    forcedNoActionPct === null ? 'N/A' : `${forcedNoActionPct.toFixed(1)}%`,
+    run.label,
+    decisionCycles.length
+      ? `${forcedNoActionN}/${decisionCycles.length} decision cycles chose NO_ACTION with at least one throughput-infeasible GE/INS candidate`
+      : 'No decision cycles with GE/INS candidates',
+    forcedNoActionPct === null ? false : forcedNoActionPct <= 20.0
+  );
+
+  _card(
+    'GE Inapplicable Cycles',
+    geInapplicablePct === null ? 'N/A' : `${geInapplicablePct.toFixed(1)}%`,
+    run.label,
+    geDecisionCycles.length
+      ? `${geInapplicableN}/${geDecisionCycles.length} cycles had GE skipped because estimated no-action bus delay was negligible`
+      : 'No bus-phase GE decision cycles detected',
+    geInapplicablePct === null ? false : geInapplicablePct <= 40.0
+  );
+}
+
+_buildAudienceSummary();
 
 // ── Run tabs + Coord flow ─────────────────────────────────────────────────
 let activeInterRun = 0;
@@ -4519,10 +6035,12 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       opt.value = j.vid;
       const gc = j.stops.filter(s => s.on_green).length;
       const nPrearm = (j.wave||[]).filter(w => w.event === 'prearm_fired').length;
-      const nActions = (r.phase_samples || []).filter(p =>
+      const nActions = ((r.phase_samples || []).concat(r.objective_trace || [])).filter(p =>
         Number(p.vid) === Number(j.vid)
-        && (p.tier === 'harmony-ge-local' || p.tier === 'harmony-ins-local')
-        && p.prearm_status === 'action'
+        && ((p.tier === 'harmony-ge-local' || p.tier === 'harmony-ins-local')
+            || String(p.mode || '').toUpperCase() === 'GE'
+            || String(p.mode || '').toUpperCase() === 'INS')
+        && (p.prearm_status === 'action' || String(p.decision || '').toUpperCase() === 'ACTION')
       ).length;
       opt.textContent = `Bus ${j.vid}  (${j.cls}, ${j.n_jcts} jcts, ${gc}/${j.stops.length} green, ${nPrearm} prearms, ${nActions} actions)`;
       coordExBusSel.appendChild(opt);
@@ -4550,6 +6068,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         coordExNoData.style.display = ''; }
       coordExCanvas.style.display = 'none';
       if (coordExBusInfo) coordExBusInfo.textContent = '';
+      const _wrap = document.getElementById('coordex-reward-wrap');
+      if (_wrap) _wrap.style.display = 'none';
       return;
     }
     if (coordExNoData) coordExNoData.style.display = 'none';
@@ -4633,16 +6153,42 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const arrivalByJct = {};
     stops.forEach(s => { arrivalByJct[String(s.jct)] = s; });
 
-    // ── Per-junction decision data from phase_samples ────────────────────
+    // ── Per-junction decision data from phase_samples + objective trace ───
     // Build a lookup: jct -> list of harmony decision rows for this bus,
     // sorted by sim time so we can find the latest decision before arrival.
     const decisionsByJct = {};
+    const objectiveByJct = {};
     (r.phase_samples || []).forEach(p => {
       if (Number(p.vid) !== Number(journey.vid)) return;
       if (typeof p.tier !== 'string' || !p.tier.startsWith('harmony-')) return;
       const key = String(p.jct);
       if (!decisionsByJct[key]) decisionsByJct[key] = [];
       decisionsByJct[key].push(p);
+    });
+    (r.objective_trace || []).forEach(p => {
+      if (Number(p.vid) !== Number(journey.vid)) return;
+      const mode = String(p.mode || '').toUpperCase();
+      const decision = String(p.decision || '').toUpperCase();
+      if (mode !== 'GE' && mode !== 'INS') return;
+      const key = String(p.jct);
+      if (!objectiveByJct[key]) objectiveByJct[key] = [];
+      const savedPax = Number(p.delay_saved_pax_s);
+      const savedTxt = Number.isFinite(savedPax) ? ` | saved=${savedPax.toFixed(1)} pax-s` : '';
+      objectiveByJct[key].push({
+        t: Number(p.t) || 0,
+        jct: Number(p.jct) || 0,
+        vid: Number(p.vid) || 0,
+        tier: mode === 'GE'
+          ? (decision === 'ACTION' ? 'harmony-ge-local' : 'harmony-no-ge-local')
+          : (decision === 'ACTION' ? 'harmony-ins-local' : 'harmony-no-ins-local'),
+        prearm_status: decision === 'ACTION' ? 'action' : 'skip',
+        prearm_note: [String(p.reason || '').trim(), String(p.note || '').trim(), savedTxt].filter(Boolean).join(' | '),
+        delay_saved_pax_s: Number.isFinite(savedPax) ? savedPax : null,
+      });
+    });
+    Object.keys(objectiveByJct).forEach(key => {
+      if (!decisionsByJct[key]) decisionsByJct[key] = [];
+      decisionsByJct[key] = decisionsByJct[key].concat(objectiveByJct[key]);
     });
     Object.values(decisionsByJct).forEach(arr =>
       arr.sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0)));
@@ -4708,7 +6254,11 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       const decisionsBeforeArr = jDecisions.filter(d => Number(d.t) <= arrT_jct + 2);
       const latestDecision = decisionsBeforeArr.length
         ? decisionsBeforeArr[decisionsBeforeArr.length - 1]
-        : (jDecisions.length ? jDecisions[jDecisions.length - 1] : null);
+        : (arrSt
+            ? (jDecisions
+                .filter(d => Math.abs(Number(d.t) - arrT_jct) <= 30)
+                .sort((a, b) => Math.abs(Number(a.t) - arrT_jct) - Math.abs(Number(b.t) - arrT_jct))[0] || null)
+            : (jDecisions.length ? jDecisions[jDecisions.length - 1] : null));
 
       const hasPrearmChain = jWave.some(w =>
         w.event === 'prearm_fired' ||
@@ -4753,12 +6303,16 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           coordExCtx.setLineDash([3, 2]);
           coordExCtx.beginPath(); coordExCtx.moveTo(wx1, y0); coordExCtx.lineTo(wx1, y1); coordExCtx.stroke();
           coordExCtx.setLineDash([]);
+          // Parse action duration from prearm_note (e.g. 'DCTSP INS_10s r=4.84s' or 'DCTSP GE_15s r=23.80s')
+          const _noteStr = String(latestDecision.prearm_note || '');
+          const _durMatch = _noteStr.match(/(INS|GE)_(\d+)s/);
+          const _actDurSuffix = _durMatch ? ` [${_durMatch[2]}s]` : '';
           // Start time label above left border
           coordExCtx.fillStyle = isIns ? '#00bcd4' : '#2ecc71';
           coordExCtx.font = 'bold 9px system-ui';
           coordExCtx.textAlign = 'left';
           coordExCtx.textBaseline = 'bottom';
-          coordExCtx.fillText((isIns ? 'INS ▶' : 'GE ▶') + fmtT(dt), wx0 + 2, midY - bandH/2 - 1);
+          coordExCtx.fillText((isIns ? 'INS ▶' : 'GE ▶') + _actDurSuffix + ' ' + fmtT(dt), wx0 + 2, midY - bandH/2 - 1);
           // End time label above right border
           coordExCtx.textAlign = 'right';
           coordExCtx.fillText('◀' + fmtT(windowEnd), wx1 - 2, midY - bandH/2 - 1);
@@ -4810,8 +6364,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           const dn = String(latestDecision.prearm_note || '');
           const dTier = String(latestDecision.tier || '');
           const dStatus = String(latestDecision.prearm_status || '');
-          if (dTier === 'harmony-ge-local')  { decLabel = '→ GE applied'; decColor = '#2ecc71'; }
-          else if (dTier === 'harmony-ins-local') { decLabel = '→ INS applied'; decColor = '#00bcd4'; }
+          const dSaved = Number(latestDecision.delay_saved_pax_s);
+          const savedTail = Number.isFinite(dSaved) ? ` (saved ${dSaved.toFixed(1)} pax-s)` : '';
+          if (dTier === 'harmony-ge-local')  { decLabel = '→ GE applied' + savedTail; decColor = '#2ecc71'; }
+          else if (dTier === 'harmony-ins-local') {
+            const _insDurM = String(latestDecision.prearm_note || '').match(/INS_(\d+)s/);
+            const _insDurStr = _insDurM ? ` [${_insDurM[1]}s insertion]` : '';
+            decLabel = '→ INS applied' + _insDurStr + savedTail; decColor = '#00bcd4';
+          }
           else if (dTier === 'harmony-no-ge-local')  {
             const reason = _decisionReasonText(_decisionReasonToken(dn, 'NO_GE '), true);
             decLabel = 'no GE: ' + reason.substring(0, 46);
@@ -4820,6 +6380,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
             const reason = _decisionReasonText(_decisionReasonToken(dn, 'NO_INS '), false);
             decLabel = 'no INS: ' + reason.substring(0, 46);
             decColor = '#e67e22';
+          } else if (dTier === 'focus_suppress') {
+            const fb = dn.replace('focus_bus=', '');
+            decLabel = `focus suppressed — bus ${fb} held corridor priority`;
+            decColor = '#9b59b6';
+          } else if (dTier === 'IC-detect-far') {
+            const etaStr = dn.replace('eta_too_far=', '').replace('s', '');
+            decLabel = `bus too far (ETA ${Number(etaStr).toFixed(0) || '?'}s > horizon) — detection only`;
+            decColor = '#888888';
           } else if (dStatus === 'skip') {
             decLabel = 'detected, skipped by local controller';
             decColor = '#f39c12';
@@ -4851,7 +6419,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         if (!decLabel && arrSt) {
           decLabel = arrSt.on_green
             ? 'natural green; no intervention required'
-            : 'arrived on red; no controller decision row found';
+            : 'arrived on red; no eligible GE/INS decision near arrival';
           decColor = arrSt.on_green ? '#2ecc71' : '#e74c3c';
         }
         if (!decLabel && !arrSt) { decLabel = 'not visited'; decColor = '#444466'; }
@@ -5026,6 +6594,171 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         `${nPrearms} prearm(s) issued | ${nSuccess} success | ` +
         `${nGreen}/${stops.length} arrived on green`;
     }
+    // Populate reward breakdown table for this bus
+    renderCoordRewardTable(ri, vid);
+  }
+
+  // Reward breakdown table: per-junction, all candidates
+  function renderCoordRewardTable(ri, vid) {
+    const wrap   = document.getElementById('coordex-reward-wrap');
+    const tbody  = document.getElementById('coordex-reward-tbody');
+    const noData = document.getElementById('coordex-reward-no-data');
+    if (!wrap || !tbody) return;
+    const r = runs[ri];
+    const allRows = (r.reward_cycle || []);
+
+    if (!vid || !allRows.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    const vidNum = Number(vid);
+    // Get all rows for this bus
+    const busRows = allRows.filter(x => Number(x.vid) === vidNum);
+    if (!busRows.length) {
+      wrap.style.display = '';
+      if (noData) { noData.style.display = ''; noData.textContent = `No reward_cycle data for bus ${vid}.`; }
+      tbody.innerHTML = '';
+      return;
+    }
+    if (noData) noData.style.display = 'none';
+    wrap.style.display = '';
+
+    // Group by junction + time (each detection event = one group)
+    const groupMap = {};
+    busRows.forEach(x => {
+      const key = `${x.jct}_${Math.round(Number(x.t))}`;
+      if (!groupMap[key]) groupMap[key] = { jct: x.jct, t: Number(x.t), rows: {} };
+      groupMap[key].rows[String(x.action)] = x;
+    });
+    const groups = Object.values(groupMap).sort((a, b) => a.t - b.t);
+
+    const ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
+    const ACT_COLORS = {
+      'NO_ACTION':'#a0a0c8','GE_5':'#3498db','GE_10':'#2980b9','GE_15':'#1a6090',
+      'GR_5':'#a3e635','GR_10':'#84cc16','GR_15':'#65a30d',
+      'INS_10':'#2ecc71','INS_15':'#27ae60','INS_20':'#1e8449',
+      'ER_10':'#f39c12','ER_20':'#e67e22','ER_30':'#d35400',
+      'ER_BP_10':'#c0392b','ER_BP_20':'#a93226','ER_BP_30':'#922b21',
+    };
+
+    tbody.innerHTML = '';
+    groups.forEach(g => {
+      const na = g.rows['NO_ACTION'];
+      const naR = na ? Number(na.reward).toFixed(2) : '—';
+      const naDelay    = na ? Number(na.no_act_delay_s          || 0).toFixed(1) : '—';
+      const naNsdPax  = na ? Number(na.no_strategy_delay_pax_s || 0).toFixed(0) : '—';
+      const sigmaIn = na ? Number(na.sigma_in_s || 0).toFixed(0) : '—';
+      const eta = na ? Number(na.bus_eta_s || 0).toFixed(1) : '—';
+
+      // Find chosen action
+      const chosenRow = Object.values(g.rows).find(x => Number(x.is_chosen) === 1);
+      const chosenAct = chosenRow ? String(chosenRow.action) : '—';
+
+      const tr = document.createElement('tr');
+      tr.style.borderBottom = '1px solid #1a1a30';
+
+      function cell(txt, color, bold) {
+        const td = document.createElement('td');
+        td.style.padding = '3px 6px';
+        td.style.textAlign = 'right';
+        if (color) td.style.color = color;
+        if (bold) td.style.fontWeight = '600';
+        td.textContent = txt;
+        return td;
+      }
+
+      tr.appendChild(Object.assign(document.createElement('td'), {
+        textContent: String(g.jct), style: 'padding:3px 6px;text-align:left;color:#8888bb'
+      }));
+      tr.appendChild(cell(g.t.toFixed(1), '#7070a0'));
+      tr.appendChild(cell(eta, '#7070a0'));
+      tr.appendChild(cell(sigmaIn + 's', '#9b59b6'));
+      {
+        const tdNaD = document.createElement('td');
+        tdNaD.style.cssText = 'padding:3px 6px;text-align:right';
+        const _dColor = Number(naDelay) > 0 ? '#e74c3c' : '#5a5a8a';
+        tdNaD.innerHTML = `<span style="color:${_dColor}">${naDelay}s</span>` +
+          (naNsdPax !== '—' ? `<br><span style="font-size:9px;color:#9070a0">${naNsdPax}&nbsp;pax·s</span>` : '');
+        tr.appendChild(tdNaD);
+      }
+      // NO_ACTION cell: reward + pax breakdown (bus saved / car cost)
+      {
+        const tdNA = document.createElement('td');
+        tdNA.style.cssText = 'padding:3px 6px;text-align:right';
+        const naIsChosen = na && Number(na.is_chosen) === 1;
+        if (naIsChosen) {
+          tdNA.style.background = 'rgba(255,220,50,0.12)';
+          tdNA.style.border = '1px solid rgba(255,220,50,0.4)';
+        }
+        if (na) {
+          const naBps = Number(na.bus_saved_pax_s || 0);
+          const naCpc = Number(na.other_inc_pax_s || 0);
+          const bpsColor = naBps > 0.5 ? '#4ecdc4' : naBps < -0.5 ? '#e74c3c' : '#555';
+          const cpcColor = naCpc > 0.5 ? '#e07070' : '#555';
+          const starPfx = naIsChosen ? '<span style="color:#ffd632">★ </span>' : '';
+          tdNA.innerHTML = starPfx +
+            `<span style="color:#a0a0c8;font-weight:${naIsChosen ? 600 : 400}">${naR}</span>` +
+            '<br>' +
+            `<span style="font-size:9px;color:${bpsColor}">${naBps >= 0 ? '+' : ''}${Math.round(naBps)}</span>` +
+            `<span style="font-size:9px;color:#444">/</span>` +
+            `<span style="font-size:9px;color:${cpcColor}">−${Math.round(naCpc)}</span>`;
+        } else {
+          tdNA.textContent = '—'; tdNA.style.color = '#555';
+        }
+        tr.appendChild(tdNA);
+      }
+
+      // GE/INS/ER reward cells — show reward + bus pax saved + car pax cost
+      ACTS.slice(1).forEach(act => {
+        const row = g.rows[act];
+        const rVal = row ? Number(row.reward) : null;
+        const rTxt = rVal !== null ? rVal.toFixed(2) : '—';
+        const isChosen = row && Number(row.is_chosen) === 1;
+        const color = rVal !== null && rVal > 0.01 ? (ACT_COLORS[act] || '#cccccc') : (rVal !== null && rVal < -0.01 ? '#888' : '#555');
+
+        const td = document.createElement('td');
+        td.style.padding = '3px 6px';
+        td.style.textAlign = 'right';
+        if (isChosen) {
+          td.style.background = 'rgba(255,220,50,0.12)';
+          td.style.border = '1px solid rgba(255,220,50,0.4)';
+        }
+
+        if (row) {
+          const bps = Number(row.bus_saved_pax_s || 0);
+          const cpc = Number(row.other_inc_pax_s || 0);
+          const bpsColor = bps > 0.5 ? '#4ecdc4' : bps < -0.5 ? '#e74c3c' : '#555';
+          const cpcColor = cpc > 0.5 ? '#e07070' : '#555';
+          const starPfx  = isChosen ? '<span style="color:#ffd632">★ </span>' : '';
+          td.innerHTML = starPfx +
+            `<span style="color:${color};font-weight:${isChosen ? 600 : 400}">${rTxt}</span>` +
+            '<br>' +
+            `<span style="font-size:9px;color:${bpsColor}">${bps >= 0 ? '+' : ''}${Math.round(bps)}</span>` +
+            `<span style="font-size:9px;color:#444">/</span>` +
+            `<span style="font-size:9px;color:${cpcColor}">−${Math.round(cpc)}</span>`;
+        } else {
+          td.textContent = '—';
+          td.style.color = '#555';
+        }
+        tr.appendChild(td);
+      });
+
+      // Chosen action summary
+      const tdChosen = document.createElement('td');
+      tdChosen.style.cssText = 'padding:3px 6px;text-align:left;font-size:10px';
+      if (chosenAct !== '—') {
+        const cr = chosenRow ? Number(chosenRow.reward).toFixed(3) : '';
+        const bps = chosenRow ? (Number(chosenRow.bus_saved_pax_s || 0)).toFixed(0) + ' pax·s' : '';
+        tdChosen.innerHTML = `<span style="color:#ffd632;font-weight:600">${chosenAct}</span>`
+                           + ` <span style="color:#9090a8">r=${cr}</span>`
+                           + (bps ? ` <span style="color:#5a8a5a">saved=${bps}</span>` : '');
+      } else {
+        tdChosen.textContent = '—';
+        tdChosen.style.color = '#555';
+      }
+      tr.appendChild(tdChosen);
+      tbody.appendChild(tr);
+    });
   }
 
   // Tab setup
@@ -5599,6 +7332,92 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   }
 }
 
+// ── Queue per Entry-Point Approach chart ──────────────────────────────────
+{
+  const EP_COLORS = ['#5599ff','#ff7755','#55cc88','#ffcc44','#cc55ff','#44ccff','#ff55aa','#88ff55','#ffaa33','#33aaff'];
+  let _epCharts = [];
+
+  function renderQueueEntryPoints(ri) {
+    const r = runs[ri];
+    const rows = (r.queue_entry_snapshots || []);
+    const noData = document.getElementById('queue-entry-no-data');
+    const container = document.getElementById('queue-entry-container');
+    if (!container) return;
+
+    // Destroy existing charts
+    _epCharts.forEach(c => { try { c.destroy(); } catch(e){} });
+    _epCharts = [];
+    container.innerHTML = '';
+
+    if (!rows.length) {
+      if (noData) noData.style.display = '';
+      return;
+    }
+    if (noData) noData.style.display = 'none';
+
+    // Group by junction
+    const jctSet = new Set();
+    rows.forEach(r => jctSet.add(r.jct));
+    const jcts = Array.from(jctSet).sort((a, b) => a - b);
+
+    // Collect all side-section keys
+    const allKeys = new Set();
+    rows.forEach(r => Object.keys(r.sides || {}).forEach(k => allKeys.add(k)));
+    const sideKeys = Array.from(allKeys).sort();
+
+    jcts.forEach(function(jct) {
+      const jrows = rows.filter(rr => rr.jct === jct).sort((a, b) => a.t - b.t);
+      const datasets = [];
+      const mainDir = (jrows[0] && jrows[0].main_dir) ? jrows[0].main_dir : 'main';
+      // Main (bus) approach
+      datasets.push({
+        label: mainDir || 'main',
+        data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
+        borderColor: '#ffffff', backgroundColor: 'transparent',
+        tension: 0.3, pointRadius: 0, borderWidth: 2
+      });
+      // Side approaches — already aggregated by direction bucket (NB/EB/SB/WB)
+      sideKeys.forEach(function(k, ki) {
+        datasets.push({
+          label: k,
+          data: jrows.map(rr => ({ x: rr.t, y: (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0 })),
+          borderColor: EP_COLORS[ki % EP_COLORS.length],
+          backgroundColor: 'transparent',
+          tension: 0.3, pointRadius: 0, borderWidth: 1.5
+        });
+      });
+      const cvs = document.createElement('canvas');
+      cvs.style.cssText = 'width:100%;margin-bottom:14px';
+      cvs.height = 180;
+      container.appendChild(cvs);
+      const ch = new Chart(cvs, {
+        type: 'line',
+        data: { datasets: datasets },
+        options: {
+          parsing: false, animation: false,
+          responsive: true,
+          plugins: {
+            title: { display: true, color: '#9090cc', text: 'Queue per approach — junction ' + jct },
+            legend: { labels: { color: '#9090cc', boxWidth: 12, font: { size: 10 } } },
+            tooltip: { backgroundColor:'#0a0a22', titleColor:'#ccccee', bodyColor:'#9090cc', borderColor:'#2a2a50', borderWidth:1 }
+          },
+          scales: {
+            x: { type: 'linear', ticks: { color: '#9090cc', maxTicksLimit: 10 },
+                 grid: { color: '#1e1e38' },
+                 title: { display: true, text: 'Sim time (s)', color: '#7070a0' } },
+            y: { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, min: 0,
+                 title: { display: true, text: 'Queue (veh)', color: '#7070a0' } }
+          }
+        }
+      });
+      _epCharts.push(ch);
+    });
+  }
+
+  buildRunTabs('queue-entry-run-tabs', (i) => renderQueueEntryPoints(i));
+  if (runs.length) renderQueueEntryPoints(initialRunIdx);
+}
+
 // ── Global Bus Focus Priority table ───────────────────────────────────────
 {
   let activeFocusRun = -1;
@@ -5726,8 +7545,11 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         // and works for both INDEP (no wave CSV) and COORD runs.
         const fhJcts = mergedGrantJctsByVid[j.vid];
         totalPriority += fhJcts ? fhJcts.size : 0;
-        // Approximate delay: junctions arrived on red (not on_green)
-        totalDelay += stops.filter(s => !s.on_green).length * 30; // rough 30s per red arrival
+        // Delay proxy: red arrivals × 30 s.  This is a rough lower-bound estimate —
+        // actual red-phase wait depends on cycle timing, not a fixed 30 s.
+        // Do NOT compare this per-bus figure to junction-level pax-hour totals.
+        const nRed = stops.filter(s => !s.on_green).length;
+        totalDelay += nRed * 30;
       });
       const n = list.length;
       return { delay_avg: totalDelay / n, tt_avg: totalTT / n, priority_avg: totalPriority / n };
@@ -5879,8 +7701,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   //   indepRun  — Phase-Based Uncoordinated (coordinated===false && not NORMAL)
   const noTspRun  = runs.find(r => (r.strategy || '').toUpperCase() === 'NORMAL'
                                 || (r.exp_name  || '').toUpperCase() === 'NO_TSP');
-  const coordRun  = runs.find(r => r.coordinated === true && r !== noTspRun);
-  const indepRun  = runs.find(r => r.coordinated === false && r !== noTspRun);
+  const _isRewardRun = (r) => {
+    const s = `${(r && r.strategy) || ''} ${(r && r.exp_name) || ''}`.toUpperCase();
+    return s.includes('REWARD_TSP') || s.includes('DRL_DENSITY');
+  };
+  const rewardRun = runs.find(r => _isRewardRun(r) && r !== noTspRun);
+  const coordRun  = runs.find(r => r.coordinated === true && r !== noTspRun && r !== rewardRun) || rewardRun;
+  const indepRun  = runs.find(r => r.coordinated === false && r !== noTspRun && r !== rewardRun);
   const noDataEl  = document.getElementById('xcomp-no-data');
   const ctx       = document.getElementById('xcomp-canvas');
 
@@ -5896,6 +7723,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const noTspJMap  = _journeyMap(noTspRun);
     const coordJMap  = _journeyMap(coordRun);
     const indepJMap  = _journeyMap(indepRun);
+    const rewardJMap = _journeyMap(rewardRun);
 
     // Buses granted GE or Phase Insertion in the COORDINATED run.
     // _acquire_focus() is called exactly when GE or INS fires, so the
@@ -5909,12 +7737,55 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       }
     });
 
+    function _actionRows(run) {
+      return ((run && run.objective_trace) || []).filter(r =>
+        (r.mode === 'GE' || r.mode === 'INS') && r.decision === 'ACTION');
+    }
+
+    function _bucketKey(r) {
+      const tBucket = Math.round((Number(r.t) || 0) / 30) * 30;
+      return `${r.jct}|${tBucket}`;
+    }
+
+    function _delayValue(r) {
+      if (!r) return null;
+      const v = Number(r.strategy_min_delay_pax_s);
+      if (Number.isFinite(v) && v > 0) return v;
+      const v2 = Number(r.delay_with_strategy_pax_s);
+      return Number.isFinite(v2) ? v2 : null;
+    }
+
+    function _delayBaseline(r) {
+      if (!r) return null;
+      const v = Number(r.no_strategy_delay_pax_s);
+      if (Number.isFinite(v) && v > 0) return v;
+      const v2 = Number(r.delay_base_pax_s);
+      return Number.isFinite(v2) ? v2 : null;
+    }
+
+    function _nearestByJctTime(rows, jct, tRef) {
+      let best = null;
+      let bestDt = 1e9;
+      rows.forEach(r => {
+        if (Number(r.jct) !== Number(jct)) return;
+        const dt = Math.abs((Number(r.t) || 0) - tRef);
+        if (dt < bestDt) {
+          bestDt = dt;
+          best = r;
+        }
+      });
+      return (bestDt <= 60.0) ? best : null;
+    }
+
     const xcompLabels  = [];
     const noTspTTArr   = [];
     const indepTTArr   = [];
+    const rewardTTArr  = [];
     const coordTTArr   = [];
     const ttSavCoordArr = [];  // noTsp_TT - coord_TT  (positive = coord faster)
     const ttSavIndepArr = [];  // noTsp_TT - indep_TT
+    const ttSavRewardArr = []; // noTsp_TT - reward_TT
+    let xcompMode = 'journey';
 
     function _journeyTT(journeyObj) {
       const stops = (journeyObj || {}).stops || [];
@@ -5931,19 +7802,53 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       const noTspTT = _journeyTT(noTspJ);
       if (coordTT === null || noTspTT === null) return;
 
-      const indepTT = _journeyTT(indepJMap[vid]);  // may be null if bus not seen
+      const indepTT = _journeyTT(indepJMap[vid]);   // may be null if bus not seen
+      const rewardTT = _journeyTT(rewardJMap[vid]); // may be null if bus not seen
 
       xcompLabels.push(`Bus ${vid}`);
       noTspTTArr.push(Math.max(0, noTspTT));
       coordTTArr.push(Math.max(0, coordTT));
       indepTTArr.push(indepTT !== null ? Math.max(0, indepTT) : null);
+      rewardTTArr.push(rewardTT !== null ? Math.max(0, rewardTT) : null);
       ttSavCoordArr.push(Math.round(noTspTT - coordTT));
       ttSavIndepArr.push(indepTT !== null ? Math.round(noTspTT - indepTT) : null);
+      ttSavRewardArr.push(rewardTT !== null ? Math.round(noTspTT - rewardTT) : null);
     });
+
+    // Fallback for runs where vehicle IDs are not stable across experiments:
+    // compare GE/INS ACTION events by (junction, time-bucket), then nearest time.
+    if (!xcompLabels.length) {
+      const coordActs = _actionRows(coordRun);
+      const indepActs = _actionRows(indepRun);
+      const rewardActs = _actionRows(rewardRun);
+      coordActs.forEach(ca => {
+        const jct = Number(ca.jct);
+        const tRef = Number(ca.t) || 0;
+        const inM = _nearestByJctTime(indepActs, jct, tRef);
+        const rwM = _nearestByJctTime(rewardActs, jct, tRef);
+
+        const dNo = _delayBaseline(ca);
+        const dCoord = _delayValue(ca);
+        const dInd = _delayValue(inM);
+        const dReward = _delayValue(rwM);
+        if (!(Number.isFinite(dNo) && Number.isFinite(dCoord))) return;
+
+        xcompMode = 'objective';
+        xcompLabels.push(`j${jct}@t${Math.round(tRef)}`);
+        noTspTTArr.push(Math.max(0, dNo));
+        coordTTArr.push(Math.max(0, dCoord));
+        indepTTArr.push(Number.isFinite(dInd) ? Math.max(0, dInd) : null);
+        rewardTTArr.push(Number.isFinite(dReward) ? Math.max(0, dReward) : null);
+        ttSavCoordArr.push(Math.round(dNo - dCoord));
+        ttSavIndepArr.push(Number.isFinite(dInd) ? Math.round(dNo - dInd) : null);
+        ttSavRewardArr.push(Number.isFinite(dReward) ? Math.round(dNo - dReward) : null);
+      });
+    }
 
     const nLabel = noTspRun.label  || 'No TSP';
     const cLabel = coordRun.label  || 'Coordinated';
     const iLabel = indepRun ? (indepRun.label || 'Uncoordinated') : 'Uncoordinated';
+    const rLabel = rewardRun ? (rewardRun.label || 'Reward-Based') : 'Reward-Based';
 
     if (xcompLabels.length && ctx) {
       if (noDataEl) noDataEl.style.display = 'none';
@@ -5955,6 +7860,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         { label: `TT saving: ${cLabel} vs ${nLabel} (s)`,  data: ttSavCoordArr, backgroundColor: 'rgba(0,230,118,0.6)',  yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
         { label: `TT saving: ${iLabel} vs ${nLabel} (s)`,  data: ttSavIndepArr, backgroundColor: 'rgba(255,235,59,0.4)',  yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(255,235,59,0.8)' },
       ];
+      if (rewardRun) {
+        datasets.splice(2, 0,
+          { label: `${rLabel} — corridor TT (s)`, data: rewardTTArr, backgroundColor: 'rgba(139,195,74,0.7)', yAxisID: 'y' }
+        );
+        datasets.push(
+          { label: `TT saving: ${rLabel} vs ${nLabel} (s)`, data: ttSavRewardArr, backgroundColor: 'rgba(174,213,129,0.35)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(174,213,129,0.8)' }
+        );
+      }
       new Chart(ctx.getContext('2d'), {
         type: 'bar',
         data: { labels: xcompLabels, datasets },
@@ -5966,7 +7879,9 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
             tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
             title: {
               display: true,
-              text: `Buses granted GE/INS in ${cLabel} run — corridor TT across all runs (${xcompLabels.length} buses)`,
+              text: (xcompMode === 'journey')
+                ? `Buses granted GE/INS in ${cLabel} run — corridor TT across all runs (${xcompLabels.length} buses)`
+                : `Cross-experiment matched actions (jct/time) — objective delay across runs (${xcompLabels.length} matches)`,
               color: '#7070a0', font: { size: 11 },
             },
           },
@@ -5978,7 +7893,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         },
       });
     } else if (noDataEl) {
-      noDataEl.textContent = `No buses found that were granted GE/INS in the ${cLabel} run.`;
+      noDataEl.textContent = `No same-bus or matched objective-action pairs found for ${cLabel}.`;
     }
 
     // ── Delay comparison chart (same bus set, red-stop estimate) ──────────
@@ -5986,19 +7901,40 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const delayCtxEl  = document.getElementById('xcomp-delay-canvas');
     const delayNoData = document.getElementById('xcomp-delay-no-data');
 
-    function _busDelay(journeyMap, vid) {
+    // Use red-stop COUNT (not reds×30s) — the 30s proxy created delay > corridor_time
+    // which is physically impossible and misleading. Count is honest and directly shows
+    // whether TSP reduced the number of red-phase arrivals for each bus.
+    function _busRedStops(journeyMap, vid) {
       const j = journeyMap[vid];
       if (!j) return null;
-      const reds = (j.stops || []).filter(s => !s.on_green).length;
-      return reds * 30;   // s  (rough 30s per red-phase arrival)
+      return (j.stops || []).filter(s => !s.on_green).length;
     }
 
-    if (xcompLabels.length && delayCtxEl) {
-      const noTspDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(noTspJMap, vid); });
-      const coordDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(coordJMap, vid); });
-      const indepDelArr   = xcompLabels.map((_, i) => { const vid = [...grantedVids][i]; return _busDelay(indepJMap, vid); });
-      const delSavCoord   = noTspDelArr.map((d, i) => d !== null && coordDelArr[i] !== null ? Math.round(d - coordDelArr[i]) : null);
-      const delSavIndep   = noTspDelArr.map((d, i) => d !== null && indepDelArr[i] !== null ? Math.round(d - indepDelArr[i]) : null);
+    if (xcompMode === 'journey' && xcompLabels.length && delayCtxEl) {
+      const grantedVidsArr = [...grantedVids];
+      const noTspDelArr   = xcompLabels.map((_, i) => _busRedStops(noTspJMap, grantedVidsArr[i]));
+      const coordDelArr   = xcompLabels.map((_, i) => _busRedStops(coordJMap, grantedVidsArr[i]));
+      const indepDelArr   = xcompLabels.map((_, i) => _busRedStops(indepJMap, grantedVidsArr[i]));
+      const rewardDelArr  = xcompLabels.map((_, i) => _busRedStops(rewardJMap, grantedVidsArr[i]));
+      // Saving = baseline reds - strategy reds (positive = fewer reds = improvement)
+      const delSavCoord   = noTspDelArr.map((d, i) => d !== null && coordDelArr[i] !== null ? d - coordDelArr[i] : null);
+      const delSavIndep   = noTspDelArr.map((d, i) => d !== null && indepDelArr[i] !== null ? d - indepDelArr[i] : null);
+      const delSavReward  = noTspDelArr.map((d, i) => d !== null && rewardDelArr[i] !== null ? d - rewardDelArr[i] : null);
+      const delayDatasets = [
+        { label: `${nLabel} — red stops`,   data: noTspDelArr,  backgroundColor: 'rgba(255,82,82,0.7)',  yAxisID: 'y' },
+        { label: `${iLabel} — red stops`,   data: indepDelArr,  backgroundColor: 'rgba(255,179,0,0.7)',  yAxisID: 'y' },
+        { label: `${cLabel} — red stops`,   data: coordDelArr,  backgroundColor: 'rgba(41,182,246,0.7)', yAxisID: 'y' },
+        { label: `Red stops saved: ${cLabel} vs ${nLabel}`, data: delSavCoord, backgroundColor: 'rgba(0,230,118,0.6)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
+        { label: `Red stops saved: ${iLabel} vs ${nLabel}`, data: delSavIndep, backgroundColor: 'rgba(255,235,59,0.4)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(255,235,59,0.8)' },
+      ];
+      if (rewardRun) {
+        delayDatasets.splice(2, 0,
+          { label: `${rLabel} — red stops`, data: rewardDelArr, backgroundColor: 'rgba(139,195,74,0.7)', yAxisID: 'y' }
+        );
+        delayDatasets.push(
+          { label: `Red stops saved: ${rLabel} vs ${nLabel}`, data: delSavReward, backgroundColor: 'rgba(174,213,129,0.35)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(174,213,129,0.8)' }
+        );
+      }
 
       delayCtxEl.style.display = '';
       if (delayNoData) delayNoData.style.display = 'none';
@@ -6006,34 +7942,1239 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         type: 'bar',
         data: {
           labels: xcompLabels,
-          datasets: [
-            { label: `${nLabel} — est. delay (s)`,   data: noTspDelArr,  backgroundColor: 'rgba(255,82,82,0.7)',  yAxisID: 'y' },
-            { label: `${iLabel} — est. delay (s)`,   data: indepDelArr,  backgroundColor: 'rgba(255,179,0,0.7)',  yAxisID: 'y' },
-            { label: `${cLabel} — est. delay (s)`,   data: coordDelArr,  backgroundColor: 'rgba(41,182,246,0.7)', yAxisID: 'y' },
-            { label: `Delay saving: ${cLabel} vs ${nLabel} (s)`, data: delSavCoord, backgroundColor: 'rgba(0,230,118,0.6)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(0,230,118,0.9)' },
-            { label: `Delay saving: ${iLabel} vs ${nLabel} (s)`, data: delSavIndep, backgroundColor: 'rgba(255,235,59,0.4)', yAxisID: 'y2', borderWidth: 1, borderColor: 'rgba(255,235,59,0.8)' },
-          ],
+          datasets: delayDatasets,
         },
         options: {
           responsive: true,
           animation: false,
           plugins: {
             legend: { labels: { color: '#9090cc', font: { size: 10 } } },
-            tooltip: { backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc', borderColor: '#2a2a50', borderWidth: 1 },
+            tooltip: {
+              backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+              borderColor: '#2a2a50', borderWidth: 1,
+              callbacks: {
+                afterBody: () => ['Note: these are buses that received GE/INS in the coordinated run.',
+                                  'They are inherently the "hard cases" — comparing the SAME bus',
+                                  'across strategies (right axis saving) is the fair measure.']
+              }
+            },
             title: {
               display: true,
-              text: `Same buses — estimated corridor delay (red-stop × 30s proxy, ${xcompLabels.length} buses)`,
+              text: `Same-bus comparison — red-phase arrivals per corridor journey (${xcompLabels.length} buses granted priority in ${cLabel})`,
               color: '#7070a0', font: { size: 11 },
             },
           },
           scales: {
             x:  { ticks: { color: '#9090cc', maxRotation: 60 }, grid: { color: '#1e1e38' } },
-            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Est. delay (s)', color: '#7070a0' }, min: 0 },
-            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Delay saving vs baseline (s)', color: '#00e676' } },
+            y:  { ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Red-phase arrivals (count)', color: '#7070a0' }, min: 0 },
+            y2: { position: 'right', ticks: { color: '#00e676' }, grid: { display: false }, title: { display: true, text: 'Red stops saved vs baseline', color: '#00e676' } },
+          },
+        },
+      });
+    } else if (xcompMode !== 'journey' && delayNoData) {
+      delayNoData.style.display = '';
+      delayNoData.textContent = 'Red-stop chart requires same bus IDs across runs; objective-match mode is shown in the chart above.';
+    }
+  }
+}
+
+// ── Reward State-Action Diagnostics ─────────────────────────────────────
+{
+  let _rewardChart = null;
+  let _rewardMode = 'jct';   // 'jct' | 'bus'
+  let _rewardRi   = null;
+
+  // Colour palette for action types (consistent across both modes)
+  const ACTION_COLORS = {
+    'NO_ACTION': 'rgba(120,120,180,0.70)',
+    'GE_5':      'rgba(0,200,100,0.75)',
+    'GE_10':     'rgba(0,230,140,0.75)',
+    'GE_15':     'rgba(80,255,160,0.75)',
+    'INS_10':    'rgba(41,182,246,0.75)',
+    'INS_15':    'rgba(100,200,255,0.75)',
+    'INS_20':    'rgba(160,220,255,0.75)',
+  };
+  function actionColor(a) {
+    return ACTION_COLORS[a] || 'rgba(180,140,60,0.70)';
+  }
+
+  function renderRewardChart(ri) {
+    _rewardRi = ri;
+    if (_rewardMode === 'bus') {
+      renderRewardBusJourney(ri);
+    } else {
+      renderRewardJct(ri);
+    }
+  }
+
+  // ── Mode: By Junction (original view) ───────────────────────────────────
+  function renderRewardJct(ri) {
+    const r = runs[ri];
+    const rows0 = (r.reward_cycle || []);
+    const noDataEl = document.getElementById('reward-no-data');
+    const ctx = document.getElementById('reward-canvas');
+    const jctSel = document.getElementById('reward-jct-sel');
+    const onlyChosen = document.getElementById('reward-only-chosen')?.checked;
+
+    if (_rewardChart) { _rewardChart.destroy(); _rewardChart = null; }
+    if (!ctx) return;
+
+    if (!rows0.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      ctx.style.display = 'none';
+      if (jctSel) jctSel.innerHTML = '<option value="">All</option>';
+      return;
+    }
+
+    const allJcts = [...new Set(rows0.map(x => Number(x.jct)).filter(v => Number.isFinite(v) && v > 0))].sort((a,b)=>a-b);
+    if (jctSel) {
+      const prev = jctSel.value;
+      jctSel.innerHTML = '<option value="">All</option>';
+      allJcts.forEach(j => {
+        const o = document.createElement('option');
+        o.value = String(j);
+        o.textContent = `jct ${j}`;
+        jctSel.appendChild(o);
+      });
+      if (prev && allJcts.includes(Number(prev))) jctSel.value = prev;
+    }
+
+    const selJ = jctSel && jctSel.value ? Number(jctSel.value) : null;
+    let rows = rows0.filter(x => !selJ || Number(x.jct) === selJ);
+    if (onlyChosen) rows = rows.filter(x => Number(x.is_chosen) === 1);
+
+    if (!rows.length) {
+      if (noDataEl) {
+        noDataEl.style.display = '';
+        noDataEl.textContent = 'No reward rows for this filter (try turning off "chosen only" or selecting All junctions).';
+      }
+      ctx.style.display = 'none';
+      return;
+    }
+
+    if (noDataEl) noDataEl.style.display = 'none';
+    ctx.style.display = '';
+
+    // All candidate rows shown (NO_ACTION included).  Each row is one candidate
+    // evaluated for one (bus, junction, time) decision cycle.
+    const chartRows = rows;
+
+    // Group rows by decision cycle (junction × sim_time) so X-axis shows one
+    // group per bus-arrival event regardless of how many candidates were tested.
+    const cycleKeys = [];
+    const cycleMap  = {};
+    chartRows.forEach(x => {
+      const key = `j${x.jct}|t${Math.round(Number(x.t)||0)}|v${x.vid}`;
+      if (!cycleMap[key]) {
+        cycleMap[key] = { jct: x.jct, t: Number(x.t), vid: x.vid, rows: [] };
+        cycleKeys.push(key);
+      }
+      cycleMap[key].rows.push(x);
+    });
+    const cycles = cycleKeys.map(k => cycleMap[k]);
+    cycles.sort((a,b) => a.t - b.t || a.jct - b.jct);
+
+    const labels = cycles.map(c => `j${c.jct}\nt=${Math.round(c.t)}s`);
+
+    // One dataset per action type so the legend is colour-coded
+    const actionTypes = ['NO_ACTION','GE_5','GE_10','GE_15','INS_10','INS_15','INS_20'];
+    const datasets = actionTypes.map(act => ({
+      label: act,
+      data: cycles.map(c => {
+        const row = c.rows.find(x => x.action === act);
+        return row ? (Number(row.reward) || 0) : null;
+      }),
+      backgroundColor: actionColor(act),
+      borderColor:     act === 'NO_ACTION' ? 'rgba(180,180,255,0.6)' : actionColor(act),
+      borderWidth:     act === 'NO_ACTION' ? 1 : 0,
+      borderSkipped:   false,
+      spanGaps:        false,
+    }));
+
+    // Overlay: star = chosen action raw reward value
+    const chosenReward = cycles.map(c => {
+      const chosen = c.rows.find(x => Number(x.is_chosen) === 1);
+      return chosen ? (Number(chosen.reward) || 0) : null;
+    });
+    datasets.push({
+      label: '★ chosen',
+      data: chosenReward,
+      type: 'line',
+      borderColor: 'rgba(255,220,50,1)',
+      backgroundColor: 'rgba(255,220,50,0.3)',
+      pointStyle: 'star',
+      pointRadius: 9,
+      pointHoverRadius: 12,
+      borderWidth: 0,
+      fill: false,
+      yAxisID: 'y',
+      order: 0,
+    });
+
+    // Robust y-axis bounds: clip to 2nd–98th percentile of all rewards so a
+    // handful of extreme outliers (from old data with mc_mult bug) don't
+    // collapse the chart scale and make normal values appear as blanks.
+    const allRewardVals = chartRows.map(x => Number(x.reward)).filter(v => Number.isFinite(v));
+    let yMin = undefined, yMax = undefined;
+    if (allRewardVals.length > 10) {
+      const rv = [...allRewardVals].sort((a, b) => a - b);
+      const p02 = rv[Math.floor(rv.length * 0.02)];
+      const p98 = rv[Math.floor(rv.length * 0.98)];
+      const margin = Math.max(Math.abs(p98 - p02) * 0.10, 1.0);
+      yMin = p02 - margin;
+      yMax = p98 + margin;
+    }
+
+    _rewardChart = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: { labels, datasets },
+      options: {
+        responsive: true, animation: false,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          tooltip: {
+            backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+            borderColor: '#2a2a50', borderWidth: 1,
+            callbacks: {
+              afterBody: (items) => {
+                const ci   = items[0]?.dataIndex;
+                const act  = items[0]?.dataset?.label;
+                if (ci == null) return [];
+                const c = cycles[ci];
+                const row = c.rows.find(x => x.action === act);
+                if (!row) return [];
+                const naRow = c.rows.find(x => x.action === 'NO_ACTION');
+                const naR = naRow ? Number(naRow.reward||0) : Number(row.no_action_reward||0);
+                const delta = Number(row.reward_delta || (Number(row.reward||0) - naR));
+                return [
+                  `reward (raw):    ${Number(row.reward||0).toFixed(4)}`,
+                  `NO_ACTION r:     ${naR.toFixed(4)}`,
+                  `Δ (vs NO_ACTION): ${delta >= 0 ? '+' : ''}${delta.toFixed(4)}`,
+                  `σ_in=${Number(row.sigma_in_s||0).toFixed(1)}s  σ_out=${Number(row.sigma_out_s||0).toFixed(1)}s`,
+                  `chosen: ${Number(row.is_chosen)===1 ? 'YES ★' : 'no'}`,
+                ];
+              },
+            },
+          },
+          title: {
+            display: true,
+            text: `${r.label} — by junction (${cycles.length} decision cycles, ${chartRows.length} candidates)` + (onlyChosen ? ' [chosen filter]' : '') + (yMin !== undefined ? '  [y-axis clipped to 2–98%ile]' : ''),
+            color: '#7070a0', font: { size: 11 },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#9090cc', maxRotation: 70, minRotation: 30 }, grid: { color: '#1e1e38' } },
+          y: {
+            min: yMin, max: yMax,
+            ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+            title: { display: true, text: 'actual reward  (INV_DELAY/V2X: 0–1 · MARL: pax·s)', color: '#7070a0' },
+          },
+        },
+      },
+    });
+  }
+
+  // ── Mode: By Bus Journey ─────────────────────────────────────────────────
+  // Shows, for a selected bus, its sequence of junctions and what action was
+  // chosen (or all candidates) at each stop — X-axis = junction visit order.
+  function renderRewardBusJourney(ri) {
+    const r = runs[ri];
+    const rows0 = (r.reward_cycle || []);
+    const noDataEl = document.getElementById('reward-no-data');
+    const ctx = document.getElementById('reward-canvas');
+    const busSel = document.getElementById('reward-bus-sel');
+    const showAll = document.getElementById('reward-bus-all-cands')?.checked;
+
+    if (_rewardChart) { _rewardChart.destroy(); _rewardChart = null; }
+    if (!ctx) return;
+
+    if (!rows0.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      ctx.style.display = 'none';
+      return;
+    }
+
+    // Populate bus selector
+    const allBuses = [...new Set(rows0.map(x => Number(x.vid)).filter(v => Number.isFinite(v) && v > 0))].sort((a,b)=>a-b);
+    if (busSel) {
+      const prev = busSel.value;
+      busSel.innerHTML = '<option value="">All buses (chosen only)</option>';
+      allBuses.forEach(v => {
+        const o = document.createElement('option');
+        o.value = String(v);
+        o.textContent = `Bus ${v}`;
+        busSel.appendChild(o);
+      });
+      if (prev && allBuses.includes(Number(prev))) busSel.value = prev;
+    }
+
+    const selBus = busSel && busSel.value ? Number(busSel.value) : null;
+
+    if (selBus !== null) {
+      // ── Single bus: stacked bar per junction, one bar per action candidate ─
+      // Get all rows for this bus, sorted by sim time
+      let busRows = rows0.filter(x => Number(x.vid) === selBus);
+      if (!showAll) busRows = busRows.filter(x => Number(x.is_chosen) === 1);
+      busRows = busRows.sort((a, b) => Number(a.t) - Number(b.t));
+
+      if (!busRows.length) {
+        if (noDataEl) {
+          noDataEl.style.display = '';
+          noDataEl.textContent = `No data for bus ${selBus}.`;
+        }
+        ctx.style.display = 'none';
+        return;
+      }
+
+      if (noDataEl) noDataEl.style.display = 'none';
+      ctx.style.display = '';
+
+      // X labels: "jct XXXXX @ t=NNN"
+      // If showing all candidates, group by (jct, t) → one group per junction visit
+      if (showAll) {
+        // Group rows by junction visit (sim_time + jct)
+        const groups = [];
+        const groupMap = {};
+        busRows.forEach(x => {
+          const key = `${x.jct}@${Math.round(Number(x.t))}`;
+          if (!groupMap[key]) {
+            groupMap[key] = { jct: x.jct, t: Number(x.t), rows: [] };
+            groups.push(groupMap[key]);
+          }
+          groupMap[key].rows.push(x);
+        });
+        groups.sort((a,b) => a.t - b.t);
+
+        const labels = groups.map(g => `j${g.jct}\nt=${Math.round(g.t)}s`);
+        const actionTypes = ['NO_ACTION','GE_5','GE_10','GE_15','INS_10','INS_15','INS_20'];
+
+        const datasets = actionTypes.map(act => ({
+          label: act,
+          data: groups.map(g => {
+            const row = g.rows.find(x => x.action === act);
+            return row ? (Number(row.reward) || 0) : null;
+          }),
+          backgroundColor: actionColor(act),
+          borderColor: act === 'NO_ACTION' ? 'rgba(200,200,255,0.4)' : undefined,
+          borderWidth: act === 'NO_ACTION' ? 1 : 0,
+          // Highlight chosen with solid border
+          borderSkipped: false,
+        }));
+
+        // Overlay markers for chosen actions
+        const chosenReward = groups.map(g => {
+          const chosen = g.rows.find(x => Number(x.is_chosen) === 1);
+          return chosen ? Number(chosen.reward) : null;
+        });
+
+        datasets.push({
+          label: '★ chosen',
+          data: chosenReward,
+          type: 'line',
+          borderColor: 'rgba(255,220,50,1)',
+          backgroundColor: 'rgba(255,220,50,0.3)',
+          pointStyle: 'star',
+          pointRadius: 10,
+          pointHoverRadius: 12,
+          borderWidth: 0,
+          fill: false,
+          yAxisID: 'y',
+          order: 0,
+        });
+
+        _rewardChart = new Chart(ctx.getContext('2d'), {
+          type: 'bar',
+          data: { labels, datasets },
+          options: {
+            responsive: true, animation: false,
+            plugins: {
+              legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+              title: {
+                display: true,
+                text: `Bus ${selBus} corridor journey — all action candidates at each junction`,
+                color: '#7070a0', font: { size: 11 },
+              },
+              tooltip: {
+                backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+                borderColor: '#2a2a50', borderWidth: 1,
+                callbacks: {
+                  afterBody: (items) => {
+                    const gi = items[0]?.dataIndex;
+                    const act = items[0]?.dataset?.label;
+                    if (gi == null) return [];
+                    const g = groups[gi];
+                    const row = g.rows.find(x => x.action === act);
+                    if (!row) return [];
+                    return [
+                      `σ_in=${Number(row.sigma_in_s||0).toFixed(1)}s  σ_out=${Number(row.sigma_out_s||0).toFixed(1)}s`,
+                      `no-act delay: ${Number(row.no_strategy_delay_pax_s||0).toFixed(0)} pax·s`,
+                      `with-action:  ${Number(row.strategy_min_delay_pax_s||0).toFixed(0)} pax·s`,
+                      `chosen: ${Number(row.is_chosen)===1 ? 'YES ★' : 'no'}`,
+                    ];
+                  },
+                },
+              },
+            },
+            scales: {
+              x: { ticks: { color: '#9090cc', maxRotation: 60, minRotation: 30 }, grid: { color: '#1e1e38' } },
+              y: {
+                ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+                title: { display: true, text: 'actual reward  (INV_DELAY/V2X: 0–1 · MARL: pax·s)', color: '#7070a0' },
+              },
+            },
+          },
+        });
+
+      } else {
+        // Chosen-only: line chart of reward along the journey
+        const labels = busRows.map(x => `j${x.jct}\nt=${Math.round(Number(x.t))}s`);
+        const rewards = busRows.map(x => Number(x.reward) || 0);
+        const saves   = busRows.map(x => {
+          const base = Number(x.no_strategy_delay_pax_s) || 0;
+          const strat = Number(x.strategy_min_delay_pax_s) || 0;
+          return Math.max(0, base - strat);
+        });
+        const colors = busRows.map(x => actionColor(x.action));
+
+        _rewardChart = new Chart(ctx.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'pax delay saved (chosen)',
+                data: saves,
+                backgroundColor: colors,
+                yAxisID: 'y',
+                order: 2,
+              },
+              {
+                label: 'reward (chosen)',
+                data: rewards,
+                type: 'line',
+                borderColor: 'rgba(255,193,7,1)',
+                borderWidth: 2,
+                pointRadius: 4,
+                pointBackgroundColor: colors,
+                fill: false,
+                yAxisID: 'y',
+                order: 1,
+              },
+            ],
+          },
+          options: {
+            responsive: true, animation: false,
+            plugins: {
+              legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+              title: {
+                display: true,
+                text: `Bus ${selBus} corridor journey — chosen actions (${busRows.length} junctions visited)`,
+                color: '#7070a0', font: { size: 11 },
+              },
+              tooltip: {
+                backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+                borderColor: '#2a2a50', borderWidth: 1,
+                callbacks: {
+                  afterBody: (items) => {
+                    const idx = items[0]?.dataIndex;
+                    if (idx == null) return [];
+                    const x = busRows[idx];
+                    return [
+                      `action: ${x.action}`,
+                      `σ_in=${Number(x.sigma_in_s||0).toFixed(1)}s  σ_out=${Number(x.sigma_out_s||0).toFixed(1)}s`,
+                      `no-act: ${Number(x.no_strategy_delay_pax_s||0).toFixed(0)} pax·s → ${Number(x.strategy_min_delay_pax_s||0).toFixed(0)} pax·s`,
+                    ];
+                  },
+                },
+              },
+            },
+            scales: {
+              x: { ticks: { color: '#9090cc', maxRotation: 60, minRotation: 30 }, grid: { color: '#1e1e38' } },
+              y: {
+                ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+                title: { display: true, text: 'reward / pax delay saved', color: '#7070a0' },
+              },
+            },
+          },
+        });
+      }
+
+    } else {
+      // ── All buses: one bar per bus, showing total reward across the corridor ─
+      if (noDataEl) noDataEl.style.display = 'none';
+      ctx.style.display = '';
+
+      const chosenRows = rows0.filter(x => Number(x.is_chosen) === 1);
+      const totalByBus = {};
+      chosenRows.forEach(x => {
+        const vid = Number(x.vid);
+        if (!totalByBus[vid]) totalByBus[vid] = { total_reward: 0, total_saved: 0, jct_count: 0, actions: {} };
+        totalByBus[vid].total_reward += Number(x.reward) || 0;
+        const base  = Number(x.no_strategy_delay_pax_s) || 0;
+        const strat = Number(x.strategy_min_delay_pax_s) || 0;
+        totalByBus[vid].total_saved += Math.max(0, base - strat);
+        totalByBus[vid].jct_count++;
+        const act = x.action || 'NO_ACTION';
+        totalByBus[vid].actions[act] = (totalByBus[vid].actions[act] || 0) + 1;
+      });
+
+      const sortedBuses = Object.entries(totalByBus).sort((a,b) => b[1].total_saved - a[1].total_saved);
+      const labels  = sortedBuses.map(([vid]) => `Bus ${vid}`);
+      const rewards = sortedBuses.map(([,v]) => v.total_reward);
+      const saves   = sortedBuses.map(([,v]) => v.total_saved);
+      const jcounts = sortedBuses.map(([,v]) => v.jct_count);
+
+      // Colour by dominant action type
+      const domColors = sortedBuses.map(([,v]) => {
+        const top = Object.entries(v.actions).sort((a,b)=>b[1]-a[1])[0]?.[0] || 'NO_ACTION';
+        return actionColor(top);
+      });
+
+      _rewardChart = new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            { label: 'total pax delay saved (corridor)', data: saves, backgroundColor: domColors, yAxisID: 'y', order: 2 },
+            { label: 'total reward',                     data: rewards, type: 'line', borderColor: 'rgba(255,193,7,1)', borderWidth: 2, pointRadius: 3, fill: false, yAxisID: 'y', order: 1 },
+          ],
+        },
+        options: {
+          responsive: true, animation: false,
+          plugins: {
+            legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+            title: {
+              display: true,
+              text: `${r.label} — all buses, total corridor reward (sorted by pax-delay saved)`,
+              color: '#7070a0', font: { size: 11 },
+            },
+            tooltip: {
+              backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+              borderColor: '#2a2a50', borderWidth: 1,
+              callbacks: {
+                afterBody: (items) => {
+                  const idx = items[0]?.dataIndex;
+                  if (idx == null) return [];
+                  const [vid, v] = sortedBuses[idx];
+                  const actSummary = Object.entries(v.actions).map(([a,n])=>`${a}×${n}`).join(' ');
+                  return [
+                    `Junctions: ${v.jct_count}`,
+                    `Actions: ${actSummary}`,
+                  ];
+                },
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: '#9090cc', maxRotation: 60, minRotation: 30 }, grid: { color: '#1e1e38' } },
+            y: {
+              ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+              title: { display: true, text: 'pax·s', color: '#7070a0' },
+            },
           },
         },
       });
     }
+  }
+
+  const rewardRuns = runs
+    .map((r, i) => ({ r, i }))
+    .filter(x => (x.r.reward_cycle || []).length > 0)
+    .map(x => x.i);
+
+  const rewardTabHost = document.getElementById('reward-run-tabs');
+  if (rewardTabHost) {
+    rewardTabHost.innerHTML = '';
+    rewardRuns.forEach((ri, idx) => {
+      const btn = document.createElement('button');
+      btn.className = 'run-tab' + (idx === 0 ? ' active' : '');
+      btn.textContent = runs[ri].label;
+      btn.onclick = () => {
+        rewardTabHost.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderRewardChart(ri);
+      };
+      rewardTabHost.appendChild(btn);
+    });
+
+    // Mode toggle buttons
+    const modeJctBtn = document.getElementById('reward-mode-jct');
+    const modeBusBtn = document.getElementById('reward-mode-bus');
+    const jctCtrl    = document.getElementById('reward-jct-controls');
+    const busCtrl    = document.getElementById('reward-bus-controls');
+    const modeHint   = document.getElementById('reward-mode-hint');
+
+    function setRewardMode(mode) {
+      _rewardMode = mode;
+      modeJctBtn?.classList.toggle('active', mode === 'jct');
+      modeBusBtn?.classList.toggle('active', mode === 'bus');
+      if (jctCtrl) jctCtrl.style.display = mode === 'jct' ? 'flex' : 'none';
+      if (busCtrl) busCtrl.style.display = mode === 'bus' ? 'flex' : 'none';
+      if (modeHint) modeHint.textContent = mode === 'jct'
+        ? 'Reward = wh×Δheadway + (1-wh)×ΔNetPaxDelay. Positive = net-beneficial.'
+        : 'Bus Journey: X-axis = corridor junction sequence for the selected bus. Bar colour = action type.';
+      if (_rewardRi !== null) renderRewardChart(_rewardRi);
+    }
+
+    modeJctBtn?.addEventListener('click', () => setRewardMode('jct'));
+    modeBusBtn?.addEventListener('click', () => setRewardMode('bus'));
+
+    // Event listeners for filters
+    const jsel = document.getElementById('reward-jct-sel');
+    if (jsel) jsel.addEventListener('change', () => { if (_rewardRi !== null) renderRewardChart(_rewardRi); });
+    const chk = document.getElementById('reward-only-chosen');
+    if (chk) chk.addEventListener('change', () => { if (_rewardRi !== null) renderRewardChart(_rewardRi); });
+    const bsel = document.getElementById('reward-bus-sel');
+    if (bsel) bsel.addEventListener('change', () => { if (_rewardRi !== null) renderRewardChart(_rewardRi); });
+    const bchk = document.getElementById('reward-bus-all-cands');
+    if (bchk) bchk.addEventListener('change', () => { if (_rewardRi !== null) renderRewardChart(_rewardRi); });
+
+    if (rewardRuns.length) renderRewardChart(rewardRuns[0]);
+  }
+}
+
+// ── MDN Delay Calibration chart ───────────────────────────────────────────
+// Shows per-decision-cycle: MDN-predicted total delay (no-action and chosen
+// action) vs the Aimsun-measured cumulative car delay increment.
+// Only populated for runs with MDN data (no_strategy_delay_pax_s > 0 in CSV).
+{
+  let _mdnCalibChart = null;
+  let _mdnCalibRi    = null;
+
+  // Build time-bucketed series from reward_cycle rows.
+  // Calibration: compare predicted bus delay (no_act_delay_s, seconds) with
+  // actual headway change at the intersection (sigma_out - sigma_in, seconds).
+  // Both are in seconds → same scale.  For NO_ACTION rows the predicted and
+  // actual delays should align when the model is well-calibrated.
+  // For TSP-action rows (INS/GE/ER), sigma_out − sigma_in ≈ 0 (bus was saved).
+  function _buildMdnCalibSeries(rows, jctFilter, chosenOnly) {
+    const pred = [];   // {t, pred_na_s, actual_delta_s, action, jct}
+
+    // Filter by junction
+    const filtered = jctFilter
+      ? rows.filter(r => Number(r.jct) === Number(jctFilter))
+      : rows;
+
+    // Build from chosen-action rows (each represents one decision cycle).
+    const chosenRows = filtered.filter(r => Number(r.is_chosen) === 1);
+    chosenRows.sort((a, b) => Number(a.t) - Number(b.t));
+    chosenRows.forEach(r => {
+      const sigma_in  = Number(r.sigma_in_s)  || 0;
+      const sigma_out = Number(r.sigma_out_s) || 0;
+      pred.push({
+        t:            Number(r.t),
+        pred_na_s:    Number(r.no_act_delay_s) || 0,   // predicted bus delay (s)
+        actual_delta: sigma_out - sigma_in,             // actual headway change (s)
+        sigma_in:     sigma_in,                         // incoming headway state (s)
+        jct:          Number(r.jct),
+        action:       r.action,
+      });
+    });
+
+    return { pred };
+  }
+
+  function renderMdnCalibChart(ri) {
+    _mdnCalibRi = ri;
+    const r        = runs[ri];
+    const rows0    = r.reward_cycle || [];
+    const noDataEl = document.getElementById('mdn-calib-no-data');
+    const ctx      = document.getElementById('mdn-calib-canvas');
+    const jctSel   = document.getElementById('mdn-calib-jct-sel');
+    const chosenOnly = document.getElementById('mdn-calib-chosen-only')?.checked ?? true;
+
+    if (_mdnCalibChart) { _mdnCalibChart.destroy(); _mdnCalibChart = null; }
+    if (!ctx) return;
+
+    // Detect data: any chosen row with no_act_delay_s present
+    const hasData = rows0.some(x => Number(x.is_chosen) === 1);
+    if (!hasData || !rows0.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      ctx.style.display = 'none';
+      return;
+    }
+    if (noDataEl) noDataEl.style.display = 'none';
+    ctx.style.display = '';
+
+    // Populate junction selector
+    const allJcts = [...new Set(rows0.map(x => Number(x.jct)).filter(Number.isFinite))].sort((a,b)=>a-b);
+    if (jctSel) {
+      const prev = jctSel.value;
+      jctSel.innerHTML = '<option value="">All junctions</option>';
+      allJcts.forEach(j => {
+        const o = document.createElement('option');
+        o.value = j; o.textContent = `Junction ${j}`;
+        jctSel.appendChild(o);
+      });
+      jctSel.value = prev || '';
+    }
+
+    const jctFilter = jctSel?.value || '';
+    const { pred } = _buildMdnCalibSeries(rows0, jctFilter, chosenOnly);
+
+    // Build point arrays for Chart.js — all in seconds (same scale).
+    const labels     = pred.map(p => `t=${Math.round(p.t)}s`);
+    const predNaY    = pred.map(p => p.pred_na_s);        // model predicted bus delay (s)
+    const actualDY   = pred.map(p => p.actual_delta);     // sigma_out − sigma_in (s)
+    const sigmaInY   = pred.map(p => p.sigma_in);         // incoming headway state (s)
+
+    // Colour-code actual_delta by action type: NO_ACTION grey, INS green, GE teal, ER orange.
+    const ptColors = pred.map(p => {
+      const a = (p.action || '').toLowerCase();
+      if (a === 'no_action') return 'rgba(160,160,200,0.7)';
+      if (a.startsWith('ins')) return 'rgba(100,220,120,0.85)';
+      if (a.startsWith('ge'))  return 'rgba(78,205,196,0.85)';
+      if (a.startsWith('er') || a.startsWith('early')) return 'rgba(255,159,67,0.85)';
+      return 'rgba(200,180,100,0.7)';
+    });
+
+    if (_mdnCalibChart) _mdnCalibChart.destroy();
+    _mdnCalibChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Predicted bus delay — no action (s)',
+            data: predNaY,
+            borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.15)',
+            borderWidth: 2, pointRadius: 3, tension: 0.2, fill: false,
+          },
+          {
+            label: 'Actual headway change σ_out − σ_in (s, colour = action)',
+            data: actualDY,
+            borderColor: 'transparent',
+            backgroundColor: ptColors,
+            borderWidth: 0, pointRadius: 5, pointStyle: 'circle',
+            showLine: false, type: 'scatter',
+          },
+          {
+            label: 'Incoming headway deviation σ_in (s)',
+            data: sigmaInY,
+            borderColor: '#9b59b6', backgroundColor: 'rgba(155,89,182,0.08)',
+            borderWidth: 1.5, pointRadius: 0, tension: 0.2, fill: false,
+            borderDash: [4, 4],
+          },
+        ],
+      },
+      options: {
+        animation: false,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          title: {
+            display: true,
+            text: `${r.label} — delay calibration (predicted bus delay vs actual headway change)`,
+            color: '#7070a0', font: { size: 11 },
+          },
+          tooltip: {
+            backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+            borderColor: '#2a2a50', borderWidth: 1,
+            callbacks: {
+              afterBody: (items) => {
+                const idx = items[0]?.dataIndex;
+                if (idx == null) return [];
+                const p = pred[idx];
+                if (!p) return [];
+                return [
+                  `junction: ${p.jct}`,
+                  `action: ${p.action}`,
+                  `predicted no-action delay: ${p.pred_na_s.toFixed(1)}s`,
+                  `actual Δheadway (σ_out − σ_in): ${p.actual_delta.toFixed(1)}s`,
+                  `σ_in: ${p.sigma_in.toFixed(1)}s`,
+                ];
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#9090cc', maxRotation: 70, minRotation: 30 }, grid: { color: '#1e1e38' } },
+          y: {
+            ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+            title: { display: true, text: 'bus delay / headway deviation (s)', color: '#7070a0' },
+          },
+        },
+      },
+    });
+  }
+
+  // Initialise delay calibration panel — show for any run with chosen reward_cycle rows.
+  const mdnCalibSection  = document.getElementById('mdn-calib-section');
+  const mdnCalibTabHost  = document.getElementById('mdn-calib-run-tabs');
+  const mdnCalibRuns     = runs.filter((r, ri) =>
+    (r.reward_cycle || []).some(x => Number(x.is_chosen) === 1));
+
+  if (!mdnCalibRuns.length && mdnCalibSection) {
+    mdnCalibSection.style.display = 'none';
+  } else {
+    mdnCalibRuns.forEach((r, idx) => {
+      const ri  = runs.indexOf(r);
+      const btn = document.createElement('button');
+      btn.className = 'run-tab' + (idx === 0 ? ' active' : '');
+      btn.textContent = r.label;
+      btn.onclick = () => {
+        mdnCalibTabHost.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderMdnCalibChart(ri);
+      };
+      mdnCalibTabHost.appendChild(btn);
+    });
+
+    const jsel = document.getElementById('mdn-calib-jct-sel');
+    const chk  = document.getElementById('mdn-calib-chosen-only');
+    if (jsel) jsel.addEventListener('change', () => { if (_mdnCalibRi !== null) renderMdnCalibChart(_mdnCalibRi); });
+    if (chk)  chk.addEventListener('change',  () => { if (_mdnCalibRi !== null) renderMdnCalibChart(_mdnCalibRi); });
+
+    if (mdnCalibRuns.length) renderMdnCalibChart(runs.indexOf(mdnCalibRuns[0]));
+  }
+}
+
+// ── MDN Phase Delay Decomposition chart ───────────────────────────────────
+// ── Delay Method Validation chart ───────────────────────────────────────────
+// Two scatter sub-plots stacked in one canvas (simulated via two Chart.js charts):
+//
+//   TOP  – Cross-traffic model validation (car delay pax·s):
+//     X = Δ measured_car_pax_s_cumul between consecutive NO_ACTION events at
+//         the same junction (= actual Aimsun-measured car delay for that interval).
+//     Y = other_delay_model_pax_s (UpFlowList-based cross-traffic cost model:
+//         _dctsp_cross_traffic_delay_s(bus_phase_duration), or _mdn_na_pax_s for MDN mode).
+//     This validates the cross-traffic cost model against the Aimsun ground truth.
+//
+//   BOTTOM – Bus delay method comparison (bus delay seconds):
+//     X = no_act_delay_s (kinematic model — reference baseline).
+//     Y = dd1_delay_s / mb_delay_s (alternative methods).
+//     Shows how D/D/1 queue and moving-bottleneck compare to the kinematic model.
+//     (True bus ground-truth requires downstream detectors; kinematic is the
+//      best proxy available in-controller.)
+{
+  let _delayValChart  = null;
+  let _delayValChart2 = null;
+  let _delayValRi     = null;
+
+  function renderDelayValChart(ri) {
+    _delayValRi = ri;
+    const r        = runs[ri];
+    const rows0    = r.reward_cycle || [];
+    const noDataEl = document.getElementById('delay-val-no-data');
+    const ctx      = document.getElementById('delay-val-canvas');
+    const ctx2     = document.getElementById('delay-val-canvas2');
+    const jctSel   = document.getElementById('delay-val-jct-sel');
+    const showDd1  = document.getElementById('delay-val-dd1')?.checked ?? true;
+    const showMb   = document.getElementById('delay-val-mb')?.checked ?? true;
+
+    if (_delayValChart)  { _delayValChart.destroy();  _delayValChart  = null; }
+    if (_delayValChart2) { _delayValChart2.destroy(); _delayValChart2 = null; }
+    if (!ctx) return;
+
+    // Only rows where the agent chose NO_ACTION
+    const noActRows = rows0.filter(x =>
+      Number(x.is_chosen) === 1 && x.action === 'NO_ACTION');
+
+    const hasNewCols = noActRows.some(x => x.dd1_delay_s !== undefined && x.dd1_delay_s !== '');
+    if (!noActRows.length || !hasNewCols) {
+      if (noDataEl) noDataEl.style.display = '';
+      if (ctx)  ctx.style.display  = 'none';
+      if (ctx2) ctx2.style.display = 'none';
+      return;
+    }
+    if (noDataEl) noDataEl.style.display = 'none';
+    if (ctx)  ctx.style.display  = '';
+    if (ctx2) ctx2.style.display = '';
+
+    // Populate junction selector
+    const allJcts = [...new Set(noActRows.map(x => Number(x.jct)).filter(Number.isFinite))].sort((a,b)=>a-b);
+    if (jctSel) {
+      const prev = jctSel.value;
+      jctSel.innerHTML = '<option value="">All junctions</option>';
+      allJcts.forEach(j => { const o = document.createElement('option'); o.value = j; o.textContent = `Junction ${j}`; jctSel.appendChild(o); });
+      jctSel.value = prev || '';
+    }
+    const jctFilter = jctSel?.value || '';
+    const filtered = jctFilter ? noActRows.filter(x => String(x.jct) === jctFilter) : noActRows;
+
+    // ── TOP chart: cross-traffic measured delta vs model predicted ──────────
+    // If the CSV contains the newer per-event delta columns (interval_s > 0), use
+    // them directly and time-normalise both sides to the same bus-phase window so
+    // they are directly comparable (pax·s per bp_dur_s):
+    //   X_norm = measured_delta × (bp_dur_s / interval_s)
+    //   Y      = other_delay_model_pax_s_nf1  (raw triangle, NF removed)
+    //
+    // NOTE: We use the NF=1 column (other_delay_model_pax_s_nf1) so the 45° line
+    // is interpretable. The NF-amplified column (other_delay_model_pax_s) was the
+    // Y-axis in older dashboards and caused apparent 4-5× over-prediction for
+    // INV_DELAY/ZIG because NF is a decision bias, not a calibration target.
+    // Newer CSVs have both columns; older CSVs fall back to dividing by NF.
+    const crossPts = [];
+    const hasNewDelta = filtered.some(row => Number(row.interval_s) > 0);
+    if (hasNewDelta) {
+      filtered.forEach(row => {
+        const delta  = Number(row.measured_car_pax_s_delta || 0);
+        const intv   = Number(row.interval_s) || 0;
+        const bpDur  = Number(row.bp_dur_s) || 30;
+        // Use NF=1 prediction for validation; fall back gracefully for old CSVs.
+        const predNF  = Number(row.other_delay_model_pax_s || 0);
+        const nf      = Math.max(Number(row.network_factor || 1), 1);
+        const pred    = (row.other_delay_model_pax_s_nf1 !== undefined &&
+                         row.other_delay_model_pax_s_nf1 !== '')
+                        ? Number(row.other_delay_model_pax_s_nf1)
+                        : predNF / nf;
+        if (intv > 1 && pred >= 0) {
+          const measNorm = delta * bpDur / intv;
+          crossPts.push({ x: measNorm, y: pred,
+                          _jct: String(row.jct), _t: Number(row.t),
+                          _delta: delta, _intv: intv, _bpDur: bpDur,
+                          _nf: nf });
+        }
+      });
+    } else {
+      // Old CSV: compute delta from cumulative column per junction.
+      const jctPrevCumul = {};
+      const sortedForDelta = [...filtered].sort((a, b) => {
+        const jc = String(a.jct).localeCompare(String(b.jct));
+        return jc !== 0 ? jc : Number(a.t) - Number(b.t);
+      });
+      sortedForDelta.forEach(row => {
+        const jct    = String(row.jct);
+        const cumul  = Number(row.measured_car_pax_s_cumul || 0);
+        const predNF = Number(row.other_delay_model_pax_s  || 0);
+        const nf     = Math.max(Number(row.network_factor || 1), 1);
+        const pred   = predNF / nf;
+        if (jctPrevCumul[jct] !== undefined) {
+          const delta = cumul - jctPrevCumul[jct];
+          if (delta >= 0 && pred >= 0) {
+            crossPts.push({ x: delta, y: pred,
+                            _jct: jct, _t: Number(row.t), _cumul: cumul, _nf: nf });
+          }
+        }
+        jctPrevCumul[jct] = cumul;
+      });
+    }
+    const xLabel = hasNewDelta
+      ? 'Measured car delay × (bp_dur/interval) pax·s (time-normalised)'
+      : 'Actual total car delay Δ pax·s (Aimsun measured, per interval)';
+    const yLabel = 'Cross-traffic cost model pax·s (NF=1 raw triangle)';
+
+    // Cap axis at 95th percentile to prevent outliers from collapsing the scale.
+    function _pct95(arr) {
+      if (!arr.length) return 10;
+      const s = [...arr].sort((a, b) => a - b);
+      return s[Math.min(Math.floor(s.length * 0.95), s.length - 1)] || 10;
+    }
+    const _allC = crossPts.flatMap(p => [p.x, p.y]).filter(v => v > 0);
+    let maxC = Math.max(100, Math.ceil(_pct95(_allC) * 1.2 / 100) * 100);
+
+    _delayValChart = new Chart(ctx, {
+      type: 'scatter',
+      data: { datasets: [
+        { label: 'Perfect (45°)', data: [{x:0,y:0},{x:maxC,y:maxC}],
+          type: 'line', borderColor: '#ffffff44', borderDash: [6,4],
+          borderWidth: 1.5, pointRadius: 0, fill: false },
+        { label: 'Cross-traffic model vs measured car delay (pax·s)', data: crossPts,
+          backgroundColor: '#4ecdc488', borderColor: '#4ecdc4', borderWidth: 1, pointRadius: 4 },
+      ]},
+      options: {
+        animation: false,
+        plugins: {
+          legend: { labels: { color: '#ccc', font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => {
+            const d = c.raw;
+            const detail = hasNewDelta
+              ? `  raw_Δ=${d._delta?.toFixed(0)} pax·s  intv=${d._intv?.toFixed(0)}s  bp=${d._bpDur?.toFixed(0)}s`
+              : `  cumul=${d._cumul?.toFixed(0)}`;
+            return `jct=${d._jct} t=${d._t?.toFixed(0)}s  norm_actual=${d.x?.toFixed(0)} pax·s  model=${d.y?.toFixed(0)} pax·s${detail}`;
+          }}},
+        },
+        scales: {
+          x: { type: 'linear', min: 0, max: maxC,
+               title: { display: true, text: xLabel, color: '#aaa', font: { size: 11 } },
+               ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#444' } },
+          y: { type: 'linear', min: 0, max: maxC,
+               title: { display: true, text: yLabel, color: '#aaa', font: { size: 11 } },
+               ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#444' } },
+        },
+      },
+    });
+
+    // ── BOTTOM chart: bus delay methods vs kinematic reference ──────────────
+    // Exclude rows where kinematic delay = 0 (bus was already on green — no
+    // delay expected, so D/D/1 and MB can't be validated against the reference).
+    // These "on-green" events are annotated separately in the legend count.
+    const dd1Pts = [], mbPts = [];
+    let maxB = 10;
+    let zeroKinCount = 0;
+    filtered.forEach(row => {
+      const kin = Math.max(0, Number(row.no_act_delay_s || 0));
+      const dd1 = Math.max(0, Number(row.dd1_delay_s || 0));
+      const mb  = Math.max(0, Number(row.mb_delay_s  || 0));
+      if (kin === 0) { zeroKinCount++; return; }   // bus on green – skip from scatter
+      if (showDd1) dd1Pts.push({ x: kin, y: dd1 });
+      if (showMb)  mbPts.push({ x: kin, y: mb  });
+      maxB = Math.max(maxB, kin, dd1, mb);
+    });
+    maxB = Math.ceil(_pct95([...dd1Pts.flatMap(p=>[p.x,p.y]), ...mbPts.flatMap(p=>[p.x,p.y])].filter(v=>v>0)) * 1.2 / 10) * 10 || Math.ceil(maxB * 1.1 / 10) * 10;
+
+    if (ctx2) {
+      const dsBus = [
+        { label: `Perfect (45°) — ${zeroKinCount} on-green events excluded (kinematic=0)`, data: [{x:0,y:0},{x:maxB,y:maxB}],
+          type: 'line', borderColor: '#ffffff44', borderDash: [6,4],
+          borderWidth: 1.5, pointRadius: 0, fill: false },
+      ];
+      if (showDd1) dsBus.push({
+        label: `D/D/1 queue (n=${dd1Pts.length})`, data: dd1Pts, type: 'scatter',
+        backgroundColor: '#ffd63288', borderColor: '#ffd632', borderWidth: 1, pointRadius: 4,
+      });
+      if (showMb) dsBus.push({
+        label: `Moving bottleneck (n=${mbPts.length})`, data: mbPts, type: 'scatter',
+        backgroundColor: '#ff9f4388', borderColor: '#ff9f43', borderWidth: 1, pointRadius: 4,
+      });
+      _delayValChart2 = new Chart(ctx2, {
+        type: 'scatter',
+        data: { datasets: dsBus },
+        options: {
+          animation: false,
+          plugins: {
+            legend: { labels: { color: '#ccc', font: { size: 11 } } },
+            tooltip: { callbacks: { label: c => `kinematic=${c.raw.x.toFixed(1)}s  method=${c.raw.y.toFixed(1)}s` } },
+          },
+          scales: {
+            x: { type: 'linear', min: 0, max: maxB,
+                 title: { display: true, text: 'Kinematic bus delay (s) — reference', color: '#aaa', font: { size: 11 } },
+                 ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#444' } },
+            y: { type: 'linear', min: 0, max: maxB,
+                 title: { display: true, text: 'D/D/1 or MB bus delay estimate (s)', color: '#aaa', font: { size: 11 } },
+                 ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#444' } },
+          },
+        },
+      });
+    }
+  }
+
+  // Wire controls
+  function _reDelayVal() { if (_delayValRi != null) renderDelayValChart(_delayValRi); }
+  document.addEventListener('DOMContentLoaded', () => {
+    const jctSel = document.getElementById('delay-val-jct-sel');
+    if (jctSel) jctSel.addEventListener('change', _reDelayVal);
+    ['delay-val-dd1','delay-val-mb'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', _reDelayVal);
+    });
+  });
+
+  // Tab wiring
+  function _buildDelayValRunTabs(runs) {
+    const tabsEl = document.getElementById('delay-val-run-tabs');
+    if (!tabsEl) return;
+    tabsEl.innerHTML = '';
+    runs.forEach((r, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'run-tab' + (i === 0 ? ' active' : '');
+      btn.textContent = r.name;
+      btn.addEventListener('click', () => {
+        tabsEl.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderDelayValChart(i);
+      });
+      tabsEl.appendChild(btn);
+    });
+    if (runs.length > 0) renderDelayValChart(0);
+  }
+  window._buildDelayValRunTabs = _buildDelayValRunTabs;
+}
+
+// Shows per-detection: bus-phase contribution (no_act_delay_s × bus_occ) and
+// cross-traffic contribution (NA_total − bus_phase) as stacked bars, plus the
+// chosen-action bus saving and car cost.  Helps validate the reward signal.
+{
+  let _mdnPhaseChart = null;
+  let _mdnPhaseRi    = null;
+
+  function renderMdnPhaseChart(ri) {
+    _mdnPhaseRi = ri;
+    const r        = runs[ri];
+    const rows0    = r.reward_cycle || [];
+    const noDataEl = document.getElementById('mdn-phase-no-data');
+    const ctx      = document.getElementById('mdn-phase-canvas');
+    const jctSel   = document.getElementById('mdn-phase-jct-sel');
+
+    if (_mdnPhaseChart) { _mdnPhaseChart.destroy(); _mdnPhaseChart = null; }
+    if (!ctx) return;
+
+    const hasData = rows0.some(x => Number(x.is_chosen) === 1 && Number(x.no_strategy_delay_pax_s) > 0);
+    if (!hasData || !rows0.length) {
+      if (noDataEl) noDataEl.style.display = '';
+      ctx.style.display = 'none';
+      return;
+    }
+    if (noDataEl) noDataEl.style.display = 'none';
+    ctx.style.display = '';
+
+    // Populate junction selector
+    const allJcts = [...new Set(rows0.map(x => Number(x.jct)).filter(Number.isFinite))].sort((a,b)=>a-b);
+    if (jctSel) {
+      const prev = jctSel.value;
+      jctSel.innerHTML = '<option value="">All junctions</option>';
+      allJcts.forEach(j => {
+        const o = document.createElement('option');
+        o.value = j; o.textContent = `Junction ${j}`;
+        jctSel.appendChild(o);
+      });
+      jctSel.value = prev || '';
+    }
+
+    const jctFilter = jctSel?.value ? Number(jctSel.value) : null;
+    // Use only chosen-action rows (one per detection event)
+    let chosen = rows0.filter(x => Number(x.is_chosen) === 1);
+    if (jctFilter) chosen = chosen.filter(x => Number(x.jct) === jctFilter);
+    chosen = chosen.sort((a, b) => Number(a.t) - Number(b.t));
+
+    if (!chosen.length) {
+      if (noDataEl) { noDataEl.style.display = ''; noDataEl.textContent = 'No chosen-action rows for this junction.'; }
+      ctx.style.display = 'none';
+      return;
+    }
+
+    // Per detection: decompose NA_total into bus phase vs cross-traffic
+    const labels = chosen.map(x => `j${x.jct}\nt=${Math.round(Number(x.t))}s`);
+    const busPhasePax = chosen.map(x => {
+      const bo = Number(x.bus_occ) || 20;
+      return Number(x.no_act_delay_s) * bo;
+    });
+    const xtraffPax = chosen.map(x => {
+      const bo = Number(x.bus_occ) || 20;
+      const total = Number(x.no_strategy_delay_pax_s) || 0;
+      const bus   = Number(x.no_act_delay_s) * bo;
+      return Math.max(0, total - bus);
+    });
+    const busSaved  = chosen.map(x => Number(x.bus_saved_pax_s)  || 0);
+    const carCost   = chosen.map(x => -Math.abs(Number(x.other_inc_pax_s) || 0));
+
+    _mdnPhaseChart = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Bus phase (NA) pax·s',
+            data: busPhasePax,
+            backgroundColor: 'rgba(78,205,196,0.75)',
+            stack: 'na',
+          },
+          {
+            label: 'Cross-traffic (NA) pax·s',
+            data: xtraffPax,
+            backgroundColor: 'rgba(100,100,140,0.65)',
+            stack: 'na',
+          },
+          {
+            label: 'Bus saved pax·s (chosen)',
+            data: busSaved,
+            backgroundColor: 'rgba(46,204,113,0.8)',
+            stack: 'chosen',
+          },
+          {
+            label: 'Car cost pax·s (chosen)',
+            data: carCost,
+            backgroundColor: 'rgba(231,76,60,0.7)',
+            stack: 'chosen',
+          },
+        ],
+      },
+      options: {
+        responsive: true, animation: false,
+        plugins: {
+          legend: { labels: { color: '#9090cc', font: { size: 10 } } },
+          title: {
+            display: true,
+            text: `${r.label} — phase delay decomposition (chosen action, per detection)`,
+            color: '#7070a0', font: { size: 11 },
+          },
+          tooltip: {
+            backgroundColor: '#0a0a22', titleColor: '#ccccee', bodyColor: '#9090cc',
+            borderColor: '#2a2a50', borderWidth: 1,
+            callbacks: {
+              afterBody: (items) => {
+                const i = items[0]?.dataIndex;
+                if (i == null) return [];
+                const x = chosen[i];
+                const bo = Number(x.bus_occ) || 20;
+                const na = Number(x.no_strategy_delay_pax_s) || 0;
+                const busPs = Number(x.no_act_delay_s) * bo;
+                return [
+                  `action: ${x.action}`,
+                  `no_act_delay_s: ${Number(x.no_act_delay_s).toFixed(2)}s`,
+                  `bus_occ: ${bo} pax`,
+                  `bus-phase pax·s: ${busPs.toFixed(1)}`,
+                  `cross-traffic pax·s: ${Math.max(0, na - busPs).toFixed(1)}`,
+                  `NA_total: ${na.toFixed(1)}`,
+                  `reward: ${Number(x.reward).toFixed(3)}`,
+                ];
+              },
+            },
+          },
+        },
+        scales: {
+          x: { stacked: true, ticks: { color: '#9090cc', maxRotation: 70, minRotation: 30 }, grid: { color: '#1e1e38' } },
+          y: {
+            stacked: true,
+            ticks: { color: '#9090cc' }, grid: { color: '#1e1e38' },
+            title: { display: true, text: 'pax·s', color: '#7070a0' },
+          },
+        },
+      },
+    });
+  }
+
+  const mdnPhaseSection = document.getElementById('mdn-phase-section');
+  const mdnPhaseTabHost = document.getElementById('mdn-phase-run-tabs');
+  const mdnPhaseRuns    = runs.filter(r =>
+    (r.reward_cycle || []).some(x => Number(x.is_chosen) === 1 && Number(x.no_strategy_delay_pax_s) > 0));
+
+  if (!mdnPhaseRuns.length && mdnPhaseSection) {
+    mdnPhaseSection.style.display = 'none';
+  } else {
+    mdnPhaseRuns.forEach((r, idx) => {
+      const ri  = runs.indexOf(r);
+      const btn = document.createElement('button');
+      btn.className = 'run-tab' + (idx === 0 ? ' active' : '');
+      btn.textContent = r.label;
+      btn.onclick = () => {
+        mdnPhaseTabHost.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderMdnPhaseChart(ri);
+      };
+      mdnPhaseTabHost.appendChild(btn);
+    });
+
+    const jsel = document.getElementById('mdn-phase-jct-sel');
+    if (jsel) jsel.addEventListener('change', () => { if (_mdnPhaseRi !== null) renderMdnPhaseChart(_mdnPhaseRi); });
+
+    if (mdnPhaseRuns.length) renderMdnPhaseChart(runs.indexOf(mdnPhaseRuns[0]));
+  }
+
+  // ── Delay Validation chart wiring ────────────────────────────────────────
+  const delayValSection = document.getElementById('delay-val-section');
+  const delayValTabHost = document.getElementById('delay-val-run-tabs');
+  // Show for any run with reward_cycle data containing dd1_delay_s column
+  const delayValRuns = runs.filter(r =>
+    (r.reward_cycle || []).some(x =>
+      Number(x.is_chosen) === 1 && x.dd1_delay_s !== undefined && x.dd1_delay_s !== ''));
+
+  if (!delayValRuns.length && delayValSection) {
+    delayValSection.style.display = 'none';
+  } else if (delayValSection) {
+    delayValSection.style.display = '';
+    delayValRuns.forEach((r, idx) => {
+      const ri  = runs.indexOf(r);
+      const btn = document.createElement('button');
+      btn.className = 'run-tab' + (idx === 0 ? ' active' : '');
+      btn.textContent = r.label;
+      btn.onclick = () => {
+        delayValTabHost.querySelectorAll('.run-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderDelayValChart(ri);
+      };
+      delayValTabHost.appendChild(btn);
+    });
+    if (delayValRuns.length) renderDelayValChart(runs.indexOf(delayValRuns[0]));
   }
 }
 
@@ -6800,6 +9941,72 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
 // ── Aimsun-format network stats table ────────────────────────────────────
 {
+  const sigTable = document.getElementById('signal-timing-table');
+  if (sigTable) {
+    const sigHead = sigTable.querySelector('thead');
+    const sigBody = sigTable.querySelector('tbody');
+    sigHead.innerHTML = '<tr><th>Junction</th><th>Run</th><th>Main entry cycle</th><th>Side entry cycle</th><th>Green / red samples</th><th>TSP actions</th></tr>';
+    const byJct = {};
+    SIGNAL_PLANS.forEach(p => { byJct[String(p.jct)] = p; });
+    const planJcts = SIGNAL_PLANS.length ? SIGNAL_PLANS.map(p => String(p.jct)) : jcts.slice();
+    const sampleStats = (run, jid) => {
+      const rows = (run.phase_samples || []).filter(p => String(p.jct) === String(jid));
+      const g = rows.filter(p => Number(p.on_green) === 1).length;
+      return { g, r: rows.length - g, n: rows.length };
+    };
+    const actionStats = (run, jid) => {
+      const acts = (run.objective_trace || []).filter(x =>
+        String(x.jct) === String(jid) && String(x.decision || '').toUpperCase() === 'ACTION');
+      const objGe = acts.filter(x => String(x.mode || '').toUpperCase() === 'GE').length;
+      const objIns = acts.filter(x => String(x.mode || '').toUpperCase() === 'INS').length;
+      const chosenReward = (run.reward_cycle || []).filter(x =>
+        String(x.jct) === String(jid) && Number(x.is_chosen) === 1 &&
+        String(x.action || '').toUpperCase() !== 'NO_ACTION');
+      const rewGe = chosenReward.filter(x => String(x.action || '').toUpperCase().startsWith('GE')).length;
+      const rewIns = chosenReward.filter(x => String(x.action || '').toUpperCase().startsWith('INS')).length;
+      const actionSamples = (run.phase_samples || []).filter(p =>
+        String(p.jct) === String(jid) && String(p.prearm_status || '').toLowerCase() === 'action');
+      const detGe = actionSamples.filter(p => String(p.tier || '').toLowerCase().includes('ge')).length;
+      const detIns = actionSamples.filter(p => String(p.tier || '').toLowerCase().includes('ins')).length;
+      return {
+        ge: Math.max(objGe, rewGe, detGe),
+        ins: Math.max(objIns, rewIns, detIns),
+        rew: chosenReward.length,
+      };
+    };
+    const cycleBar = (greenS, redS, cycleS, flip) => {
+      const gPct = Math.max(0, Math.min(100, 100 * greenS / Math.max(cycleS, 1)));
+      const rPct = Math.max(0, 100 - gPct);
+      const firstPct = flip ? rPct : gPct;
+      const secondPct = flip ? gPct : rPct;
+      const firstGreen = !flip;
+      const firstTxt = flip ? `${redS.toFixed(0)}s red` : `${greenS.toFixed(0)}s green`;
+      const secondTxt = flip ? `${greenS.toFixed(0)}s green` : `${redS.toFixed(0)}s red`;
+      return `<div style="min-width:210px">
+        <div style="display:flex;height:18px;border:1px solid #2a2a50;border-radius:4px;overflow:hidden;background:#191933">
+          <div style="width:${firstPct}%;background:${firstGreen ? 'rgba(0,230,118,0.65)' : 'rgba(255,82,82,0.58)'};font-size:10px;line-height:18px;color:#f0f0ff;text-align:center;white-space:nowrap">${firstTxt}</div>
+          <div style="width:${secondPct}%;background:${firstGreen ? 'rgba(255,82,82,0.58)' : 'rgba(0,230,118,0.65)'};font-size:10px;line-height:18px;color:#f0f0ff;text-align:center;white-space:nowrap">${secondTxt}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;color:#7070a0;font-size:10px;margin-top:2px"><span>0s</span><span>${greenS.toFixed(0)}s</span><span>${cycleS.toFixed(0)}s</span></div>
+      </div>`;
+    };
+    planJcts.forEach(jid => {
+      const p = byJct[String(jid)] || { jct: jid, cycle_s: 135, main_green_s: 0, main_red_s: 135, side_green_s: 135, side_red_s: 0 };
+      runs.forEach(run => {
+        const ss = sampleStats(run, jid);
+        const as = actionStats(run, jid);
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>jct ${jid}<br><span style="color:var(--muted);font-size:10px">cycle ${Number(p.cycle_s).toFixed(0)}s, bus phase ${p.bus_phase || '-'}</span></td>
+          <td>${run.label}</td>
+          <td>${cycleBar(Number(p.main_green_s)||0, Number(p.main_red_s)||0, Number(p.cycle_s)||135, false)}</td>
+          <td>${cycleBar(Number(p.side_green_s)||0, Number(p.side_red_s)||0, Number(p.cycle_s)||135, true)}</td>
+          <td><span style="color:#00e676">${ss.g} green</span> / <span style="color:#ff8a80">${ss.r} red</span><br><span style="color:var(--muted);font-size:10px">${ss.n} detection samples</span></td>
+          <td>GE ${as.ge} · INS ${as.ins}<br><span style="color:var(--muted);font-size:10px">chosen reward actions ${as.rew}</span></td>`;
+        sigBody.appendChild(tr);
+      });
+    });
+  }
+
   const table = document.getElementById('aimsun-stats-table');
   if (table) {
     const thead = table.querySelector('thead');
@@ -6818,34 +10025,152 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     // Entry-Based Delay Time in Aimsun is average delay per vehicle per kilometer and excludes virtual queue time.
     // Pax delay (s/pax) = pax·s of delay / passenger-passages — DIFFERENT metric (shown below).
     // Car occupancy: 1.2 pax/car  |  Bus occupancy: 40 pax/bus
+    // Build dynamic NO_TSP reference values from the actual NO_TSP run in this batch
+    const noTspRef = runs.find(r => (r.strategy||'').toUpperCase() === 'NORMAL'
+                                  || (r.exp_name||'').toUpperCase().includes('NO_TSP')
+                                  || (r.label||'').toUpperCase().includes('NO_TSP'));
+    const _ref = (key, fallback) => {
+      if (!noTspRef) return fallback;
+      const v = noTspRef[key];
+      return (v !== null && v !== undefined && Number(v) > 0) ? `NO_TSP: ${Number(v).toFixed(2)}` : fallback;
+    };
+    const _refN = (key, unit, fallback) => {
+      if (!noTspRef) return fallback;
+      const v = noTspRef[key];
+      if (v === null || v === undefined || Number(v) === 0) return fallback;
+      return `NO_TSP this run: ${Number(v).toFixed(2)} ${unit}`;
+    };
+
+    // Actual NO_TSP values from Aimsun Statistics panel (user-provided reference)
+    // These are correct when Aimsun statistics collection is enabled in the scenario.
+    const NO_TSP_AIMSUN = {
+      density_all: 14.34, density_car: 6.90, density_hov: 6.87, density_bus: 0.16, density_truck: 0.41,
+      entry_delay_all: 80.14, entry_delay_car: 78.58, entry_delay_hov: 81.82, entry_delay_bus: 90.09, entry_delay_truck: 76.32,
+      exit_delay_all: 82.23,  exit_delay_car: 84.67,  exit_delay_hov: 80.58,  exit_delay_bus: 85.46,  exit_delay_truck: 79.10,
+      flow_all: 8962.5, flow_car: 3633.09, flow_hov: 5066.33, flow_bus: 40.54, flow_truck: 222.54,
+      speed_all: 25.71, speed_car: 26.08, speed_hov: 25.56, speed_bus: 16.81, speed_truck: 25.69,
+    };
+    // Compute total pax delay for NO_TSP from delay(s/km) × distance(km) × occupancy
+    const NO_TSP_DIST = { bus: 130.39, car: 8569.94, hov: 8361.57, truck: 506.37 };
+    const NO_TSP_OCC  = { bus: 40, car: 1.2, hov: 1.5, truck: 1.0 };
+    const _noTspPaxDelay = (t) => {
+      const d = NO_TSP_AIMSUN[`entry_delay_${t}`] || 0;
+      const dist = NO_TSP_DIST[t] || 0;
+      const occ  = NO_TSP_OCC[t]  || 1;
+      return d * dist * occ / 3600;  // pax-hours
+    };
+    const noTspTotalPaxDelay_h = ['bus','car','hov','truck'].reduce((s,t) => s + _noTspPaxDelay(t), 0);
+    const _ref2 = (aimsunKey, unit) => {
+      const v = NO_TSP_AIMSUN[aimsunKey];
+      return v != null ? `NO_TSP: ${Number(v).toFixed(2)} ${unit} (Aimsun Stats panel)` : `Requires Aimsun stats API`;
+    };
+
     const AIMSUN_ROWS = [
-      // ── Density (veh/km/lane) — Aimsun network density is per kilometer of lane ──
-      { label:'Density - All',              key:'density',        unit:'veh/km/lane', dec:2, note:'Aimsun network density; NORMAL ref: 24.05' },
-      { label:'Density - Car',              key:'net_dens_car',   unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 23.15' },
-      { label:'Density - Truck',            key:'net_dens_truck', unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 0.62' },
-      { label:'Density - Std Bus',          key:'net_dens_bus',   unit:'veh/km/lane', dec:2, note:'Aimsun network density by type; NORMAL ref: 0.29' },
-      // ── Entry-Based Delay Time — average delay per vehicle per kilometer; excludes virtual queue ──
-      { label:'Entry-Based Delay Time - All',      key:'net_delay_all',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay; excludes virtual queue. NORMAL ref: 247.76' },
-      { label:'Entry-Based Delay Time - Car',      key:'net_delay_car',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 248.40' },
-      { label:'Entry-Based Delay Time - Truck',    key:'net_delay_truck', unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 246.31' },
-      { label:'Entry-Based Delay Time - Std Bus',  key:'net_delay_bus',   unit:'sec/km', dec:2, note:'Aimsun entry-based delay by type. NORMAL ref: 194.07' },
-      // ── Entry-Based Flow — vehicles that entered during the interval, with Aimsun including vehicles still inside at interval end ──
-      { label:'Entry-Based Flow - All',     key:'flow',           unit:'veh/h',  dec:0, note:'Aimsun entry-based flow. NORMAL ref: 10946' },
-      { label:'Entry-Based Flow - Car',     key:'net_flow_car',   unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 10521' },
-      { label:'Entry-Based Flow - Truck',   key:'net_flow_truck', unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 298' },
-      { label:'Entry-Based Flow - Std Bus', key:'net_flow_bus',   unit:'veh/h',  dec:0, note:'Aimsun entry-based flow by type. NORMAL ref: 127' },
-      // ── Entry-Based Speed — total distance travelled divided by total travel time ──
-      { label:'Entry-Based Speed - All',    key:'speed',          unit:'km/h',   dec:2, note:'Aimsun entry-based speed. NORMAL ref: 6.15' },
-      { label:'Entry-Based Speed - Car',    key:'net_spd_car',    unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 6.14' },
-      { label:'Entry-Based Speed - Truck',  key:'net_spd_truck',  unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 6.61' },
-      { label:'Entry-Based Speed - Std Bus',key:'net_spd_bus',    unit:'km/h',   dec:2, note:'Aimsun entry-based speed by type. NORMAL ref: 5.51' },
-      // ── Pax-weighted delay (s/pax) — different from Aimsun sec/km ─────────
-      { label:'Avg Bus Pax Delay',          key:'avg_bus_delay',  unit:'s/pax',  dec:2, note:'bus pax·s ÷ bus passengers — NOT sec/km' },
-      { label:'Avg Car Pax Delay',          key:'avg_car_delay',  unit:'s/pax',  dec:2, note:'car pax·s ÷ car passengers — NOT sec/km' },
-      { label:'Avg Truck Pax Delay',        key:'avg_truck_delay',unit:'s/pax',  dec:2, note:'truck pax·s ÷ truck passengers' },
-      { label:'Bus Total Travel Time',      key:'bus_tt',         unit:'h',      dec:3, note:'bus TT across monitored sections' },
-      { label:'Total Pax Delay — corridor', key:'total_delay',    unit:'pax·h',  dec:3, note:'occupancy-weighted (car×1.2 + bus×40)' },
-      { label:'Main-street Pax Delay',      key:'main_delay',     unit:'pax·h',  dec:3, note:'bus-approach sections' },
+      // ── Density (veh/km) ─────────────────────────────────────────────────────
+      { label:'Density - All',              key:'density_all',    unit:'veh/km', dec:2, note:_ref2('density_all','veh/km') },
+      { label:'Density - Car',              key:'net_dens_car',   unit:'veh/km', dec:2, note:_ref2('density_car','veh/km') },
+      { label:'Density - HOV Car',          key:'net_dens_hov',   unit:'veh/km', dec:2, note:_ref2('density_hov','veh/km') },
+      { label:'Density - Truck',            key:'net_dens_truck', unit:'veh/km', dec:2, note:_ref2('density_truck','veh/km') },
+      { label:'Density - Std Bus',          key:'net_dens_bus',   unit:'veh/km', dec:2, note:_ref2('density_bus','veh/km') },
+      // ── Entry-Based Delay Time ────────────────────────────────────────────────
+      { label:'Entry-Based Delay Time - All',      key:'net_entry_delay_all',   unit:'sec/km', dec:2, note:_ref2('entry_delay_all','sec/km') },
+      { label:'Entry-Based Delay Time - Car',      key:'net_entry_delay_car',   unit:'sec/km', dec:2, note:_ref2('entry_delay_car','sec/km') },
+      { label:'Entry-Based Delay Time - HOV Car',  key:'net_entry_delay_hov',   unit:'sec/km', dec:2, note:_ref2('entry_delay_hov','sec/km') },
+      { label:'Entry-Based Delay Time - Truck',    key:'net_entry_delay_truck', unit:'sec/km', dec:2, note:_ref2('entry_delay_truck','sec/km') },
+      { label:'Entry-Based Delay Time - Std Bus',  key:'net_entry_delay_bus',   unit:'sec/km', dec:2, note:_ref2('entry_delay_bus','sec/km') },
+      // ── Exit-Based Delay Time ─────────────────────────────────────────────────
+      { label:'Exit-Based Delay Time - All',       key:'net_exit_delay_all',   unit:'sec/km', dec:2, note:_ref2('exit_delay_all','sec/km') },
+      { label:'Exit-Based Delay Time - Car',       key:'net_exit_delay_car',   unit:'sec/km', dec:2, note:_ref2('exit_delay_car','sec/km') },
+      { label:'Exit-Based Delay Time - HOV Car',   key:'net_exit_delay_hov',   unit:'sec/km', dec:2, note:_ref2('exit_delay_hov','sec/km') },
+      { label:'Exit-Based Delay Time - Truck',     key:'net_exit_delay_truck', unit:'sec/km', dec:2, note:_ref2('exit_delay_truck','sec/km') },
+      { label:'Exit-Based Delay Time - Std Bus',   key:'net_exit_delay_bus',   unit:'sec/km', dec:2, note:_ref2('exit_delay_bus','sec/km') },
+      // ── Entry-Based Travel Time ───────────────────────────────────────────────
+      { label:'Entry-Based Travel Time - All',      key:'net_entry_tt_all',   unit:'sec/km', dec:2, note:'Mean travel time (entry-based) across network; count-weighted avg of TTa/L_km' },
+      { label:'Entry-Based Travel Time - Car',      key:'net_entry_tt_car',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — car' },
+      { label:'Entry-Based Travel Time - HOV Car',  key:'net_entry_tt_hov',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — HOV car' },
+      { label:'Entry-Based Travel Time - Truck',    key:'net_entry_tt_truck', unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — truck' },
+      { label:'Entry-Based Travel Time - Std Bus',  key:'net_entry_tt_bus',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — bus' },
+      // ── Exit-Based Travel Time ────────────────────────────────────────────────
+      { label:'Exit-Based Travel Time - All',       key:'net_exit_tt_all',   unit:'sec/km', dec:2, note:'Mean travel time (exit-based) = TotalTravelTime/count/L_km; count-weighted avg' },
+      { label:'Exit-Based Travel Time - Car',       key:'net_exit_tt_car',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — car' },
+      { label:'Exit-Based Travel Time - HOV Car',   key:'net_exit_tt_hov',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — HOV car' },
+      { label:'Exit-Based Travel Time - Truck',     key:'net_exit_tt_truck', unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — truck' },
+      { label:'Exit-Based Travel Time - Std Bus',   key:'net_exit_tt_bus',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — bus' },
+      // ── Exit-Based Speed ──────────────────────────────────────────────────────
+      { label:'Exit-Based Speed - All',    key:'net_exit_spd_all',   unit:'km/h', dec:2, note:'Exit-based mean speed (Sd field); count-weighted avg across sections' },
+      { label:'Exit-Based Speed - Car',    key:'net_exit_spd_car',   unit:'km/h', dec:2, note:'Exit-based speed — car' },
+      { label:'Exit-Based Speed - HOV Car',key:'net_exit_spd_hov',   unit:'km/h', dec:2, note:'Exit-based speed — HOV car' },
+      { label:'Exit-Based Speed - Truck',  key:'net_exit_spd_truck', unit:'km/h', dec:2, note:'Exit-based speed — truck' },
+      { label:'Exit-Based Speed - Std Bus',key:'net_exit_spd_bus',   unit:'km/h', dec:2, note:'Exit-based speed — bus' },
+      // ── Stop Time ─────────────────────────────────────────────────────────────
+      { label:'Stop Time - All',     key:'net_stop_time_all',   unit:'sec/km', dec:2, note:'Mean stop time per vehicle per km (entry-based STa/L_km); count-weighted avg' },
+      { label:'Stop Time - Car',     key:'net_stop_time_car',   unit:'sec/km', dec:2, note:'Stop time — car' },
+      { label:'Stop Time - Truck',   key:'net_stop_time_truck', unit:'sec/km', dec:2, note:'Stop time — truck' },
+      { label:'Stop Time - Std Bus', key:'net_stop_time_bus',   unit:'sec/km', dec:2, note:'Stop time — bus' },
+      // ── Number of Stops ───────────────────────────────────────────────────────
+      { label:'Number of Stops - All',     key:'net_num_stops_all',   unit:'#/veh/km', dec:3, note:'Mean stops per vehicle per km (NumStops field); count-weighted avg' },
+      { label:'Number of Stops - Car',     key:'net_num_stops_car',   unit:'#/veh/km', dec:3, note:'Stops — car' },
+      { label:'Number of Stops - Truck',   key:'net_num_stops_truck', unit:'#/veh/km', dec:3, note:'Stops — truck' },
+      { label:'Number of Stops - Std Bus', key:'net_num_stops_bus',   unit:'#/veh/km', dec:3, note:'Stops — bus' },
+      // ── Total Distance Traveled ───────────────────────────────────────────────
+      { label:'Total Distance - All',   key:'net_total_dist_all',   unit:'km',  dec:1, note:'Σ TotalTravel across sections — total vehicle-km traveled' },
+      { label:'Total Distance - Car',   key:'net_total_dist_car',   unit:'km',  dec:1, note:'Total vehicle-km — car' },
+      { label:'Total Distance - Bus',   key:'net_total_dist_bus',   unit:'km',  dec:1, note:'Total vehicle-km — bus' },
+      { label:'Total Distance - Truck', key:'net_total_dist_truck', unit:'km',  dec:1, note:'Total vehicle-km — truck' },
+      // ── Total Travel Time ─────────────────────────────────────────────────────
+      { label:'Total Travel Time - All',   key:'net_total_tt_h_all',   unit:'veh·h', dec:2, note:'Σ TotalTravelTime/3600 across sections — total vehicle-hours' },
+      { label:'Total Travel Time - Car',   key:'net_total_tt_h_car',   unit:'veh·h', dec:2, note:'Total vehicle-hours — car' },
+      { label:'Total Travel Time - Bus',   key:'net_total_tt_h_bus',   unit:'veh·h', dec:2, note:'Total vehicle-hours — bus' },
+      { label:'Total Travel Time - Truck', key:'net_total_tt_h_truck', unit:'veh·h', dec:2, note:'Total vehicle-hours — truck' },
+      // ── Exit Count & Flow ─────────────────────────────────────────────────────
+      { label:'Exit Count - All',    key:'net_exit_count_all',   unit:'veh',   dec:0, note:'Σ count across sections — total exit-based vehicle count' },
+      { label:'Exit Count - Car',    key:'net_exit_count_car',   unit:'veh',   dec:0, note:'Exit count — car' },
+      { label:'Exit Count - Bus',    key:'net_exit_count_bus',   unit:'veh',   dec:0, note:'Exit count — bus' },
+      { label:'Exit Flow - All',     key:'net_exit_flow_all',    unit:'veh/h', dec:0, note:'Exit count / sim_h — exit-based flow' },
+      { label:'Exit Flow - Car',     key:'net_exit_flow_car',    unit:'veh/h', dec:0, note:'Exit flow — car' },
+      { label:'Input Flow - All',    key:'net_input_flow_all',   unit:'veh/h', dec:0, note:'Σ inputCount / sim_h — input flow rate' },
+      { label:'Input Flow - Bus',    key:'net_input_flow_bus',   unit:'veh/h', dec:0, note:'Input flow — bus' },
+      // ── Lane Changes ─────────────────────────────────────────────────────────
+      { label:'Total Lane Changes - All',   key:'net_total_lc_all',   unit:'count', dec:0, note:'Σ totalLaneChanges across sections' },
+      { label:'Total Lane Changes - Car',   key:'net_total_lc_car',   unit:'count', dec:0, note:'Lane changes — car' },
+      { label:'Total Lane Changes - Truck', key:'net_total_lc_truck', unit:'count', dec:0, note:'Lane changes — truck' },
+      // ── Queue Statistics ──────────────────────────────────────────────────────
+      { label:'Mean Queue - All',    key:'net_mean_queue_all',   unit:'veh', dec:1, note:'Σ LongQueueAvg across sections — mean queued vehicles in network' },
+      { label:'Mean Queue - Car',    key:'net_mean_queue_car',   unit:'veh', dec:1, note:'Mean queue — car' },
+      { label:'Mean Queue - Bus',    key:'net_mean_queue_bus',   unit:'veh', dec:1, note:'Mean queue — bus' },
+      { label:'Max Queue - All',     key:'net_max_queue_all',    unit:'veh', dec:1, note:'Σ LongQueueMax across sections' },
+      { label:'Max Queue - Car',     key:'net_max_queue_car',    unit:'veh', dec:1, note:'Max queue — car' },
+      { label:'Max Queue - Bus',     key:'net_max_queue_bus',    unit:'veh', dec:1, note:'Max queue — bus' },
+      // ── Virtual Queue ─────────────────────────────────────────────────────────
+      { label:'Virtual Queue Avg - All', key:'net_vq_avg_all',  unit:'veh', dec:1, note:'Σ virtualQueueAvg across sections' },
+      { label:'Virtual Queue Avg - Bus', key:'net_vq_avg_bus',  unit:'veh', dec:1, note:'Virtual queue avg — bus' },
+      { label:'Virtual Queue Max - All', key:'net_vq_max_all',  unit:'veh', dec:1, note:'Σ virtualQueueMax across sections' },
+      { label:'Waiting Time in VQ - All',key:'net_wait_vq_all', unit:'sec', dec:1, note:'VQ-count-weighted avg waitingTimeVirtualQueue across sections' },
+      { label:'Waiting Time in VQ - Bus',key:'net_wait_vq_bus', unit:'sec', dec:1, note:'VQ waiting time — bus' },
+      // ── Entry-Based Flow ──────────────────────────────────────────────────────
+      { label:'Entry-Based Flow - All',     key:'flow',           unit:'veh/h',  dec:0, note:_ref2('flow_all','veh/h') },
+      { label:'Entry-Based Flow - Car',     key:'net_flow_car',   unit:'veh/h',  dec:0, note:_ref2('flow_car','veh/h') },
+      { label:'Entry-Based Flow - HOV Car', key:'net_flow_hov',   unit:'veh/h',  dec:0, note:_ref2('flow_hov','veh/h') },
+      { label:'Entry-Based Flow - Truck',   key:'net_flow_truck', unit:'veh/h',  dec:0, note:_ref2('flow_truck','veh/h') },
+      { label:'Entry-Based Flow - Std Bus', key:'net_flow_bus',   unit:'veh/h',  dec:0, note:_ref2('flow_bus','veh/h') },
+      // ── Entry-Based Speed ─────────────────────────────────────────────────────
+      { label:'Entry-Based Speed - All',    key:'speed',          unit:'km/h',   dec:2, note:_ref2('speed_all','km/h') },
+      { label:'Entry-Based Speed - Car',    key:'net_spd_car',    unit:'km/h',   dec:2, note:_ref2('speed_car','km/h') },
+      { label:'Entry-Based Speed - HOV Car',key:'net_spd_hov',    unit:'km/h',   dec:2, note:_ref2('speed_hov','km/h') },
+      { label:'Entry-Based Speed - Truck',  key:'net_spd_truck',  unit:'km/h',   dec:2, note:_ref2('speed_truck','km/h') },
+      { label:'Entry-Based Speed - Std Bus',key:'net_spd_bus',    unit:'km/h',   dec:2, note:_ref2('speed_bus','km/h') },
+      // ── GE / INS event counts (from detection_points CSV) ────────────────────
+      { label:'TSP GE Extensions (count)',  key:'tsp_ext',        unit:'events', dec:0, note:'Count of harmony-ge-local actions from detection_points CSV' },
+      { label:'TSP Insertions (count)',     key:'tsp_ins',        unit:'events', dec:0, note:'Count of harmony-ins-local actions from detection_points CSV' },
+      { label:'TSP Detections (count)',     key:'tsp_det',        unit:'events', dec:0, note:'Count of IC-detect events (bus arrivals in detection zone)' },
+      { label:'Mean Green (bus phase %)',   key:'mean_green',     unit:'%',      dec:1, note:'Average % time bus phase is green across monitored junctions' },
+      // ── Total pax delay — from per-type delay × distance × occupancy ─────────
+      // NO_TSP computed: bus=130.5 pax-h + car=224.4 + hov=284.4 + truck=10.7 = ~650 pax-h total
+      // Requires Aimsun statistics enabled; entry_delay(s/km)×distance(km)×occupancy
+      { label:'Avg Bus Pax Delay',          key:'avg_bus_delay',  unit:'s/pax',  dec:2, note:'bus pax·s ÷ bus passages — requires Aimsun stats collection (N/A if stats disabled)' },
+      { label:'Avg Car Pax Delay',          key:'avg_car_delay',  unit:'s/pax',  dec:2, note:'car pax·s ÷ car passages — requires Aimsun stats collection (N/A if stats disabled)' },
+      { label:'Total Pax Delay — corridor', key:'total_delay',    unit:'pax·h',  dec:3, note:`Total pax delay from car/bus/truck delay×distance×occ. NO_TSP ref: ${noTspTotalPaxDelay_h.toFixed(1)} pax-h. Requires Aimsun stats.` },
+      { label:'Main-street Pax Delay',      key:'main_delay',     unit:'pax·h',  dec:3, note:'bus-approach sections only (corridor-monitored subset)' },
       { label:'Side-street Pax Delay',      key:'side_delay',     unit:'pax·h',  dec:3, note:'cross-street sections' },
     ];
 
@@ -6877,9 +10202,20 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       const numVals = vals.filter(v => v !== null);
       // For delay/density metrics lower is better; for speed/flow higher is better
       const lowerBetter = [
-        'avg_car_delay','avg_bus_delay','total_delay','main_delay','side_delay','density',
+        'avg_car_delay','avg_bus_delay','total_delay','main_delay','side_delay','density','density_all',
         'net_dens_car','net_dens_bus','net_dens_truck',
-        'net_delay_all','net_delay_car','net_delay_bus','net_delay_truck'
+        'net_delay_all','net_delay_car','net_delay_bus','net_delay_truck',
+        'net_entry_delay_all','net_entry_delay_car','net_entry_delay_bus','net_entry_delay_truck',
+        'net_exit_delay_all','net_exit_delay_car','net_exit_delay_bus','net_exit_delay_truck',
+        'net_entry_tt_all','net_entry_tt_car','net_entry_tt_bus','net_entry_tt_hov','net_entry_tt_truck',
+        'net_exit_tt_all','net_exit_tt_car','net_exit_tt_bus','net_exit_tt_hov','net_exit_tt_truck',
+        'net_stop_time_all','net_stop_time_car','net_stop_time_bus','net_stop_time_truck',
+        'net_num_stops_all','net_num_stops_car','net_num_stops_bus','net_num_stops_truck',
+        'net_mean_queue_all','net_mean_queue_car','net_mean_queue_bus','net_mean_queue_truck',
+        'net_max_queue_all','net_max_queue_car','net_max_queue_bus','net_max_queue_truck',
+        'net_vq_avg_all','net_vq_avg_bus','net_vq_max_all',
+        'net_wait_vq_all','net_wait_vq_bus',
+        'net_total_tt_h_all','net_total_tt_h_car','net_total_tt_h_bus','net_total_tt_h_truck',
       ].includes(row.key);
       const best  = numVals.length ? (lowerBetter ? Math.min(...numVals) : Math.max(...numVals)) : null;
       const worst = numVals.length ? (lowerBetter ? Math.max(...numVals) : Math.min(...numVals)) : null;
@@ -7050,7 +10386,7 @@ def _build_static_fallback_html(data: dict) -> str:
       f"<td>{strategy}</td>"
       f"<td>{coordinated}</td>"
       f"<td>{_fmt_num(r.get('total_delay'), 1)}</td>"
-      f"<td>{_fmt_num(r.get('bus_delay'), 1)}</td>"
+      f"<td>{_fmt_num(r.get('avg_bus_delay'), 1)}</td>"
       f"<td>{_fmt_num(r.get('mean_green'), 1)}</td>"
       f"<td>{_fmt_num(r.get('flow'), 0)}</td>"
       "</tr>"
@@ -7122,11 +10458,33 @@ def generate(batch_csv: str = None, out_html: str = None,
 
 
 if __name__ == "__main__":
-    import argparse
+    import argparse, subprocess
     ap = argparse.ArgumentParser(
         description="Generate HTML comparison dashboard from batch_results.csv")
     ap.add_argument("batch_csv", nargs="?", help="batch_results.csv path")
     ap.add_argument("out_html",  nargs="?", help="output HTML path")
     ap.add_argument("--log_dir", default=None, help="logs/ directory")
     args = ap.parse_args()
-    generate(args.batch_csv, args.out_html, args.log_dir)
+    main_html = generate(args.batch_csv, args.out_html, args.log_dir)
+
+    # ── Auto-run companion plots ────────────────────────────────────────────
+    _batch = args.batch_csv or os.path.join(_SCRIPT_DIR, "batch_results.csv")
+    _logs  = args.log_dir   or os.path.join(_SCRIPT_DIR, "logs")
+    for _script, _extra_args in [
+        ("plot_saturation.py",    [_batch, os.path.join(_SCRIPT_DIR, "saturation_mfd.html")]),
+        ("plot_signal_timing.py", [_logs,  os.path.join(_SCRIPT_DIR, "signal_timing_diagram.html")]),
+    ]:
+        _path = os.path.join(_SCRIPT_DIR, _script)
+        if not os.path.isfile(_path):
+            continue
+        try:
+            import sys as _sys
+            _r = subprocess.run(
+                [_sys.executable, _path] + _extra_args,
+                capture_output=True, text=True, timeout=60)
+            if _r.returncode == 0:
+                print(f"[dashboard] {_script}: {_r.stdout.strip()}")
+            else:
+                print(f"[dashboard] {_script} error: {_r.stderr.strip()[:200]}")
+        except Exception as _e:
+            print(f"[dashboard] {_script} skipped: {_e}")

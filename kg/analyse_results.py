@@ -19,8 +19,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-RESULTS_ROOT = r"D:\Aimsun_Results\11129236_11129237_11129240"
-PLOTS_OUT    = r"D:\Aimsun_Results\plots"
+# Results are saved to <project>/results/ by batch_runner.py.
+# Each experiment is in its own subfolder: <EXPERIMENT>_seed<N>_<ids>/
+_HERE        = os.path.dirname(os.path.abspath(__file__))
+RESULTS_ROOT = os.path.join(_HERE, "results")
+PLOTS_OUT    = os.path.join(_HERE, "plots")
 
 # KPIs to compare from simulation_results.csv (global summary)
 GLOBAL_KPIS = {

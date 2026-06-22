@@ -85,6 +85,13 @@ def _load_objective_csv(path):
                 'bp_lb_s': _f(r.get('bp_lb_s')),
                 'bp_ub_s': _f(r.get('bp_ub_s')),
                 'opt_bp_s': _f(r.get('opt_bp_s')),
+                'delay_saved_pax_s': _f(r.get('delay_saved_pax_s')),
+                'delay_delta_pax_s': _f(r.get('delay_delta_pax_s')),
+                'delay_base_pax_s': _f(r.get('delay_base_pax_s')),
+                'delay_with_strategy_pax_s': _f(r.get('delay_with_strategy_pax_s')),
+                'no_strategy_delay_pax_s': _f(r.get('no_strategy_delay_pax_s', r.get('delay_base_pax_s'))),
+                'strategy_min_delay_pax_s': _f(r.get('strategy_min_delay_pax_s', r.get('delay_with_strategy_pax_s'))),
+                'delay_rule_pick': (r.get('delay_rule_pick') or '').strip(),
                 'note': (r.get('note') or '').strip(),
             })
     return rows
@@ -133,6 +140,10 @@ def _from_detection_csv(path):
                 'bp_lb_s': _f(payload.get('lb_s')),
                 'bp_ub_s': _f(payload.get('ub_s')),
                 'opt_bp_s': _f(payload.get('opt_bp_s')),
+                'delay_saved_pax_s': _f(payload.get('delay_saved_pax_s')),
+                'delay_delta_pax_s': _f(payload.get('delay_delta_pax_s')),
+                'delay_base_pax_s': _f(payload.get('baseline')),
+                'delay_with_strategy_pax_s': _f(payload.get('with_ge', payload.get('with_ins'))),
                 'note': note,
             })
 
@@ -212,6 +223,8 @@ def _build_html(rows, src_path, out_path):
         <div class=\"muted\">Source: __SRC__</div>
         <div class=\"muted\">Generated: __GENERATED__</div>
     <div class=\"kpis\" style=\"margin-top:10px\">
+        <div class="formula" style="margin-top:6px">Decision rule shown below: compare no_strategy_delay_pax_s vs strategy_min_delay_pax_s; choose the smaller delay.</div>
+        <div class="muted" style="margin-top:6px">pax_saved = no_strategy_delay_pax_s - strategy_min_delay_pax_s (positive means TSP helped).</div>
             <div class=\"kpi\"><div>Total decisions</div><div class=\"v\">__TOTAL__</div></div>
             <div class=\"kpi\"><div>GE actions</div><div class=\"v\" style=\"color:var(--ok)\">__GE_ACTION__</div></div>
             <div class=\"kpi\"><div>GE skips</div><div class=\"v\" style=\"color:var(--warn)\">__GE_SKIP__</div></div>
@@ -241,9 +254,26 @@ function pick(rows, mode, decision){ return rows.filter(r => r.mode===mode && r.
 function xs(rows){ return rows.map(r => r.t); }
 function ys(rows, k){ return rows.map(r => (r[k]===null || r[k]==="" ? null : Number(r[k]))); }
 function txt(rows){ return rows.map(r => `jct=${r.junction_id} bus=${r.veh_id} reason=${r.reason}`); }
+// Parse delay_saved_pax_s out of the note field
+function savedPaxS(r) {
+    if (r && r.delay_saved_pax_s !== null && r.delay_saved_pax_s !== undefined && r.delay_saved_pax_s !== '') {
+        const v = Number(r.delay_saved_pax_s);
+        if (Number.isFinite(v)) return v;
+    }
+  const m = String(r.note||'').match(/delay_saved_pax_s=([\d.]+)/);
+  return m ? Number(m[1]) : null;
+}
+function txtSaved(rows) {
+  return rows.map(r => {
+    const s = savedPaxS(r);
+    return `jct=${r.junction_id} bus=${r.veh_id} reason=${r.reason}${s!==null?' saved='+s.toFixed(1)+'pax·s':''}`;
+  });
+}
 
-const ge = rows.filter(r => r.mode === 'GE');
-const ins = rows.filter(r => r.mode === 'INS');
+const ge     = rows.filter(r => r.mode === 'GE');
+const ins    = rows.filter(r => r.mode === 'INS');
+const geAct  = pick(rows,'GE','ACTION');
+const insAct = pick(rows,'INS','ACTION');
 
 Plotly.newPlot('chartA', [
   {{x: xs(rows), y: ys(rows,'bus_eta_s'), mode:'markers', name:'bus_eta_s', marker:{{size:6,color:'#1f6feb'}}, text: txt(rows), hovertemplate:'t=%{{x:.1f}}<br>eta=%{{y:.1f}}<br>%{{text}}<extra></extra>'}},
@@ -254,14 +284,24 @@ Plotly.newPlot('chartA', [
 Plotly.newPlot('chartB', [
   {{x: xs(ge), y: ys(ge,'ge_lb_s'), mode:'markers', name:'GE_lb_s', marker:{{size:6,color:'#8b5cf6'}}}},
   {{x: xs(ge), y: ys(ge,'ge_ub_s'), mode:'markers', name:'GE_ub_s', marker:{{size:6,color:'#14b8a6'}}}},
-  {{x: xs(ge), y: ys(ge,'opt_ge_s'), mode:'markers', name:'opt_GE_s', marker:{{size:7,color:'#1b8f3e',symbol:'star'}}}}
-], {{title:'GE Objective Window and Result', template:'plotly_white', xaxis:{{title:'simulation time (s)'}}, yaxis:{{title:'seconds'}}}});
+  {{x: xs(ge), y: ys(ge,'opt_ge_s'), mode:'markers', name:'opt_GE_s', marker:{{size:7,color:'#1b8f3e',symbol:'star'}}}},
+    {{x: xs(ge), y: ys(ge,'no_strategy_delay_pax_s'), mode:'lines+markers', name:'No-strategy delay (pax·s)', marker:{{size:5,color:'#b42318'}}, line:{{width:1.6,color:'#b42318'}}, yaxis:'y2'}},
+    {{x: xs(ge), y: ys(ge,'strategy_min_delay_pax_s'), mode:'lines+markers', name:'GE min delay (pax·s)', marker:{{size:5,color:'#1b8f3e'}}, line:{{width:1.6,color:'#1b8f3e'}}, yaxis:'y2'}},
+  {{x: xs(geAct), y: geAct.map(savedPaxS), mode:'markers', name:'pax_saved (pax·s)', marker:{{size:9,color:'#ff6600',symbol:'diamond'}}, yaxis:'y2', text:txtSaved(geAct), hovertemplate:'t=%{{x:.1f}}<br>saved=%{{y:.1f}} pax·s<br>%{{text}}<extra></extra>'}}
+], {{title:'GE Objective Window, Result & Delay Savings', template:'plotly_white',
+     xaxis:{{title:'simulation time (s)'}}, yaxis:{{title:'seconds'}},
+         yaxis2:{{title:'pax·s (delay / saved)', overlaying:'y', side:'right', showgrid:false}}}});
 
 Plotly.newPlot('chartC', [
   {{x: xs(ins), y: ys(ins,'bp_lb_s'), mode:'markers', name:'BP_lb_s', marker:{{size:6,color:'#8b5cf6'}}}},
   {{x: xs(ins), y: ys(ins,'bp_ub_s'), mode:'markers', name:'BP_ub_s', marker:{{size:6,color:'#14b8a6'}}}},
-  {{x: xs(ins), y: ys(ins,'opt_bp_s'), mode:'markers', name:'opt_BP_s', marker:{{size:7,color:'#1b8f3e',symbol:'star'}}}}
-], {{title:'INS Objective Window and Result', template:'plotly_white', xaxis:{{title:'simulation time (s)'}}, yaxis:{{title:'seconds'}}}});
+  {{x: xs(ins), y: ys(ins,'opt_bp_s'), mode:'markers', name:'opt_BP_s', marker:{{size:7,color:'#1b8f3e',symbol:'star'}}}},
+    {{x: xs(ins), y: ys(ins,'no_strategy_delay_pax_s'), mode:'lines+markers', name:'No-strategy delay (pax·s)', marker:{{size:5,color:'#b42318'}}, line:{{width:1.6,color:'#b42318'}}, yaxis:'y2'}},
+    {{x: xs(ins), y: ys(ins,'strategy_min_delay_pax_s'), mode:'lines+markers', name:'INS min delay (pax·s)', marker:{{size:5,color:'#1b8f3e'}}, line:{{width:1.6,color:'#1b8f3e'}}, yaxis:'y2'}},
+  {{x: xs(insAct), y: insAct.map(savedPaxS), mode:'markers', name:'pax_saved (pax·s)', marker:{{size:9,color:'#ff6600',symbol:'diamond'}}, yaxis:'y2', text:txtSaved(insAct), hovertemplate:'t=%{{x:.1f}}<br>saved=%{{y:.1f}} pax·s<br>%{{text}}<extra></extra>'}}
+], {{title:'INS Objective Window, Result & Delay Savings', template:'plotly_white',
+     xaxis:{{title:'simulation time (s)'}}, yaxis:{{title:'seconds'}},
+         yaxis2:{{title:'pax·s (delay / saved)', overlaying:'y', side:'right', showgrid:false}}}});
 </script>
 </body>
 </html>

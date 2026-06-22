@@ -90,42 +90,92 @@ def latest_file(pattern: str, n: int = 1) -> list:
 
 
 def load_queue_snapshots(log_dir: str) -> dict:
-    """Load all queue_snapshot CSV files from log_dir.  Returns dict[experiment -> df]."""
+    """Load all queue_snapshot CSV files from log_dir.  Returns dict[experiment -> df].
+
+    When multiple runs exist for the same strategy (same name prefix, different
+    timestamp suffixes), only the most-recent file is kept so the dashboard
+    does not mix stale and fresh data.
+    """
+    MAX_RED_S = 270.0
+
+    # Collect all matching files, sorted oldest→newest so latest wins
+    all_files = sorted(glob.glob(os.path.join(log_dir, "queue_snapshot_*.csv")),
+                       key=os.path.getmtime)
+
+    # De-duplicate: strip trailing _YYYYMMDD_HHMMSS to get the strategy label.
+    # Keep only the most-recently-modified file per strategy.
+    latest_by_strategy: dict = {}  # strategy_label -> filepath
+    for f in all_files:
+        stem = Path(f).stem.replace("queue_snapshot_", "")
+        # Strip trailing timestamp suffix (_YYYYMMDD_HHMMSS = 16 chars)
+        parts = stem.rsplit("_", 2)
+        strategy = parts[0] if (len(parts) == 3 and parts[1].isdigit()
+                                 and parts[2].isdigit()) else stem
+        latest_by_strategy[strategy] = f   # later files overwrite earlier ones
+
     dfs = {}
-    for f in sorted(glob.glob(os.path.join(log_dir, "queue_snapshot_*.csv"))):
-        exp = Path(f).stem.replace("queue_snapshot_", "")
+    for exp, f in sorted(latest_by_strategy.items()):
+        exp_label = exp   # clean strategy name without timestamp
         try:
             df = pd.read_csv(f)
-            df['experiment'] = exp
-            dfs[exp] = df
+            # Force numeric types for shockwave/profile signals so plot traces
+            # don't become blank if CSV columns are parsed as strings.
+            for _c in [
+                'sim_time_s', 'junction_id',
+                'queue_main', 'queue_side', 'queue_total',
+                'sw_q_main', 'sw_q_side',
+                'sw_flow_main', 'sw_density_main', 'sw_red_s', 'sw_flow_side',
+            ]:
+                if _c in df.columns:
+                    df[_c] = pd.to_numeric(df[_c], errors='coerce').fillna(0.0)
+            # Cap sw_red_s to MAX_RED_S for display only; do NOT recompute sw_q_main —
+            # the controller already wrote correct LWR estimates into the CSV.
+            if 'sw_red_s' in df.columns:
+                df['sw_red_s'] = df['sw_red_s'].clip(upper=MAX_RED_S)
+            df['experiment'] = exp_label
+            dfs[exp_label] = df
         except Exception as e:
             print(f"Warning: could not load {f}: {e}")
     return dfs
 
 
+def _dedup_latest(files: list, prefix: str) -> dict:
+    """Return {strategy_label: filepath}, keeping the newest file per strategy."""
+    latest: dict = {}
+    for f in sorted(files, key=os.path.getmtime):
+        stem = Path(f).stem.replace(prefix, "")
+        parts = stem.rsplit("_", 2)
+        strategy = (parts[0] if (len(parts) == 3 and parts[1].isdigit()
+                                  and parts[2].isdigit()) else stem)
+        latest[strategy] = f
+    return latest
+
+
 def load_detection_points(log_dir: str) -> dict:
-    """Load all detection_points CSV files.  Returns dict[experiment -> df]."""
+    """Load detection_points CSV files (latest run per strategy)."""
     dfs = {}
-    for f in sorted(glob.glob(os.path.join(log_dir, "detection_points_*.csv"))):
-        exp = Path(f).stem.replace("detection_points_", "")
+    for strategy, f in _dedup_latest(
+            glob.glob(os.path.join(log_dir, "detection_points_*.csv")),
+            "detection_points_").items():
         try:
             df = pd.read_csv(f)
-            df['experiment'] = exp
-            dfs[exp] = df
+            df['experiment'] = strategy
+            dfs[strategy] = df
         except Exception as e:
             print(f"Warning: could not load {f}: {e}")
     return dfs
 
 
 def load_wave_events(log_dir: str) -> dict:
-    """Load corridor wave events."""
+    """Load corridor_wave_events CSV files (latest run per strategy)."""
     dfs = {}
-    for f in sorted(glob.glob(os.path.join(log_dir, "corridor_wave_events_*.csv"))):
-        exp = Path(f).stem.replace("corridor_wave_events_", "")
+    for strategy, f in _dedup_latest(
+            glob.glob(os.path.join(log_dir, "corridor_wave_events_*.csv")),
+            "corridor_wave_events_").items():
         try:
             df = pd.read_csv(f)
-            df['experiment'] = exp
-            dfs[exp] = df
+            df['experiment'] = strategy
+            dfs[strategy] = df
         except Exception as e:
             print(f"Warning: could not load {f}: {e}")
     return dfs
@@ -333,9 +383,10 @@ def build_shockwave_profile_figure(
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
-        subplot_titles=["Queue Length (vehicles)", "Approach Flow & Shockwave Speeds"],
+        subplot_titles=["Queue Length (vehicles)", "Approach Flow (veh/h) & Backward Wave Speed (km/h)"],
         row_heights=[0.65, 0.35],
         vertical_spacing=0.1,
+        specs=[[{}], [{"secondary_y": True}]],
     )
 
     df_q = queue_dfs.get(exp, pd.DataFrame())
@@ -354,10 +405,14 @@ def build_shockwave_profile_figure(
                            row=1, col=1, font_size=14)
         return fig
 
-    jq = df_q[df_q['junction_id'] == jct_id].copy()
+    # Cast both sides to int to avoid float64 vs int comparison issues
+    try:
+        jq = df_q[df_q['junction_id'].astype(int) == int(jct_id)].copy()
+    except Exception:
+        jq = df_q[df_q['junction_id'] == jct_id].copy()
     if jq.empty:
-        fig.add_annotation(text=f"No data for jct={jct_id}", x=0.5, y=0.5,
-                           showarrow=False, row=1, col=1, font_size=14)
+        fig.add_annotation(text=f"No data for jct={jct_id} (checked {len(df_q)} rows)",
+                           x=0.5, y=0.5, showarrow=False, row=1, col=1, font_size=14)
         return fig
 
     jq = jq.sort_values('sim_time_s')
@@ -425,42 +480,45 @@ def build_shockwave_profile_figure(
             ), row=1, col=1)
 
     # ── Bus detection markers ──
+    # Marker y is placed at 8% of the queue axis range so it sits clearly at
+    # the bottom of the chart and is NOT mistaken for an actual queue reading.
     if not df_d.empty:
         jd = df_d[df_d['junction_id'] == jct_id].copy()
         if bus_id and bus_id > 0:
             jd = jd[jd['veh_id'] == bus_id]
         if not jd.empty:
+            _q_top = max(
+                jq.get('queue_main', pd.Series(dtype=float)).max() if not jq.empty else 0,
+                jq.get('sw_q_main',  pd.Series(dtype=float)).max() if not jq.empty else 0,
+                1.0,
+            )
+            _marker_y = max(0.08 * float(_q_top), 0.5)
             fig.add_trace(go.Scatter(
-                x=jd['sim_time_s'], y=[1.5] * len(jd),
-                mode='markers+text', name='Bus detection',
+                x=jd['sim_time_s'], y=[_marker_y] * len(jd),
+                mode='markers+text', name='Bus detection (marker position ≠ queue)',
                 marker=dict(symbol='triangle-up', size=10, color='green'),
                 text=[str(v) for v in jd['veh_id']],
                 textposition='top center',
-                hovertemplate='Bus %{text} at t=%{x:.1f}s<extra></extra>',
+                hovertemplate='Bus %{text} detected at t=%{x:.1f}s (y-position is a marker, not queue)<extra></extra>',
             ), row=1, col=1)
 
-    # ── Row 2: Flow and shockwave speeds ──
+    # ── Row 2: Flow (primary y) and shockwave speeds (secondary y) ──
+    # Flow and density on the primary y-axis (veh/h); backward wave speed
+    # on a secondary y-axis (km/h) so it is readable on its own scale.
     if 'sw_flow_main' in jq.columns:
         fig.add_trace(go.Scatter(
             x=jq['sim_time_s'], y=jq['sw_flow_main'].fillna(0),
             name='Main approach flow (veh/h)', mode='lines',
             line=dict(color='teal', width=1.5),
-        ), row=2, col=1)
+        ), row=2, col=1, secondary_y=False)
     if 'sw_flow_side' in jq.columns:
         fig.add_trace(go.Scatter(
             x=jq['sim_time_s'], y=jq['sw_flow_side'].fillna(0),
             name='Side flow (veh/h)', mode='lines',
             line=dict(color='orangered', width=1.5),
-        ), row=2, col=1)
-    if 'sw_density_main' in jq.columns:
-        fig.add_trace(go.Scatter(
-            x=jq['sim_time_s'], y=jq['sw_density_main'].fillna(0) * 10,  # scale to plot
-            name='Main density ×10 (veh/km)', mode='lines',
-            line=dict(color='purple', width=1.2, dash='dot'),
-        ), row=2, col=1)
+        ), row=2, col=1, secondary_y=False)
 
-    # ── Shockwave speed annotations ──
-    # Backward wave speed = Q_arrive / (K_jam - K_arrive)
+    # ── Backward wave speed on secondary y-axis ──
     if 'sw_flow_main' in jq.columns and 'sw_density_main' in jq.columns:
         _f = jq['sw_flow_main'].fillna(0)
         _k = jq['sw_density_main'].fillna(0)
@@ -468,11 +526,13 @@ def build_shockwave_profile_figure(
         fig.add_trace(go.Scatter(
             x=jq['sim_time_s'], y=_w_back,
             name='Backward wave speed (km/h)',
-            mode='lines', line=dict(color='darkred', width=1.2),
-        ), row=2, col=1)
+            mode='lines', line=dict(color='darkred', width=1.5, dash='dash'),
+        ), row=2, col=1, secondary_y=True)
 
     fig.update_yaxes(title_text="Queue (vehicles)", row=1, col=1)
-    fig.update_yaxes(title_text="Flow (veh/h)", row=2, col=1)
+    fig.update_yaxes(title_text="Flow (veh/h)", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Wave speed (km/h)", row=2, col=1, secondary_y=True,
+                     showgrid=False)
     fig.update_xaxes(title_text="Simulation time (s)", row=2, col=1)
 
     return fig
@@ -512,16 +572,42 @@ def build_bus_detection_timeline(
     if bus_id and bus_id > 0:
         dd = dd[dd['veh_id'] == bus_id]
 
+    # Remove pure noise tiers (high-frequency position tracking, not decisions)
+    _noise_tiers = {'track-section', 'track-zone', 'zone_enter', 'zone_exit',
+                    # Skip tiers clutter the timeline without adding actionable info
+                    'harmony-no-ge-local', 'harmony-no-ins-local',
+                    'focus_suppress',
+                    'IC-detect-far'}
+    if 'tier' in dd.columns:
+        dd = dd[~dd['tier'].isin(_noise_tiers)]
+
+    if dd.empty:
+        fig.add_annotation(
+            text="No TSP action/detection events (all events were noise or skip tiers)",
+            x=0.5, y=0.5, showarrow=False)
+        return fig
+
+    # Colour/symbol map — only tiers we actually show
+    _tier_style = {
+        'IC-detect':                        ('#3498db', 'circle',        8),
+        'harmony-ge-local':                 ('#2ecc71', 'triangle-up',  12),
+        'harmony-ins-local':                ('#27ae60', 'star',          14),
+        'coord-prearm-harmony/KALMAN':      ('#f39c12', 'diamond',       9),
+        'coord-prearm-success/KALMAN':      ('#e67e22', 'diamond-open', 10),
+        'coord-prearm-missed/KALMAN':       ('#e74c3c', 'x',             9),
+        'harmony-ins-prearm':               ('#9b59b6', 'triangle-right',10),
+    }
     tiers = dd['tier'].unique() if 'tier' in dd.columns else ['IC-detect']
-    colors = px.colors.qualitative.Plotly
-    for ti, tier in enumerate(tiers):
+    _fallback_colors = px.colors.qualitative.Plotly
+    for ti, tier in enumerate(sorted(tiers)):
         td = dd[dd['tier'] == tier] if 'tier' in dd.columns else dd
+        style = _tier_style.get(tier, (_fallback_colors[ti % len(_fallback_colors)], 'circle', 8))
         fig.add_trace(go.Scatter(
             x=td['sim_time_s'],
             y=td['junction_id'],
             mode='markers',
             name=tier,
-            marker=dict(size=8, color=colors[ti % len(colors)], symbol='circle'),
+            marker=dict(size=style[2], color=style[0], symbol=style[1]),
             text=[f"bus={v} phase={p}" for v, p in
                   zip(td.get('veh_id', []), td.get('signal_phase', []))],
             hovertemplate="t=%{x:.1f}s jct=%{y}<br>%{text}<extra></extra>",
@@ -712,8 +798,8 @@ def build_dashboard(log_dir: str, out_html: str):
         figures[f'queue_bar_{exp}'] = build_queue_bar_figure(
             queue_dfs, [exp], junctions)
 
-        # 2. Shockwave profile per junction (first 4 junctions by default)
-        for jct in junctions[:4]:
+        # 2. Shockwave profile per junction — all junctions
+        for jct in junctions:
             key = f'sw_profile_{exp}_{jct}'
             figures[key] = build_shockwave_profile_figure(
                 queue_dfs, detection_dfs, exp, jct)
@@ -842,13 +928,19 @@ def _build_html(figures: dict, experiments: list, junctions: list,
     html_parts.append('</div>\n')
 
     # Panel: Shockwave profiles
+    first_exp = experiments[0] if experiments else ''
+
     html_parts.append('<div id="tab_sw" class="panel">\n')
     html_parts.append('<div class="info-box">Shockwave profiles per intersection. '
-                      'Blue dotted = shockwave-estimated queue. Orange dashed = LWR theoretical profile at each red phase. '
-                      'Green triangles = bus detections.</div>\n')
+                      'Blue = snapshot queue. Blue dotted = shockwave-estimated. '
+                      'Orange dashed = LWR theoretical profile at each red phase onset. '
+                      'Green triangles = bus detections. '
+                      'Use the Experiment dropdown to switch runs.</div>\n')
     for exp in experiments:
-        html_parts.append(f'<div class="grid2" data-exp="{exp}">\n')
-        for jct in junctions[:8]:
+        # Only the first experiment is visible by default; JS controls the rest
+        _vis = '' if exp == first_exp else ' style="display:none"'
+        html_parts.append(f'<div class="grid2" data-exp="{exp}"{_vis}>\n')
+        for jct in junctions:
             key = f'sw_profile_{exp}_{jct}'
             if key in figures:
                 html_parts.append(f'<div class="plot-container" data-jct="{jct}">\n')
@@ -859,25 +951,32 @@ def _build_html(figures: dict, experiments: list, junctions: list,
 
     # Panel: Detection timeline
     html_parts.append('<div id="tab_detect" class="panel">\n')
+    html_parts.append('<div class="info-box">Bus detections and TSP events over time. '
+                      'Tiers: <b>IC-detect</b> = in-zone detection, '
+                      '<b>harmony-ge-local</b> / <b>harmony-ins-local</b> = TSP action granted, '
+                      '<b>harmony-no-ge-local</b> / <b>harmony-no-ins-local</b> = TSP skipped. '
+                      'track-section events are hidden for clarity.</div>\n')
     for exp in experiments:
         key = f'detection_{exp}'
         if key in figures:
-            html_parts.append(f'<div class="plot-container" data-exp="{exp}">\n')
+            _vis = '' if exp == first_exp else ' style="display:none"'
+            html_parts.append(f'<div class="plot-container" data-exp="{exp}"{_vis}>\n')
             html_parts.append(fig_div(key, figures[key]))
             html_parts.append('</div>\n')
     html_parts.append('</div>\n')
 
     # Panel: Strategy diagnostics
     html_parts.append('<div id="tab_strat" class="panel">\n')
-    html_parts.append('<div class="info-box">Queue estimation strategies per intersection: <br>'
-                      '<b>snapshot</b> = AKIVehStateGetVehicleInfSection scan (v&lt;5 km/h) &nbsp;|&nbsp; '
-                      '<b>shockwave</b> = LWR model from approach flow + red time &nbsp;|&nbsp; '
-                      '<b>SideUpFlow</b> = SideUpFlowList from _sample_side_sections &nbsp;|&nbsp; '
-                      '<b>default400</b> = urban default 400 veh/h (all side sections virtual)</div>\n')
+    html_parts.append('<div class="info-box">Queue estimation strategies per intersection: '
+                      '<b>snapshot</b> = AKIVehState physical count &nbsp;|&nbsp; '
+                      '<b>shockwave</b> = LWR model (approach flow × red time) &nbsp;|&nbsp; '
+                      '<b>SideUpFlow</b> = SideUpFlowList &nbsp;|&nbsp; '
+                      '<b>default400</b> = 400 veh/h urban default (no side sections found)</div>\n')
     for exp in experiments:
         key = f'strat_{exp}'
         if key in figures:
-            html_parts.append(f'<div class="plot-container" data-exp="{exp}">\n')
+            _vis = '' if exp == first_exp else ' style="display:none"'
+            html_parts.append(f'<div class="plot-container" data-exp="{exp}"{_vis}>\n')
             html_parts.append(fig_div(key, figures[key]))
             html_parts.append('</div>\n')
     html_parts.append('</div>\n')
@@ -885,35 +984,38 @@ def _build_html(figures: dict, experiments: list, junctions: list,
     # Panel: LWR equations
     html_parts.append('<div id="tab_lwr" class="panel">\n')
     html_parts.append('<div class="info-box">'
-                      'LWR triangular flow model used for all shockwave calculations. '
-                      'Adjust q_arrive and phase timing to explore different scenarios.</div>\n')
+                      'LWR triangular flow model used for all shockwave calculations.</div>\n')
     if 'lwr_demo' in figures:
         html_parts.append('<div class="plot-container">\n')
         html_parts.append(fig_div('lwr_demo', figures['lwr_demo']))
         html_parts.append('</div>\n')
     html_parts.append('</div>\n')
 
-    # JS
-    html_parts.append("""
+    # JS — also filter out 'track-section' tier from detection plots on page load
+    html_parts.append(f"""
 <script>
-function showTab(id) {
+function showTab(id) {{
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   document.getElementById('tabBtn_' + id).classList.add('active');
-}
+}}
 
-function onSelChange() {
+function onSelChange() {{
   const exp = document.getElementById('sel_exp').value;
   const jct = document.getElementById('sel_jct').value;
-  // Highlight matching panels (simple visibility by data-exp attribute)
-  document.querySelectorAll('[data-exp]').forEach(el => {
-    el.style.display = (el.dataset.exp === exp || exp === 'all') ? '' : 'none';
-  });
-  document.querySelectorAll('[data-jct]').forEach(el => {
+  document.querySelectorAll('[data-exp]').forEach(el => {{
+    el.style.display = (el.dataset.exp === exp) ? '' : 'none';
+  }});
+  document.querySelectorAll('[data-jct]').forEach(el => {{
     el.style.display = (jct === 'all' || el.dataset.jct === jct) ? '' : 'none';
-  });
-}
+  }});
+}}
+
+// Initialise: show only the first experiment
+window.addEventListener('DOMContentLoaded', function() {{
+  onSelChange();
+}});
 </script>
 </body></html>
 """)

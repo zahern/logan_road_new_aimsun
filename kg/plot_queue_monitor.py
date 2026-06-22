@@ -493,6 +493,14 @@ def main():
                 except:
                     pass
             df_queue = pd.concat(all_queue, ignore_index=True) if all_queue else pd.DataFrame()
+
+        if df_queue.empty:
+            snapshot_files = glob.glob(os.path.join(RESULTS_ROOT, "**/queue_snapshot_*.csv"), recursive=True)
+            if snapshot_files:
+                print(f"[QUEUE] Found {len(snapshot_files)} queue snapshot file(s); plotting them directly.")
+                for qf in sorted(snapshot_files):
+                    _run_from_snapshot(qf)
+                return
     
     if not df_queue.empty:
         print(f"[QUEUE] Queue data available for {len(df_queue['_strategy'].unique())} strategies")
@@ -519,22 +527,126 @@ def main():
     print("=" * 80)
 
 
-def run(queue_csv=None, junc_csv=None):
-    """Entry point called from AAPIFinish in intersection_controller.py.
+def _run_from_snapshot(queue_csv: str) -> None:
+    """Load a queue_snapshot_*.csv and produce queue plots directly.
 
-    Parameters
-    ----------
-    queue_csv : str or None
-        Path to the queue snapshot CSV produced by the simulation.
-        If None, ``main()`` falls back to scanning RESULTS_ROOT.
-    junc_csv : str or None
-        Path to the junction summary CSV.  Not currently consumed by this
-        module but accepted so the call signature matches the controller.
+    This bypasses the section_counts_*.csv / Aimsun-results workflow used by
+    main() so the monitor works when called from AAPIFinish during a live run.
     """
+    out_dir = os.path.join(os.path.dirname(queue_csv), "queue_monitor")
+    os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        df = pd.read_csv(queue_csv)
+    except Exception as e:
+        print(f"[QUEUE] Could not load {queue_csv}: {e}")
+        return
+
+    required = {'sim_time_s', 'junction_id', 'queue_main', 'queue_side'}
+    if not required.issubset(df.columns):
+        print(f"[QUEUE] Snapshot CSV missing columns. Available: {list(df.columns)}")
+        return
+
+    for col in ('sim_time_s', 'junction_id', 'queue_main', 'queue_side', 'queue_total',
+                'queue_main_nb', 'queue_main_sb', 'queue_side_eb', 'queue_side_wb',
+                'queue_slow_main', 'queue_slow_side'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    junctions = sorted(df['junction_id'].unique())
+    n = len(junctions)
+    if n == 0:
+        print("[QUEUE] No junction data in snapshot CSV.")
+        return
+
+    print(f"[QUEUE] Plotting {n} junctions from {os.path.basename(queue_csv)}")
+
+    ncols = min(4, n)
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows),
+                             squeeze=False)
+    axes_flat = [axes[r][c] for r in range(nrows) for c in range(ncols)]
+
+    # Check if directional queue data is available
+    has_directional = all(col in df.columns for col in ['queue_main_nb', 'queue_main_sb', 'queue_side_eb', 'queue_side_wb'])
+
+    for idx, jct_id in enumerate(junctions):
+        ax = axes_flat[idx]
+        jd = df[df['junction_id'] == jct_id].sort_values('sim_time_s')
+
+        if has_directional:
+            # Plot directional queues with clear legend
+            ax.plot(jd['sim_time_s'], jd['queue_main_nb'],
+                    color='steelblue', linewidth=1.5, label='Main NB')
+            ax.plot(jd['sim_time_s'], jd['queue_main_sb'],
+                    color='navy', linewidth=1.5, label='Main SB')
+            ax.plot(jd['sim_time_s'], jd['queue_side_eb'],
+                    color='coral', linewidth=1.5, label='Cross EB')
+            ax.plot(jd['sim_time_s'], jd['queue_side_wb'],
+                    color='darkred', linewidth=1.5, label='Cross WB')
+        else:
+            # Fall back to aggregated queues
+            ax.plot(jd['sim_time_s'], jd['queue_main'],
+                    color='steelblue', linewidth=1.5, label='Main')
+            ax.plot(jd['sim_time_s'], jd['queue_side'],
+                    color='coral', linewidth=1.5, label='Side')
+
+        if 'queue_slow_main' in df.columns:
+            ax.plot(jd['sim_time_s'], jd['queue_slow_main'],
+                    color='navy', linewidth=1.0, linestyle='--', label='Slow-main')
+        ax.set_title(f'Jct {int(jct_id)}', fontsize=9, fontweight='bold')
+        ax.set_xlabel('Time (s)', fontsize=8)
+        ax.set_ylabel('Queue (veh)', fontsize=8)
+        ax.legend(fontsize=6, loc='upper left')
+        ax.grid(True, alpha=0.3)
+
+    for idx in range(n, len(axes_flat)):
+        axes_flat[idx].set_visible(False)
+
+    exp_name = os.path.basename(queue_csv).replace('queue_snapshot_', '').rsplit('_', 2)[0]
+    fig.suptitle(f'Queue Monitor — {exp_name}', fontsize=12, fontweight='bold', y=1.01)
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f"queue_timeseries_{exp_name}.png")
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"[QUEUE] Saved: {out_path}")
+
+    # Heatmap: time × junction
+    try:
+        pivot = df.pivot_table(index='sim_time_s', columns='junction_id',
+                               values='queue_main', aggfunc='mean')
+        if not pivot.empty:
+            fig2, ax2 = plt.subplots(figsize=(max(8, n * 0.8), 6))
+            im = ax2.imshow(pivot.values, aspect='auto', cmap='YlOrRd',
+                            interpolation='nearest', origin='lower')
+            ax2.set_xticks(range(len(pivot.columns)))
+            ax2.set_xticklabels([str(int(c)) for c in pivot.columns],
+                                rotation=45, ha='right', fontsize=7)
+            ax2.set_yticks(range(0, len(pivot.index), max(1, len(pivot.index) // 10)))
+            ax2.set_yticklabels(
+                [f'{int(pivot.index[i])}s'
+                 for i in range(0, len(pivot.index), max(1, len(pivot.index) // 10))],
+                fontsize=7)
+            plt.colorbar(im, ax=ax2, label='Main queue (veh)')
+            ax2.set_title(f'Queue Heatmap — {exp_name}')
+            ax2.set_xlabel('Junction ID')
+            ax2.set_ylabel('Time (s)')
+            plt.tight_layout()
+            hm_path = os.path.join(out_dir, f"queue_heatmap_{exp_name}.png")
+            plt.savefig(hm_path, dpi=150, bbox_inches='tight')
+            plt.close(fig2)
+            print(f"[QUEUE] Saved: {hm_path}")
+    except Exception as _he:
+        print(f"[QUEUE] Heatmap skipped: {_he}")
+
+    print(f"[QUEUE] All plots saved to: {out_dir}")
+
+
+def run(queue_csv=None, junc_csv=None):
+    """Entry point called from AAPIFinish in intersection_controller.py."""
     if queue_csv and os.path.isfile(queue_csv):
-        global RESULTS_ROOT, PLOTS_OUT
-        RESULTS_ROOT = os.path.dirname(queue_csv)
-        PLOTS_OUT = os.path.join(RESULTS_ROOT, "queue_monitor")
+        _run_from_snapshot(queue_csv)
+        return
     main()
 
 

@@ -1,0 +1,807 @@
+---
+title: "Corridor TSP — Objective Comparison"
+subtitle: "Kelvin Grove: Z₁ Delay · Z₂ Progression · Z₃ Lateness"
+author: "Batch Runner"
+format: 
+  revealjs:
+    theme: dark
+    slide-number: true
+    chalkboard: false
+    width: 1400
+    height: 900
+    margin: 0.05
+    center: false
+execute:
+  echo: false
+  warning: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse); library(scales); library(gt); library(patchwork)
+theme_set(theme_minimal(base_size=13) +
+  theme(plot.background=element_rect(fill="#1a1a2e",color=NA),
+        panel.background=element_rect(fill="#16213e"),
+        text=element_text(color="#e0e0e0"), axis.text=element_text(color="#a0a0a0",size=10),
+        panel.grid=element_line(color="#2a2a4a"), legend.background=element_rect(fill="#16213e"),
+        legend.text=element_text(color="#e0e0e0"),
+        plot.title=element_text(size=14,face="bold"), plot.subtitle=element_text(size=10,color="#8888aa")))
+
+batch <- read_csv("batch_results.csv", show_col_types=FALSE)
+df <- batch %>% rename(experiment=run_experiment,
+  pass_delay_hrs=stats_TotalPassDelay_hrs, main_delay_hrs=stats_MainPassDelay_hrs,
+  side_delay_hrs=stats_SidePassDelay_hrs, bus_delay_s=stats_AvgBusPassDelay_s,
+  car_delay_s=stats_AvgCarPassDelay_s, speed_kmh=stats_Net_AvgSpeed_kmh,
+  detections=stats_TSP_Detections, extensions=stats_TSP_Extensions,
+  insertions=stats_TSP_Insertions, alpha=wobj_alpha, beta=wobj_beta,
+  w_main=wobj_w_main, w_side=wobj_w_side, rho_bus=wobj_rho_bus, rho_car=wobj_rho_car) %>%
+  mutate(grant_rate=(extensions+insertions)/pmax(detections,1))
+
+no_tsp <- df %>% filter(experiment=="NO_TSP")
+base_delay <- no_tsp$pass_delay_hrs[1]; base_bus <- no_tsp$bus_delay_s[1]; base_car <- no_tsp$car_delay_s[1]
+
+strategies <- df %>% filter(experiment %in% c("NO_TSP","DCTSP_MARL","DCTSP_ZIG",
+         "DCTSP_BARGAIN_SPM","DCTSP_MP_ECTM","DCTSP_BXT")) %>%
+  mutate(strategy_label=case_when(experiment=="NO_TSP"~"NoPriority",
+    experiment=="DCTSP_MARL"~"CPD-QL", experiment=="DCTSP_ZIG"~"WaveGate",
+    experiment=="DCTSP_BARGAIN_SPM"~"NashGate",
+    experiment=="DCTSP_MP_ECTM"~"CellSearch", experiment=="DCTSP_BXT"~"CellQLearn"),
+    vs_baseline=pass_delay_hrs-base_delay)
+
+# Check if BUS_PRIO data exists
+busprio_real <- df %>% filter(str_detect(experiment, "BUSPRIO_SWEEP"))
+has_busprio <- nrow(busprio_real) > 0
+
+bus_trips_path <- "results/NO_TSP_seed300_11129236_11129237_11129240/bus_trips.csv"
+if(file.exists(bus_trips_path)) {
+  bus_tt <- read_csv(bus_trips_path,show_col_types=FALSE)$TravelTime_s
+  bus_tt <- bus_tt[!is.na(bus_tt)&bus_tt>0]
+  sched_tt <- as.numeric(quantile(bus_tt,0.10)); lateness <- bus_tt-sched_tt
+}
+pct_30 <- if(exists("lateness")) round(mean(lateness>30)*100,0) else "?"
+```
+
+# What We're Comparing
+
+::: {.notes}
+**Presenter notes:**
+
+We're testing 6 strategies on the Kelvin Grove corridor (12 intersections, Brisbane).
+All strategies solve the same problem: should we grant TSP to an approaching bus,
+and if so, which action (extend green / insert a phase / do nothing / ...)?
+
+The difference is HOW they decide — and whether a **gate** checks the decision
+before it's applied:
+
+- **NoPriority**: never grants TSP — baseline, no gate.
+- **CPD-QL**: Q-learning agent picks an action from learned experience — no
+  gate, so a bad action is applied even when it hurts cross-traffic.
+- **WaveGate**: simulates the corridor with an LWR shockwave model and grants
+  only if the predicted bus-side pax·s saving exceeds the car-side pax·s cost.
+- **CellSearch**: simulates ALL 10 candidate actions on a Cell Transmission
+  Model (CTM — see below), picks the lowest-cost one, and grants it only if
+  it beats doing nothing by enough.
+- **CellQLearn**: same CTM simulation as CellSearch, but a Q-learning policy
+  (not exhaustive search) picks which action to evaluate/apply.
+- **NashGate**: Nash bargaining — picks the action that maximises
+  (bus benefit) × (car benefit); an action that helps one side a lot but hurts
+  the other too much scores low and is rejected.
+- **META-TSP**: CellSearch's CTM search, PLUS (a) an adaptive bus weight that
+  grows the more behind-schedule the bus already is, and (b) a hard
+  "lateness takeover" — if a bus is critically late, priority is granted
+  unconditionally, bypassing the cost-benefit check entirely.
+
+**What is "the gate"?** Every strategy except CPD-QL has a gate: a pass/fail
+check, run fresh at every bus detection, that decides whether to actually
+grant priority. The methods differ in HOW they estimate "is this action
+good?" (a shockwave model for WaveGate, a CTM grid search for
+CellSearch/CellQLearn/META-TSP, a bargaining objective for NashGate) and WHAT
+threshold they apply.
+
+**The CTM gate (CellSearch, CellQLearn, META-TSP):** CTM = Cell Transmission
+Model — a fast "what-if" simulator that splits the corridor into ~100m cells
+and propagates traffic forward a short horizon for each candidate action (do
+nothing / extend green ×1-3 / insert a green phase ×1-3 / ...). Each action
+gets a cost = weighted bus delay + cross-traffic delay. The gate picks the
+lowest-cost action $a^*$ and grants it only if
+$Z(\text{NO\_ACTION}) - Z(a^*) \ge$ threshold AND the bus is already delayed
+by enough. META-TSP adds: the bus-delay weight grows the later the bus
+already is (adaptive weight), and if the bus is critically late
+($|\sigma| \ge \tau$), the gate is skipped entirely and priority is granted no
+matter what the CTM says (lateness takeover).
+
+We measure 3 objectives:
+- **Z₁**: total passenger delay (bus + car, in pax·s)
+- **Z₂**: green-wave progression quality
+- **Z₃**: bus lateness (headway deviation)
+
+Key metric: **total passenger delay** aggregates across ALL ~94,700 passengers.
+Vehicle-hours counts vehicles. Passenger delay is ~4× larger because buses carry 40 people.
+:::
+
+| Strategy | How it decides | Gate |
+|----------|---------------|------|
+| **NoPriority** | Never grants TSP | — |
+| **CPD-QL** | Q-learning (54 states, ε-greedy) | No |
+| **WaveGate** | LWR shockwave: grant if bus pax·s saved > car pax·s cost | Yes |
+| **CellSearch** | CTM grid search: simulate 10 actions, grant the best if it beats doing nothing | Yes |
+| **CellQLearn** | CTM grid search, but Q-learning picks the action | Yes |
+| **NashGate** | Nash bargaining: maximise bus-benefit × car-benefit | Yes |
+| **META-TSP** | CTM grid search + adaptive bus weight + lateness takeover | Yes (3-part) |
+
+---
+
+# Strategy Performance
+
+```{r}
+strategies %>% arrange(pass_delay_hrs) %>%
+  mutate(Total=pass_delay_hrs, Delta=pass_delay_hrs-base_delay, Main=main_delay_hrs, Side=side_delay_hrs,
+         Bus=bus_delay_s, Car=car_delay_s, Label=strategy_label) %>%
+  select(Label, Total, Delta, Main, Side, Bus, Car, grant_rate) %>%
+  gt() %>% tab_header(title="Total Passenger Delay", subtitle=paste0("NoPriority baseline: ",round(base_delay,1)," pax·hrs  |  all 6 strategies, real data")) %>%
+  fmt_number(columns=c(Total,Delta,Main,Side,Bus,Car),decimals=1) %>% fmt_percent(columns=grant_rate,decimals=0) %>%
+  cols_label(Label="", Total="Total (h)", Delta="Δ (h)", Main="Main (h)", Side="Side (h)", Bus="Bus (s)", Car="Car (s)", grant_rate="Grant") %>%
+  tab_options(table.font.size="85%", data_row.padding="2px") %>%
+  data_color(columns=Delta, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x))
+```
+
+::: {.notes}
+**How to read this table:**
+
+- **Total**: passenger delay in pax·hours. Sum of every passenger's extra waiting time.
+  NoPriority = 1261h means 94,730 passengers each delayed ~48s on average.
+- **Δ**: change from NoPriority. Green = better (negative), red = worse (positive).
+- **Main/Side**: the Total split by corridor section — Main = the coordinated
+  TSP corridor, Side = the cross/side streets. Main + Side = Total.
+- **Bus/Car**: per-person delay. Bus at 72.6s means each bus passenger waits 73 extra seconds.
+- **Grant**: % of bus detections where TSP fired.
+
+**Key story:**
+- CPD-QL makes things WORSE (+509 pax·hrs). It has no guard, so it grants TSP 50% of the time,
+  disrupting the green wave. Car delay jumps from 36→71 s/pax.
+- WaveGate and NashGate both IMPROVE on baseline because their guards block harmful actions.
+- NashGate has lowest grant rate (25%) — it's the most selective.
+- **Main/Side reveals WHERE the win comes from**: relative to NoPriority's
+  394.9h Main / 866.1h Side split, every strategy INCREASES Main delay
+  (+38 to +589h) but most strategies DECREASE Side delay (by up to -328h
+  for NashGate). The three Pareto-improving strategies (WaveGate, CellSearch,
+  NashGate) all trade a modest Main-corridor cost for a much larger Side
+  saving — the net win comes almost entirely from clearing side-street
+  queues. CellQLearn is the exception: it gets WORSE on both Main (+149h)
+  and Side (+84h).
+:::
+
+---
+
+# Total Vehicle-Hours, Volume & Average Travel Time
+
+```{r}
+base_row <- strategies %>% filter(experiment=="NO_TSP")
+base_total_tt <- with(base_row, stats_Net_TotalTT_h_Bus+stats_Net_TotalTT_h_Car+stats_Net_TotalTT_h_Truck)
+base_vehicles <- with(base_row, stats_N_DistinctCars+stats_N_DistinctBuses+stats_N_DistinctTrucks)
+base_avgtt <- base_total_tt*3600/base_vehicles
+
+strategies %>% arrange(pass_delay_hrs) %>%
+  mutate(BusTT=stats_Net_TotalTT_h_Bus, CarTT=stats_Net_TotalTT_h_Car, TruckTT=stats_Net_TotalTT_h_Truck,
+         TotalTT=BusTT+CarTT+TruckTT,
+         TotalVeh=stats_N_DistinctCars+stats_N_DistinctBuses+stats_N_DistinctTrucks,
+         AvgTT_all=TotalTT*3600/TotalVeh, DeltaAvgTT=AvgTT_all-base_avgtt,
+         Car_count=stats_N_DistinctCars, AvgCarTT=round(CarTT/Car_count*3600,0),
+         AvgBusTT=stats_AvgBusTT_s) %>%
+  select(strategy_label, BusTT, CarTT, TruckTT, TotalTT, TotalVeh, AvgTT_all, DeltaAvgTT, AvgBusTT, AvgCarTT, speed_kmh) %>%
+  gt() %>% tab_header(title="Vehicle-Hours, Vehicle Volume & Average Travel Time (1h simulation)",
+    subtitle=paste0("NoPriority: ",round(base_total_tt,1)," veh·hrs, ",base_vehicles," vehicles, ",round(base_avgtt,1),"s/vehicle")) %>%
+  fmt_number(columns=c(BusTT,CarTT,TruckTT,TotalTT,AvgTT_all,DeltaAvgTT,speed_kmh,AvgBusTT,AvgCarTT),decimals=1) %>%
+  fmt_number(columns=TotalVeh,decimals=0) %>%
+  cols_label(strategy_label="", BusTT="Bus (h)", CarTT="Car (h)", TruckTT="Truck (h)", TotalTT="Total (h)",
+             TotalVeh="Total Vehicles", AvgTT_all="Avg TT all (s)", DeltaAvgTT="Δ Avg TT (s)",
+             AvgBusTT="Avg Bus TT (s)", AvgCarTT="Avg Car TT (s)", speed_kmh="km/h") %>%
+  tab_options(table.font.size="75%", data_row.padding="2px") %>%
+  data_color(columns=DeltaAvgTT, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x))
+```
+
+::: {.notes}
+**How to read:**
+- **Vehicle-hours** (Bus/Car/Truck/Total) sum each vehicle's journey time, not weighted by
+  occupancy — a bus and a car each contribute 1 vehicle-hour per hour in the network, even
+  though the bus carries ~40 passengers. Total (≈316h for NoPriority) is therefore ~4×
+  smaller than Total pax·hrs on the Strategy Performance slide (1261h) — that ratio IS the
+  occupancy weighting (ρ_bus=40).
+- **Total Vehicles** = distinct cars + buses + trucks completing a trip in the hour. Varies
+  8134–8620 across strategies — NOT because demand differs (same seed for all 60 executed runs), but
+  because congestion changes how many vehicles clear the network in time.
+- **Avg TT all** = Total veh·hrs × 3600 / Total Vehicles — average journey time across EVERY
+  vehicle, regardless of class.
+- **Δ Avg TT** = increase over NoPriority's Avg TT all (131.9s) — the average extra delay
+  per vehicle each strategy imposes.
+
+**Avg Bus TT / Avg Car TT**: per-class average journey times (same as previous slides).
+NoPriority bus=44.9s, car=126s. CPD-QL bus=63.2s, car=239s (nearly doubled!).
+
+**Key story:**
+- CPD-QL: Δ Avg TT = +117.5s — every vehicle takes ~2 minutes longer on average. Total +255.7 veh·hrs.
+- CellSearch has the SMALLEST Δ Avg TT of any TSP strategy (+21.9s) — smaller than WaveGate
+  (+25.5s) and NashGate (+28.9s). Its benefit is spread evenly across vehicles.
+- NashGate adds 62.8 veh·hrs total but has the best car protection (see next slides).
+
+**Why does Δ Avg TT go UP here while total passenger delay (previous slide)
+goes DOWN — isn't that a contradiction?** No — they're different weightings
+of the same green-time reallocation. TSP takes green time from cars and gives
+it to buses. The previous slide's "Total (pax·hrs)" weights each bus-second
+~27× a car-second (ρ_bus=40 vs ρ_car=1.5), so the (few) bus-seconds saved
+outweigh the (many) car-seconds lost, and Total/Z₁ falls. **Δ Avg TT here is
+UNWEIGHTED**: it averages the change across all ~8,300–8,600 vehicles, where
+a few dozen buses each saving tens of seconds are outnumbered roughly 200:1
+by cars each losing a few seconds — so the aggregate car-side cost (invisible
+to Z₁) dominates, and Δ Avg TT rises for *every* TSP configuration tested.
+In short: the previous slide answers "did the average **passenger** get a
+better deal?" (yes); this slide answers "did the average **vehicle**'s trip
+get faster?" (no, slightly slower). Both are correct simultaneously.
+:::
+
+---
+
+# Bus vs Car Delay
+
+```{r fig.height=6, fig.width=10}
+strategies %>% filter(experiment!="NO_TSP") %>%
+  mutate(lbl_vjust=case_when(strategy_label=="WaveGate" ~ -1.2,
+                              strategy_label=="CellSearch" ~ 1.6,
+                              strategy_label=="NashGate" ~ 1.4,
+                              TRUE ~ -1.2),
+         lbl_hjust=case_when(strategy_label=="WaveGate" ~ -0.1,
+                              strategy_label=="NashGate" ~ -0.1,
+                              TRUE ~ 0.5)) %>%
+  ggplot(aes(bus_delay_s,car_delay_s,label=strategy_label)) +
+  annotate("rect",xmin=-Inf,xmax=base_bus,ymin=-Inf,ymax=base_car,fill="#27ae60",alpha=0.08) +
+  geom_vline(xintercept=base_bus,linetype="dashed",color="#3498db",alpha=0.5) +
+  geom_hline(yintercept=base_car,linetype="dashed",color="#e67e22",alpha=0.5) +
+  annotate("text",x=base_bus-4,y=base_car-2,label="Both better",color="#27ae60",size=3.5,hjust=1) +
+  geom_point(aes(size=grant_rate,color=pass_delay_hrs),alpha=0.9) +
+  geom_text(aes(vjust=lbl_vjust,hjust=lbl_hjust),color="#e0e0e0",size=3.8) +
+  scale_color_viridis_c(name="Total (h)") + scale_size_continuous(name="Grant",labels=percent_format()) +
+  labs(x="Bus Delay (s/pax)",y="Car Delay (s/pax)") + theme(legend.position="right")
+```
+
+::: {.notes}
+**How to read this plot:**
+- Dashed lines = NoPriority baseline (72.6s bus, 36.2s car)
+- Green quadrant = BOTH bus AND car better than baseline (the Pareto zone)
+- Point size = grant rate (bigger = more TSP actions)
+- Color = total delay (darker = worse)
+
+**Key story:**
+- WaveGate, CellSearch, and NashGate are all in the green zone — both bus AND
+  car improve. NashGate has the largest total-delay reduction ($-$18.5\%) and
+  the lowest car delay (32.7s); CellSearch is close behind ($-$17.9\%) with
+  the largest bus-delay reduction of the three ($-$31.7\%).
+- CPD-QL and CellQLearn are both in the "both worse" zone (top-right) — neither
+  guard has converged to a useful policy.
+:::
+
+---
+
+# Z₁/Z₂ Weights: Why Z₂ Is Always Zero (+ New Z₄ Term)
+
+```{r}
+wobj <- df %>% filter(str_detect(experiment,"WOBJ_SWEEP"))
+wobj %>% group_by(beta) %>% summarise(Total=mean(pass_delay_hrs), Z1=mean(wobj_Z1_total),
+    Z2=mean(wobj_Z2_total), J=mean(wobj_objective_total), .groups="drop") %>%
+  mutate(Delta=Total-base_delay, Label=paste0("β=",beta)) %>%
+  bind_rows(tibble(Label="Baseline",Total=base_delay,Delta=0,Z1=NA,Z2=NA,J=NA)) %>%
+  select(Label, Total, Delta, Z1, Z2, J) %>% arrange(Total) %>%
+  gt() %>% tab_header(title="Effect of Progression Weight β on Z₁/Z₂/J",
+    subtitle="J = α·Z₁ + β·Z₂, α=0.8 — Z₂ is logged as 0.0 for every row") %>%
+  fmt_number(columns=c(Total,Delta,Z1,Z2,J),decimals=1) %>%
+  cols_label(Label="", Total="Total (h)", Delta="Δ (h)", Z1="Z₁ (pax·s)", Z2="Z₂ (pax·s)", J="J (pax·s)") %>%
+  tab_options(table.font.size="85%", data_row.padding="4px") %>%
+  data_color(columns=Delta, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x))
+```
+
+::: {.notes}
+**What is Z₂, concretely?**
+Z₂ is the flow-weighted progression-bandwidth mismatch (Eq. Z2 in the paper) —
+it measures how badly bus arrivals miss the "green wave" along the corridor.
+For each coordinated link (i,j): τ_ij is the free-flow travel time from i to
+j (how long a bus takes to drive between the two intersections at uncongested
+speed), and φ_i/φ_j are the *realised* offsets at which each intersection's
+bus-progression phase turns green. Compare the realised gap (φ_j − φ_i) to
+the ideal gap τ_ij:
+- If the realised gap is **larger** than τ_ij (signal j turns green later
+  than a bus leaving i on green would need), the bus arrives at j too EARLY
+  and must wait — this shortfall is **ε⁺**.
+- If the realised gap is **smaller** than τ_ij, signal j's green has already
+  started/finished before the bus arrives — the bus is too LATE and misses
+  its window — this is **ε⁻**.
+Either way, the green time actually usable by the bus shrinks by (ε⁺+ε⁻).
+Z₂ sums (ε⁺+ε⁻) across every coordinated link/timestep, weighted by bus flow
+q — i.e. it's the total "green-wave miss" time, in pax·s. A perfectly
+synchronized green wave (every signal's offset exactly equal to the
+inter-section free-flow travel time) gives ε⁺=ε⁻=0 and Z₂=0 — the
+theoretical best case.
+
+**Why is Z₂ always 0.0 here — and NOT because the green wave is perfect?**
+Reaching Z₂=0 the way above requires the controller to track the realised
+offsets φ_i at runtime and feed the resulting ε⁺/ε⁻ into the Z₂ formula.
+None of the six methods in this dataset populate this signal (the
+corridor-offset error `_last_offset_error_s` is never computed) — a telemetry
+gap, not a property of any particular β, and not evidence of perfect
+progression. So `J = α·Z₁ + β·Z₂` collapses to `J = α·Z₁` exactly for
+every row: e.g. β=0.1, α=0.8 → 0.8 × 182,170.5 ≈ 145,736.4 ✓ (matches J).
+β therefore has NO effect on J while Z₂≡0.
+
+**So why does β still change the results?**
+β is ALSO propagated directly into two reward weights:
+`REWARD_MAIN_SECTION_WEIGHT = max(0.1, 1−β)` and
+`REWARD_SIDE_SECTION_WEIGHT = 3β`. These reweight the MAIN-corridor vs.
+SIDE-street components of Z₁ itself — a second, independent channel from Z₂.
+This is the real mechanism behind the β results below.
+
+**A new Z₄ term has just been added (results pending).**
+A new `WOBJ_DELTA` weight (δ) extends the objective to
+`J = α·Z₁ + β·Z₂ + δ·Z₄`, where Z₄ is the *raw* (unweighted: ρ=1, w_main=w_side=1)
+sum of vehicle-delay-seconds across the same four section/mode components as
+Z₁ — i.e. the quantity that drives Δ Avg TT (Total Vehicle-Hours slide), now
+expressed as a per-step cost the reward can penalise directly. δ=0 (the
+default) recovers `J = α·Z₁ + β·Z₂` exactly, so every row on this slide is
+unaffected. A 4-config pending sweep (δ ∈ {0,2,8,32} at `D20/P0/T60/S2.5`,
+the new overall-best configuration from the lateness-takeover follow-up
+sweep) is described a few slides ahead.
+
+**Key story:**
+- β=0.1: low side-street weight → solver ignores cross-traffic →
+  +15% worse than baseline.
+- β=0.2: −25% vs baseline. β=0.3: best result (−28%).
+- β≥0.2 is REQUIRED for any benefit. Below that, TSP does more harm than good.
+- **Z₁ note**: β=0.2 has HIGHER Z₁ (357k) than β=0.3 (172k) because the
+  reweighted objective makes different argmin choices that increase raw
+  delay (Z₁) while still reducing the *Total* pax·hrs metric.
+:::
+
+---
+
+# Z₃: META-TSP Gate Parameter Sweep (BUS_PRIO, 12 configs)
+
+All 12 rows below use `GLOBAL_REWARD + META_TSP_MODE` — the "META-TSP" method
+(see Solution Methods) — sweeping its three gate parameters
+(`δ_min, n_min, τ`). This *is* the BUS_PRIO sweep. A follow-up 12-config
+sweep of `τ × META_HW_SENSITIVITY`, anchored at this sweep's best config
+(`D20/P0/T60`), is presented two slides ahead — with real results.
+
+```{r}
+busprio_lat <- busprio_real %>% rowwise() %>% mutate(
+    bus_trips_file = paste0("results/", experiment, "_seed300_11129236_11129237_11129240/bus_trips.csv"),
+    Pct30 = {
+      tt <- read_csv(bus_trips_file, show_col_types=FALSE)$TravelTime_s
+      tt <- tt[!is.na(tt) & tt>0]
+      round(100*mean((tt-sched_tt)>30),1)
+    }
+  ) %>% ungroup() %>%
+  transmute(
+    min_lat = case_when(str_detect(experiment,"D0_")~"0", str_detect(experiment,"D10_")~"10", str_detect(experiment,"D20_")~"20"),
+    min_ben = case_when(str_detect(experiment,"P0_")~"0", str_detect(experiment,"P40_")~"40"),
+    takeover = case_when(str_detect(experiment,"T30")~"30", str_detect(experiment,"T60")~"60"),
+    Total = pass_delay_hrs, Bus = bus_delay_s, Car = car_delay_s,
+    AvgBusTT = stats_AvgBusTT_s, MeanSigma = round(stats_AvgBusTT_s - sched_tt,1), Pct30,
+    TotalTT = stats_Net_TotalTT_h_Bus+stats_Net_TotalTT_h_Car+stats_Net_TotalTT_h_Truck,
+    TotalVeh = stats_N_DistinctCars+stats_N_DistinctBuses+stats_N_DistinctTrucks,
+    DeltaAvgTT = round(TotalTT*3600/TotalVeh - base_avgtt, 1)
+  ) %>% select(-TotalTT,-TotalVeh) %>% arrange(Total)
+
+busprio_lat %>%
+  bind_rows(tibble(min_lat="—", min_ben="—", takeover="—", Total=base_delay,
+    Bus=base_bus, Car=base_car, AvgBusTT=no_tsp$stats_AvgBusTT_s[1],
+    MeanSigma=round(no_tsp$stats_AvgBusTT_s[1]-sched_tt,1),
+    Pct30=round(mean(lateness>30)*100,1), DeltaAvgTT=0)) %>%
+  gt() %>% tab_header(title="META-TSP Gate Parameter Sweep",
+    subtitle="δ_min = min bus delay, n_min = min net benefit, τ = lateness-takeover threshold") %>%
+  fmt_number(columns=c(Total,Bus,Car,AvgBusTT,MeanSigma,Pct30,DeltaAvgTT), decimals=1) %>%
+  cols_label(min_lat="δ_min (s)", min_ben="n_min (pax·s)", takeover="τ (s)", Total="Total (h)",
+    Bus="Bus (s)", Car="Car (s)", AvgBusTT="Avg Bus TT (s)", MeanSigma="Mean σ (s)", Pct30="σ>30s %",
+    DeltaAvgTT="Δ Avg TT (s)") %>%
+  tab_options(table.font.size="70%", data_row.padding="2px") %>%
+  data_color(columns=Total, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x)) %>%
+  data_color(columns=DeltaAvgTT, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x)) %>%
+  tab_source_note("D20/P0/T60 and D20/P40/T60 are numerically identical (n_min isn't binding once δ_min=20 already gates most buses); same for the D0/T30 vs T60 and D0/P40/T30 vs T60 pairs. Δ Avg TT (last row = NoPriority, by definition 0) is the change in unweighted average travel time per vehicle — shown for context, not part of the optimised objective.")
+```
+
+::: {.notes}
+**What each parameter does:**
+- **δ_min (Min Lateness)**: bus must already be ≥ this delayed before META-TSP
+  considers acting. 0 = help any bus. 20 = only buses already meaningfully late.
+- **n_min (Min Benefit)**: the CTM cost reduction `Z(NO_ACTION)-Z(a*)` must be
+  ≥ this many net pax·s. 0 = any saving counts. 40 = only substantial savings.
+- **τ (Takeover)**: if `|σ_in| ≥ τ`, both gates above are bypassed — META-TSP
+  fires unconditionally.
+
+**Key story:**
+- **D20/P0/T60 is the standout result on passenger delay within this
+  12-config sweep**: −24.5% total delay (952.4h vs NoPriority's 1261.1h),
+  with both bus (−31.4%) and car (−19.0%) improving — a larger Pareto gain
+  than even CellSearch. A follow-up sweep (two slides ahead), varying
+  `META_LATENESS_TAKEOVER_S × META_HW_SENSITIVITY` at this same `D20/P0`
+  anchor, finds an even better configuration — `D20/P0/T60/S2.5`, −27.2%,
+  the new overall best of all 60 executed experiments.
+- **But its Mean σ (36.9s) is still higher than NoPriority's (35.5s)** — like
+  every configuration tested (including the follow-up sweep's new best), it
+  does not beat the no-TSP baseline on per-passage schedule lateness, even
+  though it is the best on total delay. Among configs that improve total
+  delay by >100 pax·hrs, D20/P0/T60 has the smallest σ gap (+1.4s) other than
+  CellSearch's (+0.7s).
+- **D20/P0/T60 is also not the standout result on Δ Avg TT within this
+  sweep.** Its +34.1s is *worse* than CellSearch (+21.9s), WaveGate
+  (+25.5s), or NashGate (+28.9s) — despite its best-in-sweep passenger delay.
+  Within this sweep, D10/P40/T60 has the smallest Δ Avg TT (+26.7s) but a
+  much smaller delay improvement (−70.2 pax·hrs vs. D20/P0/T60's −308.7). The
+  follow-up sweep's `D20/P0/T60/S2.5` does slightly better still (+33.0s vs
+  +34.1s) — a small step in the right direction, not a fix. Same pattern as
+  the Z₁/Z₂ slide: Z₁ (occupancy-weighted) and Δ Avg TT (unweighted) don't
+  always agree on which config is "best".
+- **D0 configs (δ_min=0) are worst on every metric** — META-TSP fires for
+  buses that are barely late, disrupting cross-traffic (Car delay up to
+  54.2s) without a lateness payoff (σ>30s up to 56.5%, worse than baseline).
+- The follow-up sweep (two slides ahead) presents real results for the
+  τ × sensitivity sweep aimed at closing the σ gap without making Δ Avg TT
+  worse.
+:::
+
+---
+
+# Bus Lateness by Strategy (Real Data)
+
+```{r}
+lat_dirs <- list(NoPriority="results/NO_TSP_seed300_11129236_11129237_11129240/bus_trips.csv",
+  CPD_QL="results/DCTSP_MARL_seed300_11129236_11129237_11129240/bus_trips.csv",
+  WaveGate="results/DCTSP_ZIG_seed300_11129236_11129237_11129240/bus_trips.csv",
+  CellSearch="results/DCTSP_MP_ECTM_seed300_11129236_11129237_11129240/bus_trips.csv",
+  CellQLearn="results/DCTSP_BXT_seed300_11129236_11129237_11129240/bus_trips.csv",
+  NashGate="results/DCTSP_BARGAIN_SPM_seed300_11129236_11129237_11129240/bus_trips.csv",
+  "META-TSP (best)"="results/LATENESS_SWEEP_T60_S25_seed300_11129236_11129237_11129240/bus_trips.csv")
+sched <- as.numeric(quantile(read_csv(lat_dirs[["NoPriority"]],show_col_types=FALSE)$TravelTime_s,0.10))
+lat_tbl <- tibble()
+for(nm in names(lat_dirs)) { if(file.exists(lat_dirs[[nm]])) {
+  tt <- read_csv(lat_dirs[[nm]],show_col_types=FALSE)$TravelTime_s; tt <- tt[!is.na(tt)&tt>0]
+  lat_tbl <- bind_rows(lat_tbl, tibble(Strategy=ifelse(nm=="CPD_QL","CPD-QL",nm),
+    Mean_s=round(mean(tt-sched),1), Pct30=round(100*mean(tt-sched>30),1),
+    Pct60=round(100*mean(tt-sched>60),1)))
+}}
+lat_tbl %>% arrange(Mean_s) %>%
+  gt() %>% tab_header(title="Actual Lateness Violation Rates", subtitle=paste0("Scheduled travel time: ",round(sched,1),"s (10th percentile free-flow)")) %>%
+  cols_label(Strategy="", Mean_s="Mean σ (s)", Pct30=">30s %", Pct60=">60s %") %>%
+  tab_options(table.font.size="90%", data_row.padding="4px") %>%
+  data_color(columns=Mean_s, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x))
+```
+
+::: {.notes}
+**How to read:**
+- Scheduled TT = 10th percentile of NoPriority travel times (free-flow estimate).
+- σ = actual TT − scheduled, *per bus-intersection passage*. Positive = late.
+- This is a different, smaller-scale metric from "Avg Bus Pass Delay" (the
+  route-level delay-vs-desired-speed statistic in earlier slides) — TSP
+  improves that metric substantially (e.g. 72.6→45.6s for CellSearch) while
+  barely moving this one.
+
+**Key story:**
+- **NoPriority is lowest (35.5s / 43.3%>30s) of all seven rows** — every TSP
+  strategy, including the best on total delay (CellSearch 36.2s, META-TSP
+  `D20/P0/T60/S2.5` 37.4s, the new overall-best config), is slightly worse
+  here.
+- Why: when a TSP action shortens delay at intersection $i$, it can shift the
+  downstream signal phase so a bus hits a red phase at $i+1$ it would
+  otherwise have missed — a coordination cascade (see the BUS 11573 example:
+  a 23.5s local saving costs 53s downstream). Averaged over many passages,
+  these cascade losses slightly outweigh the local gains.
+- CPD-QL is still the worst by far (53.8s / 59.2%>30s) — unguarded TSP
+  disrupts the green wave on nearly every passage.
+- **No strategy directly optimises σ.** The lateness-takeover ×
+  adaptive-weight sweep (two slides ahead) is the first attempt aimed
+  specifically at closing this gap — and, while it does not close it, it
+  finds the new overall-best configuration on total passenger delay.
+:::
+
+---
+
+# Z₃ Follow-up: Lateness-Takeover × Adaptive-Weight Sweep (12 configs, real data)
+
+A second 12-config sweep, anchored at the previous slide's best gate region
+(`δ_min=20, n_min=0`, i.e. `D20/P0`), varies `META_LATENESS_TAKEOVER_S` (τ)
+∈ {60, 90, 120, 9999} × `META_HW_SENSITIVITY` (S) ∈ {0.5, 1.5, 2.5} — the
+adaptive bus-weight slope that the BUS_PRIO sweep held fixed at its default
+of 1.5:
+
+$$w_{bus}(\sigma) = \texttt{META\_BASE\_BUS\_WEIGHT} + S \times
+\mathrm{clip}\!\left(\frac{|\sigma_{in}|}{\texttt{META\_HW\_REF\_S}}, 0, 1\right)$$
+
+τ = 9999 effectively disables the lateness-takeover gate.
+
+```{r}
+lat_sweep <- df %>% filter(str_detect(experiment, "^LATENESS_SWEEP")) %>%
+  rowwise() %>% mutate(
+    bus_trips_file = paste0("results/", experiment, "_seed300_11129236_11129237_11129240/bus_trips.csv"),
+    tt_list = list({
+      tt <- read_csv(bus_trips_file, show_col_types=FALSE)$TravelTime_s
+      tt[!is.na(tt) & tt>0]
+    })
+  ) %>% ungroup() %>%
+  mutate(
+    tau  = case_when(str_detect(experiment,"_T60_")~"60", str_detect(experiment,"_T90_")~"90",
+                     str_detect(experiment,"_T120_")~"120", str_detect(experiment,"_T9999_")~"9999"),
+    sens = case_when(str_detect(experiment,"_S05$")~"0.5", str_detect(experiment,"_S15$")~"1.5", str_detect(experiment,"_S25$")~"2.5"),
+    Total = pass_delay_hrs,
+    DeltaTotal = round(100*(round(Total,1)-round(base_delay,1))/round(base_delay,1),1),
+    Bus = bus_delay_s, Car = car_delay_s, AvgBusTT = stats_AvgBusTT_s,
+    MeanSigma = map_dbl(tt_list, ~round(mean(.x - sched_tt),1)),
+    Pct30 = map_dbl(tt_list, ~round(100*mean((.x-sched_tt)>30),1)),
+    TotalTT = stats_Net_TotalTT_h_Bus+stats_Net_TotalTT_h_Car+stats_Net_TotalTT_h_Truck,
+    TotalVeh = stats_N_DistinctCars+stats_N_DistinctBuses+stats_N_DistinctTrucks,
+    DeltaAvgTT = round(TotalTT*3600/TotalVeh - base_avgtt, 1)
+  ) %>%
+  select(tau, sens, Total, DeltaTotal, Bus, Car, AvgBusTT, MeanSigma, Pct30, DeltaAvgTT) %>%
+  arrange(Total)
+
+lat_sweep %>%
+  bind_rows(tibble(tau="—", sens="—", Total=base_delay, DeltaTotal=0,
+    Bus=base_bus, Car=base_car, AvgBusTT=no_tsp$stats_AvgBusTT_s[1],
+    MeanSigma=round(no_tsp$stats_AvgBusTT_s[1]-sched_tt,1),
+    Pct30=round(mean(lateness>30)*100,1), DeltaAvgTT=0)) %>%
+  gt() %>% tab_header(title="Lateness-Takeover × Adaptive-Weight Sweep (anchored at D20/P0)",
+    subtitle="τ = META_LATENESS_TAKEOVER_S (s), S = META_HW_SENSITIVITY") %>%
+  fmt_number(columns=c(Total,DeltaTotal,Bus,Car,AvgBusTT,MeanSigma,Pct30,DeltaAvgTT), decimals=1) %>%
+  cols_label(tau="τ (s)", sens="S", Total="Total (h)", DeltaTotal="ΔTotal %",
+    Bus="Bus (s)", Car="Car (s)", AvgBusTT="Avg Bus TT (s)", MeanSigma="Mean σ (s)",
+    Pct30="σ>30s %", DeltaAvgTT="Δ Avg TT (s)") %>%
+  tab_options(table.font.size="70%", data_row.padding="2px") %>%
+  data_color(columns=Total, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x)) %>%
+  data_color(columns=DeltaAvgTT, fn=function(x) scales::col_numeric("RdYlGn",domain=range(x,na.rm=TRUE),reverse=TRUE)(x)) %>%
+  tab_source_note("τ∈{90,120,9999} rows are numerically identical across all three sensitivity values — the lateness-takeover gate rarely fires once τ≥90, so the δ_min/n_min cost-benefit gate governs and is insensitive to META_HW_SENSITIVITY. τ=60/S=1.5 reproduces BUSPRIO_SWEEP_D20_P0_T60 exactly (cross-check). Last row = NoPriority.")
+```
+
+::: {.notes}
+**New overall best: `D20/P0/T60/S2.5`.** Two of the twelve configurations —
+τ=60 at S=0.5 and S=2.5 — improve on `D20/P0/T60`. `D20/P0/T60/S2.5`
+(`LATENESS_SWEEP_T60_S25`) reaches 918.1 pax·hrs (−27.2% vs NoPriority), the
+lowest total passenger delay of all 60 executed experiments, with
+Pareto-improving bus (−33.9%) and car (−22.8%) delay — both *larger*
+improvements than `D20/P0/T60`'s (−31.4%/−19.0%). `D20/P0/T60/S0.5` is a
+close second (928.2 pax·hrs, −26.4%). For τ≥90, total delay gets
+monotonically worse as τ increases (959.0 → 1004.7 → 1070.6 pax·hrs at
+τ=90,120,9999) — relaxing the takeover threshold beyond 60s costs passenger
+delay regardless of sensitivity.
+
+**Mean σ goal not met — and the new best is no exception.** None of the 12
+configurations push Mean σ below NoPriority's 35.5s; the closest is
+`D20/P0/T60` itself (36.9s). `D20/P0/T60/S2.5` (37.4s) and `D20/P0/T60/S0.5`
+(37.8s) are both *slightly worse* on σ than the configuration they beat on
+total delay — the adaptive-weight tuning that reduces total passenger delay
+further does so at a small further cost in per-passage schedule adherence.
+Within the (τ, sensitivity) region tested here, this mechanism cannot push
+Mean σ below the NoPriority baseline; Z₃ would need a different formulation
+(e.g. a direct σ-penalty term, future work) to do so.
+
+**Δ Avg TT: a partial improvement.** `D20/P0/T60/S2.5`'s Δ Avg TT (+33.0s)
+is marginally better than `D20/P0/T60`'s (+34.1s), but both remain worse
+than CellSearch (+21.9s), WaveGate (+25.5s), and NashGate (+28.9s). The τ≥90
+configurations have the *best* Δ Avg TT in this sweep (+27.9s at τ=90,
++27.7s at τ=120) — close to D10/P40/T60's +26.7s (the best-in-BUS_PRIO
+value, previous slide) — but cost 41–87 pax·hrs more total delay than
+`D20/P0/T60/S2.5`. No configuration in either sweep combines the lowest
+total delay with the lowest Δ Avg TT — this remains the motivation for the
+raw travel-time sweep (next slide), now re-anchored at `D20/P0/T60/S2.5`.
+
+**Sensitivity is inert except at τ=60.** For τ∈{90,120,9999}, all three
+sensitivity values produce numerically identical results — the adaptive
+bus-weight slope has no observable effect. A plausible explanation: the
+lateness-takeover condition `|σ_in| ≥ τ` fires often enough at τ=60 to
+interact with `w_bus(σ)` during action selection, but rarely or never for
+τ≥90 at this corridor's demand level — so those configurations are governed
+entirely by the δ_min=20/n_min=0 cost-benefit gate, whose argmin appears
+insensitive to `w_bus` in the range tested.
+
+**Built-in cross-check**: τ=60/S=1.5 reproduces `BUSPRIO_SWEEP_D20_P0_T60`
+exactly (952.4 pax·hrs, Mean σ=36.9s, Δ Avg TT=+34.1s) — confirmed.
+:::
+
+---
+
+# Next: Raw Travel-Time Term (Z₄)
+
+**Results pending** — requires a follow-up Aimsun batch run.
+
+A second new term, $Z_4$, is added directly to the objective: the *raw,
+unweighted* sum of vehicle-delay-seconds across all four section/mode
+components — the same quantity that drives Δ Avg TT (Total Vehicle-Hours
+slide), now expressed as a per-step cost the reward can minimise directly.
+
+$$J = \alpha Z_1 + \beta Z_2 + \delta Z_4, \qquad \delta = \texttt{WOBJ\_DELTA}$$
+
+Anchored at the new overall-best configuration (`D20/P0/T60/S2.5`, i.e.
+`LATENESS_SWEEP_T60_S25` — the −27.2% total-delay result from the previous
+slide), a new 4-config sweep varies δ:
+
+| `WOBJ_DELTA` (δ) | Rationale |
+|---|---|
+| 0 | Reproduces `D20/P0/T60/S2.5` exactly — built-in cross-check |
+| 2, 8 | Comparable to Z₁'s car-delay weight (α·ρ_car ≈ 1.2) |
+| 32 | Comparable to Z₁'s bus-delay weight (α·ρ_bus ≈ 32) |
+
+**Goal**: `D20/P0/T60/S2.5` is the lowest-total-delay configuration of all 60
+executed experiments but its Δ Avg TT (+33.0s) is still *worse* than
+CellSearch's +21.9s. A non-zero δ should pull the solver away from this
+trade-off, reducing Δ Avg TT towards CellSearch's level without giving up
+`D20/P0/T60/S2.5`'s passenger-delay advantage over `D20/P0/T60` (−27.2% vs
+−24.5%).
+
+::: {.notes}
+This 4-config sweep (`TRAVELTIME_SWEEP_D{0,2,8,32}`) is enabled in
+`batch_runner.py`, re-anchored this round from `D20/P0/T60` to
+`D20/P0/T60/S2.5` (`META_LATENESS_TAKEOVER_S=60, META_HW_SENSITIVITY=2.5`),
+but has not been run yet — like the lateness-takeover × adaptive-weight
+sweep on the previous slide, it requires Aimsun and is a separate batch job.
+This is the only experiment of the 64 designed that hasn't been run yet.
+
+The mechanism is implemented in `compute_weighted_objective` /
+`_accumulate_weighted_objective` (`intersection_controller.py`): Z₄ is
+computed and logged alongside Z₁/Z₂ in the same per-run weighted-objective
+trace, with `WOBJ_DELTA` defaulting to 0.0 (legacy behaviour — every existing
+result on the previous slides is unaffected).
+
+The lateness-takeover × adaptive-weight sweep (previous slide) already
+improved Δ Avg TT slightly (+34.1s → +33.0s) while improving total delay
+substantially (−24.5% → −27.2%) — a step in the right direction on both
+fronts, but not a fix for the Z₁ / Δ Avg TT gap. This sweep targets that gap
+directly via δ, from the new, better-positioned anchor.
+:::
+
+---
+
+# Per-Objective Sensitivity: Best Config vs. Baseline
+
+The previous slides report each term of $J = \alpha Z_1 + \beta Z_2 + \gamma Z_3 + \delta Z_4$
+separately, across different tables. Here they are collected for a single
+configuration — **`D20/P0/T60/S2.5`** (`LATENESS_SWEEP_T60_S25`), the
+configuration with the lowest total passenger delay of all 60 executed
+experiments — against the **NoPriority** baseline.
+
+| Objective | Metric | NoPriority | D20/P0/T60/S2.5 | Δ | Change |
+|---|---|---|---|---|---|
+| $Z_1$ (passenger delay) | PaxDelay (pax·hrs) | 1261.1 | 918.1 | −343.0 | **−27.2%** |
+| $Z_2$ (offset correction) | \|error\| (pax·s) | 0.0 | 0.0 | 0.0 | n/a† |
+| $Z_3$ (schedule lateness) | Mean σ (s) | 35.5 | 37.4 | +1.9 | +5.4% |
+| $Z_4$ (raw travel-time delay) | Δ Avg TT (s/veh) | 0.0 (ref.) | +33.0 | +33.0 | ‡ |
+
+† $Z_2 \equiv 0$ for every configuration in this dataset (telemetry gap, see Z₁/Z₂ slide).
+‡ $Z_4$ itself has no logged data yet (pending sweep, previous slide); Δ Avg TT is the
+best available proxy for its sign and magnitude.
+
+::: {.notes}
+`D20/P0/T60/S2.5` was selected purely on total passenger delay (previous two
+slides), and on that axis it is decisive: −27.2% passenger delay, the best
+of all 60 executed experiments. $Z_2$ is unaffected — still exactly zero, a
+telemetry gap rather than a result.
+
+On $Z_3$ it is *worse* than the baseline by 1.9s of mean schedule lateness
+(+5.4%) — a slightly larger gap than `D20/P0/T60`'s (+1.4s, +3.9%) — though
+still better than NashGate, CellQLearn, and CPD-QL, and better than
+`D20/P0/T60/S0.5` and all τ≥90 configurations in the lateness-takeover ×
+adaptive-weight sweep.
+
+On the $Z_4$ proxy (Δ Avg TT) it is, again, the *worst* Pareto-improving
+result in the entire study: +33.0s/veh — marginally better than
+`D20/P0/T60`'s +34.1s, but still well above +21.9 for CellSearch, +25.5 for
+WaveGate, and +28.9 for NashGate.
+
+**Bottom line**: the configuration that wins on total passenger delay remains
+close to a wash on $Z_3$ and a clear loss on $Z_4$ relative to the other
+Pareto-improving strategies — the motivation for the raw travel-time sweep
+(previous slide), now re-anchored at `D20/P0/T60/S2.5`.
+:::
+
+---
+
+# Delay Split: Main Corridor vs Side Streets
+
+```{r fig.height=4}
+strategies %>% select(strategy_label,main_delay_hrs,side_delay_hrs) %>%
+  pivot_longer(-strategy_label,names_to="section",values_to="hrs") %>%
+  mutate(section=ifelse(section=="main_delay_hrs","Main Corridor","Side Streets")) %>%
+  ggplot(aes(reorder(strategy_label,hrs),hrs,fill=section)) +
+  geom_col(position="stack",width=0.5) + coord_flip() +
+  scale_fill_manual(values=c("Main Corridor"="#8e44ad","Side Streets"="#2ecc71")) +
+  labs(x="",y="Passenger Delay (hrs)",fill="")
+```
+
+::: {.notes}
+**How to read:**
+- Purple = delay on the main corridor (KG Road — where buses travel).
+- Green = delay on side streets (cross-traffic).
+- Side streets dominate (69% of NoPriority total) because cross-traffic volume is high.
+
+**Key story:**
+- CPD-QL inflates MAIN corridor delay massively (purple bar grows) because its TSP
+  actions disrupt the green wave → all traffic on KG Road suffers.
+- WaveGate and NashGate reduce side-street delay while keeping main near baseline.
+- The balance guard protects cross-traffic by blocking TSP when car cost is too high.
+:::
+
+---
+
+# Key Findings
+
+| Finding | Detail |
+|---------|--------|
+| **CPD-QL harmful** | +40% pax delay, +82% car veh·hrs, lateness WORSE than baseline (59% vs 43%) |
+| **NashGate best Pareto** | −18.5% pax delay, −28.1% bus, −9.6% car — largest Pareto improvement of the six methods |
+| **CellSearch nearly matches** | −17.9% pax delay via pure CTM search, no learning or bargaining — smallest per-vehicle delay increase (+21.9s) |
+| **WaveGate best-tuned** | gate threshold 1.0, penalty 3.0 → −32% pax delay, −41% bus, −23% car |
+| **β ≥ 0.2 required** | β=0.1 → +15% worse than baseline (progression ignored) |
+| **D20/P0/T60/S2.5 is the new overall best** | −27.2% pax delay (918.1h), Pareto bus −33.9% / car −22.8% — lowest total delay of all 60 executed experiments |
+| **No config beats baseline σ** | Even the new best (D20/P0/T60/S2.5) has Mean σ=37.4s > NoPriority's 35.5s, and its ΔAvgTT (+33.0s) is worse than CellSearch's (+21.9s) |
+| **Total time metric** | CPD-QL +255.7 veh·hrs, WaveGate +52.1, NashGate +62.8 |
+
+::: {.notes}
+**Presenter summary:**
+
+1. CPD-QL without a guard is worse than doing nothing.
+2. NashGate and CellSearch are the two standout strategies — both improve bus
+   AND car delay simultaneously (Pareto improvements), NashGate slightly
+   ahead (−18.5% vs −17.9%).
+3. CellSearch reaches this via pure CTM cost-minimisation with no learning or
+   bargaining — remarkable given its simplicity. CellQLearn (same CTM model
+   plus a Q-learning policy) is the second-worst strategy, showing the
+   learned policy hasn't converged to anything useful.
+4. Progression weight β must be ≥0.2 or TSP makes things worse — and its
+   effect operates via the reward-section weights, not via Z₂ (Z₂≡0 here).
+5. The lateness-takeover × adaptive-weight sweep found `D20/P0/T60/S2.5`
+   (−27.2% total delay), the new overall best of all 60 executed
+   experiments — ahead of `D20/P0/T60` (−24.5%, the best of the 12-config
+   BUS_PRIO sweep) and every strategy default.
+6. Schedule-lateness (σ) remains unsolved: even `D20/P0/T60/S2.5`
+   (Mean σ=37.4s) doesn't beat the no-TSP baseline (35.5s) on this metric. A
+   direct σ-penalty formulation is flagged as future work.
+7. Total vehicle-hours is the simplest metric: CPD-QL +255.7 veh·hrs,
+   WaveGate +52.1, NashGate +62.8 (now includes bus+car+truck hours).
+:::
+
+---
+
+# Experiment Plan
+
+**64 experiments designed, 60 executed, single seed 300:**
+
+| Group | Count | What it tests |
+|-------|-------|---------------|
+| Strategy comparison | 6 | NoPriority, CPD-QL, WaveGate, CellSearch, CellQLearn, NashGate |
+| WOBJ sweep | 9 | α (delay weight) × β (progression weight) — Z₁ vs Z₂ |
+| Main-Side sweep | 9 | w_main × w_side — corridor vs cross-street priority |
+| WaveGate variants | 12 | Strategy configuration variants |
+| **META-TSP gate sweep (BUS_PRIO)** | **12** | **δ_min × n_min × τ — real data** |
+| **Lateness-takeover × adaptive-weight sweep** | **12** | **τ × META_HW_SENSITIVITY @ D20/P0 — real data, new overall best** |
+| **Raw travel-time sweep** | **4** | **δ (WOBJ_DELTA) ∈ {0,2,8,32} @ D20/P0/T60/S2.5 — *pending*** |
+| **Total** | **64 (60 executed)** | |
+
+::: {.notes}
+**What each sweep tells us:**
+- WOBJ: how much should we weight progression (Z₂) vs delay (Z₁)? In
+  practice β's effect comes via the reward-section weights, not Z₂ — see the
+  Z₁/Z₂ Weights slide.
+- Main-Side: should we protect the corridor or cross-streets more?
+- META-TSP gate sweep (BUS_PRIO): when should the lateness-aware gate fire
+  for late buses regardless of car cost? Produced the lowest passenger delay
+  of the 12-config BUS_PRIO sweep (D20/P0/T60, −24.5% total delay) — though
+  not the lowest Δ Avg TT (CellSearch, WaveGate, and NashGate all beat it on
+  that axis).
+- Lateness-takeover × adaptive-weight sweep (12 configs, real data):
+  anchored at D20/P0, varies τ ∈ {60,90,120,9999} × META_HW_SENSITIVITY ∈
+  {0.5,1.5,2.5}. Found `D20/P0/T60/S2.5` (−27.2%), the new overall best of
+  all 60 executed experiments — see the dedicated slide. Targets the
+  unsolved σ-lateness gap from the previous slides while tracking Δ Avg TT
+  as a secondary goal.
+- Raw travel-time sweep (4 configs, pending): adds the new Z₄ term
+  (Section "Next: Raw Travel-Time Term") to the reward via
+  `WOBJ_DELTA` ∈ {0,2,8,32}, re-anchored this round at
+  `D20/P0/T60/S2.5` (`LATENESS_SWEEP_T60_S25`). Targets its Δ Avg TT gap
+  (+33.0s vs. CellSearch's +21.9s) directly. Requires a follow-up Aimsun
+  batch run (results pending) — the only experiment of the 64 designed that
+  hasn't been run yet.
+:::
+
+# Thank You

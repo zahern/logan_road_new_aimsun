@@ -50,6 +50,36 @@ _SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 # =============================================================================
 
 EXPERIMENTS = [
+        # Global reward aggregation test case: aggregates all reward action states and feeds into offset calculation
+        {
+            "name": "GLOBAL_REWARD",
+            "strategy": "GLOBAL_REWARD",
+            "coordinated": True,
+            "coordination_algo": "KALMAN",
+            "active_intersections": None,
+            "reward_overrides": {
+                "REWARD_ALPHA": 1.0,
+                "REWARD_BETA": 1.0,
+                "REWARD_GAMMA": 1.0,
+                "REWARD_DENSITY": 1.0,
+                "GLOBAL_REWARD_MODE": True
+            },
+        },
+        # Local reward baseline: same as above but no global aggregation
+        {
+            "name": "LOCAL_REWARD",
+            "strategy": "GLOBAL_REWARD",
+            "coordinated": True,
+            "coordination_algo": "KALMAN",
+            "active_intersections": None,
+            "reward_overrides": {
+                "REWARD_ALPHA": 1.0,
+                "REWARD_BETA": 1.0,
+                "REWARD_GAMMA": 1.0,
+                "REWARD_DENSITY": 1.0,
+                "GLOBAL_REWARD_MODE": False
+            },
+        },
     {
         "name":                 "NORMAL",
         "strategy":             "NORMAL",
