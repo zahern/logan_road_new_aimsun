@@ -235,20 +235,24 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                     sides = {}
 
                     # Try new directional columns first (queue_main_nb, queue_main_sb, queue_side_eb, queue_side_wb)
-                    q_main_nb = float(r.get("queue_main_nb", 0) or 0)
-                    q_main_sb = float(r.get("queue_main_sb", 0) or 0)
-                    q_side_eb = float(r.get("queue_side_eb", 0) or 0)
-                    q_side_wb = float(r.get("queue_side_wb", 0) or 0)
+                    # These columns exist and have values (including 0.0) if directional queue tracking is enabled
+                    q_cols = ["queue_main_nb", "queue_main_sb", "queue_side_eb", "queue_side_wb"]
+                    has_directional_cols = any(r.get(col) is not None and r.get(col) != '' for col in q_cols)
 
-                    if q_main_nb > 0 or q_main_sb > 0 or q_side_eb > 0 or q_side_wb > 0:
-                        # Use directional breakdown
-                        if q_main_nb > 0:
+                    if has_directional_cols:
+                        # Use directional breakdown - include even if values are 0
+                        q_main_nb = float(r.get("queue_main_nb", 0) or 0)
+                        q_main_sb = float(r.get("queue_main_sb", 0) or 0)
+                        q_side_eb = float(r.get("queue_side_eb", 0) or 0)
+                        q_side_wb = float(r.get("queue_side_wb", 0) or 0)
+
+                        if q_main_nb >= 0:
                             sides["Main NB"] = q_main_nb
-                        if q_main_sb > 0:
+                        if q_main_sb >= 0:
                             sides["Main SB"] = q_main_sb
-                        if q_side_eb > 0:
+                        if q_side_eb >= 0:
                             sides["Cross EB"] = q_side_eb
-                        if q_side_wb > 0:
+                        if q_side_wb >= 0:
                             sides["Cross WB"] = q_side_wb
                     else:
                         # Fall back to parsing queue_side_detail for older CSV files
@@ -8837,12 +8841,16 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
                          row.other_delay_model_pax_s_nf1 !== '')
                         ? Number(row.other_delay_model_pax_s_nf1)
                         : predNF / nf;
-        if (intv > 1 && pred >= 0) {
+        // Stricter filtering: require meaningful interval, valid prediction, and confidence-based data quality
+        if (intv > 2 && pred >= 0 && delta >= 0 && Math.abs(delta) < 1000) {  // Reject extreme outliers (>1000 pax·s)
           const measNorm = delta * bpDur / intv;
-          crossPts.push({ x: measNorm, y: pred,
-                          _jct: String(row.jct), _t: Number(row.t),
-                          _delta: delta, _intv: intv, _bpDur: bpDur,
-                          _nf: nf });
+          // Only include points with reasonable ratio and reasonable absolute values
+          if (measNorm >= 0 && measNorm < 1000 && pred < 1000) {
+            crossPts.push({ x: measNorm, y: pred,
+                            _jct: String(row.jct), _t: Number(row.t),
+                            _delta: delta, _intv: intv, _bpDur: bpDur,
+                            _nf: nf });
+          }
         }
       });
     } else {
@@ -8918,14 +8926,21 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     // Exclude rows where kinematic delay = 0 (bus was already on green — no
     // delay expected, so D/D/1 and MB can't be validated against the reference).
     // These "on-green" events are annotated separately in the legend count.
+    // Also filter out extreme outliers to keep the scale readable.
     const dd1Pts = [], mbPts = [];
     let maxB = 10;
     let zeroKinCount = 0;
+    let outlierCount = 0;
     filtered.forEach(row => {
       const kin = Math.max(0, Number(row.no_act_delay_s || 0));
       const dd1 = Math.max(0, Number(row.dd1_delay_s || 0));
       const mb  = Math.max(0, Number(row.mb_delay_s  || 0));
       if (kin === 0) { zeroKinCount++; return; }   // bus on green – skip from scatter
+      // Stricter filtering: reject extreme outliers (>300s kinematic delay, >400s method delay)
+      if (kin > 300 || dd1 > 400 || mb > 400) {
+        outlierCount++;
+        return;  // Skip extreme outliers that distort scale
+      }
       if (showDd1) dd1Pts.push({ x: kin, y: dd1 });
       if (showMb)  mbPts.push({ x: kin, y: mb  });
       maxB = Math.max(maxB, kin, dd1, mb);
@@ -8934,7 +8949,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     if (ctx2) {
       const dsBus = [
-        { label: `Perfect (45°) — ${zeroKinCount} on-green events excluded (kinematic=0)`, data: [{x:0,y:0},{x:maxB,y:maxB}],
+        { label: `Perfect (45°) — ${zeroKinCount} on-green + ${outlierCount} extreme outliers excluded`, data: [{x:0,y:0},{x:maxB,y:maxB}],
           type: 'line', borderColor: '#ffffff44', borderDash: [6,4],
           borderWidth: 1.5, pointRadius: 0, fill: false },
       ];

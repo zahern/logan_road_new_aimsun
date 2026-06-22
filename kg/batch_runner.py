@@ -2656,31 +2656,20 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
     _z1 = meta.get('wobj_Z1_total', 0) or 0
     if abs(_z1) < 0.01:
         try:
-            # Z1: use direct Aimsun simulation total pax delay (network stat, not
-            # TSP-controller-scoped) so NO_TSP baseline is stable across config changes.
-            _sim_z1 = float(meta.get('stats_SimTotalDelay_pax_s', 0) or 0)
-            if _sim_z1 > 0:
-                meta['wobj_Z1_total'] = _sim_z1
-                meta['wobj_objective_total'] = 0.8 * _sim_z1
-                log(f"  Z1 (fallback, SimTotalDelay): {_sim_z1:.1f} pax-s")
+            # Z1: Prefer TotalPassDelay (total pax-hours × 3600) as direct pax-second measure.
+            # This is more reliable than SimTotalDelay which may have different calculation.
+            _total_pass_delay_hrs = float(meta.get('stats_TotalPassDelay_hrs', 0) or 0)
+            if _total_pass_delay_hrs > 0:
+                meta['wobj_Z1_total'] = _total_pass_delay_hrs * 3600  # Convert hours to seconds
+                meta['wobj_objective_total'] = meta['wobj_Z1_total']
+                log(f"  Z1 (fallback, TotalPassDelay): {meta['wobj_Z1_total']:.1f} pax-s")
             else:
-                # Older formula fallback using main/side delay split
-                _md = float(meta.get('stats_MainPassDelay_hrs', 0) or 0)
-                _sd = float(meta.get('stats_SidePassDelay_hrs', 0) or 0)
-                _bp = float(meta.get('stats_BusPaxEquivPassages', 0) or 0)
-                _cp = float(meta.get('stats_CarPaxEquivPassages', 0) or 0)
-                _tp = _bp + _cp
-                if _tp > 0 and (_md > 0 or _sd > 0):
-                    _bs = _bp / _tp
-                    _cs = _cp / _tp
-                    _rb = 40.0; _rc = 1.5
-                    _bvs = _md * 3600 * _bs / _rb
-                    _cvm = _md * 3600 * _cs / _rc
-                    _cvs = _sd * 3600 / _rc
-                    _z1_approx = 0.8 * _rb * _bvs + 0.8 * _rc * _cvm + 0.6 * _rc * _cvs
-                    meta['wobj_Z1_total'] = _z1_approx
-                    meta['wobj_objective_total'] = 0.8 * _z1_approx
-                    log(f"  Z1 (fallback, formula): {_z1_approx:.1f} pax-s")
+                # Second: use direct Aimsun simulation total pax delay (network stat)
+                _sim_z1 = float(meta.get('stats_SimTotalDelay_pax_s', 0) or 0)
+                if _sim_z1 > 0:
+                    meta['wobj_Z1_total'] = _sim_z1
+                    meta['wobj_objective_total'] = _sim_z1
+                    log(f"  Z1 (fallback, SimTotalDelay): {_sim_z1:.1f} pax-s")
         except Exception:
             pass
 
