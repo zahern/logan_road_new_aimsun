@@ -3389,10 +3389,17 @@ def main():
     _clear_previous_outputs(PROJECT_DIR)
 
     # ── Create batch_results.csv early so waiting scripts don't timeout ─────
-    # Write CSV header immediately so gen_obj_dashboard.py can detect file exists
+    # Write CSV header immediately with all core columns so gen_obj_dashboard.py can detect file exists.
+    # append_master_csv() will add additional columns as runs complete.
+    _early_header = [
+        "run_experiment", "run_strategy", "run_coordinated", "run_seed", "run_demand_scalar",
+        "stats_AvgBusTT_s", "stats_AvgBusPassDelay_s", "stats_Objective_PaxPerDelayHr",
+        "stats_Net_AvgSpeed_kmh", "stats_AvgPassDelay_s", "wobj_Z1_total", "wobj_Z2_total",
+        "wobj_Z3_total", "wobj_Z4_total"
+    ]
     try:
         with open(MASTER_CSV_PATH, 'w', encoding='utf-8', newline='') as f:
-            f.write("run_experiment,run_strategy,run_coordinated,run_seed,run_demand_scalar\n")
+            f.write(",".join(_early_header) + "\n")
         log(f"  Batch results file created: {MASTER_CSV_PATH}")
     except Exception as e:
         log(f"  WARNING: could not create batch_results.csv: {e}")
