@@ -96,9 +96,10 @@ EXPERIMENTS = [
             "DCTSP_W_H":             0.50,   # balanced: headway = pax delay
             "DCTSP_CAR_WEIGHT":      1.00,   # full car cost — per passenger
             "BUS_OCC_OVERRIDE":      None,   # use junction defaults (bus=40, car=1.2) — per passenger
-            "WOBJ_Z1_SCALE":         3000000.0,
+            "WOBJ_Z1_SCALE":         10000000.0,  # Increased to reduce Z1 influence
             "WOBJ_Z2_SCALE":         7500.0,
             "WOBJ_Z3_SCALE":         12000.0,
+            "WOBJ_Z4_SCALE":         50000.0,     # Added for vehicle-km throughput
         },
     },
     # ── MARL + Harmony Search ──────────────────────────────────────────────────

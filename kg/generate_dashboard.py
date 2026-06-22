@@ -217,8 +217,8 @@ def _objective_trace_from_csv(path: str) -> list:
 def _queue_entry_snapshots_from_csv(path: str) -> list:
     """Parse a queue_snapshot_*.csv for the per-approach entry-point chart.
 
-    Reads the new-format columns: n_main_veh, main_dir, queue_side_detail
-    (format: dir:sec_id:n_veh or legacy sec_id:n_veh per section separated by |).
+    Reads directional queue columns: queue_main_nb, queue_main_sb, queue_side_eb, queue_side_wb
+    or falls back to queue_side_detail (format: dir:sec_id:n_veh per section separated by |).
     Returns a list of dicts suitable for renderQueueEntryPoints().
     """
     if not path or not os.path.isfile(path):
@@ -232,26 +232,46 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                     jct = int(float(r.get("junction_id", -1) or -1))
                     main_veh = float(r.get("n_main_veh", 0) or 0)
                     main_dir = str(r.get("main_dir", "main") or "main")
-                    qsd = str(r.get("queue_side_detail", "") or "")
                     sides = {}
-                    for tok in qsd.split("|"):
-                        tok = tok.strip()
-                        if not tok:
-                            continue
-                        parts = tok.split(":")
-                        if len(parts) == 3:          # dir:sec_id:n_veh  (new)
-                            d, sid, nv = parts
-                            key = d.strip() if d.strip() else f"sec{sid}"
-                        elif len(parts) == 2:         # sec_id:n_veh  (legacy)
-                            sid, nv = parts
-                            key = f"sec{sid}"
-                        else:
-                            continue
-                        try:
-                            # Aggregate by direction key (sum vehicles)
-                            sides[key] = sides.get(key, 0.0) + float(nv)
-                        except ValueError:
-                            pass
+
+                    # Try new directional columns first (queue_main_nb, queue_main_sb, queue_side_eb, queue_side_wb)
+                    q_main_nb = float(r.get("queue_main_nb", 0) or 0)
+                    q_main_sb = float(r.get("queue_main_sb", 0) or 0)
+                    q_side_eb = float(r.get("queue_side_eb", 0) or 0)
+                    q_side_wb = float(r.get("queue_side_wb", 0) or 0)
+
+                    if q_main_nb > 0 or q_main_sb > 0 or q_side_eb > 0 or q_side_wb > 0:
+                        # Use directional breakdown
+                        if q_main_nb > 0:
+                            sides["Main NB"] = q_main_nb
+                        if q_main_sb > 0:
+                            sides["Main SB"] = q_main_sb
+                        if q_side_eb > 0:
+                            sides["Cross EB"] = q_side_eb
+                        if q_side_wb > 0:
+                            sides["Cross WB"] = q_side_wb
+                    else:
+                        # Fall back to parsing queue_side_detail for older CSV files
+                        qsd = str(r.get("queue_side_detail", "") or "")
+                        for tok in qsd.split("|"):
+                            tok = tok.strip()
+                            if not tok:
+                                continue
+                            parts = tok.split(":")
+                            if len(parts) == 3:          # dir:sec_id:n_veh  (new)
+                                d, sid, nv = parts
+                                key = d.strip() if d.strip() else f"sec{sid}"
+                            elif len(parts) == 2:         # sec_id:n_veh  (legacy)
+                                sid, nv = parts
+                                key = f"sec{sid}"
+                            else:
+                                continue
+                            try:
+                                # Aggregate by direction key (sum vehicles)
+                                sides[key] = sides.get(key, 0.0) + float(nv)
+                            except ValueError:
+                                pass
+
                     out.append({"t": t, "jct": jct, "main_dir": main_dir,
                                 "main_veh": main_veh, "sides": sides})
                 except Exception:
