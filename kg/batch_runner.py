@@ -80,7 +80,7 @@ EXPERIMENTS = [
     # sensitive to the actual pax·s saved vs car delay cost.
     {
         "name":              "DCTSP_MARL",
-        "enabled":           True,
+        "enabled":           False,  # DISABLED FOR THIS RUN
         "strategy":          "GLOBAL_REWARD",
         "coordinated":       True,
         "coordination_algo": "KALMAN",
@@ -660,7 +660,7 @@ EXPERIMENTS = [
     # ControlType=-2007 and the centralized controller cannot override phases.
     {
         "name":              "CENTRALISED",
-        "enabled":           True,
+        "enabled":           False,  # DISABLED FOR THIS RUN
         "strategy":          "GLOBAL_REWARD",
         "coordinated":       True,
         "coordination_algo": "KALMAN",
@@ -1061,27 +1061,28 @@ _PREDICTOR_STRATEGIES = [
     # NO_TSP is excluded — the predictor has no effect on a baseline-only run,
     # so three identical PRED_{PRED}_NO_TSP experiments would be redundant.
     # The standalone NO_TSP experiment above serves as the shared baseline.
-    {
-        "label":    "CPDQL",
-        "strategy": "GLOBAL_REWARD",
-        "coordinated": True,
-        "coordination_algo": "KALMAN",
-        "reward_overrides": {
-            "GLOBAL_REWARD_MODE":           True,
-            "BARGAIN_SPM_MODE":             False,
-            "DCTSP_ZIG_MODE":               False,
-            "META_TSP_MODE":                False,
-            "MDN_DELAY_MODE":               False,
-            "HS_EXT_MODE":                  False,
-            "DCTSP_GREEN_REALLOC_MODE":     True,
-            "GREEN_REALLOC_RECOVER_FRACTION": 1.0,
-            "DCTSP_W_H":                    0.50,
-            "DCTSP_CAR_WEIGHT":             1.00,
-            # Pure exploitation — no random exploration during single-episode eval
-            "RL_EPSILON_START":             0.0,
-            "RL_EPSILON_END":               0.0,
-        },
-    },
+    # CPDQL DISABLED FOR THIS RUN
+    # {
+    #     "label":    "CPDQL",
+    #     "strategy": "GLOBAL_REWARD",
+    #     "coordinated": True,
+    #     "coordination_algo": "KALMAN",
+    #     "reward_overrides": {
+    #         "GLOBAL_REWARD_MODE":           True,
+    #         "BARGAIN_SPM_MODE":             False,
+    #         "DCTSP_ZIG_MODE":               False,
+    #         "META_TSP_MODE":                False,
+    #         "MDN_DELAY_MODE":               False,
+    #         "HS_EXT_MODE":                  False,
+    #         "DCTSP_GREEN_REALLOC_MODE":     True,
+    #         "GREEN_REALLOC_RECOVER_FRACTION": 1.0,
+    #         "DCTSP_W_H":                    0.50,
+    #         "DCTSP_CAR_WEIGHT":             1.00,
+    #         # Pure exploitation — no random exploration during single-episode eval
+    #         "RL_EPSILON_START":             0.0,
+    #         "RL_EPSILON_END":               0.0,
+    #     },
+    # },
     {
         "label":    "WaveGate",
         "strategy": "GLOBAL_REWARD",
@@ -1147,7 +1148,8 @@ _PREDICTOR_STRATEGIES = [
     },
 ]
 for _ps in _PREDICTOR_STRATEGIES:
-    for _pred in ("KALMAN", "ADAPTIVE_KALMAN", "LSTM_SS"):
+    # KALMAN filter DISABLED — using only ADAPTIVE_KALMAN and LSTM_SS
+    for _pred in ("ADAPTIVE_KALMAN", "LSTM_SS"):
         EXPERIMENTS.append({
             "name":              f"PRED_{_pred}_{_ps['label']}",
             "enabled":           PREDICTOR_SWEEP_ENABLED,
@@ -2632,16 +2634,18 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
         except Exception as _we:
             log(f"  INFO: weighted_objective CSV parse failed: {_we}")
 
-    # ── Z4: total travel time in the corridor (veh·h), network-level ───────────
-    # Net_TotalTT_h_Car/Bus/Truck (section 1) are the vehicle-hours of travel
-    # accumulated across the whole corridor for this run -- the same figure
-    # shown as "Total hours of travel [veh-h]" in the KPI table. Available for
-    # every run (no weighted_objective trace required).
-    meta['wobj_Z4_total'] = (float(meta.get('stats_Net_TotalTT_h_Car', 0) or 0)
-                              + float(meta.get('stats_Net_TotalTT_h_Bus', 0) or 0)
-                              + float(meta.get('stats_Net_TotalTT_h_Truck', 0) or 0))
-    meta['corridor_total_travel_time_veh_h'] = meta['wobj_Z4_total']
-    log(f"  Corridor total travel time (Z4): {meta['wobj_Z4_total']:.1f} veh-h")
+    # ── Z4: total vehicle kilometres in the corridor (veh·km), network-level ───────────
+    # Z4 now represents total vehicle-km travelled (throughput metric).
+    # This is calculated as sum(flow_veh/h × section_length_km) across network.
+    # Prefer aimsun_total_veh_km_h if available; fall back to travel time for comparison.
+    meta['wobj_Z4_total'] = float(meta.get('aimsun_total_veh_km_h', 0) or 0)
+    if meta['wobj_Z4_total'] <= 0:
+        # Fallback to travel time if vehicle-km not available
+        meta['wobj_Z4_total'] = (float(meta.get('stats_Net_TotalTT_h_Car', 0) or 0)
+                                  + float(meta.get('stats_Net_TotalTT_h_Bus', 0) or 0)
+                                  + float(meta.get('stats_Net_TotalTT_h_Truck', 0) or 0))
+    meta['corridor_total_veh_km'] = meta['wobj_Z4_total']
+    log(f"  Corridor total vehicle-km (Z4): {meta['wobj_Z4_total']:.1f} veh-km")
 
     # ── Z1/Z2/Z3 fallback for any run without a weighted_objective CSV ──────────
     # TSP experiments write weighted_objective_*.csv; NO_TSP does not.

@@ -8,12 +8,12 @@ Run standalone after a batch completes, or call from batch_runner.py.
   Z1  Passenger delay     – weighted pax·s (lower = better)
   Z2  Flow bandwidth      – green-window alignment in seconds (higher = better)
   Z3  Bus lateness        – sigma^+ cumulative lateness in pax·s (lower = better)
-  Z4  Total travel time   – veh·h (lower = better; also a throughput proxy)
+  Z4  Vehicle kilometres  – total veh·km travelled (higher = better; throughput)
   Z5  Bandwidth flow      – natural-green window·s (higher = better)
 
-Demand-starvation warning: if Z1/Z4 improve but PaxEquivPassages drops vs NO_TSP,
-the strategy may be reducing delay by serving fewer vehicles, not by moving them
-faster.  The dashboard flags this with a red cell.
+Throughput improvement: if Z4 (veh-km) increases while Z1/Z3 decrease,
+the strategy is moving more vehicles faster, indicating genuine improvement.
+The dashboard flags low throughput with starvation warning if PaxEquivPassages drop.
 """
 import csv, os
 from datetime import datetime
@@ -58,7 +58,7 @@ for r in rows:
             _z2 = _dets * (_rate * 12.0 + (1.0 - _rate) * 3.0)
     # Z3: prefer wobj_Z3_total; fall back to SimBusDelay (bus pax·s proxy for lateness)
     _z3 = fv(r, 'wobj_Z3_total') or fv(r, 'stats_SimBusDelay_pax_s')
-    # Z4: prefer wobj_Z4_total; fall back to sum of TT stats
+    # Z4: prefer wobj_Z4_total (veh·km throughput); fall back to travel time
     _z4 = fv(r, 'wobj_Z4_total') or (fv(r, 'stats_Net_TotalTT_h_Car')
                                       + fv(r, 'stats_Net_TotalTT_h_Bus')
                                       + fv(r, 'stats_Net_TotalTT_h_Truck'))
@@ -74,7 +74,7 @@ for r in rows:
         'z1':  _z1,   # pax·s total delay — lower better
         'z2':  _z2,   # bandwidth alignment s — higher better
         'z3':  _z3,   # bus lateness pax·s — lower better
-        'z4':  _z4,   # total travel time veh·h — lower better
+        'z4':  _z4,   # vehicle-km throughput — higher better (was: total TT veh·h — lower)
         'z5':  _z5_bw,# bandwidth flow (natural-green window s) — higher better
         'obj': fv(r, 'wobj_objective_total'),
         # KPI columns
@@ -149,7 +149,7 @@ for i, d in enumerate(data):
 <td style="{_rank_bg(_z1v,i,True)}">{d['z1']/1e6:,.2f}M &nbsp;{_delta_pct(d['z1'],b['z1'],True) if b else ''}</td>
 <td style="{_rank_bg(_z2v,i,False)}">{d['z2']:,.0f} &nbsp;{_delta_pct(d['z2'],b['z2'],False) if b else ''}</td>
 <td style="{_rank_bg(_z3v,i,True)}">{d['z3']/1e6:,.2f}M &nbsp;{_delta_pct(d['z3'],b['z3'],True) if b else ''}</td>
-<td style="{_rank_bg(_z4v,i,True)}">{d['z4']:,.1f} &nbsp;{_delta_pct(d['z4'],b['z4'],True) if b else ''}</td>
+<td style="{_rank_bg(_z4v,i,False)}">{d['z4']:,.1f} &nbsp;{_delta_pct(d['z4'],b['z4'],False) if b else ''}</td>
 <td style="{_rank_bg(_z5v,i,False)}">{d['z5']:,.0f} &nbsp;{_delta_pct(d['z5'],b['z5'],False) if b else ''}</td>
 </tr>'''
 
@@ -177,10 +177,10 @@ legend = '''
   Z1 Pax Delay — <span class="bad">lower is better ↓</span> |
   Z2 Bandwidth — <span class="good">higher is better ↑</span> |
   Z3 Bus Lateness — <span class="bad">lower is better ↓</span> |
-  Z4 Travel Time — <span class="bad">lower is better ↓</span> |
+  Z4 Vehicle-km Throughput — <span class="good">higher is better ↑</span> |
   Z5 BW Flow (natural-green window·s) — <span class="good">higher is better ↑</span><br>
-  <b>Demand starvation:</b> ⚠ red PaxEquiv cell = strategy serves &gt;3%
-  fewer passengers than NO_TSP baseline — delay may be artificially low.
+  <b>Throughput improvement:</b> if Z4 increases while Z1/Z3 decrease, the strategy
+  is moving more vehicles faster, indicating genuine improvement.
 </div>'''
 
 html = f'''<!DOCTYPE html>
@@ -211,7 +211,7 @@ tr:hover{{background:#f0f4ff}}
   <th class="bad">Z1 &nbsp;Pax Delay ↓<br><small>(pax·s)</small></th>
   <th class="good">Z2 &nbsp;Bandwidth ↑<br><small>(s)</small></th>
   <th class="bad">Z3 &nbsp;Bus Lateness ↓<br><small>(pax·s)</small></th>
-  <th class="bad">Z4 &nbsp;Travel Time ↓<br><small>(veh·h)</small></th>
+  <th class="good">Z4 &nbsp;Vehicle-km ↑<br><small>(veh·km)</small></th>
   <th class="bw">Z5 &nbsp;BW Flow ↑<br><small>(window·s)</small></th>
 </tr>
 {summary_rows}
@@ -224,7 +224,7 @@ tr:hover{{background:#f0f4ff}}
   <th class="bad">Z1 Pax Delay<br>(pax·s) ↓</th>
   <th class="good">Z2 Bandwidth<br>(s) ↑</th>
   <th class="bad">Z3 Bus Lateness<br>(pax·s) ↓</th>
-  <th class="bad">Z4 Travel Time<br>(veh·h) ↓</th>
+  <th class="good">Z4 Vehicle-km<br>(veh·km) ↑</th>
   <th class="bw">Z5 BW Flow<br>(window·s) ↑</th>
   <th>Composite<br>Objective</th>
   <th class="sep bad">Total Pax<br>Delay (h) ↓</th>
