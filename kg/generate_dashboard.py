@@ -234,27 +234,23 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                     main_dir = str(r.get("main_dir", "main") or "main")
                     sides = {}
 
-                    # Try new directional columns first (queue_main_nb, queue_main_sb, queue_side_eb, queue_side_wb)
-                    # These columns exist and have values (including 0.0) if directional queue tracking is enabled
-                    q_cols = ["queue_main_nb", "queue_main_sb", "queue_side_eb", "queue_side_wb"]
-                    has_directional_cols = any(r.get(col) is not None and r.get(col) != '' for col in q_cols)
+                    # Try new directional columns first - these contain the directional queue breakdown
+                    try:
+                        q_main_nb = float(r.get("queue_main_nb") or 0)
+                        q_main_sb = float(r.get("queue_main_sb") or 0)
+                        q_side_eb = float(r.get("queue_side_eb") or 0)
+                        q_side_wb = float(r.get("queue_side_wb") or 0)
+                        total_directional = q_main_nb + q_main_sb + q_side_eb + q_side_wb
 
-                    if has_directional_cols:
-                        # Use directional breakdown - include even if values are 0
-                        q_main_nb = float(r.get("queue_main_nb", 0) or 0)
-                        q_main_sb = float(r.get("queue_main_sb", 0) or 0)
-                        q_side_eb = float(r.get("queue_side_eb", 0) or 0)
-                        q_side_wb = float(r.get("queue_side_wb", 0) or 0)
-
-                        if q_main_nb >= 0:
+                        # Use directional breakdown if any value is non-zero
+                        if total_directional > 0 or ("queue_main_nb" in f.fieldnames):  # Check if columns exist in CSV
                             sides["Main NB"] = q_main_nb
-                        if q_main_sb >= 0:
                             sides["Main SB"] = q_main_sb
-                        if q_side_eb >= 0:
                             sides["Cross EB"] = q_side_eb
-                        if q_side_wb >= 0:
                             sides["Cross WB"] = q_side_wb
-                    else:
+                        else:
+                            raise ValueError("Directional columns not in CSV")  # Fall back to detailed parsing
+                    except (ValueError, KeyError, TypeError):
                         # Fall back to parsing queue_side_detail for older CSV files
                         qsd = str(r.get("queue_side_detail", "") or "")
                         for tok in qsd.split("|"):
@@ -2894,7 +2890,7 @@ TEMPLATE_FALLBACK_HTML
 
 <!-- ── Charts row 1: Delays ──────────────────────────────────────────── -->
 <!-- ── TSP_Paper 4-Objective Summary ──────────────────────────────────── -->
-<p class="section-hdr">TSP Objectives (Z1–Z4) <span style="font-size:0.78rem;color:var(--muted)">(from TSP_Paper weighted objective; lower is better for all four)</span></p>
+<p class="section-hdr">TSP Objectives (Z1–Z4) <span style="font-size:0.78rem;color:var(--muted)">(from TSP_Paper: Z1 pax delay ↓, Z2 bandwidth ↑, Z3 lateness ↓, Z4 veh-km ↑)</span></p>
 <div class="card" id="objectives-card">
   <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
     <b>Z1</b> Total passenger delay (bus + car, pax·s) &nbsp;·&nbsp;
@@ -2913,7 +2909,7 @@ TEMPLATE_FALLBACK_HTML
     <div style="font-size:10px;color:#7777aa;margin-bottom:4px">
       <span style="color:#64dc78;font-weight:700">★ green bold</span> = best across all experiments &nbsp;·&nbsp;
       <span style="color:#f05050">red</span> = worst &nbsp;·&nbsp;
-      Z1 ↓ min &nbsp;·&nbsp; Z2 ↑ max &nbsp;·&nbsp; Z3 ↓ min &nbsp;·&nbsp; Z4 ↓ min
+      Z1 ↓ pax-delay &nbsp;·&nbsp; Z2 ↑ bandwidth &nbsp;·&nbsp; Z3 ↓ lateness &nbsp;·&nbsp; Z4 ↑ veh-km
     </div>
     <table id="raw-z-table" style="width:100%;border-collapse:collapse;font-size:10.5px;color:#c0c0e0">
       <thead>
@@ -2922,7 +2918,7 @@ TEMPLATE_FALLBACK_HTML
           <th style="text-align:right;padding:4px 8px">Z1 Pax Delay ↓</th>
           <th style="text-align:right;padding:4px 8px">Z2 Bandwidth ↑</th>
           <th style="text-align:right;padding:4px 8px">Z3 Lateness ↓</th>
-          <th style="text-align:right;padding:4px 8px">Z4 Travel Time ↓</th>
+          <th style="text-align:right;padding:4px 8px">Z4 Vehicle-km ↑</th>
           <th style="text-align:right;padding:4px 8px">Weighted Obj</th>
           <th style="text-align:right;padding:4px 8px">Avg Delay ↓</th>
           <th style="text-align:right;padding:4px 8px">Flow (veh)</th>

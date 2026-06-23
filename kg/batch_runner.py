@@ -96,10 +96,10 @@ EXPERIMENTS = [
             "DCTSP_W_H":             0.50,   # balanced: headway = pax delay
             "DCTSP_CAR_WEIGHT":      1.00,   # full car cost — per passenger
             "BUS_OCC_OVERRIDE":      None,   # use junction defaults (bus=40, car=1.2) — per passenger
-            "WOBJ_Z1_SCALE":         10000000.0,  # Increased to reduce Z1 influence
+            "WOBJ_Z1_SCALE":         50000000.0,  # Heavily increased to reduce Z1 influence (now ~3% of weight)
             "WOBJ_Z2_SCALE":         7500.0,
             "WOBJ_Z3_SCALE":         12000.0,
-            "WOBJ_Z4_SCALE":         50000.0,     # Added for vehicle-km throughput
+            "WOBJ_Z4_SCALE":         50000.0,     # Vehicle-km throughput (maximize)
         },
     },
     # ── MARL + Harmony Search ──────────────────────────────────────────────────
@@ -3513,8 +3513,8 @@ def main():
                 "MDN_DELAY_MODE":        False,
                 "REWARD_MAIN_SECTION_WEIGHT": 1.0,
                 "REWARD_SIDE_SECTION_WEIGHT": 0.50,  # initial: side traffic at half weight
-                "WOBJ_ALPHA":            0.8,   # Z1 (weighted pax-delay) weight — reset so a
-                "WOBJ_BETA":             0.2,   # sweep run's value can't leak into the next run
+                "WOBJ_ALPHA":            0.2,   # Z1 (weighted pax-delay) weight — reduced to 20% to reduce Z1 dominance
+                "WOBJ_BETA":             0.8,   # Z2 (flow bandwidth) weight — increased to 80% to dominate objective
                 "WOBJ_GAMMA":            0.0,   # Z3 (bus lateness) weight — reset for the same reason
                 "INV_DELAY_EPSILON":     1.0,
                 "INV_DELAY_CAR_WEIGHT":  2.0,
