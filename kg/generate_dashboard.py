@@ -226,7 +226,9 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
     out = []
     try:
         with open(path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
+            reader = csv.DictReader(f)
+            fieldnames = set(reader.fieldnames or [])
+            for r in reader:
                 try:
                     t = float(r.get("sim_time_s", 0) or 0)
                     jct = int(float(r.get("junction_id", -1) or -1))
@@ -242,8 +244,8 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                         q_side_wb = float(r.get("queue_side_wb") or 0)
                         total_directional = q_main_nb + q_main_sb + q_side_eb + q_side_wb
 
-                        # Use directional breakdown if any value is non-zero
-                        if total_directional > 0 or ("queue_main_nb" in f.fieldnames):  # Check if columns exist in CSV
+                        # Use directional breakdown if columns exist in CSV (include even if all zeros)
+                        if "queue_main_nb" in fieldnames:
                             sides["Main NB"] = q_main_nb
                             sides["Main SB"] = q_main_sb
                             sides["Cross EB"] = q_side_eb
