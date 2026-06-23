@@ -1973,14 +1973,21 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # ── Numeric metrics ──────────────────────────────────────────────────
         total_delay   = _pick(row, ["stats_TotalPassDelay_hrs",
                                     "inter_sum_TotalPassDelay_hrs"])
+        # Fallback: derive total delay from SimTotalDelay_pax_s (pax-seconds → hours)
+        if total_delay is None:
+            _sim_pax_s = _pick(row, ["stats_SimTotalDelay_pax_s"])
+            if _sim_pax_s is not None and _sim_pax_s > 0:
+                total_delay = round(_sim_pax_s / 3600.0, 3)
         main_delay    = _pick(row, ["stats_MainPassDelay_hrs",
                                     "inter_sum_MainPassDelay_hrs"])
         side_delay    = _pick(row, ["stats_SidePassDelay_hrs",
                                     "inter_sum_SidePassDelay_hrs"])
         bus_tt        = _pick(row, ["stats_BusTotalTT_hrs",
                                     "inter_sum_BusTotalTT_hrs"])
-        avg_bus_delay   = _pick(row, ["stats_AvgBusPassDelay_s",
-                                      "inter_avg_AvgBusPassDelay_s"])
+        # avg_bus_delay: guard against non-numeric values like 'True' (corrupted CSV rows)
+        _raw_bus_delay = _pick(row, ["stats_AvgBusPassDelay_s",
+                                     "inter_avg_AvgBusPassDelay_s"])
+        avg_bus_delay = _raw_bus_delay if (_raw_bus_delay is not None and _raw_bus_delay < 9999) else None
         avg_pass_delay  = _pick(row, ["stats_AvgPassDelay_s",
                                       "inter_avg_AvgPassDelay_s"])
         avg_car_delay   = _pick(row, ["stats_AvgCarPassDelay_s",
@@ -3178,30 +3185,19 @@ TEMPLATE_FALLBACK_HTML
       <span style="font-weight:400;color:#666">(requires reward_cycle CSV — from DCTSP_MARL/MDN/ZIG runs)</span>
     </div>
     <div style="overflow-x:auto">
-      <table id="coordex-reward-table" style="font-size:10px;border-collapse:collapse;width:100%;min-width:700px">
-        <thead>
+      <div style="font-size:9px;color:#666;margin-bottom:4px">
+        Columns: only actions actually evaluated in this run (—= not evaluated; ★ = chosen).
+        Each cell shows: reward / bus pax·s saved / car pax·s cost.
+        GE = Green Extension, INS = Insertion, GR = Green Realloc, ER = Early Red.
+      </div>
+      <table id="coordex-reward-table" style="font-size:10px;border-collapse:collapse;width:100%;min-width:600px">
+        <thead id="coordex-reward-thead">
           <tr style="color:#7070a0;border-bottom:1px solid #222">
             <th style="text-align:left;padding:3px 6px">Junction</th>
             <th style="text-align:right;padding:3px 6px">Sim t (s)</th>
             <th style="text-align:right;padding:3px 6px">Bus ETA</th>
             <th style="text-align:right;padding:3px 6px">σ_in</th>
-            <th style="text-align:right;padding:3px 6px" title="bus delay (s) / total intersection pax·s under no strategy">No-Act Delay</th>
-            <th style="text-align:right;padding:3px 6px">NO_ACTION r</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_5</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_10</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">GE_15</th>
-            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_5</th>
-            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_10</th>
-            <th style="text-align:right;padding:3px 6px" title="green realloc (zero car cost) — reward / bus pax·s saved">GR_15</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_10</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_15</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">INS_20</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_10</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_20</th>
-            <th style="text-align:right;padding:3px 6px" title="reward / bus pax·s saved / car pax·s cost">ER_30</th>
-            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_10</th>
-            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_20</th>
-            <th style="text-align:right;padding:3px 6px" title="bus-phase early-red — reward / bus pax·s saved / car pax·s cost">ER_BP_30</th>
+            <th style="text-align:right;padding:3px 6px" title="bus delay (s) under NO_ACTION">No-Act Delay</th>
             <th style="text-align:left;padding:3px 6px">★ Chosen</th>
           </tr>
         </thead>
@@ -3789,12 +3785,12 @@ function barChart(id, labels, datasets, extraOpts={}) {
     const bestZ1  = _best('wobj_Z1', true);
     const bestZ2  = _best('wobj_Z2', false);   // MAXIMISE
     const bestZ3  = _best('wobj_Z3', true);
-    const bestZ4  = _best('wobj_Z4', true);
+    const bestZ4  = _best('wobj_Z4', false);  // Z4 = veh-km HIGHER is better
     const bestDel = _best('avg_pass_delay', true);
     const worstZ1 = _best('wobj_Z1', false);
     const worstZ2 = _best('wobj_Z2', true);
     const worstZ3 = _best('wobj_Z3', false);
-    const worstZ4 = _best('wobj_Z4', false);
+    const worstZ4 = _best('wobj_Z4', true);  // Z4 worst = lowest veh-km
     const worstDel = _best('avg_pass_delay', false);
 
     // Colour helper: vs global best/worst (±1% tolerance)
@@ -3818,7 +3814,7 @@ function barChart(id, labels, datasets, extraOpts={}) {
       const cZ1 = cell(z1, bestZ1,  worstZ1,  true);
       const cZ2 = cell(z2, bestZ2,  worstZ2,  false);  // Z2: higher = better
       const cZ3 = cell(z3, bestZ3,  worstZ3,  true);
-      const cZ4 = cell(z4, bestZ4,  worstZ4,  true);
+      const cZ4 = cell(z4, bestZ4,  worstZ4,  false);  // Z4 veh-km: higher = better
       const cD  = cell(d,  bestDel, worstDel, true);
       return `<tr style="border-bottom:1px solid #1c1c3a">
         <td style="padding:3px 8px;font-weight:500">${r.label||r.exp_name||'—'}</td>
@@ -6654,7 +6650,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     });
     const groups = Object.values(groupMap).sort((a, b) => a.t - b.t);
 
-    const ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
+    // Only show action columns that actually appear in the CSV — dynamic, not hardcoded
+    const ALL_POSSIBLE_ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
+    const actionsInData = new Set(busRows.map(x => String(x.action)));
+    const ACTS = ALL_POSSIBLE_ACTS.filter(a => actionsInData.has(a));
     const ACT_COLORS = {
       'NO_ACTION':'#a0a0c8','GE_5':'#3498db','GE_10':'#2980b9','GE_15':'#1a6090',
       'GR_5':'#a3e635','GR_10':'#84cc16','GR_15':'#65a30d',
@@ -6663,7 +6662,44 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       'ER_BP_10':'#c0392b','ER_BP_20':'#a93226','ER_BP_30':'#922b21',
     };
 
+    // Build dynamic header based on actions that actually appear in the data
+    const thead = document.getElementById('coordex-reward-thead');
+    if (thead) {
+      const ACT_TITLES = {
+        'NO_ACTION': 'reward / bus pax·s saved / car pax·s cost',
+        'GE_5': 'Green Extension 5s: reward / bus saved / car cost',
+        'GE_10': 'Green Extension 10s: reward / bus saved / car cost',
+        'GE_15': 'Green Extension 15s: reward / bus saved / car cost',
+        'GR_5': 'Green Realloc 5s (zero car cost): reward / bus saved',
+        'GR_10': 'Green Realloc 10s: reward / bus saved',
+        'GR_15': 'Green Realloc 15s: reward / bus saved',
+        'INS_10': 'Phase Insertion 10s: reward / bus saved / car cost',
+        'INS_15': 'Phase Insertion 15s: reward / bus saved / car cost',
+        'INS_20': 'Phase Insertion 20s: reward / bus saved / car cost',
+        'ER_10': 'Early Red 10s: reward / bus saved / car cost',
+        'ER_20': 'Early Red 20s: reward / bus saved / car cost',
+        'ER_30': 'Early Red 30s: reward / bus saved / car cost',
+        'ER_BP_10': 'Bus-Phase Early Red 10s: reward / bus saved / car cost',
+        'ER_BP_20': 'Bus-Phase Early Red 20s: reward / bus saved / car cost',
+        'ER_BP_30': 'Bus-Phase Early Red 30s: reward / bus saved / car cost',
+      };
+      const candidateActs = ACTS.filter(a => a !== 'NO_ACTION');
+      thead.innerHTML = '<tr style="color:#7070a0;border-bottom:1px solid #222">' +
+        '<th style="text-align:left;padding:3px 6px">Junction</th>' +
+        '<th style="text-align:right;padding:3px 6px">Sim t (s)</th>' +
+        '<th style="text-align:right;padding:3px 6px">Bus ETA</th>' +
+        '<th style="text-align:right;padding:3px 6px">σ_in</th>' +
+        '<th style="text-align:right;padding:3px 6px" title="bus delay (s) / total intersection pax·s under no strategy">No-Act Delay</th>' +
+        '<th style="text-align:right;padding:3px 6px">NO_ACTION</th>' +
+        candidateActs.map(a =>
+          `<th style="text-align:right;padding:3px 6px" title="${ACT_TITLES[a]||a}">${a}</th>`
+        ).join('') +
+        '<th style="text-align:left;padding:3px 6px">★ Chosen</th>' +
+        '</tr>';
+    }
+
     tbody.innerHTML = '';
+    const candidateActsForRows = ACTS.filter(a => a !== 'NO_ACTION');
     groups.forEach(g => {
       const na = g.rows['NO_ACTION'];
       const naR = na ? Number(na.reward).toFixed(2) : '—';
@@ -6730,8 +6766,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         tr.appendChild(tdNA);
       }
 
-      // GE/INS/ER reward cells — show reward + bus pax saved + car pax cost
-      ACTS.slice(1).forEach(act => {
+      // GE/INS/ER reward cells — show reward + bus pax saved + car pax cost (only evaluated actions)
+      candidateActsForRows.forEach(act => {
         const row = g.rows[act];
         const rVal = row ? Number(row.reward) : null;
         const rTxt = rVal !== null ? rVal.toFixed(2) : '—';
@@ -7390,24 +7426,56 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     jcts.forEach(function(jct) {
       const jrows = rows.filter(rr => rr.jct === jct).sort((a, b) => a.t - b.t);
       const datasets = [];
-      const mainDir = (jrows[0] && jrows[0].main_dir) ? jrows[0].main_dir : 'main';
-      // Main (bus) approach
-      datasets.push({
-        label: mainDir || 'main',
-        data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
-        borderColor: '#ffffff', backgroundColor: 'transparent',
-        tension: 0.3, pointRadius: 0, borderWidth: 2
-      });
-      // Side approaches — already aggregated by direction bucket (NB/EB/SB/WB)
-      sideKeys.forEach(function(k, ki) {
+      const mainDir = (jrows[0] && jrows[0].main_dir) ? jrows[0].main_dir : 'Main';
+
+      // Check if directional breakdown has any non-zero values across all time steps
+      // If all directional values are zero (bearing not computed), fall back to aggregated main/side
+      const hasDirectionalData = sideKeys.some(k =>
+        jrows.some(rr => rr.sides && rr.sides[k] != null && rr.sides[k] > 0)
+      );
+      const hasMainData = jrows.some(rr => rr.main_veh > 0);
+
+      if (!hasDirectionalData && hasMainData) {
+        // Fallback: show aggregate main approach only with proper label
         datasets.push({
-          label: k,
-          data: jrows.map(rr => ({ x: rr.t, y: (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0 })),
-          borderColor: EP_COLORS[ki % EP_COLORS.length],
-          backgroundColor: 'transparent',
-          tension: 0.3, pointRadius: 0, borderWidth: 1.5
+          label: (mainDir !== 'UK' ? mainDir + ' (Main)' : 'Main approach'),
+          data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
+          borderColor: '#ffffff', backgroundColor: 'transparent',
+          tension: 0.3, pointRadius: 0, borderWidth: 2
         });
-      });
+      } else {
+        // Show white line for main (bus) approach total
+        datasets.push({
+          label: (mainDir !== 'UK' ? mainDir + ' Main' : 'Main approach'),
+          data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
+          borderColor: '#ffffff', backgroundColor: 'transparent',
+          tension: 0.3, pointRadius: 0, borderWidth: 2
+        });
+        // Side approaches — aggregated by direction bucket (NB/EB/SB/WB)
+        sideKeys.forEach(function(k, ki) {
+          const vals = jrows.map(rr => (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0);
+          const maxVal = Math.max(...vals);
+          // Only add dataset if it has at least some non-zero values
+          if (maxVal > 0) {
+            datasets.push({
+              label: k,
+              data: jrows.map(rr => ({ x: rr.t, y: (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0 })),
+              borderColor: EP_COLORS[ki % EP_COLORS.length],
+              backgroundColor: 'transparent',
+              tension: 0.3, pointRadius: 0, borderWidth: 1.5
+            });
+          }
+        });
+        // If only the white main line has data, add a note
+        if (datasets.length === 1) {
+          datasets.push({
+            label: 'Side (direction unknown — bearing not computed)',
+            data: [],
+            borderColor: '#888888', backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 0, borderWidth: 1
+          });
+        }
+      }
       const cvs = document.createElement('canvas');
       cvs.style.cssText = 'width:100%;margin-bottom:14px';
       cvs.height = 180;
@@ -8825,30 +8893,33 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     // Y-axis in older dashboards and caused apparent 4-5× over-prediction for
     // INV_DELAY/ZIG because NF is a decision bias, not a calibration target.
     // Newer CSVs have both columns; older CSVs fall back to dividing by NF.
+    // Cross-traffic validation: compare model prediction vs Aimsun measured car delay.
+    // Both sides are scaled to the SAME time window (the actual interval_s between events)
+    // so the 45° line means perfect model accuracy.
+    //   X = measured_car_pax_s_delta (actual Aimsun car delay over interval_s)
+    //   Y = model_pred scaled to same interval: pred_per_bpDur × (interval_s / bp_dur_s)
+    // This avoids the bpDur/intv normalization issue that caused points to be off-scale.
     const crossPts = [];
     const hasNewDelta = filtered.some(row => Number(row.interval_s) > 0);
     if (hasNewDelta) {
       filtered.forEach(row => {
         const delta  = Number(row.measured_car_pax_s_delta || 0);
         const intv   = Number(row.interval_s) || 0;
-        const bpDur  = Number(row.bp_dur_s) || 30;
-        // Use NF=1 prediction for validation; fall back gracefully for old CSVs.
+        const bpDur  = Math.max(Number(row.bp_dur_s) || 30, 1);
         const predNF  = Number(row.other_delay_model_pax_s || 0);
         const nf      = Math.max(Number(row.network_factor || 1), 1);
-        const pred    = (row.other_delay_model_pax_s_nf1 !== undefined &&
-                         row.other_delay_model_pax_s_nf1 !== '')
-                        ? Number(row.other_delay_model_pax_s_nf1)
-                        : predNF / nf;
-        // Stricter filtering: require meaningful interval, valid prediction, and confidence-based data quality
-        if (intv > 2 && pred >= 0 && delta >= 0 && Math.abs(delta) < 1000) {  // Reject extreme outliers (>1000 pax·s)
-          const measNorm = delta * bpDur / intv;
-          // Only include points with reasonable ratio and reasonable absolute values
-          if (measNorm >= 0 && measNorm < 1000 && pred < 1000) {
-            crossPts.push({ x: measNorm, y: pred,
-                            _jct: String(row.jct), _t: Number(row.t),
-                            _delta: delta, _intv: intv, _bpDur: bpDur,
-                            _nf: nf });
-          }
+        // Model prediction (NF=1) for one bus-phase; scale to the actual observation interval
+        const predPerBp = (row.other_delay_model_pax_s_nf1 !== undefined &&
+                           row.other_delay_model_pax_s_nf1 !== '')
+                          ? Number(row.other_delay_model_pax_s_nf1)
+                          : predNF / nf;
+        // Scale model to the same interval as measured delta: pred × (intv / bpDur)
+        const predScaled = predPerBp * (intv / bpDur);
+        if (intv > 2 && predScaled >= 0 && delta >= 0 && delta < 5000 && predScaled < 5000) {
+          crossPts.push({ x: delta, y: predScaled,
+                          _jct: String(row.jct), _t: Number(row.t),
+                          _delta: delta, _intv: intv, _bpDur: bpDur,
+                          _nf: nf, _pred_per_bp: predPerBp });
         }
       });
     } else {
@@ -8874,10 +8945,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         jctPrevCumul[jct] = cumul;
       });
     }
-    const xLabel = hasNewDelta
-      ? 'Measured car delay × (bp_dur/interval) pax·s (time-normalised)'
-      : 'Actual total car delay Δ pax·s (Aimsun measured, per interval)';
-    const yLabel = 'Cross-traffic cost model pax·s (NF=1 raw triangle)';
+    const xLabel = 'Measured Aimsun car delay (pax·s, per observation interval)';
+    const yLabel = hasNewDelta
+      ? 'Cross-traffic model pax·s (NF=1, scaled to same interval)'
+      : 'Cross-traffic model pax·s (NF=1 raw triangle)';
 
     // Cap axis at 95th percentile to prevent outliers from collapsing the scale.
     function _pct95(arr) {
@@ -8904,9 +8975,9 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           tooltip: { callbacks: { label: c => {
             const d = c.raw;
             const detail = hasNewDelta
-              ? `  raw_Δ=${d._delta?.toFixed(0)} pax·s  intv=${d._intv?.toFixed(0)}s  bp=${d._bpDur?.toFixed(0)}s`
+              ? `  intv=${d._intv?.toFixed(0)}s  bp=${d._bpDur?.toFixed(0)}s  model/bp=${d._pred_per_bp?.toFixed(0)}`
               : `  cumul=${d._cumul?.toFixed(0)}`;
-            return `jct=${d._jct} t=${d._t?.toFixed(0)}s  norm_actual=${d.x?.toFixed(0)} pax·s  model=${d.y?.toFixed(0)} pax·s${detail}`;
+            return `jct=${d._jct} t=${d._t?.toFixed(0)}s  actual=${d.x?.toFixed(0)} pax·s  model_scaled=${d.y?.toFixed(0)} pax·s${detail}`;
           }}},
         },
         scales: {
