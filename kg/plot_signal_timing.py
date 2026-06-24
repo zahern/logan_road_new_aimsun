@@ -1,22 +1,22 @@
 """
-Signal Timing Diagram: Original configured phase plan vs TSP-adjusted timings.
+Signal Timing Diagram v2 — multi-strategy, filterable by time.
 
-Two panels per intersection:
-  Top row  — Original signal plan (repeating configured cycle, no TSP)
-  Bottom row — Actual run: same nominal cycle but with GE/INS events overlaid
-               and periodic_replan forward-OC corrections shown.
+Breakdown markers:
+  GE  — Green Extension (harmony-ge-local / dctsp_ge)
+  INS — Phase Insertion (harmony-ins-local / dctsp_ins)
+  GR  — Natural Green (harmony-no-ge-local): bus arrived in green, no TSP action needed
+  PR  — Prearm events (coord-prearm-*): fired / success / missed
 
-Data sources
-------------
-  INTERSECTIONS_CONFIG   — nominal phase durations and cycle length
-  detection_points_*.csv — harmony-ge-local / harmony-ins-local tier events
-  corridor_wave_events_*.csv — periodic_replan events
+Controls (in HTML):
+  Strategy dropdown  — compare any run vs NO_TSP
+  Time range filter  — zoom to a simulation window
+  Marker checkboxes  — show/hide GE / INS / GR / PR / Arrivals / Replan / Phase labels
 
 Usage:
     python plot_signal_timing.py [logs_dir] [out.html]
 """
 
-import os, sys, csv, glob, json, math
+import os, sys, csv, glob, json, math, re
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _log_dir   = os.path.join(SCRIPT_DIR, "logs")
@@ -32,10 +32,10 @@ except ImportError:
     print("[plot_signal_timing] cannot import INTERSECTIONS_CONFIG — aborting")
     sys.exit(1)
 
-# ── helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _f(v, d=0.0):
     try: return float(v)
-    except Exception: return d
+    except: return d
 
 def _latest(pattern):
     files = sorted(glob.glob(pattern), key=os.path.getmtime)
@@ -43,24 +43,16 @@ def _latest(pattern):
 
 def _read_csv(path):
     if not path or not os.path.isfile(path): return []
-    with open(path, newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+    with open(path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 
 def _compute_cycle_offset(jct_id, cfg, all_rows):
-    """Return t_cycle_0: the time when the junction's cycle was at position 0.
-
-    Uses the earliest detection row at jct_id that has a valid signal_phase
-    (Aimsun 1-indexed stage number).  Assumes the detection occurs at the START
-    of that stage.  If no usable row is found, returns 0.0 (cycle starts at
-    phase 1 at t=0, the previous default behaviour).
-    """
     cycle_s  = _f(cfg.get("cycle_length", 110))
     bp_dur   = _f(cfg.get("BusPhaseDuration", 30))
     bus_ph_1 = int(cfg.get("BusPhase", 1))
     n_phases = max(len(cfg.get("SignalGroupIDList", [])), 1)
     non_dur  = (cycle_s - bp_dur) / max(n_phases - 1, 1)
 
-    # Cumulative start position for each 0-indexed phase
     phase_starts = []
     pos = 0.0
     for ph in range(n_phases):
@@ -75,138 +67,14 @@ def _compute_cycle_offset(jct_id, cfg, all_rows):
     )
     if not candidates:
         return 0.0
+    r0     = candidates[0]
+    t_det  = _f(r0.get("sim_time_s", 0))
+    sp     = int(_f(r0.get("signal_phase", 1)))
+    ph_idx = (sp - 1) % n_phases
+    return t_det - phase_starts[ph_idx]
 
-    r0    = candidates[0]
-    t_det = _f(r0.get("sim_time_s", 0))
-    sp    = int(_f(r0.get("signal_phase", 1)))   # 1-indexed Aimsun stage
-    ph_idx = (sp - 1) % n_phases                  # 0-indexed phase
-    # Assume the detection falls at the very start of that phase
-    t_cycle_0 = t_det - phase_starts[ph_idx]
-    return t_cycle_0
-
-# ── Load CSVs — explicitly pick DCTSP_MARL and NO_TSP for comparison ───────────
-_marl_det_path  = _latest(os.path.join(_log_dir, "detection_points_DCTSP_MARL_*.csv"))
-_notsp_det_path = _latest(os.path.join(_log_dir, "detection_points_NO_TSP_*.csv"))
-_wave_path      = _latest(os.path.join(_log_dir, "corridor_wave_events_DCTSP_MARL_*.csv"))
-if not _wave_path:
-    _wave_path  = _latest(os.path.join(_log_dir, "corridor_wave_events_*.csv"))
-# Fall back to latest CSV if specific experiments not found
-if not _marl_det_path:
-    _marl_det_path = _latest(os.path.join(_log_dir, "detection_points_*.csv"))
-
-det_rows   = _read_csv(_marl_det_path)    # DCTSP_MARL — GE/INS events + bus arrivals
-notsp_rows = _read_csv(_notsp_det_path)   # NO_TSP     — bus arrivals only
-wave_rows  = _read_csv(_wave_path)
-
-print(f"[plot_signal_timing] DCTSP_MARL detections: {len(det_rows)} rows  ({_marl_det_path})")
-print(f"[plot_signal_timing] NO_TSP detections:     {len(notsp_rows)} rows  ({_notsp_det_path})")
-print(f"[plot_signal_timing] wave events:           {len(wave_rows)} rows ({_wave_path})")
-
-# ── Per-junction cycle offsets from first detection signal_phase ──────────────
-# Combined pool: use whichever run provides the earliest signal_phase reading.
-_all_det_rows_combined = det_rows + notsp_rows
-_cycle_offset_map = {}   # {jct_id: t_cycle_0}
-for _jct_key, _jcfg in INTERSECTIONS_CONFIG.items():
-    _cycle_offset_map[_jct_key] = _compute_cycle_offset(
-        _jct_key, _jcfg, _all_det_rows_combined
-    )
-
-# ── Extract GE / INS events from detection CSV ────────────────────────────────
-ge_events  = []   # (jct_id, sim_time, ge_s, signal_phase, bus_phase)
-ins_events = []   # (jct_id, sim_time, ins_s, signal_phase, bus_phase)
-for r in det_rows:
-    tier = r.get("tier", "").strip().lower()
-    jct  = int(_f(r.get("junction_id", 0)))
-    t    = _f(r.get("sim_time_s", 0))
-    note = r.get("prearm_note", "")
-    sp   = int(_f(r.get("signal_phase", 0)))
-    bpv  = int(_f(r.get("bus_phase", 0)))
-    if "harmony-ge" in tier or "dctsp_ge" in tier:
-        # parse duration from prearm_note: "GE 10.0s R=..." or "DCTSP GE_10s ..."
-        dur = 0.0
-        for tok in note.replace("GE_", "GE ").split():
-            if tok.startswith("GE") or (dur == 0 and tok[:-1].replace(".","").isdigit()):
-                pass
-            try:
-                if tok.endswith("s") and tok[:-1].replace(".","").isdigit():
-                    dur = float(tok[:-1])
-                    break
-            except Exception:
-                pass
-        if dur == 0:
-            import re
-            m = re.search(r'GE\D*([\d.]+)', note)
-            if m: dur = float(m.group(1))
-        ge_events.append((jct, t, dur, sp, bpv))
-    elif "harmony-ins" in tier or "dctsp_ins" in tier:
-        dur = 20.0
-        import re
-        m = re.search(r'INS\D*([\d.]+)', note)
-        if m: dur = float(m.group(1))
-        ins_events.append((jct, t, dur, sp, bpv))
-
-# ── Extract periodic_replan events from wave CSV ──────────────────────────────
-replan_events = []  # (tgt_jct, sim_time, correction_s)
-for r in wave_rows:
-    evt = r.get("event", "").strip().lower()
-    if "periodic_replan" not in evt:
-        continue
-    tgt = int(_f(r.get("target_jct", r.get("target_junction", 0))))
-    t   = _f(r.get("time_s", r.get("sim_time_s", 0)))
-    note = r.get("note", "")
-    import re
-    m = re.search(r'corr=([+-]?[\d.]+)', note)
-    corr = float(m.group(1)) if m else 0.0
-    replan_events.append((tgt, t, corr))
-
-# ── Bus arrival markers — IC-detect events from both experiments ─────────────────
-def _bus_arrivals(rows):
-    """Return sorted list of (jct_id, sim_time_s) for IC-detect bus entries."""
-    out = []
-    for r in rows:
-        tier = (r.get("tier") or "").strip().lower()
-        if tier == "ic-detect":
-            jct = int(_f(r.get("junction_id", 0)))
-            t   = _f(r.get("sim_time_s", 0))
-            if jct > 0 and t > 0:
-                out.append((jct, t))
-    return sorted(out, key=lambda x: x[1])
-
-marl_arrivals  = _bus_arrivals(det_rows)
-notsp_arrivals = _bus_arrivals(notsp_rows)
-
-# ── Full simulation time window ─────────────────────────────────────────────────
-# Use complete sim duration rather than just the window around TSP events so
-# the user can see the entire signal plan for both experiments.
-_all_det_times = ([_f(r.get("sim_time_s")) for r in det_rows + notsp_rows
-                   if r.get("sim_time_s")])
-t_show_start = 0.0
-t_show_end   = max(_all_det_times) + 120.0 if _all_det_times else 4500.0
-
-# ── Build Plotly shapes + traces ───────────────────────────────────────────────
-PHASE_COLOURS = {
-    "bus":      "#4CAF50",   # green  — bus phase
-    "other":    "#90CAF9",   # light blue — non-bus phases
-    "ge_ext":   "#FF9800",   # orange — GE extension
-    "ins":      "#E53935",   # red    — phase insertion
-    "replan":   "#7E57C2",   # purple — periodic OC correction
-    "nominal":  "#E0E0E0",   # light grey — nominal cycle (top row)
-    "other_nom":"#BBDEFB",   # pale blue — non-bus nominal
-}
-
-# ── Reconstruct actual DCTSP_MARL phase sequence ─────────────────────────────
-def _build_marl_phase_bars(jct_id, cfg, ge_evts, ins_evts, t_start, t_end,
-                            t_cycle_0=0.0):
-    """Walk the signal plan phase-by-phase, extending bus phases for GE events
-    and inserting extra bus phases for INS events so that subsequent bars shift
-    in time relative to the NO_TSP nominal row.
-    Returns list of (t0, t1, phase_num_1indexed, bar_type)
-    where bar_type in {'bus', 'ge', 'nonbus', 'ins', 'clearance'}.
-
-    t_cycle_0: time at which the junction's signal cycle was at position 0.
-    The cursor starts at the beginning of the cycle that contains t_start so
-    the diagram reflects the correct initial phase offset.
-    """
+def _build_marl_phase_bars(jct_id, cfg, ge_evts, ins_evts, t_start, t_end, t_cycle_0=0.0):
+    """Return list of (t0, t1, phase_num_1indexed, bar_type)."""
     cycle_s  = _f(cfg.get("cycle_length", 110))
     bp_dur   = _f(cfg.get("BusPhaseDuration", 30))
     bus_ph_1 = int(cfg.get("BusPhase", 1))
@@ -216,28 +84,23 @@ def _build_marl_phase_bars(jct_id, cfg, ge_evts, ins_evts, t_start, t_end,
     ge_q  = sorted([(t, d, sp, bp) for (jj, t, d, sp, bp) in ge_evts  if jj == jct_id])
     ins_q = sorted([(t, d, sp, bp) for (jj, t, d, sp, bp) in ins_evts if jj == jct_id])
     ge_i = ins_i = 0
-    bars   = []
+    bars  = []
 
-    # Start at the beginning of the cycle that contains t_start so the initial
-    # phase matches the actual Aimsun signal state at t_start.
     if cycle_s > 0 and t_cycle_0 != 0.0:
-        cycles_before = math.floor((t_start - t_cycle_0) / cycle_s)
-        cursor = t_cycle_0 + cycles_before * cycle_s
+        cursor = t_cycle_0 + cycle_s * math.floor((t_start - t_cycle_0) / cycle_s)
     else:
         cursor = t_start
 
     while cursor < t_end:
         for ph in range(n_phases):
-            if cursor >= t_end:
-                break
+            if cursor >= t_end: break
             is_bus = (ph == (bus_ph_1 - 1) % n_phases)
             pnum   = ph + 1
             if is_bus:
                 end0 = cursor + bp_dur
                 ext  = 0.0
                 while ge_i < len(ge_q) and ge_q[ge_i][0] < end0 + ext:
-                    if ge_q[ge_i][0] >= cursor:
-                        ext += ge_q[ge_i][1]
+                    if ge_q[ge_i][0] >= cursor: ext += ge_q[ge_i][1]
                     ge_i += 1
                 bars.append((cursor, cursor + bp_dur, pnum, 'bus'))
                 if ext > 0:
@@ -258,9 +121,6 @@ def _build_marl_phase_bars(jct_id, cfg, ge_evts, ins_evts, t_start, t_end,
                 if seg_s < phase_end:
                     bars.append((seg_s, phase_end, pnum, 'nonbus'))
                 cursor = phase_end
-        # n_phases==1: the for loop only draws the bus phase (bp_dur seconds).
-        # Add the remaining clearance (all-red inter-green) so cycles advance
-        # at the correct rate and GE events fall into the right bus phase window.
         if n_phases == 1:
             clr_dur = max(0.0, cycle_s - bp_dur)
             if clr_dur > 0 and cursor < t_end:
@@ -268,297 +128,596 @@ def _build_marl_phase_bars(jct_id, cfg, ge_evts, ins_evts, t_start, t_end,
             cursor += clr_dur
     return bars
 
-jct_ids = sorted(set(e[0] for e in ge_events + ins_events + replan_events)
-                 | set(INTERSECTIONS_CONFIG.keys()))
+# ── Load all detection CSVs grouped by strategy name ──────────────────────────
+def _load_strategies(log_dir):
+    result, latest = {}, {}
+    for path in glob.glob(os.path.join(log_dir, "detection_points_*.csv")):
+        fname = os.path.basename(path)
+        raw   = fname[len("detection_points_"):-len(".csv")]
+        name  = re.sub(r'_\d{8}_\d{6}$', '', raw)
+        mt    = os.path.getmtime(path)
+        if name not in latest or mt > latest[name]:
+            latest[name] = mt
+            result[name] = _read_csv(path)
+    return result
 
-shapes  = []
-annotations = []
-traces_plotly = []
+all_strategies = _load_strategies(_log_dir)
+if not all_strategies:
+    print("[plot_signal_timing] No detection_points_*.csv files found in", _log_dir)
+    sys.exit(0)
 
-# Phase number label accumulators — scatter text traces, readable on zoom-in
-_ph_xs_notsp, _ph_ys_notsp, _ph_txt_notsp = [], [], []
-_ph_xs_marl,  _ph_ys_marl,  _ph_txt_marl  = [], [], []
+notsp_label  = next((k for k in all_strategies if 'NO_TSP' in k), None)
+strat_labels = sorted([k for k in all_strategies if k != notsp_label])
+print(f"[plot_signal_timing] Strategies: NO_TSP={notsp_label}  others={strat_labels}")
 
-# Y layout: each intersection gets a 2-row slot (nominal on top, actual below)
-# row_y: jct_index × 3 + 0 = nominal, × 3 + 1 = actual
-ROW_H = 0.8   # bar height
-GAP   = 0.4   # gap between rows
-SLOT  = 3.0   # total slot height per intersection
+# ── Full simulation time window ────────────────────────────────────────────────
+_all_times = [_f(r.get("sim_time_s")) for rows in all_strategies.values()
+              for r in rows if r.get("sim_time_s")]
+t_show_end = max(_all_times) + 120.0 if _all_times else 4500.0
 
-def _y0(jct_idx, row):
-    """row=0 nominal, row=1 actual"""
-    base = jct_idx * SLOT
-    return base + row * (ROW_H + GAP)
+# ── Junction list and Y layout ─────────────────────────────────────────────────
+jct_ids = sorted(INTERSECTIONS_CONFIG.keys())
+ROW_H = 0.8
+GAP   = 0.4
+SLOT  = 3.0
+
+def _y0(ji, row):
+    return ji * SLOT + row * (ROW_H + GAP)
 
 total_height = len(jct_ids) * SLOT + 0.5
 
-for ji, jct_id in enumerate(jct_ids):
-    cfg      = INTERSECTIONS_CONFIG.get(jct_id, {})
-    cycle_s  = _f(cfg.get("cycle_length", 110))
-    bp_dur   = _f(cfg.get("BusPhaseDuration", 30))
-    bus_ph   = cfg.get("BusPhase", 1)
-    phases   = cfg.get("SignalGroupIDList", [])
-    n_phases = max(len(phases), 1)
-    non_bus_dur = (cycle_s - bp_dur) / max(n_phases - 1, 1)
+# ── Cycle offset map ───────────────────────────────────────────────────────────
+_all_rows_combined = [r for rows in all_strategies.values() for r in rows]
+_cycle_offset_map  = {
+    jct_id: _compute_cycle_offset(jct_id, cfg, _all_rows_combined)
+    for jct_id, cfg in INTERSECTIONS_CONFIG.items()
+}
 
-    # ── NOMINAL cycle (top row) ────────────────────────────────────────────
-    y0n = _y0(ji, 0)
-    # Use the per-junction cycle offset so the nominal plan starts at the
-    # correct initial phase (not always phase 1 at t=0).
-    _t_cycle_0 = _cycle_offset_map.get(jct_id, 0.0)
-    # First cycle boundary at or before t_show_start
-    _t_nom_first = (_t_cycle_0 + cycle_s * math.floor((t_show_start - _t_cycle_0) / cycle_s)
-                    if cycle_s > 0 else t_show_start)
-    t = _t_nom_first
-    while t < t_show_end:
-        bp_start = t
-        cursor = bp_start
-        for ph in range(n_phases):
-            if cursor >= min(t_show_end, bp_start + cycle_s):
-                break
-            if ph == (bus_ph - 1) % n_phases:
-                dur = bp_dur
-                col = "#81C784"  # lighter green for nominal bus phase
-            else:
-                dur = non_bus_dur
-                col = "#BBDEFB"
-            # Only draw the visible portion of this bar
-            seg_x0 = max(cursor, t_show_start)
-            seg_x1 = min(cursor + dur, t_show_end)
-            if seg_x0 < seg_x1:
-                shapes.append(dict(
-                    type="rect", xref="x", yref="y",
-                    x0=seg_x0, x1=seg_x1,
-                    y0=y0n, y1=y0n + ROW_H,
-                    fillcolor=col, line=dict(width=0),
-                    layer="below",
-                ))
-            _ph_xs_notsp.append(cursor + dur / 2)
-            _ph_ys_notsp.append(y0n + ROW_H / 2)
-            _ph_txt_notsp.append(str(ph + 1))
-            cursor += dur
-        # Draw clearance if cycle time remains (covers n_phases==1 intersections)
-        if cursor < bp_start + cycle_s and cursor < t_show_end:
+# ── Extract events from detection rows ────────────────────────────────────────
+def _extract_events(rows):
+    """Return (ge, ins, gr, pr, arr) event lists."""
+    ge, ins, gr, pr, arr = [], [], [], [], []
+    for r in rows:
+        tier = (r.get("tier") or "").strip().lower()
+        jct  = int(_f(r.get("junction_id", 0)))
+        t    = _f(r.get("sim_time_s", 0))
+        sp   = int(_f(r.get("signal_phase", 0)))
+        bp   = int(_f(r.get("bus_phase", 0)))
+        note = r.get("prearm_note", "") or ""
+        eta  = _f(r.get("prearm_eta_s", 0))
+        stat = (r.get("prearm_status", "") or "").lower()
+
+        if "harmony-ge" in tier or "dctsp_ge" in tier:
+            dur = 0.0
+            m = re.search(r'GE[\D_]*([\d.]+)', note)
+            if m: dur = float(m.group(1))
+            if dur == 0:
+                for tok in note.split():
+                    if tok.endswith("s") and tok[:-1].replace(".", "").isdigit():
+                        dur = float(tok[:-1]); break
+            ge.append((jct, t, dur, sp, bp))
+        elif "harmony-ins" in tier or "dctsp_ins" in tier:
+            dur = 20.0
+            m = re.search(r'INS[\D]*([\d.]+)', note)
+            if m: dur = float(m.group(1))
+            ins.append((jct, t, dur, sp, bp))
+        elif "harmony-no-ge" in tier:
+            gr.append((jct, t, sp, bp, eta, note))
+        elif "coord-prearm" in tier:
+            pr.append((jct, t, sp, bp, stat, eta, note))
+        elif tier == "ic-detect":
+            arr.append((jct, t, sp, bp))
+    return ge, ins, gr, pr, arr
+
+# ── Build NO_TSP top-row shapes ───────────────────────────────────────────────
+def _build_notsp_shapes():
+    shapes = []
+    for ji, jct_id in enumerate(jct_ids):
+        cfg      = INTERSECTIONS_CONFIG.get(jct_id, {})
+        cycle_s  = _f(cfg.get("cycle_length", 110))
+        bp_dur   = _f(cfg.get("BusPhaseDuration", 30))
+        bus_ph   = cfg.get("BusPhase", 1)
+        n_phases = max(len(cfg.get("SignalGroupIDList", [])), 1)
+        non_dur  = (cycle_s - bp_dur) / max(n_phases - 1, 1)
+        y0n      = _y0(ji, 0)
+        t0c      = _cycle_offset_map.get(jct_id, 0.0)
+        t = (t0c + cycle_s * math.floor((0.0 - t0c) / cycle_s)) if cycle_s > 0 else 0.0
+        while t < t_show_end:
+            cursor = t
+            for ph in range(n_phases):
+                if cursor >= t + cycle_s: break
+                if ph == (bus_ph - 1) % n_phases:
+                    dur, col = bp_dur, "#81C784"
+                else:
+                    dur, col = non_dur, "#BBDEFB"
+                shapes.append(dict(type="rect", xref="x", yref="y",
+                    x0=cursor, x1=cursor + dur, y0=y0n, y1=y0n + ROW_H,
+                    fillcolor=col, line=dict(width=0), layer="below"))
+                cursor += dur
+            if cursor < t + cycle_s:
+                shapes.append(dict(type="rect", xref="x", yref="y",
+                    x0=cursor, x1=t + cycle_s, y0=y0n, y1=y0n + ROW_H,
+                    fillcolor="#CFD8DC", line=dict(width=0), layer="below"))
+            t += cycle_s
+    return shapes
+
+notsp_shapes = _build_notsp_shapes()
+
+# ── Build strategy bottom-row phase shapes ────────────────────────────────────
+_BAR_COL = {"bus": "#4CAF50", "ge": "#FF9800", "nonbus": "#90CAF9",
+            "ins": "#E53935", "clearance": "#CFD8DC"}
+_BAR_BDR = {"bus": dict(width=0.3, color="#ccc"),  "ge":  dict(width=1, color="#E65100"),
+            "nonbus": dict(width=0.3, color="#ccc"), "ins": dict(width=1, color="#B71C1C"),
+            "clearance": dict(width=0)}
+_BAR_OPA = {"bus": 1.0, "ge": 0.85, "nonbus": 1.0, "ins": 0.75, "clearance": 1.0}
+_BAR_LYR = {"bus": "below", "ge": "above", "nonbus": "below", "ins": "above", "clearance": "below"}
+
+def _build_strat_shapes(ge_events, ins_events):
+    shapes = []
+    for ji, jct_id in enumerate(jct_ids):
+        cfg = INTERSECTIONS_CONFIG.get(jct_id, {})
+        y0a = _y0(ji, 1)
+        t0c = _cycle_offset_map.get(jct_id, 0.0)
+        for (b_t0, b_t1, b_pnum, b_type) in _build_marl_phase_bars(
+                jct_id, cfg, ge_events, ins_events, 0.0, t_show_end, t_cycle_0=t0c):
             shapes.append(dict(
                 type="rect", xref="x", yref="y",
-                x0=max(cursor, t_show_start), x1=min(bp_start + cycle_s, t_show_end),
-                y0=y0n, y1=y0n + ROW_H,
-                fillcolor="#CFD8DC", line=dict(width=0),
-                layer="below",
+                x0=b_t0, x1=b_t1, y0=y0a, y1=y0a + ROW_H,
+                fillcolor=_BAR_COL[b_type], line=_BAR_BDR[b_type],
+                opacity=_BAR_OPA[b_type], layer=_BAR_LYR[b_type],
             ))
-        t += cycle_s
+    return shapes
 
+# ── Phase label text traces ────────────────────────────────────────────────────
+def _build_notsp_label_trace():
+    xs, ys, txts = [], [], []
+    for ji, jct_id in enumerate(jct_ids):
+        cfg      = INTERSECTIONS_CONFIG.get(jct_id, {})
+        cycle_s  = _f(cfg.get("cycle_length", 110))
+        bp_dur   = _f(cfg.get("BusPhaseDuration", 30))
+        bus_ph   = cfg.get("BusPhase", 1)
+        n_phases = max(len(cfg.get("SignalGroupIDList", [])), 1)
+        non_dur  = (cycle_s - bp_dur) / max(n_phases - 1, 1)
+        y0n      = _y0(ji, 0)
+        t0c      = _cycle_offset_map.get(jct_id, 0.0)
+        t = (t0c + cycle_s * math.floor((0.0 - t0c) / cycle_s)) if cycle_s > 0 else 0.0
+        while t < t_show_end:
+            cursor = t
+            for ph in range(n_phases):
+                if cursor >= t + cycle_s: break
+                dur = bp_dur if ph == (bus_ph - 1) % n_phases else non_dur
+                mid = cursor + dur / 2
+                if 0.0 <= mid <= t_show_end:
+                    xs.append(mid); ys.append(y0n + ROW_H / 2); txts.append(str(ph + 1))
+                cursor += dur
+            t += cycle_s
+    return dict(type="scatter", mode="text", x=xs, y=ys, text=txts,
+                textfont=dict(size=8, color="#1a5276"), hoverinfo="skip",
+                showlegend=False, name="_notsp_ph_lbl", legendgroup="_ph_lbl")
+
+def _build_strat_label_trace(ge_events, ins_events):
+    xs, ys, txts = [], [], []
+    for ji, jct_id in enumerate(jct_ids):
+        cfg = INTERSECTIONS_CONFIG.get(jct_id, {})
+        y0a = _y0(ji, 1)
+        t0c = _cycle_offset_map.get(jct_id, 0.0)
+        for (b_t0, b_t1, b_pnum, b_type) in _build_marl_phase_bars(
+                jct_id, cfg, ge_events, ins_events, 0.0, t_show_end, t_cycle_0=t0c):
+            if b_type != "clearance":
+                xs.append((b_t0 + b_t1) / 2); ys.append(y0a + ROW_H / 2)
+                txts.append(str(b_pnum))
+    return dict(type="scatter", mode="text", x=xs, y=ys, text=txts,
+                textfont=dict(size=8, color="#1b2631"), hoverinfo="skip",
+                showlegend=False, name="_strat_ph_lbl", legendgroup="_ph_lbl")
+
+# ── Build marker scatter traces ────────────────────────────────────────────────
+def _arr_state(sp, bp):
+    if sp > 0 and sp == bp: return "green"
+    if sp > 0: return "red"
+    return "unk"
+
+def _build_marker_traces(ge_events, ins_events, gr_events, pr_events, arr_events,
+                          row=1):
+    """Build Plotly scatter traces for event markers on the given row (0=NO_TSP, 1=TSP)."""
+    traces = []
+    jct_set = set(jct_ids)
+
+    # ── Bus arrivals, coloured by signal phase state ──────────────────────────
+    for state, color, label in [
+        ("green", "#2E7D32", "Arrival: green phase"),
+        ("red",   "#C62828", "Arrival: red/non-bus"),
+        ("unk",   "#757575", "Arrival: phase unknown"),
+    ]:
+        xs, ys, txts = [], [], []
+        for (jj, t, sp, bp) in arr_events:
+            if jj not in jct_set or _arr_state(sp, bp) != state: continue
+            ji  = jct_ids.index(jj)
+            yb  = _y0(ji, row)
+            xs  += [t, t, None]
+            ys  += [yb, yb + ROW_H, None]
+            txts += [f"Arrival ({state}) t={t:.0f}s jct={jj} sp={sp} bp={bp}", "", ""]
+        if xs:
+            traces.append(dict(type="scatter", mode="lines",
+                x=xs, y=ys, text=txts, hoverinfo="text",
+                line=dict(color=color, width=1.5, dash="dot"),
+                name=label, legendgroup=f"arr_{state}", showlegend=(row == 1)))
+
+    if row == 0:   # NO_TSP row only needs arrival markers
+        return traces
+
+    # ── GE markers ────────────────────────────────────────────────────────────
+    xs, ys, txts = [], [], []
+    for (jj, t, dur, sp, bp) in ge_events:
+        if jj not in jct_set: continue
+        ji = jct_ids.index(jj)
+        xs.append(t); ys.append(_y0(ji, 1) + ROW_H + 0.1)
+        txts.append(f"GE +{dur:.0f}s @ t={t:.0f}s  jct={jj}  phase={sp}")
+    if xs:
+        traces.append(dict(type="scatter", mode="markers", x=xs, y=ys,
+            hovertext=txts, hoverinfo="text",
+            marker=dict(symbol="triangle-up", size=9, color="#FF9800",
+                        line=dict(width=1, color="#E65100")),
+            name="GE Green Extension", legendgroup="ge", showlegend=True))
+
+    # ── INS markers ───────────────────────────────────────────────────────────
+    xs, ys, txts = [], [], []
+    for (jj, t, dur, sp, bp) in ins_events:
+        if jj not in jct_set: continue
+        ji = jct_ids.index(jj)
+        xs.append(t); ys.append(_y0(ji, 1) + ROW_H + 0.1)
+        txts.append(f"INS +{dur:.0f}s @ t={t:.0f}s  jct={jj}  inserted bp={bp}")
+    if xs:
+        traces.append(dict(type="scatter", mode="markers", x=xs, y=ys,
+            hovertext=txts, hoverinfo="text",
+            marker=dict(symbol="diamond", size=9, color="#E53935",
+                        line=dict(width=1, color="#B71C1C")),
+            name="INS Phase Insertion", legendgroup="ins", showlegend=True))
+
+    # ── GR — natural green markers (bus arrived in green, no action needed) ───
+    xs, ys, txts = [], [], []
+    for (jj, t, sp, bp, eta, note) in gr_events:
+        if jj not in jct_set: continue
+        ji = jct_ids.index(jj)
+        xs.append(t); ys.append(_y0(ji, 1) + ROW_H + 0.1)
+        txts.append(f"GR natural green @ t={t:.0f}s  jct={jj}  +{eta:.1f}s rem in phase")
+    if xs:
+        traces.append(dict(type="scatter", mode="markers", x=xs, y=ys,
+            hovertext=txts, hoverinfo="text",
+            marker=dict(symbol="star", size=11, color="#00BFA5",
+                        line=dict(width=1, color="#00897B")),
+            name="GR Natural Green", legendgroup="gr", showlegend=True))
+
+    # ── PR — prearm events by outcome ─────────────────────────────────────────
+    for outcome, color, sym, label in [
+        ("fired",   "#7B1FA2", "cross-open",       "PR Prearm fired"),
+        ("success", "#388E3C", "triangle-up-open", "PR Prearm success"),
+        ("missed",  "#D32F2F", "x-open",           "PR Prearm missed"),
+    ]:
+        xs, ys, txts = [], [], []
+        for (jj, t, sp, bp, oc, eta, note) in pr_events:
+            if oc != outcome or jj not in jct_set: continue
+            ji = jct_ids.index(jj)
+            xs.append(t); ys.append(_y0(ji, 1) + ROW_H * 1.9)
+            eta_s = f"{eta:.1f}s" if eta else "?"
+            txts.append(f"{label} @ t={t:.0f}s  jct={jj}  eta={eta_s}  {note}")
+        if xs:
+            traces.append(dict(type="scatter", mode="markers", x=xs, y=ys,
+                hovertext=txts, hoverinfo="text",
+                marker=dict(symbol=sym, size=9, color=color,
+                            line=dict(width=1.5, color=color)),
+                name=label, legendgroup=f"pr_{outcome}", showlegend=True))
+
+    return traces
+
+# ── Load wave events (periodic replan) for a strategy ─────────────────────────
+def _load_wave_rows(strat_name):
+    path = _latest(os.path.join(_log_dir, f"corridor_wave_events_{strat_name}_*.csv"))
+    if not path:
+        path = _latest(os.path.join(_log_dir, "corridor_wave_events_*.csv"))
+    return _read_csv(path) if path else []
+
+def _build_replan_trace(wave_rows):
+    xs, ys, txts = [], [], []
+    jct_set = set(jct_ids)
+    for wr in wave_rows:
+        evt = (wr.get("event") or "").strip().lower()
+        if "periodic_replan" not in evt: continue
+        tgt  = int(_f(wr.get("target_jct", wr.get("target_junction", 0))))
+        t_ev = _f(wr.get("time_s", wr.get("sim_time_s", 0)))
+        note = wr.get("note", "")
+        m    = re.search(r'corr=([+-]?[\d.]+)', note)
+        corr = float(m.group(1)) if m else 0.0
+        if tgt not in jct_set: continue
+        ji   = jct_ids.index(tgt)
+        xs.append(t_ev); ys.append(_y0(ji, 1) + ROW_H / 2)
+        txts.append(f"Forward OC {corr:+.1f}s @ t={t_ev:.0f}s  jct={tgt}")
+    if not xs:
+        return None
+    return dict(type="scatter", mode="markers", x=xs, y=ys,
+                hovertext=txts, hoverinfo="text",
+                marker=dict(symbol="x", size=10, color="#7E57C2",
+                            line=dict(width=2, color="#4527A0")),
+                name="Periodic OC correction", legendgroup="replan", showlegend=True)
+
+# ── Annotations and Y-tick labels ─────────────────────────────────────────────
+ytick_vals = ([_y0(ji, 0) + ROW_H / 2 for ji in range(len(jct_ids))] +
+              [_y0(ji, 1) + ROW_H / 2 for ji in range(len(jct_ids))])
+ytick_text = ([f"INT{j} NO_TSP" for j in jct_ids] +
+              [f"INT{j} TSP"    for j in jct_ids])
+
+annotations = []
+for ji, jct_id in enumerate(jct_ids):
     annotations.append(dict(
-        x=t_show_start - 5, y=y0n + ROW_H / 2,
-        xref="x", yref="y",
-        text=f"<b>INT{jct_id}</b><br><i>NO_TSP</i>",
-        showarrow=False, xanchor="right", font=dict(size=9),
-    ))
-
-    # ── ACTUAL cycle (bottom row) — GE/INS-adjusted phase reconstruction ──────
-    y0a = _y0(ji, 1)
-    _BAR_COL = {"bus": "#4CAF50",               "ge": PHASE_COLOURS["ge_ext"],
-                "nonbus": "#90CAF9",             "ins": PHASE_COLOURS["ins"],
-                "clearance": "#CFD8DC"}
-    _BAR_BDR = {"bus": dict(width=0.3, color="#ccc"), "ge":  dict(width=1, color="#E65100"),
-                "nonbus": dict(width=0.3, color="#ccc"), "ins": dict(width=1, color="#B71C1C"),
-                "clearance": dict(width=0)}
-    _BAR_OPA = {"bus": 1.0, "ge": 0.85, "nonbus": 1.0, "ins": 0.75, "clearance": 1.0}
-    _BAR_LYR = {"bus": "below", "ge": "above", "nonbus": "below", "ins": "above", "clearance": "below"}
-    for (b_t0, b_t1, b_pnum, b_type) in _build_marl_phase_bars(
-            jct_id, cfg, ge_events, ins_events, t_show_start, t_show_end,
-            t_cycle_0=_t_cycle_0):
-        shapes.append(dict(
-            type="rect", xref="x", yref="y",
-            x0=b_t0, x1=b_t1,
-            y0=y0a, y1=y0a + ROW_H,
-            fillcolor=_BAR_COL[b_type], line=_BAR_BDR[b_type],
-            opacity=_BAR_OPA[b_type], layer=_BAR_LYR[b_type],
-        ))
-        if b_type != 'clearance':   # don't label all-red gaps
-            _ph_xs_marl.append((b_t0 + b_t1) / 2)
-            _ph_ys_marl.append(y0a + ROW_H / 2)
-            _ph_txt_marl.append(str(b_pnum))
-
+        x=-15, y=_y0(ji, 0) + ROW_H / 2, xref="x", yref="y",
+        text=f"<b>{jct_id}</b><br><small>NO_TSP</small>",
+        showarrow=False, xanchor="right", font=dict(size=9)))
     annotations.append(dict(
-        x=t_show_start - 5, y=y0a + ROW_H / 2,
-        xref="x", yref="y",
-        text=f"<b>INT{jct_id}</b><br><i>DCTSP_MARL</i>",
-        showarrow=False, xanchor="right", font=dict(size=9),
-    ))
+        x=-15, y=_y0(ji, 1) + ROW_H / 2, xref="x", yref="y",
+        text=f"<b>{jct_id}</b><br><small>TSP</small>",
+        showarrow=False, xanchor="right", font=dict(size=9)))
 
-    # ── Bus arrival markers (dotted vertical lines) ────────────────────────────
-    # NO_TSP arrivals on the NO_TSP row, DCTSP_MARL arrivals on the DCTSP row.
-    for (jj, t_arr) in notsp_arrivals:
-        if jj == jct_id and t_show_start <= t_arr <= t_show_end:
-            shapes.append(dict(
-                type="line", xref="x", yref="y",
-                x0=t_arr, x1=t_arr,
-                y0=y0n, y1=y0n + ROW_H,
-                line=dict(color="#1B5E20", width=1.5, dash="dot"),
-                layer="above",
-            ))
-    for (jj, t_arr) in marl_arrivals:
-        if jj == jct_id and t_show_start <= t_arr <= t_show_end:
-            shapes.append(dict(
-                type="line", xref="x", yref="y",
-                x0=t_arr, x1=t_arr,
-                y0=y0a, y1=y0a + ROW_H,
-                line=dict(color="#1B5E20", width=1.5, dash="dot"),
-                layer="above",
-            ))
+# ── Legend dummy traces (shapes can't appear in Plotly legend) ────────────────
+legend_traces = [
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#81C784"),  name="Bus phase (NO_TSP)"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#BBDEFB"),  name="Non-bus (NO_TSP)"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#CFD8DC"),  name="All-red/clearance"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#4CAF50"),  name="Bus phase (TSP)"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#90CAF9"),  name="Non-bus (TSP)"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#FF9800"),  name="GE bar"),
+    dict(type="scatter", mode="markers", x=[None], y=[None], showlegend=True,
+         marker=dict(symbol="square", size=14, color="#E53935"),  name="INS bar"),
+]
 
-    # ── GE detection markers (bars already drawn in _build_marl_phase_bars) ────
-    ge_xs, ge_ys, ge_texts = [], [], []
-    for (jj, t_ev, dur, _ge_sp, _ge_bp) in ge_events:
-        if jj != jct_id or not (t_show_start <= t_ev <= t_show_end):
-            continue
-        _lbl = str(_ge_sp) if _ge_sp > 0 else str(bus_ph)
-        ge_xs.append(t_ev)
-        ge_ys.append(y0a + ROW_H)
-        ge_texts.append(f"GE detected t={t_ev:.0f}s +{dur:.0f}s  jct={jct_id}  phase={_lbl}")
+# ── Build NO_TSP base traces ───────────────────────────────────────────────────
+notsp_rows = all_strategies.get(notsp_label, [])
+_, _, _, _, notsp_arr = _extract_events(notsp_rows)
+notsp_arr_traces  = _build_marker_traces([], [], [], [], notsp_arr, row=0)
+notsp_lbl_trace   = _build_notsp_label_trace()
+base_traces       = legend_traces + [notsp_lbl_trace] + notsp_arr_traces
 
-    if ge_xs:
-        traces_plotly.append(dict(
-            type="scatter", mode="markers",
-            x=ge_xs, y=ge_ys,
-            hovertext=ge_texts, hoverinfo="text",
-            marker=dict(symbol="triangle-up", size=8,
-                        color=PHASE_COLOURS["ge_ext"]),
-            name="GE extension" if ji == 0 else None,
-            showlegend=(ji == 0),
-        ))
+# ── Build per-strategy data ────────────────────────────────────────────────────
+strat_js_data = {}
+for sname in strat_labels:
+    rows = all_strategies.get(sname, [])
+    ge, ins, gr, pr, arr = _extract_events(rows)
+    shapes       = _build_strat_shapes(ge, ins)
+    lbl_trace    = _build_strat_label_trace(ge, ins)
+    mkt_traces   = _build_marker_traces(ge, ins, gr, pr, arr, row=1)
+    wave_rows    = _load_wave_rows(sname)
+    rp_trace     = _build_replan_trace(wave_rows)
+    if rp_trace:
+        mkt_traces.append(rp_trace)
+    strat_js_data[sname] = {
+        "shapes":      shapes,
+        "labelTrace":  lbl_trace,
+        "markerTraces": mkt_traces,
+    }
+    n_ge  = sum(1 for t in mkt_traces if t.get("legendgroup") == "ge")
+    n_ins = sum(1 for t in mkt_traces if t.get("legendgroup") == "ins")
+    n_gr  = sum(1 for t in mkt_traces if t.get("legendgroup") == "gr")
+    n_pr  = sum(1 for t in mkt_traces if "pr_" in (t.get("legendgroup") or ""))
+    print(f"  {sname}: {len(shapes)} shapes | GE={n_ge} INS={n_ins} GR={n_gr} PR={n_pr}")
 
-    # ── INS detection markers (bars already drawn in _build_marl_phase_bars) ───
-    ins_xs, ins_ys, ins_texts = [], [], []
-    for (jj, t_ev, dur, _ins_sp, _ins_bp) in ins_events:
-        if jj != jct_id or not (t_show_start <= t_ev <= t_show_end):
-            continue
-        _ins_lbl = str(_ins_bp) if _ins_bp > 0 else str(bus_ph)
-        ins_xs.append(t_ev)
-        ins_ys.append(y0a + ROW_H)
-        ins_texts.append(f"INS detected t={t_ev:.0f}s +{dur:.0f}s  jct={jct_id}  phase={_ins_lbl}")
-
-    if ins_xs:
-        traces_plotly.append(dict(
-            type="scatter", mode="markers",
-            x=ins_xs, y=ins_ys,
-            hovertext=ins_texts, hoverinfo="text",
-            marker=dict(symbol="diamond", size=8, color=PHASE_COLOURS["ins"]),
-            name="Phase insertion" if ji == 0 else None,
-            showlegend=(ji == 0),
-        ))
-
-    # ── Periodic replan corrections ────────────────────────────────────────
-    rp_xs, rp_ys, rp_texts = [], [], []
-    for (jj, t_ev, corr) in replan_events:
-        if jj != jct_id or not (t_show_start <= t_ev <= t_show_end):
-            continue
-        rp_xs.append(t_ev)
-        rp_ys.append(y0a + ROW_H / 2)
-        rp_texts.append(f"Forward OC {corr:+.1f}s @ t={t_ev:.0f}s  jct={jct_id}")
-
-    if rp_xs:
-        traces_plotly.append(dict(
-            type="scatter", mode="markers",
-            x=rp_xs, y=rp_ys,
-            hovertext=rp_texts, hoverinfo="text",
-            marker=dict(symbol="x", size=10, color=PHASE_COLOURS["replan"],
-                        line=dict(width=2)),
-            name="Periodic OC correction" if ji == 0 else None,
-            showlegend=(ji == 0),
-        ))
-
-# ── Phase number labels (scatter text — zoom in to read) ─────────────────────
-traces_plotly.append(dict(
-    type="scatter", mode="text",
-    x=_ph_xs_notsp, y=_ph_ys_notsp,
-    text=_ph_txt_notsp,
-    textfont=dict(size=8, color="#1a5276"),
-    hoverinfo="skip",
-    showlegend=False,
-    name="_phase_labels_notsp",
-))
-traces_plotly.append(dict(
-    type="scatter", mode="text",
-    x=_ph_xs_marl, y=_ph_ys_marl,
-    text=_ph_txt_marl,
-    textfont=dict(size=8, color="#1b2631"),
-    hoverinfo="skip",
-    showlegend=False,
-    name="_phase_labels_marl",
-))
-
-# ── Legend dummy traces ────────────────────────────────────────────────────────
-for label, colour, symbol in [
-    ("Bus phase (NO_TSP)",      "#81C784",              "square"),
-    ("All-red / clearance",     "#CFD8DC",              "square"),
-    ("Bus phase (DCTSP_MARL)",  PHASE_COLOURS["bus"],   "square"),
-    ("Non-bus (DCTSP_MARL)",    PHASE_COLOURS["other"], "square"),
-    ("GE extension (DCTSP)",    PHASE_COLOURS["ge_ext"],"square"),
-    ("Phase insertion (DCTSP)", PHASE_COLOURS["ins"],   "square"),
-    ("Bus arrival (IC-detect)", "#1B5E20",              "line-ew-open"),
-]:
-    traces_plotly.insert(0, dict(
-            type="scatter", mode="markers",
-            x=[None], y=[None],
-            marker=dict(symbol=symbol, size=12, color=colour),
-            name=label, showlegend=True,
-        ))
-
-ytick_vals  = [_y0(ji, 0) + ROW_H/2 for ji in range(len(jct_ids))]
-ytick_vals += [_y0(ji, 1) + ROW_H/2 for ji in range(len(jct_ids))]
-ytick_text  = [f"INT{j} NO_TSP"     for j in jct_ids] + [f"INT{j} DCTSP_MARL" for j in jct_ids]
-
-layout = {
-    "title": {"text": "Signal Timing: NO_TSP (fixed plan) vs DCTSP_MARL — Full Simulation", "x": 0.5},
-    "xaxis": {"title": "Simulation time (s)", "range": [t_show_start - 30, t_show_end + 30],
-              "tickmode": "linear", "dtick": 300},  # major tick every 5 min
+# ── Base layout ───────────────────────────────────────────────────────────────
+base_layout = {
+    "title": {"text": "Signal Timing — select a strategy above", "x": 0.5},
+    "xaxis": {
+        "title": "Simulation time (s)",
+        "range": [-30, t_show_end + 30],
+        "tickmode": "linear", "dtick": 300,
+    },
     "yaxis": {
         "tickvals": ytick_vals, "ticktext": ytick_text,
         "range": [-0.5, total_height],
         "tickfont": {"size": 9},
     },
-    "shapes": shapes,
     "annotations": annotations,
-    "height": max(400, len(jct_ids) * 120 + 120),
+    "shapes": [],   # filled dynamically by JS
+    "height": max(500, len(jct_ids) * 120 + 200),
     "hovermode": "closest",
     "legend": {"orientation": "h", "y": -0.12},
     "plot_bgcolor": "#F5F5F5",
+    "margin": {"l": 130},
 }
 
-fig_json = json.dumps({"data": traces_plotly, "layout": layout}, default=str)
+# ── Serialise everything to JSON ──────────────────────────────────────────────
+notsp_shapes_json   = json.dumps(notsp_shapes,  default=str)
+base_traces_json    = json.dumps(base_traces,   default=str)
+strat_data_json     = json.dumps(strat_js_data, default=str)
+base_layout_json    = json.dumps(base_layout,   default=str)
+strat_labels_json   = json.dumps(strat_labels)
+t_end_json          = json.dumps(round(t_show_end))
+default_strat_json  = json.dumps(strat_labels[0] if strat_labels else "")
 
+# ── HTML ──────────────────────────────────────────────────────────────────────
 HTML = f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <title>Signal Timing Diagram</title>
 <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-</head><body style="font-family:sans-serif;padding:16px">
-<h2>Signal Timing: NO_TSP vs DCTSP_MARL — Full Simulation</h2>
-<p style="color:#555;max-width:960px">
-  Each intersection has two rows: <b>NO_TSP</b> (top) shows the fixed-time
-  signal plan with the correct bus phase (green), non-bus phases (blue) and
-  all-red clearance (light grey) repeating throughout the simulation.
-  <b>DCTSP_MARL</b> (bottom) shows the same base plan but with TSP
-  modifications applied in real time — <b style="color:#FF9800">orange GE
-  bars</b> appear immediately after the bus phase when it was held green longer
-  (the detection triangle marks when the bus was spotted), and
-  <b style="color:#E53935">red INS bars</b> appear where an extra bus-phase
-  was inserted mid-cycle. Every GE/INS event shifts ALL subsequent phase bars
-  right relative to the NO_TSP row — zoom into any intersection to see the
-  accumulated offset clearly.
-  <b style="color:#1B5E20">Dotted green lines</b> mark bus arrivals
-  (IC-detect). Phase numbers are labelled in each bar — zoom in to read them.
-  Note: offset-correction (&times;) markers require a
-  <code>corridor_wave_events_*.csv</code> log file; none was found for this run.
-</p>
+<style>
+body {{font-family:sans-serif;padding:12px 16px;background:#f5f5f5;margin:0}}
+h2   {{margin:0 0 8px;font-size:16px;color:#1a237e}}
+#controls {{
+  background:white;border:1px solid #ddd;border-radius:6px;
+  padding:8px 14px;margin-bottom:10px;
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px
+}}
+#controls label {{font-weight:600;color:#333;white-space:nowrap}}
+#controls select,#controls input[type=number] {{
+  font-size:13px;padding:3px 6px;border:1px solid #bbb;border-radius:4px
+}}
+#controls button {{
+  padding:4px 12px;background:#2F5496;color:white;
+  border:none;border-radius:4px;cursor:pointer;font-size:13px
+}}
+#controls button:hover {{background:#1a3c7a}}
+.sep {{border-left:1px solid #ccc;align-self:stretch;margin:0 4px}}
+.cbrow {{display:flex;gap:8px;align-items:center;flex-wrap:wrap}}
+.cbrow label {{font-weight:normal;cursor:pointer}}
+#badge {{font-size:11px;background:#e8f0fe;border-radius:4px;padding:2px 8px;color:#174ea6;font-weight:600}}
+#fig   {{background:white;border-radius:4px;border:1px solid #ddd}}
+p.legend {{color:#555;font-size:11.5px;margin-top:6px;
+           background:white;padding:8px 12px;border-radius:4px;border:1px solid #ddd}}
+</style>
+</head><body>
+<h2>Signal Timing: NO_TSP (top) vs TSP strategy (bottom)</h2>
+
+<div id="controls">
+  <label>Strategy:</label>
+  <select id="stratSel"></select>
+  <span id="badge"></span>
+
+  <div class="sep"></div>
+  <label>Time (s):</label>
+  <input type="number" id="tS" value="0"    step="100" style="width:72px">
+  <span>–</span>
+  <input type="number" id="tE" value="4500" step="100" style="width:72px">
+  <button onclick="applyRange()">Zoom</button>
+  <button onclick="resetRange()">Full</button>
+
+  <div class="sep"></div>
+  <label>Show:</label>
+  <div class="cbrow">
+    <label><input type="checkbox" id="cbGE"     checked onchange="redraw()"> <b style="color:#E65100">▲ GE</b> ext</label>
+    <label><input type="checkbox" id="cbINS"    checked onchange="redraw()"> <b style="color:#B71C1C">◆ INS</b> ins</label>
+    <label><input type="checkbox" id="cbGR"     checked onchange="redraw()"> <b style="color:#00897B">★ GR</b> nat.green</label>
+    <label><input type="checkbox" id="cbPR"     checked onchange="redraw()"> <b style="color:#7B1FA2">+ PR</b> prearm</label>
+    <label><input type="checkbox" id="cbArr"    checked onchange="redraw()"> Arrivals</label>
+    <label><input type="checkbox" id="cbReplan" checked onchange="redraw()"> Replan</label>
+    <label><input type="checkbox" id="cbLbl"    checked onchange="redraw()"> Phase#</label>
+  </div>
+</div>
+
 <div id="fig"></div>
+
+<p class="legend">
+  <b>NO_TSP rows (top):</b>
+  <span style="background:#81C784;padding:1px 6px;border-radius:2px">bus phase</span>
+  <span style="background:#BBDEFB;padding:1px 6px;border-radius:2px">non-bus</span>
+  <span style="background:#CFD8DC;padding:1px 6px;border-radius:2px">all-red</span>
+  &nbsp;|&nbsp;
+  <b>TSP rows (bottom):</b>
+  <span style="background:#4CAF50;padding:1px 6px;border-radius:2px;color:white">bus phase</span>
+  <span style="background:#FF9800;padding:1px 6px;border-radius:2px">GE bar</span>
+  <span style="background:#E53935;padding:1px 6px;border-radius:2px;color:white">INS bar</span>
+  &nbsp;|&nbsp;
+  Markers above bars:
+  <b style="color:#E65100">▲ GE</b> = green extension detected &nbsp;
+  <b style="color:#B71C1C">◆ INS</b> = phase insertion &nbsp;
+  <b style="color:#00BFA5">★ GR</b> = natural green (no TSP needed) &nbsp;
+  <b style="color:#7B1FA2">+ PR fired</b> &nbsp;
+  <b style="color:#388E3C">△ PR success</b> &nbsp;
+  <b style="color:#D32F2F">× PR missed</b>
+  &nbsp;|&nbsp;
+  Dotted lines = bus arrivals (<span style="color:#2E7D32">green</span> = arrived in green phase,
+  <span style="color:#C62828">red</span> = arrived in non-bus phase)
+</p>
+
 <script>
-var fig = {fig_json};
-Plotly.newPlot('fig', fig['data'], fig['layout'], {{responsive:true}});
+var notspShapes  = {notsp_shapes_json};
+var baseTraces   = {base_traces_json};
+var stratData    = {strat_data_json};
+var baseLayout   = {base_layout_json};
+var stratLabels  = {strat_labels_json};
+var tShowEnd     = {t_end_json};
+var defaultStrat = {default_strat_json};
+
+// ── Populate dropdown ────────────────────────────────────────────────────────
+var sel = document.getElementById('stratSel');
+stratLabels.forEach(function(s) {{
+  var o = document.createElement('option');
+  o.value = s; o.text = s;
+  if (s === defaultStrat) o.selected = true;
+  sel.appendChild(o);
+}});
+
+// ── Filter helpers ───────────────────────────────────────────────────────────
+function getFilter() {{
+  return {{
+    ge:     document.getElementById('cbGE').checked,
+    ins:    document.getElementById('cbINS').checked,
+    gr:     document.getElementById('cbGR').checked,
+    pr:     document.getElementById('cbPR').checked,
+    arr:    document.getElementById('cbArr').checked,
+    replan: document.getElementById('cbReplan').checked,
+    lbl:    document.getElementById('cbLbl').checked,
+  }};
+}}
+
+var GROUP_FILTER = {{
+  ge:          function(f){{ return f.ge; }},
+  ins:         function(f){{ return f.ins; }},
+  gr:          function(f){{ return f.gr; }},
+  pr_fired:    function(f){{ return f.pr; }},
+  pr_success:  function(f){{ return f.pr; }},
+  pr_missed:   function(f){{ return f.pr; }},
+  arr_green:   function(f){{ return f.arr; }},
+  arr_red:     function(f){{ return f.arr; }},
+  arr_unk:     function(f){{ return f.arr; }},
+  replan:      function(f){{ return f.replan; }},
+  _ph_lbl:     function(f){{ return f.lbl; }},
+}};
+
+function filterTraces(traces, flt) {{
+  return traces.filter(function(t) {{
+    var g = t.legendgroup || '';
+    if (g in GROUP_FILTER) return GROUP_FILTER[g](flt);
+    return true;   // legend dummy traces, unknown groups — always show
+  }});
+}}
+
+// ── Main render ──────────────────────────────────────────────────────────────
+function redraw() {{
+  var sname  = document.getElementById('stratSel').value;
+  var sd     = stratData[sname] || {{}};
+  var flt    = getFilter();
+
+  document.getElementById('badge').textContent = sname;
+
+  // Build shapes: NO_TSP top rows (fixed) + strategy bottom rows
+  var shapes = notspShapes.concat(sd.shapes || []);
+
+  // Build layout
+  var layout = JSON.parse(JSON.stringify(baseLayout));
+  layout.shapes = shapes;
+  layout.title.text = 'Signal Timing: NO_TSP vs ' + sname;
+
+  // Apply current time range
+  var t0 = parseFloat(document.getElementById('tS').value) || 0;
+  var t1 = parseFloat(document.getElementById('tE').value) || tShowEnd;
+  layout.xaxis.range = [t0 - 10, t1 + 10];
+
+  // Build traces
+  var traces = baseTraces.slice();           // legend dummies + NO_TSP arrivals + NO_TSP labels
+  if (sd.labelTrace) traces.push(sd.labelTrace);
+  if (sd.markerTraces) traces = traces.concat(sd.markerTraces);
+  traces = filterTraces(traces, flt);
+
+  Plotly.react('fig', traces, layout);
+}}
+
+function applyRange() {{ redraw(); }}
+
+function resetRange() {{
+  document.getElementById('tS').value = 0;
+  document.getElementById('tE').value = tShowEnd;
+  redraw();
+}}
+
+sel.addEventListener('change', redraw);
+
+// ── Initial render ────────────────────────────────────────────────────────────
+document.getElementById('tE').value = tShowEnd;
+redraw();
 </script>
 </body></html>"""
 
-with open(_out_html, "w", encoding="utf-8") as f:
-    f.write(HTML)
-print(f"[plot_signal_timing] written -> {_out_html}")
+with open(_out_html, "w", encoding="utf-8") as fh:
+    fh.write(HTML)
+print(f"[plot_signal_timing] written -> {_out_html}  ({len(strat_labels)} strategies)")

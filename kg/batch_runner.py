@@ -1104,8 +1104,8 @@ _PREDICTOR_STRATEGIES = [
             "ZIG_DE_ITER":            30,
             "ZIG_DE_F":               0.8,
             "ZIG_DE_CR":              0.9,
-            # Minimum reward delta to grant TSP; blocks marginal insertions
-            "ZIG_MIN_GAIN_S":         40.0,
+            # ZIG_MIN_GAIN_S=0.0: let ZIG_BALANCE_FACTOR alone guard against marginal actions
+            "ZIG_MIN_GAIN_S":         0.0,
         },
     },
     {
@@ -1425,7 +1425,7 @@ def _wavegate_base_overrides():
         "ZIG_PHASE_OVERLAP_S":    0.5,
         "ZIG_BALANCE_FACTOR":     0.50,
         "NETWORK_FACTOR":         5.0,
-        "ZIG_MIN_GAIN_S":         40.0,
+        "ZIG_MIN_GAIN_S":         0.0,
     }
 
 
@@ -1586,7 +1586,7 @@ for _ps, _ps_ov in PREDICTION_SWEEP_STRATEGIES.items():
             "reward_overrides":  _ov,
         })
 
-SEEDS           = [300]              # 1 seed; restore [300, 42, 12345] for 3-seed replication
+SEEDS           = [300, 42, 12345, 7, 99]   # 5 seeds for replication
 # ── Flow sensitivity sweep ────────────────────────────────────────────────────
 # Literature (Robertson 1969; Hounsell & Wu 2003; Dion et al. 2004) shows TSP
 # relative benefit peaks at moderate congestion (v/c ≈ 0.65–0.80): below that

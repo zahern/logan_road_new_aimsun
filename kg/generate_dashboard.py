@@ -232,7 +232,8 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                 try:
                     t = float(r.get("sim_time_s", 0) or 0)
                     jct = int(float(r.get("junction_id", -1) or -1))
-                    main_veh = float(r.get("n_main_veh", 0) or 0)
+                    main_veh = float(r.get("queue_main", r.get("n_main_veh", 0)) or 0)
+                    side_veh_total = float(r.get("queue_side", 0) or 0)
                     main_dir = str(r.get("main_dir", "main") or "main")
                     sides = {}
 
@@ -275,7 +276,8 @@ def _queue_entry_snapshots_from_csv(path: str) -> list:
                                 pass
 
                     out.append({"t": t, "jct": jct, "main_dir": main_dir,
-                                "main_veh": main_veh, "sides": sides})
+                                "main_veh": main_veh, "side_veh_total": side_veh_total,
+                                "sides": sides})
                 except Exception:
                     continue
     except Exception:
@@ -429,10 +431,12 @@ def _green_rates_from_csv(det_csv: str, allowed_vids: set | None = None) -> dict
     for r in tsp_rows:
         jid = r["jct"]
         if jid not in stats:
-            stats[jid] = {"g": 0, "r": 0}
+            stats[jid] = {"g": 0, "r": 0, "u": 0}
         p = _phase_at_stopline(r)
         if p in ("green", "orange"):
             stats[jid]["g"] += 1
+        elif p == "unknown":
+            stats[jid]["u"] += 1  # sentinel sp=-2007 / no phase data — can't assess
         else:
             stats[jid]["r"] += 1
     junctions_derived = _junctions_from_detections(rows)
@@ -443,9 +447,13 @@ def _green_rates_from_csv(det_csv: str, allowed_vids: set | None = None) -> dict
       preferred + extras if (preferred or extras) else list(stats.keys()))
     result = {}
     for jid in ordered:
-        tot = stats.get(jid, {}).get("g", 0) + stats.get(jid, {}).get("r", 0)
-        result[str(jid)] = round(
-            100 * stats.get(jid, {}).get("g", 0) / tot, 1) if tot else 0.0
+        g = stats.get(jid, {}).get("g", 0)
+        r_ = stats.get(jid, {}).get("r", 0)
+        tot_known = g + r_
+        if tot_known == 0:
+            result[str(jid)] = None  # all-unknown phase (passive/unsignalised junction)
+        else:
+            result[str(jid)] = round(100 * g / tot_known, 1)
     return result
 
 
@@ -491,16 +499,19 @@ def _green_rates_from_csv_fallback(det_csv: str, allowed_vids: set | None = None
             sp, bp = -1, -1
 
         if jid not in stats:
-            stats[jid] = {"g": 0, "r": 0}
-        if sp >= 0 and bp >= 0 and sp == bp:
+            stats[jid] = {"g": 0, "r": 0, "u": 0}
+        if sp < 0:
+            stats[jid]["u"] += 1  # sentinel (e.g. sp=-2007): phase not tracked
+        elif sp >= 0 and bp >= 0 and sp == bp:
             stats[jid]["g"] += 1
         else:
             stats[jid]["r"] += 1
 
     out = {}
     for jid in sorted(stats.keys(), key=lambda x: int(x) if str(x).lstrip("-").isdigit() else str(x)):
-        tot = stats[jid]["g"] + stats[jid]["r"]
-        out[str(jid)] = round(100.0 * stats[jid]["g"] / tot, 1) if tot else 0.0
+        g = stats[jid]["g"]
+        tot_known = g + stats[jid]["r"]
+        out[str(jid)] = round(100.0 * g / tot_known, 1) if tot_known > 0 else None
     return out
 
 
@@ -567,6 +578,68 @@ def _dedup_batch_rows(batch_rows: list) -> list:
         seed = row.get("run_seed", "")
         seen[(exp, seed)] = row   # later rows overwrite earlier -> keep last per (exp, seed)
     return list(seen.values())
+
+
+def _avg_batch_rows(batch_rows: list) -> list:
+    """
+    Collapse batch_rows to one averaged row per experiment (across seeds).
+
+    Numeric columns are mean-averaged; string/path columns take the value from
+    the last seed's row (so log-file paths still resolve).  The seed field is
+    set to 'avg' and a 'n_seeds' field is added for reference.
+    Intended for the --avg-seeds dashboard mode (paper-quality summary view).
+    """
+    import math as _math
+
+    # First deduplicate to last-per-(exp,seed)
+    deduped = _dedup_batch_rows(batch_rows)
+
+    groups: dict = {}
+    for row in deduped:
+        exp = row.get("run_experiment") or row.get("run_strategy", "UNKNOWN")
+        if exp not in groups:
+            groups[exp] = []
+        groups[exp].append(row)
+
+    averaged: list = []
+    for exp, rows in groups.items():
+        if len(rows) == 1:
+            out = dict(rows[0])
+            out["n_seeds"] = 1
+            out["run_seed"] = str(rows[0].get("run_seed", ""))
+            averaged.append(out)
+            continue
+
+        # Start from the last row (most recent) for string/path fields
+        out = dict(rows[-1])
+        out["n_seeds"] = len(rows)
+        out["run_seed"] = "avg"
+
+        # Average every column that looks numeric across all rows in the group
+        numeric_sums: dict = {}
+        numeric_counts: dict = {}
+        for row in rows:
+            for k, v in row.items():
+                if k in ("run_experiment", "run_seed", "run_strategy",
+                         "run_scalar", "run_coordination_algo",
+                         "stats_results_folder", "run_bus_predictor"):
+                    continue
+                try:
+                    fv = float(v)
+                    if _math.isfinite(fv):
+                        numeric_sums[k]  = numeric_sums.get(k, 0.0) + fv
+                        numeric_counts[k] = numeric_counts.get(k, 0) + 1
+                except (TypeError, ValueError):
+                    pass
+
+        for k, total in numeric_sums.items():
+            n = numeric_counts[k]
+            if n > 0:
+                out[k] = total / n
+
+        averaged.append(out)
+
+    return averaged
 
 
 def _match_det_csv_by_name(exp_name: str, all_det_csvs: list) -> str:
@@ -1569,14 +1642,22 @@ def _load_simulation_results_row(batch_row: dict, log_dir: str) -> dict:
         seed = batch_row.get("run_seed", "0")
         if strategy and log_dir:
             results_base = os.path.join(os.path.dirname(log_dir), "results")
-            prefix = f"{strategy}_seed{seed}"
+            # NORMAL strategy saves results under NO_TSP_seed* — try both
+            prefixes_to_try = [f"{strategy}_seed{seed}"]
+            if strategy in ("NORMAL", "NO_TSP"):
+                prefixes_to_try += [f"NO_TSP_seed{seed}", f"NORMAL_seed{seed}"]
             try:
-                candidates = [
-                    d for d in os.scandir(results_base)
-                    if d.is_dir() and d.name.startswith(prefix)
-                ] if os.path.isdir(results_base) else []
-                if candidates:
-                    results_folder = max(candidates, key=lambda d: d.stat().st_mtime).path
+                all_dirs = list(os.scandir(results_base)) if os.path.isdir(results_base) else []
+                for _pfx in prefixes_to_try:
+                    candidates = [d for d in all_dirs if d.is_dir() and d.name.startswith(_pfx)]
+                    # Prefer the candidate that actually contains simulation_results.csv
+                    valid = [d for d in candidates if os.path.isfile(os.path.join(d.path, "simulation_results.csv"))]
+                    if valid:
+                        results_folder = max(valid, key=lambda d: d.stat().st_mtime).path
+                        break
+                    elif candidates:
+                        # Folder exists but no simulation_results.csv — keep searching
+                        pass
             except Exception:
                 pass
     if not results_folder:
@@ -1973,21 +2054,23 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # ── Numeric metrics ──────────────────────────────────────────────────
         total_delay   = _pick(row, ["stats_TotalPassDelay_hrs",
                                     "inter_sum_TotalPassDelay_hrs"])
-        # Fallback: derive total delay from SimTotalDelay_pax_s (pax-seconds → hours)
+        # Fallback 1: derive total delay from SimTotalDelay_pax_s (pax-seconds → hours)
         if total_delay is None:
             _sim_pax_s = _pick(row, ["stats_SimTotalDelay_pax_s"])
             if _sim_pax_s is not None and _sim_pax_s > 0:
                 total_delay = round(_sim_pax_s / 3600.0, 3)
+        # Fallback 2 applied after sim_row is loaded (see below)
         main_delay    = _pick(row, ["stats_MainPassDelay_hrs",
                                     "inter_sum_MainPassDelay_hrs"])
         side_delay    = _pick(row, ["stats_SidePassDelay_hrs",
                                     "inter_sum_SidePassDelay_hrs"])
         bus_tt        = _pick(row, ["stats_BusTotalTT_hrs",
                                     "inter_sum_BusTotalTT_hrs"])
-        # avg_bus_delay: guard against non-numeric values like 'True' (corrupted CSV rows)
+        # avg_bus_delay: guard against non-numeric values like 'True' (corrupted CSV rows).
         _raw_bus_delay = _pick(row, ["stats_AvgBusPassDelay_s",
                                      "inter_avg_AvgBusPassDelay_s"])
         avg_bus_delay = _raw_bus_delay if (_raw_bus_delay is not None and _raw_bus_delay < 9999) else None
+        # sim_row fallback applied after sim_row is loaded (see below)
         avg_pass_delay  = _pick(row, ["stats_AvgPassDelay_s",
                                       "inter_avg_AvgPassDelay_s"])
         avg_car_delay   = _pick(row, ["stats_AvgCarPassDelay_s",
@@ -2036,14 +2119,114 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         # Z1 = Σ passenger delay (bus + car, pax·s) — minimise
         # Z2 = flow-weighted green bandwidth        — MAXIMISE (higher is better)
         # Z3 = total bus lateness Σσ+ (s)           — minimise
-        # Z4 = corridor travel time (s)             — minimise
-        wobj_Z1 = _pick(row, ["wobj_Z1_total"])
-        wobj_Z2 = _pick(row, ["wobj_Z2_total"])
-        wobj_Z3 = _pick(row, ["wobj_Z3_total"])
-        wobj_Z4 = _pick(row, ["wobj_Z4_total"])
+        # Z4 = corridor throughput (veh·km/h)       — maximise
+        # Only trust wobj_Z* columns when the batch_results row looks intact.
+        # The NO_TSP / NORMAL row has misaligned columns (stats_results_folder=None,
+        # aimsun_total_veh_km_h empty) so wobj_Z1/Z2/Z3 are spurious values from
+        # different columns (e.g. Z1=27.705 instead of the expected ~50k–600k pax·s).
+        _row_intact = bool(row.get("stats_results_folder") or row.get("aimsun_total_veh_km_h"))
+        wobj_Z1 = _pick(row, ["wobj_Z1_total"]) if _row_intact else None
+        wobj_Z2 = _pick(row, ["wobj_Z2_total"]) if _row_intact else None
+        wobj_Z3 = _pick(row, ["wobj_Z3_total"]) if _row_intact else None
+        # Prefer aimsun_total_veh_km_h (direct Aimsun section-level metric); fall back to
+        # wobj_Z4_total only when the row looks intact.
+        wobj_Z4 = _pick(row, ["aimsun_total_veh_km_h"])
+        if wobj_Z4 is None or wobj_Z4 <= 0:
+            _z4_fallback = _pick(row, ["wobj_Z4_total"])
+            if _z4_fallback is not None and _z4_fallback > 0 and _row_intact:
+                wobj_Z4 = _z4_fallback
         wobj_total = _pick(row, ["wobj_objective_total"])
         bus_predictor = (row.get("run_bus_predictor") or "KALMAN").strip().upper() or "KALMAN"
         sim_row = _load_simulation_results_row(row, log_dir)
+        # ── sim_row fallbacks for fields that may be corrupt in batch_results.csv ─
+        # Covers NO_TSP where the batch_results.csv row has misaligned columns from
+        # an old batch run.  sim_row (simulation_results.csv) always has correct values.
+        if total_delay is None and sim_row:
+            _s = _pick(sim_row, ["TotalPassDelay_hrs"])
+            if _s is not None and 0 < _s < 1e6:
+                total_delay = round(_s, 3)
+            else:
+                _ps = _pick(sim_row, ["SimTotalDelay_pax_s"])
+                if _ps is not None and _ps > 0:
+                    total_delay = round(_ps / 3600.0, 3)
+        if avg_bus_delay is None and sim_row:
+            _s = _pick(sim_row, ["AvgBusPassDelay_s"])
+            if _s is not None and 0 < _s < 9999:
+                avg_bus_delay = _s
+        # Broad sim_row fallbacks — covers NO_TSP where batch_results columns are corrupt/None
+        if sim_row:
+            if avg_car_delay is None:
+                _s = _pick(sim_row, ["AvgCarPassDelay_s"])
+                if _s is not None and 0 < _s < 9999:
+                    avg_car_delay = _s
+            if avg_pass_delay is None:
+                _s = _pick(sim_row, ["AvgPassDelay_s", "AvgObjPassDelay"])
+                if _s is not None and 0 < _s < 9999:
+                    avg_pass_delay = _s
+            if tsp_det is None:
+                _s = _pick(sim_row, ["TSP_Detections"])
+                if _s is not None:
+                    tsp_det = int(_s)
+            if tsp_ext is None:
+                _s = _pick(sim_row, ["TSP_Extensions"])
+                if _s is not None:
+                    tsp_ext = int(_s)
+            if tsp_ins is None:
+                _s = _pick(sim_row, ["TSP_Insertions"])
+                if _s is not None:
+                    tsp_ins = int(_s)
+            if tsp_natural_green is None:
+                _s = _pick(sim_row, ["TSP_NaturalGreen"])
+                if _s is not None:
+                    tsp_natural_green = int(_s)
+            if tsp_no_action is None:
+                _s = _pick(sim_row, ["TSP_Detected_NoAction"])
+                if _s is not None:
+                    tsp_no_action = int(_s)
+            if distinct_buses is None:
+                _s = _pick(sim_row, ["N_DistinctBuses"])
+                if _s is not None:
+                    distinct_buses = int(_s)
+            if distinct_cars is None:
+                _s = _pick(sim_row, ["N_DistinctCars"])
+                if _s is not None:
+                    distinct_cars = int(_s)
+            if sim_duration_hrs is None:
+                _s = _pick(sim_row, ["SimDuration_hrs"])
+                if _s is not None and _s > 0:
+                    sim_duration_hrs = _s
+            if bus_tt is None:
+                _s = _pick(sim_row, ["BusTotalTT_hrs"])
+                if _s is not None and 0 < _s < 9999:
+                    bus_tt = _s
+            if pax_equiv is None:
+                _s = _pick(sim_row, ["PaxEquivPassages"])
+                if _s is not None and _s > 0:
+                    pax_equiv = _s
+            if bus_pax_equiv is None:
+                _s = _pick(sim_row, ["BusPaxEquivPassages"])
+                if _s is not None and _s > 0:
+                    bus_pax_equiv = _s
+            if car_pax_equiv is None:
+                _s = _pick(sim_row, ["CarPaxEquivPassages"])
+                if _s is not None and _s > 0:
+                    car_pax_equiv = _s
+            if truck_pax_equiv is None:
+                _s = _pick(sim_row, ["TruckPaxEquivPassages"])
+                if _s is not None and _s > 0:
+                    truck_pax_equiv = _s
+            if main_delay is None:
+                _s = _pick(sim_row, ["MainPassDelay_hrs"])
+                if _s is not None and 0 < _s < 1e6:
+                    main_delay = round(_s, 3)
+            if side_delay is None:
+                _s = _pick(sim_row, ["SidePassDelay_hrs"])
+                if _s is not None and 0 < _s < 1e6:
+                    side_delay = round(_s, 3)
+            if avg_truck_delay is None:
+                _s = _pick(sim_row, ["AvgTruckPassDelay_s"])
+                if _s is not None and 0 < _s < 9999:
+                    avg_truck_delay = _s
         per_section = _load_per_section_data(row, log_dir)
         sec_density = _weighted_section_metric(per_section, "density")
         sec_speed = _weighted_section_metric(per_section, "speed")
@@ -2329,6 +2512,77 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         net_wait_vq_all   = _xpick("Net_WaitVQ_All")
         net_wait_vq_bus   = _xpick("Net_WaitVQ_Bus")
 
+        # ── Reconstruct _All aggregates when Aimsun writes 0 for them ────────
+        # Aimsun often leaves the _All row zero and only fills per-type rows.
+        # HOV duplicates Car in this network, so aggregate = Car + Bus + Truck only.
+        def _sum_types(*vals):
+            """Sum non-None, finite values; return None if all absent."""
+            total = None
+            for v in vals:
+                if v is not None and math.isfinite(float(v)) and float(v) != 0.0:
+                    total = (total or 0.0) + float(v)
+            return total
+
+        def _wavg_by_flow(pairs):
+            """Weighted average: pairs = [(flow, value), ...]. None entries skipped."""
+            wsum = vsum = 0.0
+            for f, v in pairs:
+                if f is not None and v is not None and math.isfinite(float(f)) and math.isfinite(float(v)) and float(f) > 0:
+                    wsum += float(f); vsum += float(f) * float(v)
+            return (vsum / wsum) if wsum > 0 else None
+
+        # Helper: use raw value if non-zero, else use reconstructed fallback
+        def _all_or_fallback(raw, *fallback_vals):
+            if raw is not None and math.isfinite(float(raw)) and float(raw) != 0.0:
+                return raw
+            return _sum_types(*fallback_vals)
+
+        def _all_or_wavg(raw, pairs):
+            if raw is not None and math.isfinite(float(raw)) and float(raw) != 0.0:
+                return raw
+            return _wavg_by_flow(pairs)
+
+        # Flows used for weighting (Car only, no HOV dupe)
+        _f_car = net_flow_car or 0.0; _f_bus = net_flow_bus or 0.0; _f_truck = net_flow_truck or 0.0
+
+        # Additive totals
+        net_total_dist_all  = _all_or_fallback(net_total_dist_all,  net_total_dist_car,  net_total_dist_bus,  net_total_dist_truck)
+        net_total_tt_h_all  = _all_or_fallback(net_total_tt_h_all,  net_total_tt_h_car,  net_total_tt_h_bus,  net_total_tt_h_truck)
+        # Z4 final fallback: if still absent/zero (e.g. NO_TSP with misaligned batch row),
+        # use net_total_dist_all (km) from sim_row so the normalisation chart has a baseline.
+        if (wobj_Z4 is None or wobj_Z4 <= 0) and net_total_dist_all and net_total_dist_all > 0:
+            wobj_Z4 = net_total_dist_all
+        # Z2 fallback: for NO_TSP (and any run where wobj_Z2_total was not recorded),
+        # estimate bandwidth using natural-green stats (same formula as gen_obj_dashboard.py).
+        # tsp_det/tsp_natural_green are already resolved from sim_row above.
+        if (wobj_Z2 is None or wobj_Z2 <= 0) and tsp_det and tsp_det > 0:
+            _z2_rate = (tsp_natural_green or 0) / tsp_det
+            wobj_Z2 = tsp_det * (_z2_rate * 12.0 + (1.0 - _z2_rate) * 3.0)
+        net_exit_count_all  = _all_or_fallback(net_exit_count_all,  net_exit_count_car,  net_exit_count_bus,  net_exit_count_truck)
+        net_input_flow_all  = _all_or_fallback(net_input_flow_all,  net_input_flow_car,  net_input_flow_bus,  net_input_flow_truck)
+        net_exit_flow_all   = _all_or_fallback(net_exit_flow_all,   net_exit_flow_car,   net_exit_flow_bus,   net_exit_flow_truck)
+        net_total_lc_all    = _all_or_fallback(net_total_lc_all,    net_total_lc_car,    net_total_lc_bus,    net_total_lc_truck)
+        net_mean_queue_all  = _all_or_fallback(net_mean_queue_all,  net_mean_queue_car,  net_mean_queue_bus,  net_mean_queue_truck)
+        net_max_queue_all   = _all_or_fallback(net_max_queue_all,   net_max_queue_car,   net_max_queue_bus,   net_max_queue_truck)
+
+        # Flow-weighted averages (TT, speed, stop time, stops per vehicle)
+        net_entry_tt_all    = _all_or_wavg(net_entry_tt_all,   [(_f_car, net_entry_tt_car),   (_f_bus, net_entry_tt_bus),   (_f_truck, net_entry_tt_truck)])
+        net_exit_tt_all     = _all_or_wavg(net_exit_tt_all,    [(_f_car, net_exit_tt_car),    (_f_bus, net_exit_tt_bus),    (_f_truck, net_exit_tt_truck)])
+        net_exit_spd_all    = _all_or_wavg(net_exit_spd_all,   [(_f_car, net_exit_spd_car),   (_f_bus, net_exit_spd_bus),   (_f_truck, net_exit_spd_truck)])
+        net_stop_time_all   = _all_or_wavg(net_stop_time_all,  [(_f_car, net_stop_time_car),  (_f_bus, net_stop_time_bus),  (_f_truck, net_stop_time_truck)])
+        net_num_stops_all   = _all_or_wavg(net_num_stops_all,  [(_f_car, net_num_stops_car),  (_f_bus, net_num_stops_bus),  (_f_truck, net_num_stops_truck)])
+
+        # HOV == Car in this network (Aimsun reports private vehicles twice).
+        # Replace HOV values with Car values so the table is consistent.
+        # If there are genuine HOV-only vehicles, this will still be correct
+        # since the values would differ.
+        if net_entry_tt_hov is None or net_entry_tt_hov == 0.0:
+            net_entry_tt_hov   = net_entry_tt_car
+        if net_exit_tt_hov is None or net_exit_tt_hov == 0.0:
+            net_exit_tt_hov    = net_exit_tt_car
+        if net_exit_spd_hov is None or net_exit_spd_hov == 0.0:
+            net_exit_spd_hov   = net_exit_spd_car
+
         # Prearm coordination stats — written by record_prearm_stats in AAPIFinish
         # (only non-zero for GROUP_BASED modes that use CorridorCoordinator)
         prearm_fired   = _pick(row, ["stats_Prearm_Fired",    "stats_prearm_fired"])
@@ -2357,10 +2611,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         all_jct_ids.update(green_rates_all.keys())
         all_jct_ids.update(green_rates_focus.keys())
 
-        mean_green = (round(sum(green_rates_all.values()) / len(green_rates_all), 1)
-                if green_rates_all else None)
-        mean_green_focus = (round(sum(green_rates_focus.values()) / len(green_rates_focus), 1)
-                if green_rates_focus else None)
+        _gr_vals = [v for v in green_rates_all.values() if v is not None]
+        mean_green = round(sum(_gr_vals) / len(_gr_vals), 1) if _gr_vals else None
+        _grf_vals = [v for v in green_rates_focus.values() if v is not None]
+        mean_green_focus = round(sum(_grf_vals) / len(_grf_vals), 1) if _grf_vals else None
 
         # ── Per-intersection detail ───────────────────────────────────────────
         per_inter = _load_per_intersection_data(row, log_dir)
@@ -2374,6 +2628,16 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         objective_trace = _objective_trace_from_csv(obj_csv) if obj_csv else []
         reward_csv = _match_reward_cycle_csv_by_name(exp_name, all_reward_csvs)
         reward_cycle = _reward_cycle_from_csv(reward_csv) if reward_csv else []
+        # Count chosen actions from reward_cycle CSV
+        _rc_chosen = [x for x in reward_cycle if str(x.get("is_chosen","0")) == "1"]
+        tsp_gr = sum(1 for x in _rc_chosen if (x.get("action") or "").startswith("GR"))
+        tsp_pr = sum(1 for x in _rc_chosen if (x.get("action") or "").startswith("PR"))
+        rc_chosen_no_action = sum(1 for x in _rc_chosen if (x.get("action") or "").startswith("NO_ACTION"))
+        rc_chosen_total = len(_rc_chosen)
+        _rc_gr_rows = [x for x in _rc_chosen if (x.get("action") or "").startswith("GR")]
+        avg_gr_s = (sum(float(x.get("action_param_s") or 0) for x in _rc_gr_rows) / len(_rc_gr_rows)) if _rc_gr_rows else None
+        _rc_no_act_chosen = [x for x in _rc_chosen if (x.get("action") or "") == "NO_ACTION"]
+        avg_no_action_delay_s = (sum(float(x.get("no_act_delay_s") or 0) for x in _rc_no_act_chosen) / len(_rc_no_act_chosen)) if _rc_no_act_chosen else None
 
         bus_journeys = _bus_journeys_from_csv(det_csv, wave_evts) if det_csv else []
         phase_samples = _phase_samples_from_csv(det_csv) if det_csv else []
@@ -2465,6 +2729,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "stats_distinct_buses_raw": _int(row.get("stats_N_DistinctBuses")),
             "tsp_ext":          _int(tsp_ext),
             "tsp_ins":          _int(tsp_ins),
+            "tsp_gr":           tsp_gr,
+            "tsp_pr":           tsp_pr,
+            "rc_chosen_total":  rc_chosen_total,
+            "rc_chosen_no_action": rc_chosen_no_action,
             "tsp_natural_green": _int(tsp_natural_green),
             "tsp_skip_ge":      _int(tsp_skip_ge),
             "tsp_skip_ins":     _int(tsp_skip_ins),
@@ -2574,6 +2842,8 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "avg_extension_s": _rnd(avg_extension_s, 1),
             "avg_insertion_s": _rnd(avg_insertion_s, 1),
             "avg_insertion_wait_s": _rnd(avg_insertion_wait_s, 1),
+            "avg_gr_s": _rnd(avg_gr_s, 1),
+            "avg_no_action_delay_s": _rnd(avg_no_action_delay_s, 1),
             "tsp_natural_green_rate_pct": _rnd(
               (100.0 * float(det_pair_stats.get("green_pair_count", 0))
                / float(det_pair_stats.get("pair_count", 0)))
@@ -2610,10 +2880,15 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             # DYNAOPAC decisions (list of {t, jct, before_dur, extensions, delays, best_ext, applied, ...})
             "dynaropac_decisions": dynaropac_decisions,
             # TSP_Paper objectives (Z1–Z4 + weighted total, from wobj_* batch_results columns)
-            "wobj_Z1":    _rnd(wobj_Z1,    0),
+            # For NO_TSP (strategy=NORMAL) there are no optimizer objective columns.
+            # Approximate Z1 from total pax-delay so the normalized chart has a baseline.
+            # Z4 approximated as veh-km throughput from flow × sim duration.
+            "wobj_Z1":    _rnd(wobj_Z1 if wobj_Z1 is not None
+                               else (total_delay * 3600.0 if total_delay else None), 0),
             "wobj_Z2":    _rnd(wobj_Z2,    1),
             "wobj_Z3":    _rnd(wobj_Z3,    0),
-            "wobj_Z4":    _rnd(wobj_Z4,    1),
+            "wobj_Z4":    _rnd(wobj_Z4, 1),
+            "net_total_vkm": _rnd(net_total_dist_all, 1),
             "wobj_total": _rnd(wobj_total, 0),
             "bus_predictor": bus_predictor,
         }
@@ -2905,11 +3180,11 @@ TEMPLATE_FALLBACK_HTML
     <b>Z1</b> Total passenger delay (bus + car, pax·s) &nbsp;·&nbsp;
     <b>Z2</b> Flow-weighted bandwidth (maximise) &nbsp;·&nbsp;
     <b>Z3</b> Total bus lateness Σσ⁺ (s) &nbsp;·&nbsp;
-    <b>Z4</b> Corridor travel time (s).
+    <b>Z4</b> Total vehicle-km traveled = Net_TotalDist_Car + Bus + Truck (from simulation_results.csv) — higher = more vehicles moved more distance.
     Values normalised to NO_TSP baseline (NO_TSP = 100%). Missing bars = no objective data for that run.
   </div>
   <div style="font-size:10px;color:#ff9966;background:#1a0a00;border-left:3px solid #ff9966;padding:8px;margin-bottom:12px">
-    <b>Trade-offs:</b> TSP improves Z1 (passenger delay) but Z4 (total veh·h) typically increases 10–20% due to car delays. Z2 is not comparable: NO_TSP includes 334 natural-green detections, while TSP has 0 (forced intervention breaks pattern).
+    <b>Trade-offs:</b> TSP improves Z1 (passenger delay) but Z4 (total dist) may vary due to re-routing. Z2 is not comparable: NO_TSP includes natural-green detections while TSP interventions break the pattern.
   </div>
   <canvas id="chart-objectives" height="240"></canvas>
   <div id="objectives-na" style="display:none;margin-top:8px;font-size:11px;color:#b08080">No wobj_Z* data found — run a batch with PREDICTOR_SWEEP_ENABLED=True to populate.</div>
@@ -2918,7 +3193,7 @@ TEMPLATE_FALLBACK_HTML
     <div style="font-size:10px;color:#7777aa;margin-bottom:4px">
       <span style="color:#64dc78;font-weight:700">★ green bold</span> = best across all experiments &nbsp;·&nbsp;
       <span style="color:#f05050">red</span> = worst &nbsp;·&nbsp;
-      Z1 ↓ pax-delay &nbsp;·&nbsp; Z2 ↑ bandwidth &nbsp;·&nbsp; Z3 ↓ lateness &nbsp;·&nbsp; Z4 ↑ veh-km
+      Z1 ↓ pax-delay &nbsp;·&nbsp; Z2 ↑ bandwidth &nbsp;·&nbsp; Z3 ↓ lateness &nbsp;·&nbsp; Z4 ↑ total dist (km)
     </div>
     <table id="raw-z-table" style="width:100%;border-collapse:collapse;font-size:10.5px;color:#c0c0e0">
       <thead>
@@ -2927,7 +3202,8 @@ TEMPLATE_FALLBACK_HTML
           <th style="text-align:right;padding:4px 8px">Z1 Pax Delay ↓</th>
           <th style="text-align:right;padding:4px 8px">Z2 Bandwidth ↑</th>
           <th style="text-align:right;padding:4px 8px">Z3 Lateness ↓</th>
-          <th style="text-align:right;padding:4px 8px">Z4 Vehicle-km ↑</th>
+          <th style="text-align:right;padding:4px 8px" title="Total Distance Traveled — Car+Bus+Truck from simulation_results (km)">Z4 Total Dist ↑ (km)</th>
+          <th style="text-align:right;padding:4px 8px" title="Bus total travel time from simulation_results (hrs)">Bus TT (h)</th>
           <th style="text-align:right;padding:4px 8px">Weighted Obj</th>
           <th style="text-align:right;padding:4px 8px">Avg Delay ↓</th>
           <th style="text-align:right;padding:4px 8px">Flow (veh)</th>
@@ -3069,7 +3345,7 @@ TEMPLATE_FALLBACK_HTML
     <h2>Total Volume (pax-equivalent passages)</h2>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
       Stacked bars show the passenger-equivalent denominator used by AvgPassDelay.
-      The line is Net_TotalFlowVeh, so you can see whether lower delay came from lower demand.
+      The line is Total Distance Traveled (Car+Bus+Truck km) — higher means more vehicles moved further.
     </div>
     <canvas id="chart-volume" height="220"></canvas>
   </div>
@@ -3573,6 +3849,21 @@ TEMPLATE_FALLBACK_HTML
   <div id="mdn-phase-no-data" style="margin-top:8px;font-size:11px;color:var(--muted)">No phase decomposition data — run a DCTSP_MDN/ZIG experiment with reward_cycle CSV to populate.</div>
 </div>
 
+<!-- ── Phase Rotation Diagram ─────────────────────────────────────────── -->
+<p class="section-hdr">Phase Rotation Diagram <span style="font-size:0.78rem;color:var(--muted)">(DE-optimised PR actions: original vs rotated sequence, per junction — requires reward_cycle CSV with PR rows)</span></p>
+<div class="card" id="phase-rotation-section">
+  <div class="run-tabs" id="pr-run-tabs"></div>
+  <div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;font-size:11px;color:var(--muted)">
+    <label>Junction: <select id="pr-jct-sel" style="font-size:11px"><option value="">All</option></select></label>
+  </div>
+  <div style="margin-top:6px;font-size:11px;color:var(--muted)">
+    Each row = one PR decision (time, junction, bus, bus ETA). Left = original phase order. Right = rotated order after DE optimisation.
+    Blue highlight = bus phase. Orange = block that was moved. Chosen decisions shown with bold border.
+  </div>
+  <div id="pr-diagram-container" style="margin-top:10px;overflow-x:auto;max-height:500px;overflow-y:auto"></div>
+  <div id="pr-no-data" style="font-size:11px;color:var(--muted)">No PR (phase rotation) decisions found — run a DCTSP_ZIG/MARL experiment with the new DE action types.</div>
+</div>
+
 <!-- ── DYNAOPAC Phase Optimisation Decisions ─────────────────────────── -->
 <p class="section-hdr">DYNAOPAC Phase Optimisation <span style="font-size:0.78rem;color:var(--muted)">(delay vs green-extension candidates searched each step — only visible for DYNAOPAC_HARMONY runs)</span></p>
 <div class="card" id="dynaropac-section">
@@ -3712,7 +4003,8 @@ function barChart(id, labels, datasets, extraOpts={}) {
   const z1Base = baseRun ? Number(baseRun.wobj_Z1) : null;
   const z2Base = baseRun ? Number(baseRun.wobj_Z2) : null;
   const z3Base = baseRun ? Number(baseRun.wobj_Z3) : null;
-  const z4Base = baseRun ? Number(baseRun.wobj_Z4) : null;
+  // Z4: use net_total_vkm (km, consistent across all runs incl. NO_TSP) for normalisation.
+  const z4Base = baseRun ? (Number(baseRun.net_total_vkm) || Number(baseRun.wobj_Z4)) : null;
   const hasObjData = runs.some(r => r.wobj_Z1 != null);
   const objNa = document.getElementById('objectives-na');
   const objCv = document.getElementById('chart-objectives');
@@ -3737,7 +4029,7 @@ function barChart(id, labels, datasets, extraOpts={}) {
             backgroundColor: Z2_COL, borderColor: Z2_COL.replace('0.72','1'), borderWidth:1 },
           { label: 'Z3 Total Lateness', data: runs.map(r => norm(r.wobj_Z3, z3Base)),
             backgroundColor: Z3_COL, borderColor: Z3_COL.replace('0.72','1'), borderWidth:1 },
-          { label: 'Z4 Travel Time', data: runs.map(r => norm(r.wobj_Z4, z4Base)),
+          { label: 'Z4 Total Dist (km)', data: runs.map(r => norm(r.net_total_vkm ?? r.wobj_Z4, z4Base)),
             backgroundColor: Z4_COL, borderColor: Z4_COL.replace('0.72','1'), borderWidth:1 },
         ],
       },
@@ -3785,12 +4077,12 @@ function barChart(id, labels, datasets, extraOpts={}) {
     const bestZ1  = _best('wobj_Z1', true);
     const bestZ2  = _best('wobj_Z2', false);   // MAXIMISE
     const bestZ3  = _best('wobj_Z3', true);
-    const bestZ4  = _best('wobj_Z4', false);  // Z4 = veh-km HIGHER is better
+    const bestZ4  = _best('net_total_vkm', false);  // Z4 = total dist km HIGHER is better
     const bestDel = _best('avg_pass_delay', true);
     const worstZ1 = _best('wobj_Z1', false);
     const worstZ2 = _best('wobj_Z2', true);
     const worstZ3 = _best('wobj_Z3', false);
-    const worstZ4 = _best('wobj_Z4', true);  // Z4 worst = lowest veh-km
+    const worstZ4 = _best('net_total_vkm', true);  // Z4 worst = lowest total dist km
     const worstDel = _best('avg_pass_delay', false);
 
     // Colour helper: vs global best/worst (±1% tolerance)
@@ -3809,19 +4101,27 @@ function barChart(id, labels, datasets, extraOpts={}) {
       const z1 = r.wobj_Z1 != null ? Number(r.wobj_Z1) : null;
       const z2 = r.wobj_Z2 != null ? Number(r.wobj_Z2) : null;
       const z3 = r.wobj_Z3 != null ? Number(r.wobj_Z3) : null;
-      const z4 = r.wobj_Z4 != null ? Number(r.wobj_Z4) : null;
+      const z4 = r.net_total_vkm != null ? Number(r.net_total_vkm) : null;
       const d  = r.avg_pass_delay != null ? Number(r.avg_pass_delay) : null;
       const cZ1 = cell(z1, bestZ1,  worstZ1,  true);
       const cZ2 = cell(z2, bestZ2,  worstZ2,  false);  // Z2: higher = better
       const cZ3 = cell(z3, bestZ3,  worstZ3,  true);
-      const cZ4 = cell(z4, bestZ4,  worstZ4,  false);  // Z4 veh-km: higher = better
+      const cZ4 = cell(z4, bestZ4,  worstZ4,  false);  // Z4 total dist km: higher = better
       const cD  = cell(d,  bestDel, worstDel, true);
+      // Warn when all reward_cycle chosen actions are NO_ACTION (effectively no TSP applied)
+      const _rcTotal = r.rc_chosen_total || 0;
+      const _rcNoAct = r.rc_chosen_no_action || 0;
+      const _allNoAction = _rcTotal > 0 && _rcNoAct === _rcTotal;
+      const _noActNote = _allNoAction
+        ? ` <span title="All ${_rcTotal} detections chose NO_ACTION — TSP evaluated but never applied; check objective weights" style="color:#f1c40f;cursor:help">⚠ all NO_ACTION</span>`
+        : '';
       return `<tr style="border-bottom:1px solid #1c1c3a">
-        <td style="padding:3px 8px;font-weight:500">${r.label||r.exp_name||'—'}</td>
+        <td style="padding:3px 8px;font-weight:500">${r.label||r.exp_name||'—'}${_noActNote}</td>
         <td style="text-align:right;padding:3px 8px;${cZ1.style}">${fmt(r.wobj_Z1)}${cZ1.star}</td>
         <td style="text-align:right;padding:3px 8px;${cZ2.style}">${fmt(r.wobj_Z2,1)}${cZ2.star}</td>
         <td style="text-align:right;padding:3px 8px;${cZ3.style}">${fmt(r.wobj_Z3,0)}${cZ3.star}</td>
-        <td style="text-align:right;padding:3px 8px;${cZ4.style}">${fmt(r.wobj_Z4,1)}${cZ4.star}</td>
+        <td style="text-align:right;padding:3px 8px;${cZ4.style}">${fmt(r.net_total_vkm,0)}${cZ4.star}</td>
+        <td style="text-align:right;padding:3px 8px;color:#aaaacc">${fmt(r.bus_tt,2)}</td>
         <td style="text-align:right;padding:3px 8px">${fmt(r.wobj_total)}</td>
         <td style="text-align:right;padding:3px 8px;${cD.style}">${fmt(r.avg_pass_delay,1)}${cD.star}</td>
         <td style="text-align:right;padding:3px 8px">${fmt(r.flow,0)}</td>
@@ -3832,36 +4132,62 @@ function barChart(id, labels, datasets, extraOpts={}) {
   }
 }
 
-// ── Predictor comparison: PRED_* experiments grouped by algorithm ────────────
+// ── Predictor comparison: PRED_* experiments or runs grouped by bus_predictor ─
 {
-  const predRuns = runs.filter(r => (r.exp_name || '').toUpperCase().startsWith('PRED_'));
+  // Primary: look for PRED_{PREDICTOR}_{ALGO} named experiments
+  const predRunsNamed = runs.filter(r => (r.exp_name || '').toUpperCase().startsWith('PRED_'));
+  // Fallback: group all non-NO_TSP runs by their bus_predictor field
+  const predRunsByField = runs.filter(r =>
+    r.bus_predictor && r.bus_predictor !== '' &&
+    !(r.exp_name || '').toUpperCase().includes('NO_TSP')
+  );
+  const hasPredData = predRunsNamed.length > 0 || predRunsByField.length > 0;
   const predNa = document.getElementById('predictor-na');
   const predCv = document.getElementById('chart-predictor-delay');
-  if (!predRuns.length) {
+  if (!hasPredData) {
     if (predNa) predNa.style.display = '';
     if (predCv) predCv.style.display = 'none';
   } else {
-    // Extract unique algorithm labels from experiment name: PRED_{PREDICTOR}_{ALGO}
     const predTypes = ['KALMAN', 'ADAPTIVE_KALMAN', 'LSTM_SS'];
     const predColors = ['rgba(0,188,212,0.75)', 'rgba(255,152,0,0.75)', 'rgba(156,39,176,0.75)'];
-    // Collect unique algo labels
-    const algoSet = new Set();
-    predRuns.forEach(r => {
-      const parts = (r.exp_name || '').replace(/^PRED_/, '');
-      const pIdx = predTypes.findIndex(p => parts.startsWith(p));
-      if (pIdx >= 0) algoSet.add(parts.slice(predTypes[pIdx].length + 1));
-    });
-    const algos = [...algoSet].sort();
-    const datasets = predTypes.map((pred, pi) => ({
-      label: pred.replace('_', ' '),
-      backgroundColor: predColors[pi],
-      borderColor: predColors[pi].replace('0.75','1'),
-      borderWidth: 1,
-      data: algos.map(algo => {
-        const r = predRuns.find(r => (r.exp_name||'').toUpperCase() === `PRED_${pred}_${algo}`.toUpperCase());
-        return r ? (r.avg_pass_delay ?? null) : null;
-      }),
-    }));
+    let algos, datasets;
+    if (predRunsNamed.length > 0) {
+      // Named PRED_ experiments: PRED_{PREDICTOR}_{ALGO}
+      const algoSet = new Set();
+      predRunsNamed.forEach(r => {
+        const parts = (r.exp_name || '').replace(/^PRED_/i, '');
+        const pIdx = predTypes.findIndex(p => parts.toUpperCase().startsWith(p));
+        if (pIdx >= 0) algoSet.add(parts.slice(predTypes[pIdx].length + 1));
+      });
+      algos = [...algoSet].sort();
+      datasets = predTypes.map((pred, pi) => ({
+        label: pred.replace(/_/g, ' '),
+        backgroundColor: predColors[pi],
+        borderColor: predColors[pi].replace('0.75','1'),
+        borderWidth: 1,
+        data: algos.map(algo => {
+          const r = predRunsNamed.find(r => (r.exp_name||'').toUpperCase() === `PRED_${pred}_${algo}`.toUpperCase());
+          return r ? (r.avg_pass_delay ?? null) : null;
+        }),
+      }));
+    } else {
+      // Fallback: group runs by bus_predictor across experiment types
+      const algoSet = new Set(predRunsByField.map(r => r.exp_name || r.label || 'Unknown'));
+      algos = [...algoSet].sort();
+      datasets = predTypes.map((pred, pi) => ({
+        label: pred.replace(/_/g, ' '),
+        backgroundColor: predColors[pi],
+        borderColor: predColors[pi].replace('0.75','1'),
+        borderWidth: 1,
+        data: algos.map(algo => {
+          const r = predRunsByField.find(r =>
+            (r.bus_predictor || '').toUpperCase() === pred &&
+            (r.exp_name || r.label || 'Unknown') === algo
+          );
+          return r ? (r.avg_pass_delay ?? null) : null;
+        }),
+      }));
+    }
     new Chart(predCv, {
       type: 'bar',
       data: { labels: algos, datasets },
@@ -4112,12 +4438,9 @@ function barChart(id, labels, datasets, extraOpts={}) {
   const ctx = document.getElementById('chart-tsp-outcome');
   if (ctx) {
     const hasOutcomeData = runs.some(r =>
-      (r.tsp_ext || 0) +
-      (r.tsp_ins || 0) +
-      (r.tsp_skip_ge || 0) +
-      (r.tsp_skip_ins || 0) +
-      (r.tsp_natural_green || 0) +
-      (r.tsp_no_action || 0) > 0
+      (r.tsp_ext || 0) + (r.tsp_ins || 0) + (r.tsp_gr || 0) + (r.tsp_pr || 0) +
+      (r.tsp_skip_ge || 0) + (r.tsp_skip_ins || 0) +
+      (r.tsp_natural_green || 0) + (r.tsp_no_action || 0) > 0
     );
 
     if (!hasOutcomeData) {
@@ -4129,12 +4452,17 @@ function barChart(id, labels, datasets, extraOpts={}) {
         data: {
           labels: runs.map(r => r.label),
           datasets: [
-            { label:'Green Extension (granted)',   data: runs.map(r => r.tsp_ext ?? 0),           backgroundColor:'rgba(52,152,219,0.85)', borderColor:'rgba(52,152,219,1)', borderWidth:1 },
-            { label:'Insertion (granted)',         data: runs.map(r => r.tsp_ins ?? 0),           backgroundColor:'rgba(171,71,188,0.85)', borderColor:'rgba(171,71,188,1)', borderWidth:1 },
-            { label:'GE denied (delay objective)', data: runs.map(r => r.tsp_skip_ge ?? 0),       backgroundColor:'rgba(255,152,0,0.85)', borderColor:'rgba(255,152,0,1)', borderWidth:1 },
-            { label:'INS denied (delay objective)',data: runs.map(r => r.tsp_skip_ins ?? 0),      backgroundColor:'rgba(255,213,0,0.85)', borderColor:'rgba(255,213,0,1)', borderWidth:1 },
-            { label:'Natural green (no action)',   data: runs.map(r => r.tsp_natural_green ?? 0), backgroundColor:'rgba(0,200,83,0.55)', borderColor:'rgba(0,200,83,1)', borderWidth:1 },
-            { label:'No action (NORMAL mode)',     data: runs.map(r => r.tsp_no_action ?? 0),     backgroundColor:'rgba(120,120,140,0.55)', borderColor:'rgba(120,120,140,1)', borderWidth:1 },
+            { label:'GE Green Extension (chosen)',   data: runs.map(r => r.tsp_ext ?? 0),           backgroundColor:'rgba(52,152,219,0.85)', borderColor:'rgba(52,152,219,1)', borderWidth:1 },
+            { label:'PI Phase Insertion (chosen)',   data: runs.map(r => r.tsp_ins ?? 0),           backgroundColor:'rgba(171,71,188,0.85)', borderColor:'rgba(171,71,188,1)', borderWidth:1 },
+            { label:'GR Green Reallocation (chosen)',data: runs.map(r => r.tsp_gr ?? 0),            backgroundColor:'rgba(132,204,22,0.85)', borderColor:'rgba(132,204,22,1)', borderWidth:1 },
+            { label:'PR Pre-Arm Rotation (chosen)',  data: runs.map(r => r.tsp_pr ?? 0),            backgroundColor:'rgba(155,89,182,0.85)', borderColor:'rgba(155,89,182,1)', borderWidth:1 },
+            { label:'Prearm fired (coord)',          data: runs.map(r => r.prearm_fired ?? 0),       backgroundColor:'rgba(230,126,34,0.70)', borderColor:'rgba(230,126,34,1)', borderWidth:1 },
+            { label:'Prearm success',                data: runs.map(r => r.prearm_success ?? 0),     backgroundColor:'rgba(39,174,96,0.70)', borderColor:'rgba(39,174,96,1)', borderWidth:1 },
+            { label:'Prearm missed',                 data: runs.map(r => r.prearm_missed ?? 0),      backgroundColor:'rgba(192,57,43,0.70)', borderColor:'rgba(192,57,43,1)', borderWidth:1 },
+            { label:'GE denied (delay objective)',   data: runs.map(r => r.tsp_skip_ge ?? 0),        backgroundColor:'rgba(255,152,0,0.70)', borderColor:'rgba(255,152,0,1)', borderWidth:1 },
+            { label:'PI denied (delay objective)',   data: runs.map(r => r.tsp_skip_ins ?? 0),       backgroundColor:'rgba(255,213,0,0.70)', borderColor:'rgba(255,213,0,1)', borderWidth:1 },
+            { label:'Natural green (no action needed)', data: runs.map(r => r.tsp_natural_green ?? 0), backgroundColor:'rgba(0,200,83,0.45)', borderColor:'rgba(0,200,83,1)', borderWidth:1 },
+            { label:'No action (NORMAL mode)',       data: runs.map(r => r.tsp_no_action ?? 0),      backgroundColor:'rgba(120,120,140,0.45)', borderColor:'rgba(120,120,140,1)', borderWidth:1 },
           ]
         },
         options: {
@@ -4149,11 +4477,21 @@ function barChart(id, labels, datasets, extraOpts={}) {
                   const idx = items && items.length ? items[0].dataIndex : -1;
                   const r = idx >= 0 ? runs[idx] : null;
                   if (!r) return '';
-                  const granted = (r.tsp_ext || 0) + (r.tsp_ins || 0);
-                  const denied = (r.tsp_skip_ge || 0) + (r.tsp_skip_ins || 0);
-                  const total = granted + denied + (r.tsp_natural_green || 0) + (r.tsp_no_action || 0);
+                  const granted = (r.tsp_ext||0) + (r.tsp_ins||0) + (r.tsp_gr||0) + (r.tsp_pr||0);
+                  const denied  = (r.tsp_skip_ge||0) + (r.tsp_skip_ins||0);
+                  const prearm  = (r.prearm_fired||0);
+                  const total   = granted + denied + (r.tsp_natural_green||0) + (r.tsp_no_action||0);
                   const denyRate = total > 0 ? ((100.0 * denied) / total).toFixed(1) : '0.0';
-                  return `Total: ${total} | Granted: ${granted} | Denied: ${denied} (${denyRate}%)`;
+                  const lines = [`Total detections: ${total} | Chosen TSP: ${granted} | Denied: ${denied} (${denyRate}%)`];
+                  if (prearm > 0) {
+                    const pSucc = r.prearm_success || 0;
+                    const pMiss = r.prearm_missed || 0;
+                    const pRate = prearm > 0 ? ((100*pSucc/prearm).toFixed(1)) : '0.0';
+                    lines.push(`Prearm: ${prearm} fired | ${pSucc} success (${pRate}%) | ${pMiss} missed`);
+                  }
+                  if ((r.avg_extension_s||0) > 0) lines.push(`Avg GE: ${(r.avg_extension_s||0).toFixed(1)}s | Avg PI: ${(r.avg_insertion_s||0).toFixed(1)}s | Avg GR: ${(r.avg_gr_s||0).toFixed(1)}s`);
+                  if ((r.avg_no_action_delay_s||0) > 0) lines.push(`Avg no-action scenario delay: ${(r.avg_no_action_delay_s||0).toFixed(1)}s`);
+                  return lines;
                 }
               }
             }
@@ -4178,7 +4516,7 @@ if (jcts.length > 0) {
     jcts.map(j => 'jct '+j),
     runs.map((r,i) => ({
       label: r.label,
-      data: jcts.map(j => r.green_rates[j] ?? null),
+      data: jcts.map(j => r.green_rates[String(j)] ?? null),
       backgroundColor: color(i), borderColor: colorEdge(i), borderWidth:1,
     })),
     { scales:{ x: SCALE_X, y:{...SCALE_Y, min:0, max:100,
@@ -4269,7 +4607,7 @@ barChart('chart-bus-tt',
 {
   const volumeCtx = document.getElementById('chart-volume');
   if (volumeCtx) {
-    const hasVolume = runs.some(r => r.pax_equiv !== null || r.flow !== null);
+    const hasVolume = runs.some(r => r.pax_equiv !== null || r.net_total_vkm !== null);
     if (!hasVolume) {
       const card = document.getElementById('card-volume');
       if (card) card.style.display = 'none';
@@ -4285,7 +4623,7 @@ barChart('chart-bus-tt',
               backgroundColor:'rgba(102,187,106,0.72)', borderColor:'rgba(102,187,106,1)', borderWidth:1, stack:'pax', yAxisID:'y' },
             { label:'Truck pax-equivalent', data:runs.map(r => r.truck_pax_equiv ?? 0),
               backgroundColor:'rgba(255,183,77,0.78)', borderColor:'rgba(255,183,77,1)', borderWidth:1, stack:'pax', yAxisID:'y' },
-            { label:'Net_TotalFlowVeh', type:'line', data:runs.map(r => r.flow ?? null),
+            { label:'Total Dist Traveled (km)', type:'line', data:runs.map(r => r.net_total_vkm ?? null),
               borderColor:'rgba(236,64,122,1)', backgroundColor:'rgba(236,64,122,0.18)',
               borderWidth:2, tension:0.2, pointRadius:3, yAxisID:'y2' },
           ],
@@ -4318,7 +4656,7 @@ barChart('chart-bus-tt',
             y: { ...SCALE_Y, stacked:true,
                  title:{ display:true, text:'Pax-equivalent passages', color:'#7070a0', font:{size:10} } },
             y2:{ position:'right', grid:{ drawOnChartArea:false }, ticks:{ color:'#6060aa', font:{size:10} },
-                 title:{ display:true, text:'Net flow vehicles', color:'#7070a0', font:{size:10} } },
+                 title:{ display:true, text:'Total dist traveled (km)', color:'#7070a0', font:{size:10} } },
           }
         }
       });
@@ -4374,22 +4712,22 @@ if (SUPP.has('speed') || runs.every(r=>r.speed===null)) {
 
 // ── Harmony timing averages ──────────────────────────────────────────────
 {
-  const hasAnyTiming = runs.some(r => (r.avg_extension_s||0) > 0 || (r.avg_insertion_s||0) > 0 || (r.avg_insertion_wait_s||0) > 0);
+  const hasAnyTiming = runs.some(r => (r.avg_extension_s||0) > 0 || (r.avg_insertion_s||0) > 0 || (r.avg_insertion_wait_s||0) > 0 || (r.avg_gr_s||0) > 0 || (r.avg_no_action_delay_s||0) > 0);
   const timingNote = document.getElementById('harmony-timing-note');
   if (timingNote) {
     timingNote.style.display = 'block';
-    timingNote.textContent = 'Avg INS wait (s) = average bus ETA (seconds to arrival) at the moment the insertion phase fires — how far in advance of bus arrival the insertion is triggered. A value of ~10 s means the insertion fires ~10 s before the bus reaches the stop line. This is NOT the frequency between insertions.';
+    timingNote.textContent = 'Avg INS wait (s) = average bus ETA at phase-insertion fire time (how far in advance the insertion triggers). Avg GR (s) = average green-reallocation window applied. Avg no-action delay (s) = mean bus delay in cycles where NO_ACTION was chosen — a proxy for typical unconstrained delay.';
   }
   if (!hasAnyTiming) {
     if (timingNote) {
-      timingNote.textContent = 'No GE/insertion duration data yet — requires re-run with updated code.';
+      timingNote.textContent = 'No GE/insertion/GR duration data yet — requires re-run with updated code.';
     }
   } else {
     barChart('chart-harmony-timing',
-      ['Avg green extension (s)', 'Avg insertion phase (s)', 'Avg INS lead to arrival (s)'],
+      ['Avg GE duration (s)', 'Avg PI phase (s)', 'Avg PI lead to arrival (s)', 'Avg GR window (s)', 'Avg no-action bus delay (s)'],
       runs.map((r, i) => ({
         label: r.label,
-        data: [r.avg_extension_s ?? 0, r.avg_insertion_s ?? 0, r.avg_insertion_wait_s ?? 0],
+        data: [r.avg_extension_s ?? null, r.avg_insertion_s ?? null, r.avg_insertion_wait_s ?? null, r.avg_gr_s ?? null, r.avg_no_action_delay_s ?? null],
         backgroundColor: color(i), borderColor: colorEdge(i), borderWidth: 1,
       })),
       { plugins: { legend: { labels: { color: '#aaaacc', font: { size: 11 } } } },
@@ -4857,7 +5195,8 @@ function _buildAudienceSummary() {
       const naRow = rows.find(r => r.action === 'NO_ACTION');
       const chosen = rows.find(r => Number(r.is_chosen) === 1 &&
                                     r.action !== 'NO_ACTION' &&
-                                    (r.action.startsWith('GE') || r.action.startsWith('INS')));
+                                    (r.action === 'GE' || r.action === 'PI' ||
+                                     r.action.startsWith('GE') || r.action.startsWith('INS')));
       if (!naRow || !chosen) continue;
       // Prefer absolute delay fields (new CSV format: bus pax·s)
       const base  = _num(chosen.no_strategy_delay_pax_s);
@@ -5152,8 +5491,8 @@ function renderCoordFlow(ri, filterVid) {
   const scoreByJct = {};
   const scoreVals = [];
   jcts.forEach(j => {
-    const pAll = r.green_rates[j] ?? null;
-    const pFocus = (r.green_rates_focus || {})[j] ?? null;
+    const pAll = r.green_rates[String(j)] ?? null;
+    const pFocus = (r.green_rates_focus || {})[String(j)] ?? null;
     if (pAll === null) return;
     const s = (pFocus === null) ? pAll : (0.7 * pAll + 0.3 * pFocus);
     scoreByJct[j] = s;
@@ -5256,8 +5595,8 @@ function renderCoordFlow(ri, filterVid) {
   renderJcts.forEach((j, idx) => {
     const onRoute    = !busRouteSet || busRouteSet.has(j);
     const isPassiveJ = PASSIVE_JCTS.has(String(j));
-    let pct = r.green_rates[j] ?? null;
-    let pctFocus = (r.green_rates_focus || {})[j] ?? null;
+    let pct = r.green_rates[String(j)] ?? null;
+    let pctFocus = (r.green_rates_focus || {})[String(j)] ?? null;
     let bClass = 'bubble-r', sym = '\u2715';
     let extraLabel = '';
     let tooltipText = '';
@@ -6060,7 +6399,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
             || String(p.mode || '').toUpperCase() === 'INS')
         && (p.prearm_status === 'action' || String(p.decision || '').toUpperCase() === 'ACTION')
       ).length;
-      opt.textContent = `Bus ${j.vid}  (${j.cls}, ${j.n_jcts} jcts, ${gc}/${j.stops.length} green, ${nPrearm} prearms, ${nActions} actions)`;
+      const nGrPr = (r.reward_cycle || []).filter(rc =>
+        Number(rc.veh_id) === Number(j.vid) &&
+        String(rc.is_chosen) === '1' &&
+        (String(rc.action || '').startsWith('GR') || String(rc.action || '').startsWith('PR'))
+      ).length;
+      const actStr = (nActions + nGrPr) > 0 ? `, ${nActions + nGrPr} actions` : '';
+      opt.textContent = `Bus ${j.vid}  (${j.cls}, ${j.n_jcts} jcts, ${gc}/${j.stops.length} green, ${nPrearm} prearms${actStr})`;
       coordExBusSel.appendChild(opt);
     });
     // Auto-select first bus with wave events
@@ -6204,6 +6549,33 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         delay_saved_pax_s: Number.isFinite(savedPax) ? savedPax : null,
       });
     });
+    // Also include GR/PR chosen actions from reward_cycle CSV (DCTSP_ZIG/MARL strategy)
+    (r.reward_cycle || []).forEach(rc => {
+      if (Number(rc.veh_id) !== Number(journey.vid)) return;
+      if (String(rc.is_chosen) !== '1') return;
+      const act = String(rc.action || '');
+      const isGR = act.startsWith('GR');
+      const isPR = act.startsWith('PR');
+      if (!isGR && !isPR) return;
+      const key = String(rc.junction_id || rc.jct || '');
+      if (!key) return;
+      if (!objectiveByJct[key]) objectiveByJct[key] = [];
+      const reward = Number(rc.reward);
+      const busSaved = Number(rc.bus_saved_pax_s);
+      const savedTxt = Number.isFinite(busSaved) && busSaved > 0 ? ` | bus saved=${busSaved.toFixed(1)} pax-s` : '';
+      // Map action name to tier string for rendering
+      const tier = isGR ? 'dctsp-gr-local' : 'dctsp-pr-local';
+      objectiveByJct[key].push({
+        t: Number(rc.sim_time_s) || 0,
+        jct: Number(rc.junction_id || rc.jct) || 0,
+        vid: Number(rc.veh_id) || 0,
+        tier: tier,
+        prearm_status: 'action',
+        prearm_note: act + savedTxt + (Number.isFinite(reward) ? ` | r=${reward.toFixed(2)}` : ''),
+        delay_saved_pax_s: Number.isFinite(busSaved) ? busSaved : null,
+        _action_param_s: Number(rc.action_param_s) || 0,
+      });
+    });
     Object.keys(objectiveByJct).forEach(key => {
       if (!decisionsByJct[key]) decisionsByJct[key] = [];
       decisionsByJct[key] = decisionsByJct[key].concat(objectiveByJct[key]);
@@ -6292,23 +6664,35 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       coordExCtx.moveTo(padL, midY); coordExCtx.lineTo(W - padR, midY);
       coordExCtx.stroke();
 
-      // ── GE / INS action window ────────────────────────────────────────
+      // ── GE / INS / GR / PR action window ─────────────────────────────
       // For GE: use harmony-ge-local detection row as GE-start; bus arrival
       // or arrival + grace as GE-end.  Draw a filled green band over the row.
       // For INS: use harmony-ins-local row time and mark with a cyan band.
+      // For GR/PR: use dctsp-gr-local / dctsp-pr-local rows from reward_cycle.
       if (latestDecision) {
         const dn = String(latestDecision.prearm_note || '');
         const dt = Number(latestDecision.t) || 0;
         const dTier = String(latestDecision.tier || '');
-        const isGe = dTier === 'harmony-ge-local';
+        const isGe  = dTier === 'harmony-ge-local';
         const isIns = dTier === 'harmony-ins-local';
-        if (isGe || isIns) {
+        const isGR  = dTier === 'dctsp-gr-local';
+        const isPR  = dTier === 'dctsp-pr-local';
+        if (isGe || isIns || isGR || isPR) {
           // Action window: start = decision time, end = bus arrival (or +30s estimate)
+          // GR duration comes from action_param_s; otherwise use action window to arrival
+          const _grDurS = isGR ? (Number(latestDecision._action_param_s) || 0) : 0;
           const windowEnd = arrSt ? arrSt.t : dt + 30;
           const wx0 = xOf(dt);
           const wx1 = xOf(Math.min(windowEnd, tMax - 1));
-          const wColor = isIns ? 'rgba(0,188,212,0.13)' : 'rgba(46,204,113,0.13)';
-          const wBorder = isIns ? 'rgba(0,188,212,0.55)' : 'rgba(46,204,113,0.55)';
+          // Colour scheme: GE=green, INS=cyan, GR=yellow-green, PR=magenta
+          const wColor = isIns ? 'rgba(0,188,212,0.13)'
+                       : isGR  ? 'rgba(205,220,57,0.15)'
+                       : isPR  ? 'rgba(224,64,251,0.13)'
+                       : 'rgba(46,204,113,0.13)';
+          const wBorder = isIns ? 'rgba(0,188,212,0.55)'
+                        : isGR  ? 'rgba(205,220,57,0.65)'
+                        : isPR  ? 'rgba(224,64,251,0.55)'
+                        : 'rgba(46,204,113,0.55)';
           coordExCtx.fillStyle = wColor;
           coordExCtx.fillRect(wx0, y0, wx1 - wx0, y1 - y0);
           // Left border = action start
@@ -6321,16 +6705,21 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           coordExCtx.setLineDash([3, 2]);
           coordExCtx.beginPath(); coordExCtx.moveTo(wx1, y0); coordExCtx.lineTo(wx1, y1); coordExCtx.stroke();
           coordExCtx.setLineDash([]);
-          // Parse action duration from prearm_note (e.g. 'DCTSP INS_10s r=4.84s' or 'DCTSP GE_15s r=23.80s')
+          // Parse action duration from prearm_note (e.g. 'INS_10s', 'GE_15s', 'GR_10.0', 'PR_...')
           const _noteStr = String(latestDecision.prearm_note || '');
           const _durMatch = _noteStr.match(/(INS|GE)_(\d+)s/);
-          const _actDurSuffix = _durMatch ? ` [${_durMatch[2]}s]` : '';
+          const _grDurMatch = _noteStr.match(/^(GR|PR)[^\d]*(\d+\.?\d*)/);
+          const _actDurSuffix = _durMatch ? ` [${_durMatch[2]}s]`
+                              : (_grDurMatch && _grDurS > 0) ? ` [${_grDurS.toFixed(0)}s]` : '';
+          // Action label prefix
+          const _actPrefix = isIns ? 'INS ▶' : isGR ? 'GR ▶' : isPR ? 'PR ▶' : 'GE ▶';
+          const _actFillColor = isIns ? '#00bcd4' : isGR ? '#cddc39' : isPR ? '#e040fb' : '#2ecc71';
           // Start time label above left border
-          coordExCtx.fillStyle = isIns ? '#00bcd4' : '#2ecc71';
+          coordExCtx.fillStyle = _actFillColor;
           coordExCtx.font = 'bold 9px system-ui';
           coordExCtx.textAlign = 'left';
           coordExCtx.textBaseline = 'bottom';
-          coordExCtx.fillText((isIns ? 'INS ▶' : 'GE ▶') + _actDurSuffix + ' ' + fmtT(dt), wx0 + 2, midY - bandH/2 - 1);
+          coordExCtx.fillText(_actPrefix + _actDurSuffix + ' ' + fmtT(dt), wx0 + 2, midY - bandH/2 - 1);
           // End time label above right border
           coordExCtx.textAlign = 'right';
           coordExCtx.fillText('◀' + fmtT(windowEnd), wx1 - 2, midY - bandH/2 - 1);
@@ -6389,6 +6778,16 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
             const _insDurM = String(latestDecision.prearm_note || '').match(/INS_(\d+)s/);
             const _insDurStr = _insDurM ? ` [${_insDurM[1]}s insertion]` : '';
             decLabel = '→ INS applied' + _insDurStr + savedTail; decColor = '#00bcd4';
+          }
+          else if (dTier === 'dctsp-gr-local') {
+            const _grDurS = Number(latestDecision._action_param_s) || 0;
+            const _grDurStr = _grDurS > 0 ? ` [${_grDurS.toFixed(0)}s realloc]` : '';
+            decLabel = '→ GR applied' + _grDurStr + savedTail; decColor = '#cddc39';
+          }
+          else if (dTier === 'dctsp-pr-local') {
+            const _prParam = String(latestDecision.prearm_note || '').match(/^PR[^\d]*(\d+\.?\d*)/);
+            const _prStr = _prParam ? ` [${_prParam[1]}s rotation]` : '';
+            decLabel = '→ PR applied' + _prStr + savedTail; decColor = '#e040fb';
           }
           else if (dTier === 'harmony-no-ge-local')  {
             const reason = _decisionReasonText(_decisionReasonToken(dn, 'NO_GE '), true);
@@ -6642,48 +7041,35 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     wrap.style.display = '';
 
     // Group by junction + time (each detection event = one group)
+    // canonRows picks the best-rewarding action within each canonical type (GE/GR/PI/PR)
+    // so that decimal-suffix variants (GE_10.0, INS_POST_20.0, etc.) map correctly.
+    const CANONICAL_GROUPS = [
+      { key:'GE', label:'Green Extension',    color:'#2980b9', match: a => a.startsWith('GE') },
+      { key:'GR', label:'Green Reallocation', color:'#84cc16', match: a => a.startsWith('GR') },
+      { key:'PI', label:'Phase Insertion',    color:'#27ae60', match: a => a.startsWith('INS') },
+      { key:'PR', label:'Pre-Arm Rotation',   color:'#9b59b6', match: a => a.startsWith('PR') || a.startsWith('VP') },
+    ];
+    const actionsInData = new Set(busRows.map(x => String(x.action)));
+    const activeCGroups = CANONICAL_GROUPS.filter(cg => [...actionsInData].some(a => cg.match(a)));
+
     const groupMap = {};
     busRows.forEach(x => {
       const key = `${x.jct}_${Math.round(Number(x.t))}`;
-      if (!groupMap[key]) groupMap[key] = { jct: x.jct, t: Number(x.t), rows: {} };
+      if (!groupMap[key]) groupMap[key] = { jct: x.jct, t: Number(x.t), rows: {}, canonRows: {} };
       groupMap[key].rows[String(x.action)] = x;
+      for (const cg of CANONICAL_GROUPS) {
+        if (cg.match(String(x.action))) {
+          const cur = groupMap[key].canonRows[cg.key];
+          if (!cur || Number(x.reward) > Number(cur.reward))
+            groupMap[key].canonRows[cg.key] = x;
+        }
+      }
     });
     const groups = Object.values(groupMap).sort((a, b) => a.t - b.t);
 
-    // Only show action columns that actually appear in the CSV — dynamic, not hardcoded
-    const ALL_POSSIBLE_ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
-    const actionsInData = new Set(busRows.map(x => String(x.action)));
-    const ACTS = ALL_POSSIBLE_ACTS.filter(a => actionsInData.has(a));
-    const ACT_COLORS = {
-      'NO_ACTION':'#a0a0c8','GE_5':'#3498db','GE_10':'#2980b9','GE_15':'#1a6090',
-      'GR_5':'#a3e635','GR_10':'#84cc16','GR_15':'#65a30d',
-      'INS_10':'#2ecc71','INS_15':'#27ae60','INS_20':'#1e8449',
-      'ER_10':'#f39c12','ER_20':'#e67e22','ER_30':'#d35400',
-      'ER_BP_10':'#c0392b','ER_BP_20':'#a93226','ER_BP_30':'#922b21',
-    };
-
-    // Build dynamic header based on actions that actually appear in the data
+    // Build dynamic header using canonical groups
     const thead = document.getElementById('coordex-reward-thead');
     if (thead) {
-      const ACT_TITLES = {
-        'NO_ACTION': 'reward / bus pax·s saved / car pax·s cost',
-        'GE_5': 'Green Extension 5s: reward / bus saved / car cost',
-        'GE_10': 'Green Extension 10s: reward / bus saved / car cost',
-        'GE_15': 'Green Extension 15s: reward / bus saved / car cost',
-        'GR_5': 'Green Realloc 5s (zero car cost): reward / bus saved',
-        'GR_10': 'Green Realloc 10s: reward / bus saved',
-        'GR_15': 'Green Realloc 15s: reward / bus saved',
-        'INS_10': 'Phase Insertion 10s: reward / bus saved / car cost',
-        'INS_15': 'Phase Insertion 15s: reward / bus saved / car cost',
-        'INS_20': 'Phase Insertion 20s: reward / bus saved / car cost',
-        'ER_10': 'Early Red 10s: reward / bus saved / car cost',
-        'ER_20': 'Early Red 20s: reward / bus saved / car cost',
-        'ER_30': 'Early Red 30s: reward / bus saved / car cost',
-        'ER_BP_10': 'Bus-Phase Early Red 10s: reward / bus saved / car cost',
-        'ER_BP_20': 'Bus-Phase Early Red 20s: reward / bus saved / car cost',
-        'ER_BP_30': 'Bus-Phase Early Red 30s: reward / bus saved / car cost',
-      };
-      const candidateActs = ACTS.filter(a => a !== 'NO_ACTION');
       thead.innerHTML = '<tr style="color:#7070a0;border-bottom:1px solid #222">' +
         '<th style="text-align:left;padding:3px 6px">Junction</th>' +
         '<th style="text-align:right;padding:3px 6px">Sim t (s)</th>' +
@@ -6691,15 +7077,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         '<th style="text-align:right;padding:3px 6px">σ_in</th>' +
         '<th style="text-align:right;padding:3px 6px" title="bus delay (s) / total intersection pax·s under no strategy">No-Act Delay</th>' +
         '<th style="text-align:right;padding:3px 6px">NO_ACTION</th>' +
-        candidateActs.map(a =>
-          `<th style="text-align:right;padding:3px 6px" title="${ACT_TITLES[a]||a}">${a}</th>`
+        activeCGroups.map(cg =>
+          `<th style="text-align:right;padding:3px 6px" title="${cg.label}">${cg.key}</th>`
         ).join('') +
         '<th style="text-align:left;padding:3px 6px">★ Chosen</th>' +
         '</tr>';
     }
 
     tbody.innerHTML = '';
-    const candidateActsForRows = ACTS.filter(a => a !== 'NO_ACTION');
     groups.forEach(g => {
       const na = g.rows['NO_ACTION'];
       const naR = na ? Number(na.reward).toFixed(2) : '—';
@@ -6766,13 +7151,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         tr.appendChild(tdNA);
       }
 
-      // GE/INS/ER reward cells — show reward + bus pax saved + car pax cost (only evaluated actions)
-      candidateActsForRows.forEach(act => {
-        const row = g.rows[act];
+      // Canonical action group cells — GE/GR/PI/PR — best-reward variant per group
+      activeCGroups.forEach(cg => {
+        const row = g.canonRows[cg.key];
         const rVal = row ? Number(row.reward) : null;
         const rTxt = rVal !== null ? rVal.toFixed(2) : '—';
         const isChosen = row && Number(row.is_chosen) === 1;
-        const color = rVal !== null && rVal > 0.01 ? (ACT_COLORS[act] || '#cccccc') : (rVal !== null && rVal < -0.01 ? '#888' : '#555');
+        const rColor = rVal !== null && rVal > 0.01 ? cg.color : (rVal !== null && rVal < -0.01 ? '#888' : '#555');
 
         const td = document.createElement('td');
         td.style.padding = '3px 6px';
@@ -6788,8 +7173,14 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           const bpsColor = bps > 0.5 ? '#4ecdc4' : bps < -0.5 ? '#e74c3c' : '#555';
           const cpcColor = cpc > 0.5 ? '#e07070' : '#555';
           const starPfx  = isChosen ? '<span style="color:#ffd632">★ </span>' : '';
-          td.innerHTML = starPfx +
-            `<span style="color:${color};font-weight:${isChosen ? 600 : 400}">${rTxt}</span>` +
+          // Show the actual action name + param so user sees e.g. GE_10.0@10s
+          const actName = String(row.action);
+          const paramS  = Number(row.action_param_s || 0);
+          const actLine = paramS > 0
+            ? `<span style="font-size:9px;color:#7ab0d8">${actName}@${paramS}s</span><br>`
+            : `<span style="font-size:9px;color:#7070a0">${actName}</span><br>`;
+          td.innerHTML = starPfx + actLine +
+            `<span style="color:${rColor};font-weight:${isChosen ? 600 : 400}">${rTxt}</span>` +
             '<br>' +
             `<span style="font-size:9px;color:${bpsColor}">${bps >= 0 ? '+' : ''}${Math.round(bps)}</span>` +
             `<span style="font-size:9px;color:#444">/</span>` +
@@ -6807,7 +7198,8 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       if (chosenAct !== '—') {
         const cr = chosenRow ? Number(chosenRow.reward).toFixed(3) : '';
         const bps = chosenRow ? (Number(chosenRow.bus_saved_pax_s || 0)).toFixed(0) + ' pax·s' : '';
-        tdChosen.innerHTML = `<span style="color:#ffd632;font-weight:600">${chosenAct}</span>`
+        const cparam = chosenRow && Number(chosenRow.action_param_s) > 0 ? `@${Number(chosenRow.action_param_s)}s` : '';
+        tdChosen.innerHTML = `<span style="color:#ffd632;font-weight:600">${chosenAct}${cparam}</span>`
                            + ` <span style="color:#9090a8">r=${cr}</span>`
                            + (bps ? ` <span style="color:#5a8a5a">saved=${bps}</span>` : '');
       } else {
@@ -7435,44 +7827,65 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       );
       const hasMainData = jrows.some(rr => rr.main_veh > 0);
 
-      if (!hasDirectionalData && hasMainData) {
-        // Fallback: show aggregate main approach only with proper label
-        datasets.push({
-          label: (mainDir !== 'UK' ? mainDir + ' (Main)' : 'Main approach'),
-          data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
-          borderColor: '#ffffff', backgroundColor: 'transparent',
-          tension: 0.3, pointRadius: 0, borderWidth: 2
-        });
-      } else {
-        // Show white line for main (bus) approach total
-        datasets.push({
-          label: (mainDir !== 'UK' ? mainDir + ' Main' : 'Main approach'),
-          data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
-          borderColor: '#ffffff', backgroundColor: 'transparent',
-          tension: 0.3, pointRadius: 0, borderWidth: 2
-        });
-        // Side approaches — aggregated by direction bucket (NB/EB/SB/WB)
-        sideKeys.forEach(function(k, ki) {
+      // Determine if side_veh_total (queue_side aggregate) has any non-zero values
+      const hasSideAggData = jrows.some(rr => (rr.side_veh_total || 0) > 0);
+
+      // Direction colours: NB=white, SB=cyan, EB=orange, WB=magenta
+      const DIR_COLORS = {
+        'NB': '#ffffff', 'Main NB': '#ffffff',
+        'SB': '#00bcd4', 'Main SB': '#00bcd4',
+        'EB': '#ff9800', 'Cross EB': '#ff9800',
+        'WB': '#e040fb', 'Cross WB': '#e040fb',
+      };
+      if (hasDirectionalData) {
+        // Show one line per cardinal direction (NB / SB / EB / WB) from sides dict
+        // Canonical order: NB, SB, EB, WB
+        const DIR_ORDER = ['Main NB','NB','Main SB','SB','Cross EB','EB','Cross WB','WB'];
+        const orderedKeys = [...DIR_ORDER.filter(k => sideKeys.includes(k)),
+                             ...sideKeys.filter(k => !DIR_ORDER.includes(k))];
+        orderedKeys.forEach(function(k, ki) {
           const vals = jrows.map(rr => (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0);
           const maxVal = Math.max(...vals);
-          // Only add dataset if it has at least some non-zero values
-          if (maxVal > 0) {
+          if (maxVal >= 0) {  // show even zero lines so all 4 directions are always visible
+            const shortLabel = k.replace('Main ', '').replace('Cross ', '');
             datasets.push({
-              label: k,
+              label: shortLabel,
               data: jrows.map(rr => ({ x: rr.t, y: (rr.sides && rr.sides[k] != null) ? rr.sides[k] : 0 })),
-              borderColor: EP_COLORS[ki % EP_COLORS.length],
+              borderColor: DIR_COLORS[k] || EP_COLORS[ki % EP_COLORS.length],
               backgroundColor: 'transparent',
-              tension: 0.3, pointRadius: 0, borderWidth: 1.5
+              tension: 0.3, pointRadius: 0, borderWidth: 1.8
             });
           }
         });
-        // If only the white main line has data, add a note
-        if (datasets.length === 1) {
+        // Fallback: if sides dict is unexpectedly empty, show aggregate main+side
+        if (datasets.length === 0 && hasMainData) {
           datasets.push({
-            label: 'Side (direction unknown — bearing not computed)',
-            data: [],
-            borderColor: '#888888', backgroundColor: 'transparent',
-            tension: 0.3, pointRadius: 0, borderWidth: 1
+            label: 'Main approach (NB+SB)',
+            data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
+            borderColor: '#ffffff', backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 0, borderWidth: 2
+          });
+          if (hasSideAggData) datasets.push({
+            label: 'Cross approach (EB+WB)',
+            data: jrows.map(rr => ({ x: rr.t, y: rr.side_veh_total || 0 })),
+            borderColor: EP_COLORS[0], backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 0, borderWidth: 1.5
+          });
+        }
+      } else if (hasMainData) {
+        // No per-direction data — show main + side aggregates
+        datasets.push({
+          label: mainDir !== 'UK' ? `${mainDir} (NB+SB)` : 'Main approach (NB+SB)',
+          data: jrows.map(rr => ({ x: rr.t, y: rr.main_veh })),
+          borderColor: '#ffffff', backgroundColor: 'transparent',
+          tension: 0.3, pointRadius: 0, borderWidth: 2
+        });
+        if (hasSideAggData) {
+          datasets.push({
+            label: 'Cross approach (EB+WB)',
+            data: jrows.map(rr => ({ x: rr.t, y: rr.side_veh_total || 0 })),
+            borderColor: EP_COLORS[0], backgroundColor: 'transparent',
+            tension: 0.3, pointRadius: 0, borderWidth: 1.5
           });
         }
       }
@@ -8077,15 +8490,32 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   // Colour palette for action types (consistent across both modes)
   const ACTION_COLORS = {
     'NO_ACTION': 'rgba(120,120,180,0.70)',
-    'GE_5':      'rgba(0,200,100,0.75)',
-    'GE_10':     'rgba(0,230,140,0.75)',
-    'GE_15':     'rgba(80,255,160,0.75)',
-    'INS_10':    'rgba(41,182,246,0.75)',
-    'INS_15':    'rgba(100,200,255,0.75)',
-    'INS_20':    'rgba(160,220,255,0.75)',
+    'GE':        'rgba(0,230,120,0.80)',   // DE-optimised green extension
+    'GR':        'rgba(0,200,80,0.75)',    // DE-optimised green reallocation (no cycle ext)
+    'PI':        'rgba(41,182,246,0.80)',  // DE-optimised phase insertion
+    'PR':        'rgba(255,160,40,0.80)',  // DE-optimised phase rotation
+    // Legacy discrete action names (older CSVs)
+    'GE_5':      'rgba(0,200,100,0.65)',
+    'GE_10':     'rgba(0,230,140,0.65)',
+    'GE_15':     'rgba(80,255,160,0.65)',
+    'INS_10':    'rgba(60,160,230,0.65)',
+    'INS_15':    'rgba(100,200,255,0.65)',
+    'INS_20':    'rgba(160,220,255,0.65)',
   };
   function actionColor(a) {
     return ACTION_COLORS[a] || 'rgba(180,140,60,0.70)';
+  }
+  // Label helper: for GE/PI show the DE-optimised duration from action_param_s
+  function actionLabel(row) {
+    const a = String(row.action || '');
+    const p = row.action_param_s != null ? Number(row.action_param_s) : null;
+    if ((a === 'GE' || a === 'GR') && p != null && p > 0) return `${a}@${p}s`;
+    if (a === 'PI' && p != null && p > 0) return `PI@${p}s`;
+    if (a === 'PR' && p != null && p > 0) {
+      const bs = Math.floor(p / 10000), be = Math.floor((p % 10000) / 100), ia = p % 100;
+      return `PR[${bs}-${be}→${ia}]`;
+    }
+    return a;
   }
 
   function renderRewardChart(ri) {
@@ -8166,8 +8596,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     const labels = cycles.map(c => `j${c.jct}\nt=${Math.round(c.t)}s`);
 
-    // One dataset per action type so the legend is colour-coded
-    const actionTypes = ['NO_ACTION','GE_5','GE_10','GE_15','INS_10','INS_15','INS_20'];
+    // One dataset per action type — dynamically derived from CSV data, not hardcoded
+    const _ALL_REWARD_ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
+    const _actsInCycles = new Set(cycles.flatMap(c => c.rows.map(x => String(x.action || '').trim())));
+    const actionTypes = _ALL_REWARD_ACTS.filter(a => _actsInCycles.has(a));
     const datasets = actionTypes.map(act => ({
       label: act,
       data: cycles.map(c => {
@@ -8236,11 +8668,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
                 const naRow = c.rows.find(x => x.action === 'NO_ACTION');
                 const naR = naRow ? Number(naRow.reward||0) : Number(row.no_action_reward||0);
                 const delta = Number(row.reward_delta || (Number(row.reward||0) - naR));
+                const paramLine = (row.action_param_s != null && Number(row.action_param_s) > 0)
+                  ? [`DE param: ${Number(row.action_param_s)}s`] : [];
                 return [
+                  ...paramLine,
                   `reward (raw):    ${Number(row.reward||0).toFixed(4)}`,
                   `NO_ACTION r:     ${naR.toFixed(4)}`,
                   `Δ (vs NO_ACTION): ${delta >= 0 ? '+' : ''}${delta.toFixed(4)}`,
-                  `σ_in=${Number(row.sigma_in_s||0).toFixed(1)}s  σ_out=${Number(row.sigma_out_s||0).toFixed(1)}s`,
                   `chosen: ${Number(row.is_chosen)===1 ? 'YES ★' : 'no'}`,
                 ];
               },
@@ -8336,7 +8770,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         groups.sort((a,b) => a.t - b.t);
 
         const labels = groups.map(g => `j${g.jct}\nt=${Math.round(g.t)}s`);
-        const actionTypes = ['NO_ACTION','GE_5','GE_10','GE_15','INS_10','INS_15','INS_20'];
+        // Dynamic action types from data — not hardcoded
+        const _ALL_REWARD_ACTS2 = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
+        const _actsInGroups = new Set(groups.flatMap(g => g.rows.map(x => String(x.action || '').trim())));
+        const actionTypes = _ALL_REWARD_ACTS2.filter(a => _actsInGroups.has(a));
 
         const datasets = actionTypes.map(act => ({
           label: act,
@@ -8915,7 +9352,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
                           : predNF / nf;
         // Scale model to the same interval as measured delta: pred × (intv / bpDur)
         const predScaled = predPerBp * (intv / bpDur);
-        if (intv > 2 && predScaled >= 0 && delta >= 0 && delta < 5000 && predScaled < 5000) {
+        if (intv > 2 && predScaled > 0 && delta > 0 && delta < 5000 && predScaled < 5000) {
           crossPts.push({ x: delta, y: predScaled,
                           _jct: String(row.jct), _t: Number(row.t),
                           _delta: delta, _intv: intv, _bpDur: bpDur,
@@ -8937,7 +9374,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         const pred   = predNF / nf;
         if (jctPrevCumul[jct] !== undefined) {
           const delta = cumul - jctPrevCumul[jct];
-          if (delta >= 0 && pred >= 0) {
+          if (delta > 0 && pred > 0) {
             crossPts.push({ x: delta, y: pred,
                             _jct: jct, _t: Number(row.t), _cumul: cumul, _nf: nf });
           }
@@ -9401,6 +9838,106 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     renderDynChart(ri >= 0 ? ri : initialRunIdx);
   });
   if (runs.length) renderDynChart(initialRunIdx);
+}
+
+// ── Phase Rotation Diagram ─────────────────────────────────────────────────
+{
+  const prContainer = document.getElementById('pr-diagram-container');
+  const prNoData    = document.getElementById('pr-no-data');
+  const prJctSel    = document.getElementById('pr-jct-sel');
+
+  function renderPhaseRotation(ri) {
+    if (!prContainer) return;
+    prContainer.innerHTML = '';
+    const r = runs[ri];
+    const rc = (r && r.reward_cycle) ? r.reward_cycle : [];
+    // Find all PR rows
+    const prRows = rc.filter(x => x.action === 'PR');
+    if (!prRows.length) {
+      if (prNoData) prNoData.style.display = '';
+      return;
+    }
+    if (prNoData) prNoData.style.display = 'none';
+
+    // Populate junction selector
+    const jcts = [...new Set(prRows.map(x => String(x.junction_id || '')))].sort();
+    prJctSel.innerHTML = '<option value="">All</option>' + jcts.map(j => `<option value="${j}">${j}</option>`).join('');
+    const filtJct = prJctSel.value;
+    const filtered = filtJct ? prRows.filter(x => String(x.junction_id) === filtJct) : prRows;
+    // Limit to 50 most recent
+    const display = filtered.slice(-50);
+
+    // Get bus phase from run config (approximate: use first junction's bus_phase)
+    const busPhaseByJct = {};
+    (r.per_inter || []).forEach(p => { if (p.junction_id) busPhaseByJct[String(p.junction_id)] = p.bus_phase; });
+
+    let html = '<table style="border-collapse:collapse;font-size:11px;width:100%">';
+    html += '<thead><tr style="color:#7070a0;border-bottom:1px solid #333">' +
+      '<th style="padding:3px 6px">Time(s)</th><th style="padding:3px 6px">Jct</th>' +
+      '<th style="padding:3px 6px">Bus</th><th style="padding:3px 6px">ETA(s)</th>' +
+      '<th style="padding:3px 6px">Chosen?</th>' +
+      '<th style="padding:3px 6px">Reward</th>' +
+      '<th style="padding:3px 6px;min-width:200px">Original Seq</th>' +
+      '<th style="padding:3px 6px;min-width:200px">Rotated Seq (DE result)</th>' +
+      '</tr></thead><tbody>';
+
+    display.forEach(row => {
+      const param = parseInt(row.action_param_s || 0);
+      const bs = Math.floor(param / 10000);       // block_start index (0-based in rotated-from-current)
+      const be = Math.floor((param % 10000) / 100); // block_end index
+      const ia = param % 100;                      // insert_after index
+      const jctKey = String(row.junction_id || '');
+      const busPhase = busPhaseByJct[jctKey] || 2;
+      const chosen = String(row.is_chosen || '0') === '1';
+      const reward = row.reward != null ? Number(row.reward).toFixed(1) : '—';
+
+      // Build a symbolic phase sequence.  We don't have the actual sequence here,
+      // so we use 1-indexed phase IDs derived from the current_phase and n_phases.
+      // Without n_phases in the CSV we show a generic sequence [1,2,3,4...] of length 6.
+      const n = 6;  // typical number of phases (placeholder)
+      const curPh = parseInt(row.current_phase || 1);
+      const seq = Array.from({length: n}, (_, i) => ((curPh - 1 + i) % n) + 1);
+
+      function phaseCell(ph, inBlock, isBus) {
+        const bg = isBus ? '#1a4a8a' : (inBlock ? '#7a3a00' : '#1e1e2e');
+        const bdr = isBus ? '2px solid #4af' : (inBlock ? '2px solid #ffa' : '1px solid #333');
+        return `<span style="display:inline-block;padding:2px 5px;margin:1px;border:${bdr};border-radius:3px;background:${bg};font-weight:${isBus?'bold':'normal'}">${ph}</span>`;
+      }
+
+      // Original sequence cells
+      const origHtml = seq.map((ph, i) => phaseCell(ph, i >= bs && i <= be, ph === busPhase)).join('');
+
+      // Rotated sequence
+      const block = seq.slice(bs, be + 1);
+      const rest  = seq.filter((_, i) => i < bs || i > be);
+      const ins   = Math.min(ia, rest.length);
+      const rotated = [...rest.slice(0, ins), ...block, ...rest.slice(ins)];
+      const rotHtml = rotated.map((ph, i) => {
+        const inMoved = block.includes(ph) && !(seq[i] === ph && i < bs || i > be);
+        return phaseCell(ph, block.includes(ph), ph === busPhase);
+      }).join('');
+
+      html += `<tr style="border-bottom:1px solid #1c1c3a;${chosen?'background:#0a2a0a':''}">`  +
+        `<td style="padding:3px 6px">${Number(row.sim_time_s||0).toFixed(1)}</td>` +
+        `<td style="padding:3px 6px">${jctKey}</td>` +
+        `<td style="padding:3px 6px">${row.veh_id||'—'}</td>` +
+        `<td style="padding:3px 6px">${row.bus_eta_s!=null?Number(row.bus_eta_s).toFixed(1):'—'}</td>` +
+        `<td style="padding:3px 6px;text-align:center">${chosen?'✓':''}</td>` +
+        `<td style="padding:3px 6px;text-align:right">${reward}</td>` +
+        `<td style="padding:3px 6px">${origHtml}</td>` +
+        `<td style="padding:3px 6px">${rotHtml}</td>` +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    prContainer.innerHTML = html;
+  }
+
+  buildRunTabs('pr-run-tabs', (i) => renderPhaseRotation(i));
+  if (prJctSel) prJctSel.addEventListener('change', () => {
+    const ri = parseInt(document.querySelector('#pr-run-tabs .run-tab.active')?.dataset?.ri ?? '0');
+    renderPhaseRotation(ri >= 0 ? ri : initialRunIdx);
+  });
+  if (runs.length) renderPhaseRotation(initialRunIdx);
 }
 
 // ── Decision Space — TSP corridor timeline (Gantt) ─────────────────────────
@@ -10189,40 +10726,40 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       { label:'Exit-Based Delay Time - Truck',     key:'net_exit_delay_truck', unit:'sec/km', dec:2, note:_ref2('exit_delay_truck','sec/km') },
       { label:'Exit-Based Delay Time - Std Bus',   key:'net_exit_delay_bus',   unit:'sec/km', dec:2, note:_ref2('exit_delay_bus','sec/km') },
       // ── Entry-Based Travel Time ───────────────────────────────────────────────
-      { label:'Entry-Based Travel Time - All',      key:'net_entry_tt_all',   unit:'sec/km', dec:2, note:'Mean travel time (entry-based) across network; count-weighted avg of TTa/L_km' },
+      { label:'Entry-Based Travel Time - All',      key:'net_entry_tt_all',   unit:'sec/km', dec:2, note:'Flow-weighted avg of Car+Bus+Truck (Aimsun writes 0 for _All; reconstructed here)' },
       { label:'Entry-Based Travel Time - Car',      key:'net_entry_tt_car',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — car' },
-      { label:'Entry-Based Travel Time - HOV Car',  key:'net_entry_tt_hov',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — HOV car' },
+      { label:'Entry-Based Travel Time - HOV Car',  key:'net_entry_tt_hov',   unit:'sec/km', dec:2, note:'HOV = private vehicles in this network (same as Car). Fallback to Car value if HOV=0.' },
       { label:'Entry-Based Travel Time - Truck',    key:'net_entry_tt_truck', unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — truck' },
       { label:'Entry-Based Travel Time - Std Bus',  key:'net_entry_tt_bus',   unit:'sec/km', dec:2, note:'Entry-based mean TT per vehicle per km — bus' },
       // ── Exit-Based Travel Time ────────────────────────────────────────────────
-      { label:'Exit-Based Travel Time - All',       key:'net_exit_tt_all',   unit:'sec/km', dec:2, note:'Mean travel time (exit-based) = TotalTravelTime/count/L_km; count-weighted avg' },
+      { label:'Exit-Based Travel Time - All',       key:'net_exit_tt_all',   unit:'sec/km', dec:2, note:'Flow-weighted avg of Car+Bus+Truck (Aimsun _All=0; reconstructed)' },
       { label:'Exit-Based Travel Time - Car',       key:'net_exit_tt_car',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — car' },
-      { label:'Exit-Based Travel Time - HOV Car',   key:'net_exit_tt_hov',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — HOV car' },
+      { label:'Exit-Based Travel Time - HOV Car',   key:'net_exit_tt_hov',   unit:'sec/km', dec:2, note:'HOV = private vehicles (same as Car). Fallback to Car if HOV=0.' },
       { label:'Exit-Based Travel Time - Truck',     key:'net_exit_tt_truck', unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — truck' },
       { label:'Exit-Based Travel Time - Std Bus',   key:'net_exit_tt_bus',   unit:'sec/km', dec:2, note:'Exit-based mean TT per vehicle per km — bus' },
       // ── Exit-Based Speed ──────────────────────────────────────────────────────
-      { label:'Exit-Based Speed - All',    key:'net_exit_spd_all',   unit:'km/h', dec:2, note:'Exit-based mean speed (Sd field); count-weighted avg across sections' },
+      { label:'Exit-Based Speed - All',    key:'net_exit_spd_all',   unit:'km/h', dec:2, note:'Flow-weighted avg of Car+Bus+Truck (Aimsun _All=0; reconstructed)' },
       { label:'Exit-Based Speed - Car',    key:'net_exit_spd_car',   unit:'km/h', dec:2, note:'Exit-based speed — car' },
-      { label:'Exit-Based Speed - HOV Car',key:'net_exit_spd_hov',   unit:'km/h', dec:2, note:'Exit-based speed — HOV car' },
+      { label:'Exit-Based Speed - HOV Car',key:'net_exit_spd_hov',   unit:'km/h', dec:2, note:'HOV = private vehicles (same as Car). Fallback to Car if HOV=0.' },
       { label:'Exit-Based Speed - Truck',  key:'net_exit_spd_truck', unit:'km/h', dec:2, note:'Exit-based speed — truck' },
       { label:'Exit-Based Speed - Std Bus',key:'net_exit_spd_bus',   unit:'km/h', dec:2, note:'Exit-based speed — bus' },
       // ── Stop Time ─────────────────────────────────────────────────────────────
-      { label:'Stop Time - All',     key:'net_stop_time_all',   unit:'sec/km', dec:2, note:'Mean stop time per vehicle per km (entry-based STa/L_km); count-weighted avg' },
+      { label:'Stop Time - All',     key:'net_stop_time_all',   unit:'sec/km', dec:2, note:'Flow-weighted avg of Car+Bus+Truck (Aimsun _All=0; reconstructed)' },
       { label:'Stop Time - Car',     key:'net_stop_time_car',   unit:'sec/km', dec:2, note:'Stop time — car' },
       { label:'Stop Time - Truck',   key:'net_stop_time_truck', unit:'sec/km', dec:2, note:'Stop time — truck' },
       { label:'Stop Time - Std Bus', key:'net_stop_time_bus',   unit:'sec/km', dec:2, note:'Stop time — bus' },
       // ── Number of Stops ───────────────────────────────────────────────────────
-      { label:'Number of Stops - All',     key:'net_num_stops_all',   unit:'#/veh/km', dec:3, note:'Mean stops per vehicle per km (NumStops field); count-weighted avg' },
+      { label:'Number of Stops - All',     key:'net_num_stops_all',   unit:'#/veh/km', dec:3, note:'Flow-weighted avg of Car+Bus+Truck (Aimsun _All=0; reconstructed)' },
       { label:'Number of Stops - Car',     key:'net_num_stops_car',   unit:'#/veh/km', dec:3, note:'Stops — car' },
       { label:'Number of Stops - Truck',   key:'net_num_stops_truck', unit:'#/veh/km', dec:3, note:'Stops — truck' },
       { label:'Number of Stops - Std Bus', key:'net_num_stops_bus',   unit:'#/veh/km', dec:3, note:'Stops — bus' },
       // ── Total Distance Traveled ───────────────────────────────────────────────
-      { label:'Total Distance - All',   key:'net_total_dist_all',   unit:'km',  dec:1, note:'Σ TotalTravel across sections — total vehicle-km traveled' },
+      { label:'Total Distance - All',   key:'net_total_dist_all',   unit:'km',  dec:1, note:'Car+Bus+Truck sum (Aimsun _All=0; reconstructed from per-type totals)' },
       { label:'Total Distance - Car',   key:'net_total_dist_car',   unit:'km',  dec:1, note:'Total vehicle-km — car' },
       { label:'Total Distance - Bus',   key:'net_total_dist_bus',   unit:'km',  dec:1, note:'Total vehicle-km — bus' },
       { label:'Total Distance - Truck', key:'net_total_dist_truck', unit:'km',  dec:1, note:'Total vehicle-km — truck' },
       // ── Total Travel Time ─────────────────────────────────────────────────────
-      { label:'Total Travel Time - All',   key:'net_total_tt_h_all',   unit:'veh·h', dec:2, note:'Σ TotalTravelTime/3600 across sections — total vehicle-hours' },
+      { label:'Total Travel Time - All',   key:'net_total_tt_h_all',   unit:'veh·h', dec:2, note:'Car+Bus+Truck sum (Aimsun _All=0; reconstructed)' },
       { label:'Total Travel Time - Car',   key:'net_total_tt_h_car',   unit:'veh·h', dec:2, note:'Total vehicle-hours — car' },
       { label:'Total Travel Time - Bus',   key:'net_total_tt_h_bus',   unit:'veh·h', dec:2, note:'Total vehicle-hours — bus' },
       { label:'Total Travel Time - Truck', key:'net_total_tt_h_truck', unit:'veh·h', dec:2, note:'Total vehicle-hours — truck' },
@@ -10374,8 +10911,10 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     {key:'tsp_det',          hdr:'TSP trigger events (raw)',       lb:false},
     {key:'tsp_green_unique', hdr:'Green arrivals unique (bus×jct)',      lb:false},
     {key:'tsp_nongreen_unique', hdr:'Non-green arrivals unique (bus×jct)', lb:false},
-    {key:'tsp_ext',          hdr:'Extensions (raw)',            lb:false},
-    {key:'tsp_ins',          hdr:'Insertions (raw)',            lb:false},
+    {key:'tsp_ext',          hdr:'GE Extensions (raw)',         lb:false},
+    {key:'tsp_ins',          hdr:'PI Insertions (raw)',         lb:false},
+    {key:'tsp_gr',           hdr:'GR Realloc (chosen)',         lb:false},
+    {key:'tsp_pr',           hdr:'PR Rotation (chosen)',        lb:false},
     {key:'tsp_natural_green',hdr:'Natural green (raw)',         lb:false},
     {key:'tsp_natural_green_rate_pct',hdr:'Natural green % (unique)', lb:false},
     {key:'avg_extension_s', hdr:'Avg GE (s)',             lb:false},
@@ -10512,10 +11051,13 @@ def _build_static_fallback_html(data: dict) -> str:
   )
 
 def generate(batch_csv: str = None, out_html: str = None,
-             log_dir: str = None) -> str:
+             log_dir: str = None, avg_seeds: bool = False) -> str:
     """
     Generate and write the HTML dashboard.
     Returns the output path, or None on failure.
+
+    avg_seeds: if True, average numeric metrics across seeds per experiment
+               before building the dashboard (clean summary view for the paper).
     """
     if log_dir is None:
         log_dir = os.path.join(_SCRIPT_DIR, "logs")
@@ -10541,11 +11083,18 @@ def generate(batch_csv: str = None, out_html: str = None,
 
     print(f"[dashboard] {len(batch_rows)} raw row(s) from {batch_csv}")
 
+    if avg_seeds:
+        batch_rows = _avg_batch_rows(batch_rows)
+        n_seeds = max((int(r.get("n_seeds", 1)) for r in batch_rows), default=1)
+        print(f"[dashboard] --avg-seeds: collapsed to {len(batch_rows)} experiment(s) "
+              f"(averaged over up to {n_seeds} seed(s))")
+
     data = build_dashboard_data(batch_rows, log_dir)
     print(f"[dashboard] {len(data['runs'])} unique experiment(s) after dedup")
 
     if out_html is None:
-        out_html = os.path.join(os.path.dirname(batch_csv), "tsp_dashboard.html")
+        _stem = "tsp_dashboard_avg.html" if avg_seeds else "tsp_dashboard.html"
+        out_html = os.path.join(os.path.dirname(batch_csv), _stem)
 
     html = _HTML_TEMPLATE.replace("TEMPLATE_DATA_JSON", json.dumps(data, indent=2))
     html = html.replace("TEMPLATE_FALLBACK_HTML", _build_static_fallback_html(data))
@@ -10568,8 +11117,12 @@ if __name__ == "__main__":
     ap.add_argument("batch_csv", nargs="?", help="batch_results.csv path")
     ap.add_argument("out_html",  nargs="?", help="output HTML path")
     ap.add_argument("--log_dir", default=None, help="logs/ directory")
+    ap.add_argument("--avg-seeds", action="store_true",
+                    help="Average numeric metrics across seeds per experiment "
+                         "(produces a clean per-strategy summary for the paper)")
     args = ap.parse_args()
-    main_html = generate(args.batch_csv, args.out_html, args.log_dir)
+    main_html = generate(args.batch_csv, args.out_html, args.log_dir,
+                         avg_seeds=args.avg_seeds)
 
     # ── Auto-run companion plots ────────────────────────────────────────────
     _batch = args.batch_csv or os.path.join(_SCRIPT_DIR, "batch_results.csv")
