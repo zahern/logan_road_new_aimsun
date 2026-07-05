@@ -46,6 +46,8 @@ except ImportError:
 # Active = INTERSECTIONS_CONFIG junctions with SignalGroupIDList (the 9 controlled junctions).
 # Passive = everything in Inter that is NOT actively controlled.
 # ALL_INTER_JCTS = every junction in the Inter model setup dict (23 total).
+# EXCLUDED_JCTS = passive/uncontrolled junctions removed from dashboard analysis.
+_EXCLUDED_JCTS = set(['39568', '1119660', '10157950', '11118289'])
 try:
   from intersection_configs import INTERSECTIONS_CONFIG as _IC
   try:
@@ -56,7 +58,8 @@ try:
   _ACTIVE_SET   = set(_ACTIVE_JCTS)
   # Passive = all junctions in Inter OR INTERSECTIONS_CONFIG that are NOT actively controlled
   _ALL_INTER_JCTS   = sorted(set(str(j) for j in _INTER_DICT) | set(str(j) for j in _IC))
-  _PASSIVE_JCTS     = [j for j in _ALL_INTER_JCTS if j not in _ACTIVE_SET]
+  # Exclude the three passive junctions from further analysis
+  _PASSIVE_JCTS     = [j for j in _ALL_INTER_JCTS if j not in _ACTIVE_SET and j not in _EXCLUDED_JCTS]
   _ALL_CONFIG_JCTS  = _ALL_INTER_JCTS   # full set for seeding all_jct_ids
 except ImportError:
   _IC = {}
@@ -314,17 +317,21 @@ def _match_reward_cycle_csv_by_name(exp_name: str, all_csvs: list) -> str:
 
 
 def _reward_cycle_from_csv(path: str) -> list:
-  """Load reward_cycle CSV into list of dicts."""
+  """Load reward_cycle CSV into list of dicts, excluding passive junctions."""
   if not path or not os.path.isfile(path):
     return []
   out = []
   try:
     with open(path, newline="", encoding="utf-8") as f:
       for r in csv.DictReader(f):
+        jct_id = int(float(r.get("junction_id", -1) or -1))
+        # Exclude passive/uncontrolled junctions (39568, 1119660, 10157950, 11118289)
+        if str(jct_id) in _EXCLUDED_JCTS:
+          continue
         try:
           out.append({
             "t": float(r.get("sim_time_s", 0) or 0),
-            "jct": int(float(r.get("junction_id", -1) or -1)),
+            "jct": jct_id,
             "vid": int(float(r.get("veh_id", -1) or -1)),
             "bus_eta_s": float(r.get("bus_eta_s", 0) or 0),
             "current_phase": int(float(r.get("current_phase", -1) or -1)),
@@ -380,6 +387,7 @@ def _reward_cycle_from_csv(path: str) -> list:
             "measured_car_pax_s_delta": float(r.get("measured_car_pax_s_delta", 0) or 0),
             "interval_s":  float(r.get("interval_s",  0) or 0),
             "bp_dur_s":    float(r.get("bp_dur_s",    0) or 0),
+            "action_param_s": float(r.get("action_param_s", 0) or 0),
           })
         except Exception:
           continue
@@ -411,7 +419,57 @@ def _wave_events_from_csv(path: str) -> list:
   return out
 
 
-def _green_rates_from_csv(det_csv: str, allowed_vids: set | None = None) -> dict:
+def _osm_wave_events_compact(wave_evts: list) -> list:
+    """
+    Extract a compact event list for OSM map animation from full wave_evts.
+
+    Returns sorted list of [t, code, src_jct, tgt_jct, value] where code:
+      1 = offset_correction  (periodic_replan):  value = corr_s (float)
+      2 = green_realloc      (dctsp_green_realloc): value = delta_r (float)
+      3 = wave_grant         (grant):               value = 1=NB/-1=SB
+      4 = prearm_queued      :                      value = 0
+      5 = prearm_fired       :                      value = 0
+      6 = phase_ins          (dctsp_ins_preterm/post): value = duration_s
+    """
+    import re
+    _CORR = re.compile(r'corr=([+-]?\d+\.?\d*)')
+    _DR   = re.compile(r'[Dd]r=([+-]?\d+\.?\d*)')
+    _DUR  = re.compile(r'(\d+\.?\d*)s')
+    out = []
+    for e in wave_evts:
+        t   = round(float(e.get("t", 0) or 0), 1)
+        evt = e.get("event", "")
+        sj  = str(e.get("source_jct", -1))
+        tj  = str(e.get("target_jct", -1))
+        note= e.get("note", "") or ""
+
+        if evt == "periodic_replan" and sj not in ("-1", "") and tj not in ("-1", ""):
+            m = _CORR.search(note)
+            out.append([t, 1, sj, tj, round(float(m.group(1)), 1) if m else 0.0])
+
+        elif evt == "dctsp_green_realloc" and sj not in ("-1", ""):
+            m = _DR.search(note)
+            out.append([t, 2, sj, sj, round(float(m.group(1)), 2) if m else 0.0])
+
+        elif evt == "grant" and sj not in ("-1", ""):
+            out.append([t, 3, sj, tj, 1 if "north" in note.lower() else -1])
+
+        elif evt == "prearm_queued" and sj not in ("-1", "") and tj not in ("-1", ""):
+            out.append([t, 4, sj, tj, 0])
+
+        elif evt == "prearm_fired" and sj not in ("-1", "") and tj not in ("-1", ""):
+            out.append([t, 5, sj, tj, 0])
+
+        elif evt in ("dctsp_ins_preterm", "dctsp_ins_post") and sj not in ("-1", ""):
+            m = _DUR.search(note)
+            dur = round(float(m.group(1)), 1) if m else 0.0
+            out.append([t, 6, sj, sj, dur])
+
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _green_rates_from_csv(det_csv: str, allowed_vids=None) -> dict:
     """
     Load one detection CSV and return {jct_id_str: green_pct} for TSP buses.
     Returns {} if plot_green_wave is unavailable or CSV is missing.
@@ -457,7 +515,7 @@ def _green_rates_from_csv(det_csv: str, allowed_vids: set | None = None) -> dict
     return result
 
 
-def _green_rates_from_csv_fallback(det_csv: str, allowed_vids: set | None = None) -> dict:
+def _green_rates_from_csv_fallback(det_csv: str, allowed_vids=None) -> dict:
     """
     Lightweight fallback when plot_green_wave dependencies are unavailable.
 
@@ -1030,6 +1088,82 @@ def _queue_snapshot_from_csv(path: str) -> list:
     return out
 
 
+_TSP_CODE = {"NORMAL": 0, "GE": 1, "INS": 2, "GR": 3}
+
+
+def _centralized_steps_csvs(log_dir: str = "logs") -> list:
+    return sorted(glob.glob(os.path.join(log_dir, "centralized_steps_*.csv")),
+                  key=os.path.getmtime)
+
+
+def _match_centralized_steps_csv_by_name(exp_name: str, all_csvs: list):
+    exp_lower = (exp_name or "").strip().lower()
+    if not exp_lower:
+        return None
+    for p in reversed(all_csvs):
+        stem = os.path.splitext(os.path.basename(p))[0].lower()
+        if not stem.startswith("centralized_steps_"):
+            continue
+        payload = stem[len("centralized_steps_"):]
+        parts = payload.split("_")
+        if len(parts) >= 3 and parts[-1].isdigit() and parts[-2].isdigit():
+            if "_".join(parts[:-2]) == exp_lower:
+                return p
+    for p in reversed(all_csvs):
+        if exp_lower in os.path.basename(p).lower():
+            return p
+    return None
+
+
+def _bus_phase_map_from_csv(path: str) -> dict:
+    """Return {jct_id_str: bus_phase_int} from centralized_steps CSV."""
+    out = {}
+    if not path or not os.path.isfile(path):
+        return out
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if str(r.get("is_bus_phase", "0")).strip() != "1":
+                    continue
+                jid = str(int(float(r.get("junction_id", 0) or 0)))
+                ph  = int(float(r.get("current_phase", 0) or 0))
+                if jid != "0" and jid not in out:
+                    out[jid] = ph
+    except Exception:
+        pass
+    return out
+
+
+def _phase_timeline_from_csv(queue_snap_path: str) -> dict:
+    """
+    Build compact per-junction phase timeline from queue_snapshot CSV.
+
+    Returns {jct_id_str: [[t, phase_int, tsp_code_int], ...]} sorted by t.
+    tsp_code: 0=NORMAL, 1=GE, 2=INS, 3=GR
+    """
+    out = {}
+    if not queue_snap_path or not os.path.isfile(queue_snap_path):
+        return out
+    try:
+        with open(queue_snap_path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                try:
+                    jid = str(int(float(r.get("junction_id", 0) or 0)))
+                    if jid == "0" or jid in _EXCLUDED_JCTS:
+                        continue
+                    t   = float(r.get("sim_time_s", 0) or 0)
+                    ph  = int(float(r.get("current_phase", 0) or 0))
+                    tsp = _TSP_CODE.get(str(r.get("tsp_state", "NORMAL") or "NORMAL").strip(), 0)
+                    out.setdefault(jid, []).append([round(t, 1), ph, tsp])
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    for v in out.values():
+        v.sort(key=lambda x: x[0])
+    return out
+
+
 def _load_junction_centroids(log_dir: str = "logs") -> dict:
     """
     Load junction_centroids_*.csv files (written by AAPIFinish) to get
@@ -1059,6 +1193,154 @@ def _load_junction_centroids(log_dir: str = "logs") -> dict:
     except Exception:
         pass
     return out
+
+
+def _compute_jct_latlon(centroid_positions: dict):
+    """
+    Convert Aimsun model coordinates (MGA2020 Zone 56, EPSG:7856) to WGS84 lat/lon.
+
+    Returns:
+      jct_latlon   : {str(jct_id): {"lat": float, "lon": float}, ...}
+      osm_transform: affine params so JS can convert any model (x,y) → [lat,lon]
+    """
+    if not centroid_positions:
+        return {}, {}
+
+    # Reference junction for the affine transform (southernmost, most stable)
+    _REF_JID = "39606"
+    _FALLBACK_REF_LAT, _FALLBACK_REF_LON = -27.445732, 153.008620  # pyproj-computed
+    _LAT_PER_M =  9.029e-6   # ≈ 1/110,750 deg/m at this latitude
+    _LON_PER_M =  1.012e-5   # ≈ 1/(110,750 * cos(-27.45°)) deg/m
+
+    def _affine_convert(x, y, ref_x, ref_y, ref_lat, ref_lon):
+        return (round(ref_lat + (y - ref_y) * _LAT_PER_M, 7),
+                round(ref_lon + (x - ref_x) * _LON_PER_M, 7))
+
+    jct_latlon = {}
+    try:
+        from pyproj import Transformer
+        _t = Transformer.from_crs("EPSG:7856", "EPSG:4326", always_xy=True)
+        for jid, pos in centroid_positions.items():
+            try:
+                lon, lat = _t.transform(pos["x"], pos["y"])
+                jct_latlon[str(jid)] = {"lat": round(lat, 7), "lon": round(lon, 7)}
+            except Exception:
+                continue
+    except ImportError:
+        # Affine fallback using the known reference junction
+        ref_pos = centroid_positions.get(_REF_JID, next(iter(centroid_positions.values())))
+        ref_x, ref_y = ref_pos["x"], ref_pos["y"]
+        ref_lat, ref_lon = _FALLBACK_REF_LAT, _FALLBACK_REF_LON
+        for jid, pos in centroid_positions.items():
+            lat, lon = _affine_convert(pos["x"], pos["y"], ref_x, ref_y, ref_lat, ref_lon)
+            jct_latlon[str(jid)] = {"lat": lat, "lon": lon}
+
+    # Compute affine params from actual lat/lon for JS-side bus-track x,y conversion
+    ref = centroid_positions.get(_REF_JID)
+    if ref and _REF_JID in jct_latlon:
+        ref_ll = jct_latlon[_REF_JID]
+        osm_transform = {
+            "ref_x":   ref["x"],
+            "ref_y":   ref["y"],
+            "ref_lat": ref_ll["lat"],
+            "ref_lon": ref_ll["lon"],
+            "lat_per_m": _LAT_PER_M,
+            "lon_per_m": _LON_PER_M,
+        }
+    else:
+        osm_transform = {}
+
+    return jct_latlon, osm_transform
+
+
+def _fetch_corridor_osm_geometry(jct_latlon: dict, corridor_order: list,
+                                  cache_path: str = None) -> dict:
+    """
+    Fetch OSM-aligned road geometry for each consecutive junction pair via OSRM.
+
+    Returns {link_key: [[lat, lon], ...]} where link_key = "jA|jB".
+    Results are cached to cache_path (JSON) to avoid repeated API calls.
+    Falls back to straight lines if OSRM unreachable.
+    """
+    import urllib.request, json, time
+
+    # Build the set of required link keys — both directions per pair so divided roads render correctly
+    pairs = [(str(corridor_order[i]), str(corridor_order[i + 1]))
+             for i in range(len(corridor_order) - 1)]
+    required = {f"{a}|{b}" for a, b in pairs} | {f"{b}|{a}" for a, b in pairs}
+
+    # Try loading from cache (must have BOTH directions to be valid)
+    if cache_path and os.path.isfile(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            if required.issubset(set(cached.keys())):
+                return cached
+        except Exception:
+            pass
+
+    def _pin_endpoints(pts, llA, llB):
+        """Replace first/last point with exact junction lat/lon to eliminate OSRM snap gap."""
+        if pts and len(pts) >= 2:
+            pts[0]  = [llA["lat"], llA["lon"]]
+            pts[-1] = [llB["lat"], llB["lon"]]
+        return pts
+
+    def _osrm_fetch(llA, llB):
+        url = (
+            "https://router.project-osrm.org/route/v1/driving/"
+            f"{llA['lon']:.6f},{llA['lat']:.6f};"
+            f"{llB['lon']:.6f},{llB['lat']:.6f}"
+            "?overview=full&geometries=geojson&steps=false"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "WaveGateDashboard/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("code") == "Ok" and data.get("routes"):
+            coords = data["routes"][0]["geometry"]["coordinates"]
+            return [[round(c[1], 6), round(c[0], 6)] for c in coords]
+        return None
+
+    link_geom = {}
+    fetched_count = 0
+    for jA, jB in pairs:
+        llA = jct_latlon.get(jA)
+        llB = jct_latlon.get(jB)
+        if not llA or not llB:
+            continue
+        # Straight-line fallbacks
+        link_geom[f"{jA}|{jB}"] = [[llA["lat"], llA["lon"]], [llB["lat"], llB["lon"]]]
+        link_geom[f"{jB}|{jA}"] = [[llB["lat"], llB["lon"]], [llA["lat"], llA["lon"]]]
+        # Forward direction A→B
+        try:
+            pts = _osrm_fetch(llA, llB)
+            if pts and len(pts) >= 2:
+                link_geom[f"{jA}|{jB}"] = _pin_endpoints(pts, llA, llB)
+                fetched_count += 1
+            time.sleep(0.12)
+        except Exception:
+            pass
+        # Reverse direction B→A (separate carriageway for divided roads)
+        try:
+            pts = _osrm_fetch(llB, llA)
+            if pts and len(pts) >= 2:
+                link_geom[f"{jB}|{jA}"] = _pin_endpoints(pts, llB, llA)
+                fetched_count += 1
+            time.sleep(0.12)
+        except Exception:
+            pass
+
+    print(f"[dashboard] Fetched {fetched_count}/{len(pairs)*2} carriageway geometries from OSRM")
+
+    # Persist cache
+    if fetched_count and cache_path:
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(link_geom, f)
+        except Exception:
+            pass
+
+    return link_geom
 
 
 def _match_focus_csv_by_name(exp_name: str, all_csvs: list) -> str:
@@ -1327,7 +1609,7 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
         _agg = {}
         for _r in sec_rows:
             _iid = str(_r.get("IntersectionID", "")).strip()
-            if not _iid or _iid == "0":
+            if not _iid or _iid == "0" or _iid in _EXCLUDED_JCTS:
                 continue
             _l = float(_r.get("Length_km", 0) or 0)
             _d = float(_r.get("AvgDensity_vkm", 0) or 0)
@@ -1343,6 +1625,8 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
                 a["q"] += _q; a["n"] += 1
         result_fallback = []
         for _iid, a in _agg.items():
+            if _iid in _EXCLUDED_JCTS:
+                continue
             _tl = max(a["wt_len"], 1e-9)
             result_fallback.append({
                 "iid": _iid,
@@ -1414,6 +1698,8 @@ def _load_per_intersection_data(batch_row: dict, log_dir: str) -> list:
     result = []
     for r in run_rows:
         iid = r.get("IntersectionID", "?")
+        if str(iid) in _EXCLUDED_JCTS:
+            continue
         result.append({
             "iid":           iid,
             "distinct_buses": _flt(r.get("N_DistinctBuses")),
@@ -2028,8 +2314,8 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     # shows every junction even when a run's detection CSV is missing or empty.
     # Also include ALL config junctions (passive detection-zone ones) so the corridor
     # spatial map and journey chart can show them alongside active TSP junctions.
-    all_jct_ids: set = set(str(j) for j in ALL_CORRIDOR_JCTS) if HAS_GW else set()
-    all_jct_ids.update(_ALL_CONFIG_JCTS)  # include passive/monitoring junctions
+    all_jct_ids: set = set(str(j) for j in ALL_CORRIDOR_JCTS if str(j) not in _EXCLUDED_JCTS) if HAS_GW else set()
+    all_jct_ids.update(j for j in _ALL_CONFIG_JCTS if j not in _EXCLUDED_JCTS)
     runs_data:   list = []
     all_wave_csvs = _wave_csvs(log_dir) if log_dir else []
     all_bus_track_csvs = _bus_tracking_csvs(log_dir) if log_dir else []
@@ -2037,7 +2323,8 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     all_reward_csvs = _reward_cycle_csvs(log_dir) if log_dir else []
     all_focus_csvs = _focus_history_csvs(log_dir) if log_dir else []
     all_queue_snap_csvs = _queue_snapshot_csvs(log_dir) if log_dir else []
-    all_dynaropac_csvs = _dynaropac_csvs(log_dir) if log_dir else []
+    all_steps_csvs      = _centralized_steps_csvs(log_dir) if log_dir else []
+    all_dynaropac_csvs  = _dynaropac_csvs(log_dir) if log_dir else []
 
     for row in batch_rows:
         label       = _run_label(row)
@@ -2657,6 +2944,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         queue_snapshots = _queue_snapshot_from_csv(queue_snap_csv) if queue_snap_csv else []
         # Per-approach entry-point detail (new format with direction labels)
         queue_entry_snapshots = _queue_entry_snapshots_from_csv(queue_snap_csv) if queue_snap_csv else []
+        # Signal phase timeline for OSM animation (phase + TSP state per junction per timestep)
+        steps_csv      = _match_centralized_steps_csv_by_name(exp_name, all_steps_csvs)
+        phase_timeline = _phase_timeline_from_csv(queue_snap_csv)
+        bus_phase_map  = _bus_phase_map_from_csv(steps_csv) if steps_csv else {}
 
         # ── DYNAOPAC decision log (phase-duration search candidates + delays) ──
         dyn_csv = _match_dynaropac_csv_by_name(exp_name, all_dynaropac_csvs)
@@ -2667,10 +2958,10 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             track_summary,
             focus_summary,
         )
-        all_jct_ids.update(det_jct_stats.keys())
-        all_jct_ids.update((track_summary or {}).get("per_jct", {}).keys())
-        all_jct_ids.update((focus_summary or {}).get("per_jct", {}).keys())
-        all_jct_ids.update(str(pi.get("iid")) for pi in per_inter if pi.get("iid") is not None)
+        all_jct_ids.update(k for k in det_jct_stats.keys() if k not in _EXCLUDED_JCTS)
+        all_jct_ids.update(k for k in (track_summary or {}).get("per_jct", {}).keys() if k not in _EXCLUDED_JCTS)
+        all_jct_ids.update(k for k in (focus_summary or {}).get("per_jct", {}).keys() if k not in _EXCLUDED_JCTS)
+        all_jct_ids.update(str(pi.get("iid")) for pi in per_inter if pi.get("iid") is not None and str(pi.get("iid")) not in _EXCLUDED_JCTS)
 
         tracked_bus_count = int(track_summary.get("tracked_bus_count", 0))
         detected_bus_count = int(det_pair_stats.get("bus_count", 0))
@@ -2877,6 +3168,14 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "queue_snapshots": queue_snapshots,
             # per-approach entry-point snapshots (list of {t, jct, main_dir, main_veh, sides:{key:n_veh}})
             "queue_entry_snapshots": queue_entry_snapshots,
+            # compact signal phase timeline: {jct: [[t, phase, tsp_code], ...]}
+            # tsp_code: 0=NORMAL 1=GE 2=INS 3=GR
+            "phase_timeline": phase_timeline,
+            "bus_phase_map":  bus_phase_map,
+            # compact wave events for OSM animation:
+            # [[t, code, src_jct, tgt_jct, value], ...]
+            # code: 1=offset_corr 2=green_realloc 3=grant 4=prearm_q 5=prearm_f 6=phase_ins
+            "osm_wave_events": _osm_wave_events_compact(wave_evts),
             # DYNAOPAC decisions (list of {t, jct, before_dur, extensions, delays, best_ext, applied, ...})
             "dynaropac_decisions": dynaropac_decisions,
             # TSP_Paper objectives (Z1–Z4 + weighted total, from wobj_* batch_results columns)
@@ -2891,6 +3190,16 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
             "net_total_vkm": _rnd(net_total_dist_all, 1),
             "wobj_total": _rnd(wobj_total, 0),
             "bus_predictor": bus_predictor,
+            # WaveGate sensitivity sweep metadata (None when not a sweep run)
+            "sweep_group":          _pick(row, ["sweep_group"]),
+            "sweep_Z1_weight":      _rnd(_pick(row, ["sweep_Z1_weight"]),      4),
+            "sweep_Z2_weight":      _rnd(_pick(row, ["sweep_Z2_weight"]),      4),
+            "sweep_Z3_weight":      _rnd(_pick(row, ["sweep_Z3_weight"]),      4),
+            "sweep_detection_m":    _rnd(_pick(row, ["sweep_detection_m"]),    1),
+            "sweep_balance_factor": _rnd(_pick(row, ["sweep_balance_factor"]), 2),
+            "sweep_de_pop":         _rnd(_pick(row, ["sweep_de_pop"]),         0),
+            "sweep_de_iter":        _rnd(_pick(row, ["sweep_de_iter"]),        0),
+            "sweep_min_gain_s":     _rnd(_pick(row, ["sweep_min_gain_s"]),     2),
         }
         runs_data.append(run_obj)
 
@@ -3024,6 +3333,24 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
     for jid, pos in centroid_positions.items():
         jct_positions[jid] = pos
 
+    # Convert model coordinates (MGA2020 Zone 56, EPSG:7856) → WGS84 lat/lon
+    jct_latlon, osm_transform = _compute_jct_latlon(centroid_positions or jct_positions)
+
+    # Ordered active junction list for corridor polyline (S→N by northing)
+    _active_set_int = set(int(j) for j in _ACTIVE_JCTS) if _ACTIVE_JCTS else set()
+    _corridor_order = sorted(
+        (jid for jid in centroid_positions if str(jid) not in _EXCLUDED_JCTS),
+        key=lambda jid: centroid_positions[jid].get("y", 0)
+    )
+
+    # Fetch OSM-aligned road geometry for corridor links
+    _osm_cache = os.path.join(log_dir or _SCRIPT_DIR, "corridor_osm_geometry.json")
+    _corridor_str = [str(j) for j in _corridor_order]
+    print("[dashboard] Fetching OSM corridor geometry (both carriageways)...")
+    corridor_geometry = _fetch_corridor_osm_geometry(jct_latlon, _corridor_str, _osm_cache)
+    _curved = sum(1 for v in corridor_geometry.values() if len(v) > 2)
+    print(f"[dashboard] {_curved}/{len(corridor_geometry)} carriageway geometries with curves")
+
     return {
         "generated":       datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "runs":            runs_data,
@@ -3040,6 +3367,18 @@ def build_dashboard_data(batch_rows: list, log_dir: str) -> dict:
         "active_jcts":     _ACTIVE_JCTS,
         "passive_jcts":    _PASSIVE_JCTS,
         "signal_plans":    _signal_plan_rows(),
+        "has_sweep": any(r.get("sweep_group") is not None for r in runs_data),
+        # OSM map data
+        "jct_latlon":        jct_latlon,
+        "osm_transform":     osm_transform,
+        "corridor_order":    [str(j) for j in _corridor_order],
+        "corridor_geometry": corridor_geometry,
+        # bus_phase_map: {jct: phase_int_where_corridor_is_green}
+        # Derived from first run that has centralized_steps data loaded
+        "bus_phase_map": next(
+            (r.get("bus_phase_map") for r in runs_data if r.get("bus_phase_map")),
+            {}
+        ),
     }
 
 
@@ -3072,6 +3411,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kelvin Grove TSP — Simulation Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 :root {
   --bg: #0d0d1e; --bg2: #13132b; --bg3: #1a1a35;
@@ -3223,6 +3564,66 @@ TEMPLATE_FALLBACK_HTML
   </div>
   <canvas id="chart-predictor-delay" height="240"></canvas>
   <div id="predictor-na" style="display:none;margin-top:8px;font-size:11px;color:#b08080">No PRED_* experiment data found — enable PREDICTOR_SWEEP_ENABLED and re-run the batch.</div>
+</div>
+
+<!-- ── WaveGate Sensitivity Sweep ─────────────────────────────────────── -->
+<div id="wavegate-sweep-section" style="display:none">
+<p class="section-hdr">WaveGate Sensitivity <span style="font-size:0.78rem;color:var(--muted)">(A: NO_TSP baseline · C: objective weights · D: ZIG min-gain · F: offset correction · G: min-gain fine sweep)</span></p>
+<div class="grid grid-2">
+  <div class="card" style="display:none">
+    <h2>Group B — Detection Distance (disabled — no gain, all keep 50 m)</h2>
+    <canvas id="chart-wg-detdist" height="280"></canvas>
+  </div>
+  <div class="card">
+    <h2>Group C — Objective Weight (50 m, one Z turned off)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      All-equal baseline (det=50 m, min_gain=1.5 s). Each variant drops one objective; remaining two share 0.5 each. Lower = better.
+    </div>
+    <canvas id="chart-wg-objweight" height="280"></canvas>
+  </div>
+</div>
+<div class="grid grid-2" style="margin-top:16px">
+  <div class="card">
+    <h2>Z1–Z3 Objective Scores (normalised to WG_DET40M)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      Groups B+C. Z1/Z3: &lt;100% = better than baseline. Z2: &gt;100% = better. All relative to WG_DET40M.
+    </div>
+    <canvas id="chart-wg-obj-scores" height="280"></canvas>
+  </div>
+  <div class="card">
+    <h2>Group D — ZIG Hyperparameter Sensitivity (Δ vs WG_DET40M)</h2>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      One param changed at a time from WG_DET40M baseline. Red = worse, green = better. Params: ZIG_BALANCE_FACTOR, ZIG_DE_POP, ZIG_DE_ITER, ZIG_MIN_GAIN_S.
+    </div>
+    <canvas id="chart-wg-hyperparam" height="280"></canvas>
+  </div>
+</div>
+<div class="card" style="margin-top:16px">
+  <h2>WaveGate Sweep — All Runs Summary</h2>
+  <div class="tbl-wrap">
+    <table id="wg-sweep-table" style="width:100%;border-collapse:collapse;font-size:11.5px;color:#c0c0e0">
+      <thead>
+        <tr style="border-bottom:2px solid #333355;color:#8888cc">
+          <th style="text-align:left;padding:5px 8px">Experiment</th>
+          <th style="text-align:center;padding:5px 8px">Grp</th>
+          <th style="text-align:center;padding:5px 8px">α (Z1)</th>
+          <th style="text-align:center;padding:5px 8px">β (Z2)</th>
+          <th style="text-align:center;padding:5px 8px">γ (Z3)</th>
+          <th style="text-align:center;padding:5px 8px">Det (m)</th>
+          <th style="text-align:center;padding:5px 8px">BalFactor</th>
+          <th style="text-align:center;padding:5px 8px">DE-Pop</th>
+          <th style="text-align:center;padding:5px 8px">DE-Iter</th>
+          <th style="text-align:center;padding:5px 8px">MinGain</th>
+          <th style="text-align:right;padding:5px 8px">Total Delay ↓ (hrs)</th>
+          <th style="text-align:right;padding:5px 8px">Δ vs baseline</th>
+          <th style="text-align:right;padding:5px 8px">Avg Bus ↓ (s)</th>
+          <th style="text-align:right;padding:5px 8px">TSP fires</th>
+        </tr>
+      </thead>
+      <tbody id="wg-sweep-tbody"></tbody>
+    </table>
+  </div>
+</div>
 </div>
 
 <p class="section-hdr">Delay Metrics</p>
@@ -3523,6 +3924,47 @@ TEMPLATE_FALLBACK_HTML
     <span style="color:#e74c3c">●</span> stop on red &nbsp;
     <span style="color:#8e44ad">━</span> bus path &nbsp;
     <span style="color:#555;text-decoration:underline dotted">┄</span> corridor spine
+  </div>
+</div>
+
+<!-- ── OSM Network Simulation Visualisation ───────────────────────────── -->
+<p class="section-hdr">OSM Network Visualisation <span style="font-size:0.78rem;color:var(--muted)">(live junction map — link flow, queue lengths, bus animation, side-by-side NO_TSP vs TSP)</span></p>
+<div class="card" id="osm-viz-section">
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:10px">
+    <span style="font-weight:600;color:#b0b0e0">TSP run:</span>
+    <select id="osm-tsp-run-sel" style="font-size:11px;padding:2px 5px;background:#1a1a35;color:#ccc;border:1px solid #2a2a50"></select>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-flow" checked> Link flow</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-queue" checked> Queue</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-buses" checked> Buses</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-signals" checked> Signal phases</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-wavevents" checked> Wave events</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-layer-labels" checked> Labels</label>
+    <label style="margin-left:8px"><input type="checkbox" id="osm-sync-zoom" checked> Sync zoom</label>
+    <span style="margin-left:16px;font-weight:600;color:#b0b0e0">Animation:</span>
+    <button id="osm-anim-play" style="font-size:11px;padding:2px 8px;background:#2a2a50;color:#ccc;border:1px solid #3a3a70;border-radius:4px;cursor:pointer">▶ Play</button>
+    <button id="osm-anim-stop" style="font-size:11px;padding:2px 8px;background:#2a2a50;color:#ccc;border:1px solid #3a3a70;border-radius:4px;cursor:pointer">■ Stop</button>
+    <input type="range" id="osm-anim-speed" min="1" max="20" value="5" style="width:80px" title="Animation speed">
+    <span id="osm-anim-time" style="font-family:monospace;color:#29b6f6">t = —</span>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div>
+      <div style="font-size:11px;font-weight:600;color:#e74c3c;margin-bottom:4px;text-align:center">NO_TSP (baseline)</div>
+      <div id="osm-map-notsp" style="height:460px;border-radius:8px;border:1px solid #2a2a50"></div>
+    </div>
+    <div>
+      <div style="font-size:11px;font-weight:600;color:#2ecc71;margin-bottom:4px;text-align:center" id="osm-tsp-label">TSP: WG_MG_1_5</div>
+      <div id="osm-map-tsp" style="height:460px;border-radius:8px;border:1px solid #2a2a50"></div>
+    </div>
+  </div>
+  <div style="margin-top:8px;font-size:10px;color:var(--muted);display:flex;gap:16px;flex-wrap:wrap">
+    <span><span style="display:inline-block;width:30px;height:4px;background:linear-gradient(to right,#00e676,#ffb300,#ff5252);vertical-align:middle"></span> Link delay (low→high)</span>
+    <span><span style="color:#2196F3">●</span> Bus (animated)</span>
+    <span><span style="color:#ffb300">▐</span> Queue bar</span>
+    <span><span style="color:#29b6f6">⊙</span> Active junction &nbsp; <span style="color:#888">⊙</span> Passive junction</span>
+    <span id="osm-no-data-note" style="color:#f0a020;display:none">⚠ No lat/lon data — run with AAPIFinish to generate junction_centroids CSV</span>
+  </div>
+  <div id="osm-no-leaflet-note" style="display:none;margin-top:8px;padding:8px;background:#1a1a20;border-left:3px solid #f0a020;font-size:11px;color:#c0b090">
+    Leaflet not loaded (offline). OSM map requires internet access to load tile images.
   </div>
 </div>
 
@@ -7048,6 +7490,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
       { key:'GR', label:'Green Reallocation', color:'#84cc16', match: a => a.startsWith('GR') },
       { key:'PI', label:'Phase Insertion',    color:'#27ae60', match: a => a.startsWith('INS') },
       { key:'PR', label:'Pre-Arm Rotation',   color:'#9b59b6', match: a => a.startsWith('PR') || a.startsWith('VP') },
+      { key:'OC', label:'Offset Correction',  color:'#e67e22', match: a => a.startsWith('OC') },
     ];
     const actionsInData = new Set(busRows.map(x => String(x.action)));
     const activeCGroups = CANONICAL_GROUPS.filter(cg => [...actionsInData].some(a => cg.match(a)));
@@ -7173,14 +7616,13 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
           const bpsColor = bps > 0.5 ? '#4ecdc4' : bps < -0.5 ? '#e74c3c' : '#555';
           const cpcColor = cpc > 0.5 ? '#e07070' : '#555';
           const starPfx  = isChosen ? '<span style="color:#ffd632">★ </span>' : '';
-          // Show the actual action name + param so user sees e.g. GE_10.0@10s
-          const actName = String(row.action);
+          // Show the DE-optimised duration prominently, reward below
           const paramS  = Number(row.action_param_s || 0);
-          const actLine = paramS > 0
-            ? `<span style="font-size:9px;color:#7ab0d8">${actName}@${paramS}s</span><br>`
-            : `<span style="font-size:9px;color:#7070a0">${actName}</span><br>`;
-          td.innerHTML = starPfx + actLine +
-            `<span style="color:${rColor};font-weight:${isChosen ? 600 : 400}">${rTxt}</span>` +
+          const durTxt  = paramS > 0 ? `${paramS.toFixed(1)}s` : '—';
+          td.innerHTML = starPfx +
+            `<span style="color:#c8e0f8;font-size:11px;font-weight:600">${durTxt}</span>` +
+            '<br>' +
+            `<span style="color:${rColor};font-weight:${isChosen ? 600 : 400};font-size:10px">${rTxt}</span>` +
             '<br>' +
             `<span style="font-size:9px;color:${bpsColor}">${bps >= 0 ? '+' : ''}${Math.round(bps)}</span>` +
             `<span style="font-size:9px;color:#444">/</span>` +
@@ -8487,13 +8929,21 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   let _rewardMode = 'jct';   // 'jct' | 'bus'
   let _rewardRi   = null;
 
-  // Colour palette for action types (consistent across both modes)
+  // Colour palette for action types (consistent across both modes).
+  // Keyed by CANONICAL type (see canonAction below), not the raw CSV label,
+  // since DE-optimised actions are logged with a continuous duration suffix
+  // (e.g. "GE_8.0", "INS_PRETERM_20.0", "OC_5.0") that never matches a fixed
+  // discrete whitelist.
   const ACTION_COLORS = {
     'NO_ACTION': 'rgba(120,120,180,0.70)',
     'GE':        'rgba(0,230,120,0.80)',   // DE-optimised green extension
     'GR':        'rgba(0,200,80,0.75)',    // DE-optimised green reallocation (no cycle ext)
-    'PI':        'rgba(41,182,246,0.80)',  // DE-optimised phase insertion
+    'PI':        'rgba(41,182,246,0.80)',  // DE-optimised phase insertion (INS_POST/INS_PRETERM)
     'PR':        'rgba(255,160,40,0.80)',  // DE-optimised phase rotation
+    'OC':        'rgba(230,126,34,0.80)',  // offset correction
+    'VP_SKIP':   'rgba(155,89,182,0.75)',
+    'ER':        'rgba(231,76,60,0.70)',
+    'ER_BP':     'rgba(192,57,43,0.70)',
     // Legacy discrete action names (older CSVs)
     'GE_5':      'rgba(0,200,100,0.65)',
     'GE_10':     'rgba(0,230,140,0.65)',
@@ -8502,19 +8952,47 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     'INS_15':    'rgba(100,200,255,0.65)',
     'INS_20':    'rgba(160,220,255,0.65)',
   };
-  function actionColor(a) {
-    return ACTION_COLORS[a] || 'rgba(180,140,60,0.70)';
+  // Map a raw CSV action label to its canonical type (mirrors Python's
+  // _act_to_type() in intersection_controller.py). Raw labels carry a
+  // DE-optimised duration suffix (e.g. "GE_8.0"), so this must prefix-match
+  // rather than compare equality.
+  function canonAction(label) {
+    const a = String(label || '').trim();
+    if (a === 'NO_ACTION')           return 'NO_ACTION';
+    if (a.startsWith('INS_PRETERM')) return 'PI';
+    if (a.startsWith('INS_POST'))    return 'PI';
+    if (a.startsWith('INS_'))        return 'PI';
+    if (a.startsWith('GR_'))         return 'GR';   // includes GR_WP_
+    if (a.startsWith('GE_'))         return 'GE';
+    if (a.startsWith('ER_BP'))       return 'ER_BP';
+    if (a.startsWith('ER_'))         return 'ER';
+    if (a.startsWith('VP_SKIP'))     return 'VP_SKIP';
+    if (a.startsWith('PR_'))         return 'PR';
+    if (a.startsWith('OC_'))         return 'OC';
+    return a.split('_')[0] || a;
   }
-  // Label helper: for GE/PI show the DE-optimised duration from action_param_s
+  function actionColor(a) {
+    return ACTION_COLORS[canonAction(a)] || ACTION_COLORS[a] || 'rgba(180,140,60,0.70)';
+  }
+  // Label helper: shows the canonical action type plus its DE-optimised duration
   function actionLabel(row) {
-    const a = String(row.action || '');
+    const a = String(row.action || '').trim();
     const p = row.action_param_s != null ? Number(row.action_param_s) : null;
-    if ((a === 'GE' || a === 'GR') && p != null && p > 0) return `${a}@${p}s`;
-    if (a === 'PI' && p != null && p > 0) return `PI@${p}s`;
-    if (a === 'PR' && p != null && p > 0) {
+    if (a === 'NO_ACTION') return a;
+    if (a.startsWith('PR_') && p != null) {
       const bs = Math.floor(p / 10000), be = Math.floor((p % 10000) / 100), ia = p % 100;
       return `PR[${bs}-${be}→${ia}]`;
     }
+    if (a.startsWith('INS_PRETERM')) return p != null ? `PI-PT@${p}s` : a;
+    if (a.startsWith('INS_POST'))    return p != null ? `PI-PO@${p}s` : a;
+    if (a.startsWith('INS_'))        return p != null ? `PI@${p}s`    : a;
+    if (a.startsWith('GR_WP'))       return p != null ? `GR-WP@${p}s` : a;
+    if (a.startsWith('GR_'))         return p != null ? `GR@${p}s`    : a;
+    if (a.startsWith('GE_'))         return p != null ? `GE@${p}s`    : a;
+    if (a.startsWith('VP_SKIP'))     return p != null ? `VP@${p}s`    : a;
+    if (a.startsWith('ER_BP'))       return p != null ? `ER-BP@${p}s` : a;
+    if (a.startsWith('ER_'))         return p != null ? `ER@${p}s`    : a;
+    if (a.startsWith('OC_'))         return p != null ? `OC@${p}s`    : a;
     return a;
   }
 
@@ -8596,14 +9074,16 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
 
     const labels = cycles.map(c => `j${c.jct}\nt=${Math.round(c.t)}s`);
 
-    // One dataset per action type — dynamically derived from CSV data, not hardcoded
-    const _ALL_REWARD_ACTS = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
-    const _actsInCycles = new Set(cycles.flatMap(c => c.rows.map(x => String(x.action || '').trim())));
-    const actionTypes = _ALL_REWARD_ACTS.filter(a => _actsInCycles.has(a));
+    // One dataset per canonical action type — dynamically derived from CSV data.
+    // Raw labels carry a DE-optimised duration suffix (e.g. "GE_8.0", "OC_5.0"),
+    // so group by canonAction() rather than matching against a fixed whitelist.
+    const _actsInCycles = new Set(cycles.flatMap(c => c.rows.map(x => canonAction(x.action))));
+    const actionTypes = [..._actsInCycles].sort((a, b) =>
+      a === 'NO_ACTION' ? -1 : b === 'NO_ACTION' ? 1 : a.localeCompare(b));
     const datasets = actionTypes.map(act => ({
       label: act,
       data: cycles.map(c => {
-        const row = c.rows.find(x => x.action === act);
+        const row = c.rows.find(x => canonAction(x.action) === act);
         return row ? (Number(row.reward) || 0) : null;
       }),
       backgroundColor: actionColor(act),
@@ -8663,7 +9143,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
                 const act  = items[0]?.dataset?.label;
                 if (ci == null) return [];
                 const c = cycles[ci];
-                const row = c.rows.find(x => x.action === act);
+                const row = c.rows.find(x => canonAction(x.action) === act);
                 if (!row) return [];
                 const naRow = c.rows.find(x => x.action === 'NO_ACTION');
                 const naR = naRow ? Number(naRow.reward||0) : Number(row.no_action_reward||0);
@@ -8770,15 +9250,16 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
         groups.sort((a,b) => a.t - b.t);
 
         const labels = groups.map(g => `j${g.jct}\nt=${Math.round(g.t)}s`);
-        // Dynamic action types from data — not hardcoded
-        const _ALL_REWARD_ACTS2 = ['NO_ACTION','GE_5','GE_10','GE_15','GR_5','GR_10','GR_15','INS_10','INS_15','INS_20','ER_10','ER_20','ER_30','ER_BP_10','ER_BP_20','ER_BP_30'];
-        const _actsInGroups = new Set(groups.flatMap(g => g.rows.map(x => String(x.action || '').trim())));
-        const actionTypes = _ALL_REWARD_ACTS2.filter(a => _actsInGroups.has(a));
+        // Dynamic canonical action types from data (see canonAction() above) —
+        // raw labels carry a DE-optimised duration suffix, not a fixed set.
+        const _actsInGroups = new Set(groups.flatMap(g => g.rows.map(x => canonAction(x.action))));
+        const actionTypes = [..._actsInGroups].sort((a, b) =>
+          a === 'NO_ACTION' ? -1 : b === 'NO_ACTION' ? 1 : a.localeCompare(b));
 
         const datasets = actionTypes.map(act => ({
           label: act,
           data: groups.map(g => {
-            const row = g.rows.find(x => x.action === act);
+            const row = g.rows.find(x => canonAction(x.action) === act);
             return row ? (Number(row.reward) || 0) : null;
           }),
           backgroundColor: actionColor(act),
@@ -8830,7 +9311,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
                     const act = items[0]?.dataset?.label;
                     if (gi == null) return [];
                     const g = groups[gi];
-                    const row = g.rows.find(x => x.action === act);
+                    const row = g.rows.find(x => canonAction(x.action) === act);
                     if (!row) return [];
                     return [
                       `σ_in=${Number(row.sigma_in_s||0).toFixed(1)}s  σ_out=${Number(row.sigma_out_s||0).toFixed(1)}s`,
@@ -9852,7 +10333,7 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     const r = runs[ri];
     const rc = (r && r.reward_cycle) ? r.reward_cycle : [];
     // Find all PR rows
-    const prRows = rc.filter(x => x.action === 'PR');
+    const prRows = rc.filter(x => canonAction(x.action) === 'PR');
     if (!prRows.length) {
       if (prNoData) prNoData.style.display = '';
       return;
@@ -10883,6 +11364,256 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
   }
 }
 
+// ── WaveGate Sensitivity Section ─────────────────────────────────────────
+if (DATA.has_sweep) {
+  document.getElementById('wavegate-sweep-section').style.display = '';
+
+  const sweepRuns = runs.filter(r => r.sweep_group !== null && r.sweep_group !== undefined);
+  const noTsp     = sweepRuns.find(r => r.label === 'NO_TSP');
+  const noTspDelay = noTsp ? noTsp.total_delay : null;
+  const baseline   = sweepRuns.find(r => r.label === 'WG_DET40M')
+                  || sweepRuns.find(r => r.label === 'WG_MG_1_5')
+                  || sweepRuns.find(r => r.sweep_group !== 'A' && r.label !== 'NO_TSP');
+
+  // Sorted by detection distance for Group B
+  const grpB = sweepRuns.filter(r => r.sweep_group === 'B')
+                         .sort((a, b) => (a.sweep_detection_m || 0) - (b.sweep_detection_m || 0));
+  // Group C: weight sweep (baseline WG_DET40M prepended as reference)
+  const grpC = sweepRuns.filter(r => r.sweep_group === 'C');
+  const grpCfull = [baseline, ...grpC].filter(Boolean);
+  // Group D: hyperparam sensitivity
+  const grpD = sweepRuns.filter(r => r.sweep_group === 'D');
+
+  const EXP_COLORS = {
+    'NO_TSP':        '#888888',
+    'WG_DET30M':    '#1e88e5', 'WG_DET40M':    '#29b6f6',
+    'WG_DET50M':    '#26c6da', 'WG_DET60M':    '#80deea',
+    'WG_NO_Z1':     '#ff5252', 'WG_NO_Z2':     '#00e676', 'WG_NO_Z3':     '#ffb300',
+    'WG_HP_BAL05':  '#ff7043', 'WG_HP_BAL15':  '#ffa726', 'WG_HP_BAL20':  '#ef5350',
+    'WG_HP_POP08':  '#ab47bc', 'WG_HP_POP16':  '#ce93d8',
+    'WG_HP_IT20':   '#26a69a', 'WG_HP_IT40':   '#4db6ac',
+    'WG_HP_MG1':    '#d4e157', 'WG_HP_MG3':    '#aed581',
+  };
+  function expColor(r) { return EXP_COLORS[r.label] || EXP_COLORS[r.exp_name] || '#888'; }
+
+  // ── Chart 1: Group B — Detection distance ────────────────────────────
+  {
+    const ctx = document.getElementById('chart-wg-detdist').getContext('2d');
+    const labels = grpB.map(r => r.sweep_detection_m + ' m' + (r.label === 'WG_DET40M' ? ' ★' : ''));
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Total Pax Delay (hrs)',
+          data: grpB.map(r => r.total_delay),
+          backgroundColor: grpB.map(r => expColor(r) + 'cc'),
+          borderColor:     grpB.map(r => expColor(r)),
+          borderWidth: 1.5,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#aaa', font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: (ctx) => {
+                const r = grpB[ctx.dataIndex];
+                const delta = (r.total_delay !== null && noTspDelay !== null) ? (r.total_delay - noTspDelay).toFixed(2) : null;
+                return delta !== null ? `Δ NO_TSP: ${delta > 0 ? '+' : ''}${delta} hrs` : '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#aaa' }, grid: { color: '#1e1e38' } },
+          y: {
+            ticks: { color: '#aaa' }, grid: { color: '#1e1e38' },
+            title: { display: true, text: 'Total Delay (hrs)', color: '#888' },
+            ...(noTspDelay !== null ? { suggestedMin: noTspDelay * 0.95 } : {})
+          }
+        }
+      }
+    });
+  }
+
+  // ── Chart 2: Group C — Objective weight sensitivity ───────────────────
+  {
+    const ctx = document.getElementById('chart-wg-objweight').getContext('2d');
+    const labels = grpCfull.map(r => r.label === 'WG_DET40M' ? 'ALL (★baseline)' : r.label.replace('WG_NO_', 'No '));
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Total Pax Delay (hrs)',
+            data: grpCfull.map(r => r.total_delay),
+            backgroundColor: grpCfull.map(r => expColor(r) + 'cc'),
+            borderColor:     grpCfull.map(r => expColor(r)),
+            borderWidth: 1.5,
+          },
+          {
+            label: 'Avg Bus Delay (s) ÷ 10',
+            data: grpCfull.map(r => r.avg_bus_delay !== null ? r.avg_bus_delay / 10 : null),
+            backgroundColor: grpCfull.map(r => expColor(r) + '44'),
+            borderColor:     grpCfull.map(r => expColor(r)),
+            borderWidth: 1,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#aaa', font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: (ctx) => {
+                const r = grpCfull[ctx.dataIndex];
+                return `α=${r.sweep_Z1_weight} β=${r.sweep_Z2_weight} γ=${r.sweep_Z3_weight}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#1e1e38' } },
+          y: { ticks: { color: '#aaa' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Total Delay (hrs)', color: '#888' } }
+        }
+      }
+    });
+  }
+
+  // ── Chart 3: Z1/Z2/Z3 objective scores (Groups B+C normalised to WG_DET40M) ─
+  {
+    const normRuns = [...grpC];
+    function normZ(r, key, invert) {
+      const v = r[key], b = baseline ? baseline[key] : null;
+      if (v === null || b === null || b === 0) return null;
+      return invert ? (b / v) * 100 : (v / b) * 100;
+    }
+    const ctx = document.getElementById('chart-wg-obj-scores').getContext('2d');
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: normRuns.map(r => r.label),
+        datasets: [
+          { label: 'Z1 Pax Delay (↓ <100% better)',  data: normRuns.map(r => normZ(r, 'wobj_Z1', true)),  backgroundColor: '#ff525255', borderColor: '#ff5252', borderWidth: 1.5 },
+          { label: 'Z2 Bandwidth (↑ >100% better)',   data: normRuns.map(r => normZ(r, 'wobj_Z2', false)), backgroundColor: '#00e67655', borderColor: '#00e676', borderWidth: 1.5 },
+          { label: 'Z3 Lateness (↓ <100% better)',    data: normRuns.map(r => normZ(r, 'wobj_Z3', true)),  backgroundColor: '#ffb30055', borderColor: '#ffb300', borderWidth: 1.5 },
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#aaa', font: { size: 11 } } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y !== null ? ctx.parsed.y.toFixed(1) + '%' : 'N/A'}` } }
+        },
+        scales: {
+          x: { ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#1e1e38' } },
+          y: { ticks: { color: '#aaa', callback: v => v + '%' }, grid: { color: '#1e1e38' }, title: { display: true, text: '% of WG_DET40M baseline', color: '#888' } }
+        }
+      }
+    });
+  }
+
+  // ── Chart 4: Group D — Hyperparam sensitivity (Δ vs WG_DET40M) ───────
+  {
+    const bDelay = baseline ? baseline.total_delay : null;
+    const ctx = document.getElementById('chart-wg-hyperparam').getContext('2d');
+    // Friendly label: strip WG_HP_ prefix and add param value
+    function hpLabel(r) {
+      const n = r.label.replace('WG_HP_', '');
+      if (r.sweep_balance_factor != null && r.label.includes('BAL')) return `BAL=${r.sweep_balance_factor}`;
+      if (r.sweep_de_pop  != null && r.label.includes('POP'))  return `Pop=${r.sweep_de_pop}`;
+      if (r.sweep_de_iter != null && r.label.includes('IT'))   return `Iter=${r.sweep_de_iter}`;
+      if (r.sweep_min_gain_s != null && r.label.includes('MG')) return `MinGain=${r.sweep_min_gain_s}s`;
+      return n;
+    }
+    const hpDeltas = grpD.map(r => (r.total_delay !== null && bDelay !== null) ? r.total_delay - bDelay : null);
+    new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: grpD.map(hpLabel),
+        datasets: [{
+          label: 'Δ Total Delay vs WG_DET40M (hrs)',
+          data: hpDeltas,
+          backgroundColor: hpDeltas.map(d => d === null ? '#888' : d > 0 ? '#ff525288' : '#00e67688'),
+          borderColor:     hpDeltas.map(d => d === null ? '#888' : d > 0 ? '#ff5252'   : '#00e676'),
+          borderWidth: 1.5,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { labels: { color: '#aaa', font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              afterLabel: (ctx) => {
+                const r = grpD[ctx.dataIndex];
+                const abs = r.total_delay !== null ? r.total_delay.toFixed(2) + ' hrs' : 'N/A';
+                return `Abs: ${abs} | ${r.label}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: { ticks: { color: '#aaa', font: { size: 10 } }, grid: { color: '#1e1e38' } },
+          y: { ticks: { color: '#aaa' }, grid: { color: '#1e1e38' }, title: { display: true, text: 'Δ Total Delay (hrs) vs baseline', color: '#888' } }
+        }
+      }
+    });
+  }
+
+  // ── Summary table ─────────────────────────────────────────────────────
+  {
+    const tbody = document.getElementById('wg-sweep-tbody');
+    const validDelays = sweepRuns.map(r => r.total_delay).filter(v => v !== null);
+    const bestDelay = validDelays.length ? Math.min(...validDelays) : null;
+    const bDelay = baseline ? baseline.total_delay : null;
+
+    sweepRuns.forEach(r => {
+      const isB = r.total_delay !== null && r.total_delay === bestDelay;
+      function td(v, fmt, best) {
+        const el = document.createElement('td');
+        el.style.textAlign = fmt === 'c' ? 'center' : 'right';
+        el.style.padding = '4px 8px';
+        el.textContent = v !== null && v !== undefined
+          ? (typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(v < 1 && v !== 0 ? 4 : 2)) : v)
+          : '—';
+        if (best) { el.style.color = 'var(--green)'; el.style.fontWeight = '700'; }
+        return el;
+      }
+      const tr = document.createElement('tr');
+      const nameTd = document.createElement('td');
+      nameTd.style.cssText = 'padding:4px 8px;font-family:monospace;font-size:11px;white-space:nowrap';
+      nameTd.textContent = r.label;
+      if (isB) nameTd.style.color = 'var(--green)';
+      if (r.label === 'WG_DET40M') nameTd.style.fontWeight = '700';
+      tr.appendChild(nameTd);
+      tr.appendChild(td(r.sweep_group,          'c'));
+      tr.appendChild(td(r.sweep_Z1_weight,       'c'));
+      tr.appendChild(td(r.sweep_Z2_weight,       'c'));
+      tr.appendChild(td(r.sweep_Z3_weight,       'c'));
+      tr.appendChild(td(r.sweep_detection_m,     'c'));
+      tr.appendChild(td(r.sweep_balance_factor,  'c'));
+      tr.appendChild(td(r.sweep_de_pop,          'c'));
+      tr.appendChild(td(r.sweep_de_iter,         'c'));
+      tr.appendChild(td(r.sweep_min_gain_s,      'c'));
+      tr.appendChild(td(r.total_delay, 'r', isB));
+      // Δ vs WG_DET40M baseline
+      const delta = (r.total_delay !== null && bDelay !== null) ? r.total_delay - bDelay : null;
+      const deltaTd = td(delta !== null ? (delta >= 0 ? '+' : '') + delta.toFixed(2) : null, 'r');
+      if (delta !== null) deltaTd.style.color = delta > 0 ? '#ff5252' : (delta < 0 ? '#00e676' : '#aaa');
+      tr.appendChild(deltaTd);
+      tr.appendChild(td(r.avg_bus_delay, 'r'));
+      const fires = (r.tsp_ext || 0) + (r.tsp_ins || 0) + (r.tsp_gr || 0) + (r.tsp_pr || 0);
+      tr.appendChild(td(fires || null, 'r'));
+      tbody.appendChild(tr);
+    });
+  }
+}
+
 // ── Results table ─────────────────────────────────────────────────────────
 {
   const table = document.getElementById('results-table');
@@ -10987,6 +11718,709 @@ document.getElementById('coord-band-mode').addEventListener('change', function()
     tbody.appendChild(tr);
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OSM NETWORK SIMULATION VISUALISATION
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const JCT_LATLON     = DATA.jct_latlon      || {};
+  const OSM_TRANSFORM  = DATA.osm_transform   || {};
+  const CORRIDOR_ORDER = DATA.corridor_order  || [];
+  const ACTIVE_JCT_SET = new Set((DATA.active_jcts || []).map(String));
+  const BUS_PHASE_MAP    = DATA.bus_phase_map      || {};
+  const CORRIDOR_GEOM    = DATA.corridor_geometry  || {};
+  // TSP action colours (code: 0=NORMAL 1=GE 2=INS 3=GR)
+  const TSP_LABEL  = ['', 'GE', 'INS', 'GR'];
+  const TSP_COLOR  = ['', '#00e676', '#ff9800', '#ff1744'];
+  const TSP_SHADOW = ['', '#00e67688', '#ff980088', '#ff174488'];
+  // Wave event display windows (seconds the indicator stays visible after firing)
+  const EVT_WIN = [0, 90, 25, 8, 35, 6, 20];  // indexed by code 1-6
+  // Wave event labels and colours
+  const EVT_LABEL = ['','OFS','OC','→','PRE','↑','INS'];
+  const EVT_COLOR = ['','#ffd740','#ce93d8','#40c4ff','#80d8ff','#40c4ff','#ff9800'];
+
+  // Check Leaflet available
+  if (typeof L === 'undefined') {
+    const note = document.getElementById('osm-no-leaflet-note');
+    if (note) note.style.display = '';
+  } else if (Object.keys(JCT_LATLON).length === 0) {
+    const note = document.getElementById('osm-no-data-note');
+    if (note) note.style.display = '';
+  } else {
+    const hasLatLon = Object.keys(JCT_LATLON).length > 0;
+
+    // ── Affine transform: model (x,y) → [lat,lon] ──
+    function modelToLatLon(x, y) {
+      const t = OSM_TRANSFORM;
+      if (!t.ref_x) return null;
+      return [
+        t.ref_lat + (y - t.ref_y) * t.lat_per_m,
+        t.ref_lon + (x - t.ref_x) * t.lon_per_m,
+      ];
+    }
+
+    // ── Map centre from junction barycentre ──
+    const allLL = Object.values(JCT_LATLON);
+    const mapCentre = allLL.length
+      ? [allLL.reduce((s,p)=>s+p.lat,0)/allLL.length,
+         allLL.reduce((s,p)=>s+p.lon,0)/allLL.length]
+      : [-27.432, 153.004];
+
+    // ── Helper: delay → colour (green→yellow→red) ──
+    function delayToHex(delay, minD, maxD) {
+      const t = maxD > minD ? Math.min(1, Math.max(0, (delay - minD) / (maxD - minD))) : 0.5;
+      const r = Math.round(t * 255), g = Math.round((1 - t) * 180);
+      return `rgb(${r},${g},0)`;
+    }
+    function flowToHex(flow, maxF) {
+      const t = maxF > 0 ? Math.min(1, flow / maxF) : 0;
+      return `hsl(${220 - Math.round(t * 180)},80%,55%)`;
+    }
+
+    // ── Identify NO_TSP and best-TSP runs ──
+    const noTspRun  = runs.find(r => r.label === 'NO_TSP') || runs[0];
+    let tspRun      = runs.find(r => r.label === 'WG_MG_1_5')
+                   || runs.find(r => r.sweep_group === 'G')
+                   || runs.find(r => r.label !== 'NO_TSP')
+                   || runs[0];
+
+    // Populate TSP run selector
+    const tspSel = document.getElementById('osm-tsp-run-sel');
+    if (tspSel) {
+      runs.filter(r => r.label !== 'NO_TSP').forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.label;
+        opt.textContent = r.label;
+        if (r === tspRun) opt.selected = true;
+        tspSel.appendChild(opt);
+      });
+    }
+
+    // ── Build per-junction delay/flow/queue maps from per_inter ──
+    function buildJctMetrics(run) {
+      const m = {};
+      (run.per_inter || []).forEach(pi => {
+        m[String(pi.iid)] = {
+          delay: pi.avg_total_delay_per_hr != null ? pi.avg_total_delay_per_hr * 3600 : (pi.avg_bus_delay || 0),
+          flow:  pi.avg_flow  || 0,
+          queue: pi.avg_queue || 0,
+          buses: pi.distinct_buses || 0,
+        };
+      });
+      return m;
+    }
+
+    // Compute global max for colour scaling
+    function globalMaxDelay(runA, runB) {
+      let mx = 1;
+      [runA, runB].forEach(r => {
+        (r.per_inter || []).forEach(pi => {
+          const d = pi.avg_total_delay_per_hr != null
+            ? pi.avg_total_delay_per_hr * 3600 : (pi.avg_bus_delay || 0);
+          if (d > mx) mx = d;
+        });
+      });
+      return mx;
+    }
+    function globalMaxQueue(runA, runB) {
+      let mx = 1;
+      [runA, runB].forEach(r => {
+        (r.per_inter || []).forEach(pi => { if ((pi.avg_queue||0) > mx) mx = pi.avg_queue; });
+      });
+      return mx;
+    }
+
+    // ── Build corridor polyline coordinates ──
+    function corridorLatLons() {
+      return CORRIDOR_ORDER
+        .map(jid => JCT_LATLON[String(jid)])
+        .filter(Boolean)
+        .map(p => [p.lat, p.lon]);
+    }
+
+    // ── Create one Leaflet map ──
+    function createMap(divId) {
+      const map = L.map(divId, { zoomControl: true, scrollWheelZoom: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 20,
+        attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
+      }).addTo(map);
+      map.setView(mapCentre, 16);
+      return map;
+    }
+
+    const mapA = createMap('osm-map-notsp');
+    const mapB = createMap('osm-map-tsp');
+
+    // ── Layer groups ──
+    const lgFlowA = L.layerGroup().addTo(mapA), lgFlowB = L.layerGroup().addTo(mapB);
+    const lgQueueA= L.layerGroup().addTo(mapA), lgQueueB= L.layerGroup().addTo(mapB);
+    const lgBusA  = L.layerGroup().addTo(mapA), lgBusB  = L.layerGroup().addTo(mapB);
+    const lgSigA  = L.layerGroup().addTo(mapA), lgSigB  = L.layerGroup().addTo(mapB);
+    const lgWaveA = L.layerGroup().addTo(mapA), lgWaveB = L.layerGroup().addTo(mapB);
+    const lgLblA  = L.layerGroup().addTo(mapA), lgLblB  = L.layerGroup().addTo(mapB);
+
+    // ── Sync zoom/pan ──
+    let _syncing = false;
+    function syncMaps(src, dst) {
+      src.on('move', () => {
+        if (_syncing) return;
+        _syncing = true;
+        dst.setView(src.getCenter(), src.getZoom(), { animate: false });
+        _syncing = false;
+      });
+    }
+    syncMaps(mapA, mapB); syncMaps(mapB, mapA);
+
+    const syncChk = document.getElementById('osm-sync-zoom');
+    if (syncChk) syncChk.addEventListener('change', () => {
+      // toggle sync handled implicitly via _syncing flag check; just re-enable
+    });
+
+    // ── Render flow / delay links (OSM-curved, both carriageways) ──
+    function renderFlowLayer(run, lg, maxDelay) {
+      lg.clearLayers();
+      const m = buildJctMetrics(run);
+      for (let i = 0; i < CORRIDOR_ORDER.length - 1; i++) {
+        const jA = String(CORRIDOR_ORDER[i]), jB = String(CORRIDOR_ORDER[i+1]);
+        const llA = JCT_LATLON[jA], llB = JCT_LATLON[jB];
+        const straight = (llA && llB) ? [[llA.lat, llA.lon], [llB.lat, llB.lon]] : null;
+        const dA = (m[jA] || {}).delay || 0, dB = (m[jB] || {}).delay || 0;
+        const d  = (dA + dB) / 2;
+        const color  = delayToHex(d, 0, maxDelay);
+        const weight = 5 + Math.min(8, ((m[jA]||{}).flow||0) / 300);
+        const popup  = `<b>Link ${jA}→${jB}</b><br>Avg delay: ${d.toFixed(0)} s<br>Flow: ${((m[jA]||{}).flow||0).toFixed(0)} veh/h`;
+        // Forward carriageway
+        const ptsFwd = CORRIDOR_GEOM[`${jA}|${jB}`] || straight;
+        if (ptsFwd) L.polyline(ptsFwd, { color, weight, opacity: 0.82 }).bindPopup(popup).addTo(lg);
+        // Reverse carriageway (separate physical road for divided sections)
+        const ptsRev = CORRIDOR_GEOM[`${jB}|${jA}`];
+        if (ptsRev && ptsRev.length >= 2) {
+          L.polyline(ptsRev, { color, weight, opacity: 0.82 }).bindPopup(popup).addTo(lg);
+        }
+      }
+    }
+
+    // ── Render junction markers ──
+    function renderJunctionMarkers(run, lg, maxDelay) {
+      const m = buildJctMetrics(run);
+      Object.entries(JCT_LATLON).forEach(([jid, ll]) => {
+        if (!ll) return;
+        const metrics = m[jid] || {};
+        const d = metrics.delay || 0;
+        const isActive = ACTIVE_JCT_SET.has(jid);
+        const color = isActive ? delayToHex(d, 0, maxDelay) : '#555';
+        const r = isActive ? Math.max(7, Math.min(16, 7 + d / 30)) : 5;
+        L.circleMarker([ll.lat, ll.lon], {
+          radius: r, color: isActive ? '#fff' : '#444',
+          fillColor: color, fillOpacity: 0.85, weight: isActive ? 2 : 1,
+        }).bindPopup(
+          `<b>Jct ${jid}</b> ${isActive ? '(active)' : '(passive)'}<br>` +
+          `Delay: ${d.toFixed(1)} s<br>Flow: ${(metrics.flow||0).toFixed(0)} veh/h<br>` +
+          `Queue: ${(metrics.queue||0).toFixed(1)} veh<br>Buses: ${metrics.buses || 0}`
+        ).addTo(lg);
+      });
+    }
+
+    // ── Render queue bars ──
+    function renderQueueLayer(run, lg, maxQ) {
+      lg.clearLayers();
+      const m = buildJctMetrics(run);
+      CORRIDOR_ORDER.forEach((jid, i) => {
+        const ll = JCT_LATLON[String(jid)];
+        if (!ll) return;
+        const q = (m[String(jid)] || {}).queue || 0;
+        if (q < 0.5) return;
+        // Draw southward bar (approximated by a short offset polyline)
+        const qPct = Math.min(1, q / maxQ);
+        const lenDeg = 0.0003 * qPct;   // ~30m max bar
+        const color = qPct > 0.7 ? '#ff5252' : qPct > 0.4 ? '#ffb300' : '#26c6da';
+        // Offset slightly east so it doesn't overlap the main link
+        const dlng = 0.0002;
+        L.polyline([
+          [ll.lat + lenDeg, ll.lon + dlng],
+          [ll.lat - lenDeg, ll.lon + dlng],
+        ], { color, weight: 6, opacity: 0.75 })
+          .bindPopup(`<b>Jct ${jid} queue</b><br>${q.toFixed(1)} veh`)
+          .addTo(lg);
+      });
+    }
+
+    // ── Render junction labels ──
+    function renderLabels(run, lg) {
+      lg.clearLayers();
+      Object.entries(JCT_LATLON).forEach(([jid, ll]) => {
+        if (!ll || !ACTIVE_JCT_SET.has(jid)) return;
+        L.marker([ll.lat, ll.lon], {
+          icon: L.divIcon({
+            className: '', iconAnchor: [-10, 8],
+            html: `<span style="background:#13132b;color:#b0b0e0;font-size:10px;padding:1px 3px;border-radius:3px;white-space:nowrap;border:1px solid #2a2a50">${jid}</span>`,
+          }),
+        }).addTo(lg);
+      });
+    }
+
+    // ── Binary search: phase entry at or before time t ──
+    function _phaseAtT(jctTimeline, t) {
+      if (!jctTimeline || !jctTimeline.length) return null;
+      let lo = 0, hi = jctTimeline.length - 1, best = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (jctTimeline[mid][0] <= t) { best = jctTimeline[mid]; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return best;  // [t, phase_int, tsp_code]
+    }
+
+    // ── Road bearing (lon-axis angle) at start/end of polyline ──
+    function _bearingDeg(pts, atEnd) {
+      if (!pts || pts.length < 2) return 0;
+      const [a, b] = atEnd
+        ? [pts[pts.length-2], pts[pts.length-1]]
+        : [pts[0], pts[1]];
+      return Math.atan2(b[1]-a[1], b[0]-a[0]) * 180 / Math.PI;  // lon-axis angle
+    }
+
+    // ── Render live signal phase + TSP overlays ──
+    // Draws the FULL road link coloured green/red based on downstream junction phase,
+    // perpendicular side-street stubs at each junction, stop-bar at junction entry,
+    // junction dot, and TSP badge.
+    function renderSignalLayer(run, lg, _ignored, t) {
+      lg.clearLayers();
+      const timeline = (run && run.phase_timeline) ? run.phase_timeline : {};
+      const bpm      = (run && run.bus_phase_map)  ? run.bus_phase_map  : BUS_PHASE_MAP;
+
+      const SIDE_M    = 28;   // metres for side-street stub arms
+      const STOP_M    = 12;   // metres for stop-bar each side of road centre
+      const LAT_PER_M = 9e-6, LON_PER_M = 1.012e-5;
+
+      // ── Compute road bearing at each junction (for perpendicular side stubs) ──
+      const headings = {};
+      CORRIDOR_ORDER.forEach((jid, idx) => {
+        const keyOut = idx < CORRIDOR_ORDER.length-1 ? `${jid}|${CORRIDOR_ORDER[idx+1]}` : null;
+        const keyIn  = idx > 0 ? `${CORRIDOR_ORDER[idx-1]}|${jid}` : null;
+        const ptsOut = keyOut ? CORRIDOR_GEOM[keyOut] : null;
+        const ptsIn  = keyIn  ? CORRIDOR_GEOM[keyIn]  : null;
+        if (ptsOut && ptsOut.length >= 2)
+          headings[jid] = _bearingDeg(ptsOut, false);
+        else if (ptsIn && ptsIn.length >= 2)
+          headings[jid] = _bearingDeg(ptsIn, true);
+        else
+          headings[jid] = 0;
+      });
+
+      // ── Full link colouring — both carriageways where road is divided ──
+      for (let i = 0; i < CORRIDOR_ORDER.length - 1; i++) {
+        const jA  = String(CORRIDOR_ORDER[i]);
+        const jB  = String(CORRIDOR_ORDER[i + 1]);
+        const straight = () => {
+          const llA = JCT_LATLON[jA], llB = JCT_LATLON[jB];
+          return (llA && llB) ? [[llA.lat, llA.lon], [llB.lat, llB.lon]] : null;
+        };
+        // Forward carriageway A→B: green when bus phase active at downstream B
+        const ptsFwd = CORRIDOR_GEOM[`${jA}|${jB}`] || straight();
+        if (!ptsFwd) continue;
+        const entB   = _phaseAtT(timeline[jB], t);
+        const greenB = entB && bpm[jB] != null ? entB[1] === bpm[jB] : false;
+        const colB   = greenB ? '#00e676' : '#ff1744';
+        const entA   = _phaseAtT(timeline[jA], t);
+        const phA    = entA ? entA[1] : '?';
+        const phB    = entB ? entB[1] : '?';
+        L.polyline(ptsFwd, { color: '#000', weight: 10, opacity: 0.35, interactive: false }).addTo(lg);
+        L.polyline(ptsFwd, {
+          color: colB, weight: 7, opacity: 0.85, dashArray: greenB ? null : '10 5',
+        }).bindTooltip(`${jA}→${jB}: ${greenB?'GREEN ✓':'RED ✗'} (ph ${phA}→${phB})`, {sticky:true}).addTo(lg);
+
+        // Reverse carriageway B→A: green when bus phase active at downstream A
+        const ptsRev = CORRIDOR_GEOM[`${jB}|${jA}`];
+        if (ptsRev && ptsRev.length >= 2) {
+          const greenA = entA && bpm[jA] != null ? entA[1] === bpm[jA] : false;
+          const colA   = greenA ? '#00e676' : '#ff1744';
+          L.polyline(ptsRev, { color: '#000', weight: 10, opacity: 0.35, interactive: false }).addTo(lg);
+          L.polyline(ptsRev, {
+            color: colA, weight: 7, opacity: 0.85, dashArray: greenA ? null : '10 5',
+          }).bindTooltip(`${jB}→${jA}: ${greenA?'GREEN ✓':'RED ✗'} (ph ${phB}→${phA})`, {sticky:true}).addTo(lg);
+        }
+      }
+
+      // ── Per-junction: stop-bar + side-street stubs + dot + TSP badge ──
+      CORRIDOR_ORDER.forEach((jid, idx) => {
+        const ll = JCT_LATLON[String(jid)];
+        if (!ll) return;
+
+        const entry   = _phaseAtT(timeline[String(jid)], t);
+        const phase   = entry ? entry[1] : -1;
+        const tspCode = entry ? entry[2] : 0;
+        const busPh   = bpm[String(jid)] != null ? bpm[String(jid)] : -2;
+        const mainGrn = (phase !== -1 && phase === busPh);
+        const sideGrn = !mainGrn;
+
+        // Perpendicular unit vectors (lat/lon deltas per metre)
+        const bearRad = (headings[jid] || 0) * Math.PI / 180;
+        const perpLatM =  Math.cos(bearRad + Math.PI/2) * LAT_PER_M;
+        const perpLonM = -Math.sin(bearRad + Math.PI/2) * LON_PER_M;
+
+        // ── Stop bar across main road (white thick line at junction entry) ──
+        L.polyline([
+          [ll.lat + STOP_M * perpLatM, ll.lon + STOP_M * perpLonM],
+          [ll.lat - STOP_M * perpLatM, ll.lon - STOP_M * perpLonM],
+        ], { color: '#fff', weight: 4, opacity: 0.9, interactive: false }).addTo(lg);
+
+        // ── Side-street arms (coloured by cross-traffic phase) ──
+        const fwdLatM = Math.sin(bearRad) * LAT_PER_M;
+        const fwdLonM = Math.cos(bearRad) * LON_PER_M;
+        const sideCol = sideGrn ? '#00e676' : '#ff1744';
+        [1, -1].forEach(sign => {
+          L.polyline([
+            [ll.lat, ll.lon],
+            [ll.lat + sign * SIDE_M * perpLatM, ll.lon + sign * SIDE_M * perpLonM],
+          ], {
+            color: sideCol, weight: 6, opacity: 0.85,
+            dashArray: sideGrn ? null : '6 4', lineCap: 'round', interactive: false,
+          }).addTo(lg);
+        });
+
+        // ── Junction dot ──
+        L.circleMarker([ll.lat, ll.lon], {
+          radius: 6, color: '#111', weight: 2,
+          fillColor: mainGrn ? '#00e676' : '#ff1744', fillOpacity: 1.0,
+          interactive: false,
+        }).addTo(lg);
+
+        // ── TSP action badge ──
+        if (tspCode > 0) {
+          L.marker([ll.lat, ll.lon], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [-14, 7],
+              html: `<span style="background:${TSP_COLOR[tspCode]};color:#000;font-size:9px;` +
+                    `font-weight:700;padding:1px 4px;border-radius:4px;white-space:nowrap;` +
+                    `box-shadow:0 0 6px ${TSP_COLOR[tspCode]}">${TSP_LABEL[tspCode]}</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+        }
+      });
+    }
+
+    // ── Scan wave events active at time t (code-specific window) ──
+    function _activeWaveEvts(run, t) {
+      const evts = (run && run.osm_wave_events) ? run.osm_wave_events : [];
+      const out = [];
+      for (const e of evts) {
+        const et = e[0], code = e[1];
+        const win = EVT_WIN[code] || 15;
+        if (et <= t && et > t - win) out.push(e);
+      }
+      return out;
+    }
+
+    // ── Render wave / coordination events on the OSM map ──
+    // Separate layer group so these can be toggled independently.
+    function renderWaveEventLayer(run, lg, t) {
+      lg.clearLayers();
+      const active = _activeWaveEvts(run, t);
+      if (!active.length) return;
+
+      const LAT_PER_M = 9e-6, LON_PER_M = 1.012e-5;
+      const SIDE_OFFSET = 12;  // m offset to right of link so labels don't overlap
+
+      active.forEach(([et, code, sjct, tjct, val]) => {
+        const age = t - et;           // seconds since event fired
+        const win = EVT_WIN[code] || 15;
+        const fade = Math.max(0.25, 1 - age / win);  // fade out over window
+        const col  = EVT_COLOR[code] || '#fff';
+
+        const llS = JCT_LATLON[String(sjct)];
+        const llT = JCT_LATLON[String(tjct)];
+
+        // ── 1: Offset correction (periodic_replan) ──
+        // Show on the link A→B as a labelled timing annotation
+        if (code === 1 && llS && llT) {
+          const midLat = (llS.lat + llT.lat) / 2;
+          const midLon = (llS.lon + llT.lon) / 2;
+          // Small offset to right of link
+          const dLat = (llT.lat - llS.lat), dLon = (llT.lon - llS.lon);
+          const len  = Math.sqrt(dLat*dLat + dLon*dLon) || 1;
+          const offLat = (-dLon / len) * SIDE_OFFSET * LAT_PER_M;
+          const offLon = ( dLat / len) * SIDE_OFFSET * LON_PER_M;
+          const sign = val >= 0 ? '+' : '';
+          L.marker([midLat + offLat, midLon + offLon], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [22, 9],
+              html: `<span style="background:#1a1400;color:${col};font-size:9px;font-weight:600;` +
+                    `padding:1px 4px;border-radius:3px;border:1px solid ${col};` +
+                    `opacity:${fade.toFixed(2)};white-space:nowrap">` +
+                    `OFS ${sign}${val}s</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+          // Dashed directional arrow on link
+          L.polyline([[llS.lat, llS.lon], [llT.lat, llT.lon]], {
+            color: col, weight: 3, opacity: 0.5 * fade,
+            dashArray: '4 8',
+          }).addTo(lg);
+        }
+
+        // ── 2: Green time reallocation (offset correction OC mode) ──
+        // Badge on junction showing phase time is being swapped
+        if (code === 2 && llS) {
+          const sign = val >= 0 ? '+' : '';
+          L.marker([llS.lat, llS.lon], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [18, 20],
+              html: `<span style="background:#2a0040;color:${col};font-size:9px;font-weight:700;` +
+                    `padding:2px 5px;border-radius:4px;border:1.5px solid ${col};` +
+                    `opacity:${fade.toFixed(2)};white-space:nowrap;` +
+                    `box-shadow:0 0 6px ${col}">OC ${sign}${val}</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+          // Pulsing ring at junction
+          L.circleMarker([llS.lat, llS.lon], {
+            radius: 13 + age * 0.3, color: col, weight: 2,
+            fillOpacity: 0, opacity: 0.7 * fade,
+          }).addTo(lg);
+        }
+
+        // ── 3: Wave grant ──
+        // Directional arrow at junction showing the wave being granted N/S
+        if (code === 3 && llS) {
+          const isNB = val > 0;
+          const arrow = isNB ? '▲' : '▼';
+          L.marker([llS.lat, llS.lon], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [12, 22],
+              html: `<span style="background:#003344;color:${col};font-size:12px;font-weight:700;` +
+                    `padding:1px 5px;border-radius:4px;border:1.5px solid ${col};` +
+                    `opacity:${fade.toFixed(2)};white-space:nowrap;` +
+                    `box-shadow:0 0 8px ${col}">${arrow}</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+          L.circleMarker([llS.lat, llS.lon], {
+            radius: 11, color: col, weight: 2.5,
+            fillColor: col, fillOpacity: 0.2 * fade, opacity: 0.8 * fade,
+          }).addTo(lg);
+        }
+
+        // ── 4/5: Pre-arm queued / fired ──
+        // Dashed pulsing arrow on the link, progressing toward target
+        if ((code === 4 || code === 5) && llS && llT) {
+          const progress = code === 5 ? Math.min(1, age / 5) : 0.15;
+          const iLat = llS.lat + (llT.lat - llS.lat) * progress;
+          const iLon = llS.lon + (llT.lon - llS.lon) * progress;
+          L.polyline([[llS.lat, llS.lon], [iLat, iLon]], {
+            color: col, weight: 4, opacity: 0.8 * fade,
+            dashArray: '6 4',
+          }).addTo(lg);
+          L.circleMarker([iLat, iLon], {
+            radius: 5, color: col, weight: 2,
+            fillColor: col, fillOpacity: 0.9 * fade, opacity: fade,
+          }).addTo(lg);
+          // Label
+          L.marker([llS.lat + (llT.lat - llS.lat) * 0.5,
+                    llS.lon + (llT.lon - llS.lon) * 0.5], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [16, -4],
+              html: `<span style="color:${col};font-size:8px;opacity:${fade.toFixed(2)};` +
+                    `text-shadow:0 0 4px #000">${code===5?'FIRE':'PRE'}</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+        }
+
+        // ── 6: Phase insertion (INS_PRETERM / INS_POST) ──
+        // Wedge/arc indicator at junction
+        if (code === 6 && llS) {
+          L.circleMarker([llS.lat, llS.lon], {
+            radius: 14, color: col, weight: 3,
+            fillOpacity: 0, opacity: 0.8 * fade,
+            dashArray: '8 4',
+          }).addTo(lg);
+          L.marker([llS.lat, llS.lon], {
+            icon: L.divIcon({
+              className: '',
+              iconAnchor: [-14, 7],
+              html: `<span style="background:#3d1500;color:${col};font-size:9px;font-weight:700;` +
+                    `padding:1px 3px;border-radius:3px;opacity:${fade.toFixed(2)};` +
+                    `box-shadow:0 0 5px ${col}">+${val}s</span>`,
+            }),
+            interactive: false,
+          }).addTo(lg);
+        }
+      });
+    }
+
+    // ── Full redraw ──
+    function redrawAll() {
+      const curTsp = runs.find(r => r.label === (tspSel ? tspSel.value : '')) || tspRun;
+      const mxD = globalMaxDelay(noTspRun, curTsp);
+      const mxQ = globalMaxQueue(noTspRun, curTsp);
+
+      // Clear junction marker layers (they're part of flow layer group for simplicity)
+      lgFlowA.clearLayers(); lgFlowB.clearLayers();
+      renderFlowLayer(noTspRun, lgFlowA, mxD);
+      renderFlowLayer(curTsp,   lgFlowB, mxD);
+      renderJunctionMarkers(noTspRun, lgFlowA, mxD);
+      renderJunctionMarkers(curTsp,   lgFlowB, mxD);
+
+      renderQueueLayer(noTspRun, lgQueueA, mxQ);
+      renderQueueLayer(curTsp,   lgQueueB, mxQ);
+
+      renderLabels(noTspRun, lgLblA);
+      renderLabels(curTsp,   lgLblB);
+
+      // Static initial signal render at t=0 (shows phase state before animation plays)
+      const sigChkRd = document.getElementById('osm-layer-signals');
+      if (!sigChkRd || sigChkRd.checked) {
+        renderSignalLayer(noTspRun, lgSigA, lgSigA, 0);
+        renderSignalLayer(curTsp,   lgSigB, lgSigB, 0);
+      }
+      const waveChkRd = document.getElementById('osm-layer-wavevents');
+      if (!waveChkRd || waveChkRd.checked) {
+        renderWaveEventLayer(noTspRun, lgWaveA, 0);
+        renderWaveEventLayer(curTsp,   lgWaveB, 0);
+      }
+
+      const lbl = document.getElementById('osm-tsp-label');
+      if (lbl) lbl.textContent = `TSP: ${curTsp.label}`;
+
+      // Wire layer toggle checkboxes
+      const fl  = document.getElementById('osm-layer-flow');
+      const ql  = document.getElementById('osm-layer-queue');
+      const ll  = document.getElementById('osm-layer-labels');
+      [lgFlowA, lgFlowB].forEach(g => fl  && !fl.checked  ? mapA.removeLayer(g) || mapB.removeLayer(g) : null);
+      [lgQueueA, lgQueueB].forEach(g => ql && !ql.checked  ? mapA.removeLayer(g) || mapB.removeLayer(g) : null);
+      [lgLblA, lgLblB].forEach(g => ll   && !ll.checked   ? mapA.removeLayer(g) || mapB.removeLayer(g) : null);
+    }
+
+    // ── Layer toggle handlers ──
+    ['osm-layer-flow','osm-layer-queue','osm-layer-labels'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', () => {
+        const lgMap = {
+          'osm-layer-flow':   [[lgFlowA, mapA],  [lgFlowB, mapB]],
+          'osm-layer-queue':  [[lgQueueA, mapA], [lgQueueB, mapB]],
+          'osm-layer-labels': [[lgLblA, mapA],   [lgLblB, mapB]],
+        };
+        (lgMap[id] || []).forEach(([lg, map]) => el.checked ? map.addLayer(lg) : map.removeLayer(lg));
+      });
+    });
+
+    // ── Bus layer toggle ──
+    const busToggle = document.getElementById('osm-layer-buses');
+    if (busToggle) busToggle.addEventListener('change', () => {
+      [lgBusA, lgBusB].forEach(g => busToggle.checked ? (mapA.addLayer(g) || mapB.addLayer(g)) : (mapA.removeLayer(g) || mapB.removeLayer(g)));
+    });
+
+    // ── Signal layer toggle ──
+    const sigToggle = document.getElementById('osm-layer-signals');
+    if (sigToggle) sigToggle.addEventListener('change', () => {
+      if (sigToggle.checked) { mapA.addLayer(lgSigA); mapB.addLayer(lgSigB); }
+      else                   { mapA.removeLayer(lgSigA); mapB.removeLayer(lgSigB); }
+    });
+
+    // ── Wave events layer toggle ──
+    const waveToggle = document.getElementById('osm-layer-wavevents');
+    if (waveToggle) waveToggle.addEventListener('change', () => {
+      if (waveToggle.checked) { mapA.addLayer(lgWaveA); mapB.addLayer(lgWaveB); }
+      else                    { mapA.removeLayer(lgWaveA); mapB.removeLayer(lgWaveB); }
+    });
+
+    // ── Bus animation ──
+    let _animTimer = null;
+    let _animT = 0;
+    const _animStep = 30;  // seconds per frame
+
+    function _busMarkersForRun(run, t, lg) {
+      lg.clearLayers();
+      if (!OSM_TRANSFORM.ref_x) return;
+      const tracks = run.bus_tracking || [];
+      // find closest snapshot ≤ t for each vehicle
+      const latestByVid = {};
+      for (const p of tracks) {
+        if (p.t <= t && (!latestByVid[p.vid] || p.t > latestByVid[p.vid].t)) latestByVid[p.vid] = p;
+      }
+      Object.values(latestByVid).forEach(p => {
+        const ll = modelToLatLon(p.x, p.y);
+        if (!ll) return;
+        const color = p.in_zone ? '#2196F3' : '#90caf9';
+        L.circleMarker(ll, {
+          radius: 6, color: '#fff', fillColor: color, fillOpacity: 0.9, weight: 1.5,
+        }).bindTooltip(`Bus ${p.vid} @ t=${p.t.toFixed(0)}s`, { permanent: false }).addTo(lg);
+      });
+    }
+
+    function _allTimes(run) {
+      return (run.bus_tracking || []).map(p => p.t);
+    }
+
+    function animFrame() {
+      const curTsp = runs.find(r => r.label === (tspSel ? tspSel.value : '')) || tspRun;
+      const allT = [...new Set([..._allTimes(noTspRun), ..._allTimes(curTsp)])].sort((a,b)=>a-b);
+      if (!allT.length) return;
+      const tMax = allT[allT.length - 1];
+      if (_animT > tMax) _animT = allT[0];
+
+      _busMarkersForRun(noTspRun, _animT, lgBusA);
+      _busMarkersForRun(curTsp,   _animT, lgBusB);
+
+      // Update signal phase + TSP action overlays at current time
+      const sigChk = document.getElementById('osm-layer-signals');
+      if (!sigChk || sigChk.checked) {
+        renderSignalLayer(noTspRun, lgSigA, lgSigA, _animT);
+        renderSignalLayer(curTsp,   lgSigB, lgSigB, _animT);
+      }
+      const waveChk = document.getElementById('osm-layer-wavevents');
+      if (!waveChk || waveChk.checked) {
+        renderWaveEventLayer(noTspRun, lgWaveA, _animT);
+        renderWaveEventLayer(curTsp,   lgWaveB, _animT);
+      }
+
+      const timeLbl = document.getElementById('osm-anim-time');
+      if (timeLbl) timeLbl.textContent = `t = ${_animT.toFixed(0)} s`;
+
+      const nextIdx = allT.findIndex(t => t > _animT);
+      if (nextIdx >= 0) _animT = allT[nextIdx];
+      else _animT = allT[0];
+
+      const speedEl = document.getElementById('osm-anim-speed');
+      const fps = speedEl ? Number(speedEl.value) : 5;
+      _animTimer = setTimeout(animFrame, Math.max(50, 1000 / fps));
+    }
+
+    const playBtn = document.getElementById('osm-anim-play');
+    const stopBtn = document.getElementById('osm-anim-stop');
+    if (playBtn) playBtn.addEventListener('click', () => {
+      if (_animTimer) clearTimeout(_animTimer);
+      _animT = 0;
+      animFrame();
+      playBtn.disabled = true;
+    });
+    if (stopBtn) stopBtn.addEventListener('click', () => {
+      if (_animTimer) { clearTimeout(_animTimer); _animTimer = null; }
+      lgBusA.clearLayers(); lgBusB.clearLayers();
+      if (playBtn) playBtn.disabled = false;
+      const timeLbl = document.getElementById('osm-anim-time');
+      if (timeLbl) timeLbl.textContent = 't = —';
+    });
+
+    // ── TSP run change → redraw ──
+    if (tspSel) tspSel.addEventListener('change', redrawAll);
+
+    // ── Initial draw ──
+    redrawAll();
+
+    // Force Leaflet to recalculate size after layout settles
+    setTimeout(() => { mapA.invalidateSize(); mapB.invalidateSize(); }, 250);
+  }
+}
 </script>
 </body>
 </html>
@@ -11051,13 +12485,15 @@ def _build_static_fallback_html(data: dict) -> str:
   )
 
 def generate(batch_csv: str = None, out_html: str = None,
-             log_dir: str = None, avg_seeds: bool = False) -> str:
+             log_dir: str = None, avg_seeds: bool = None,
+             all_seeds: bool = False) -> str:
     """
     Generate and write the HTML dashboard.
     Returns the output path, or None on failure.
 
-    avg_seeds: if True, average numeric metrics across seeds per experiment
-               before building the dashboard (clean summary view for the paper).
+    avg_seeds: average numeric metrics across seeds per experiment (default:
+               auto-detected — True when any experiment has more than 1 seed).
+    all_seeds: force showing all individual seed runs even when multiple exist.
     """
     if log_dir is None:
         log_dir = os.path.join(_SCRIPT_DIR, "logs")
@@ -11083,17 +12519,32 @@ def generate(batch_csv: str = None, out_html: str = None,
 
     print(f"[dashboard] {len(batch_rows)} raw row(s) from {batch_csv}")
 
-    if avg_seeds:
+    # Auto-detect whether to average: default True when any experiment has >1 seed,
+    # unless the caller explicitly passed all_seeds=True or avg_seeds=False.
+    if not all_seeds and avg_seeds is None:
+        deduped_check = _dedup_batch_rows(batch_rows)
+        from collections import Counter as _Counter
+        exp_counts = _Counter(
+            r.get("run_experiment") or r.get("run_strategy", "UNKNOWN")
+            for r in deduped_check
+        )
+        max_seeds = max(exp_counts.values(), default=1)
+        avg_seeds = (max_seeds > 1)
+        if avg_seeds:
+            print(f"[dashboard] Auto-detected {max_seeds} seeds per experiment — "
+                  f"averaging. Use --all-seeds to see individual runs.")
+
+    if avg_seeds and not all_seeds:
         batch_rows = _avg_batch_rows(batch_rows)
         n_seeds = max((int(r.get("n_seeds", 1)) for r in batch_rows), default=1)
-        print(f"[dashboard] --avg-seeds: collapsed to {len(batch_rows)} experiment(s) "
-              f"(averaged over up to {n_seeds} seed(s))")
+        print(f"[dashboard] Seed-averaged: {len(batch_rows)} experiment(s) "
+              f"(mean of up to {n_seeds} seeds each)")
 
     data = build_dashboard_data(batch_rows, log_dir)
-    print(f"[dashboard] {len(data['runs'])} unique experiment(s) after dedup")
+    print(f"[dashboard] {len(data['runs'])} experiment(s) in dashboard")
 
     if out_html is None:
-        _stem = "tsp_dashboard_avg.html" if avg_seeds else "tsp_dashboard.html"
+        _stem = "tsp_dashboard_allseeds.html" if all_seeds else "tsp_dashboard.html"
         out_html = os.path.join(os.path.dirname(batch_csv), _stem)
 
     html = _HTML_TEMPLATE.replace("TEMPLATE_DATA_JSON", json.dumps(data, indent=2))
@@ -11117,12 +12568,14 @@ if __name__ == "__main__":
     ap.add_argument("batch_csv", nargs="?", help="batch_results.csv path")
     ap.add_argument("out_html",  nargs="?", help="output HTML path")
     ap.add_argument("--log_dir", default=None, help="logs/ directory")
-    ap.add_argument("--avg-seeds", action="store_true",
-                    help="Average numeric metrics across seeds per experiment "
-                         "(produces a clean per-strategy summary for the paper)")
+    ap.add_argument("--avg-seeds", action="store_true", default=None,
+                    help="Force seed averaging (default: auto when >1 seed detected)")
+    ap.add_argument("--all-seeds", action="store_true",
+                    help="Show all individual seed runs instead of averaging")
     args = ap.parse_args()
     main_html = generate(args.batch_csv, args.out_html, args.log_dir,
-                         avg_seeds=args.avg_seeds)
+                         avg_seeds=args.avg_seeds if args.avg_seeds else None,
+                         all_seeds=args.all_seeds)
 
     # ── Auto-run companion plots ────────────────────────────────────────────
     _batch = args.batch_csv or os.path.join(_SCRIPT_DIR, "batch_results.csv")

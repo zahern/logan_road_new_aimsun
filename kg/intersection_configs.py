@@ -8,29 +8,27 @@
 # Order is physical route order — CorridorCoordinator uses Kalman tracking to
 # refine direction once buses are observed.
 INTERSECTION_GROUPS = {
-    "kg_corridor_a": [39606, 39590, 36393, 36385, 39593,
-                      10157950],                              # passive; verify order in Aimsun
-    "kg_corridor_b": [39576, 11118289, 39578, 39587, 1119660,
-                      1043762, 39569, 39568, 39572, 38339],  # passive entries; verify order in Aimsun
+    "kg_corridor_a": [39606, 39590, 36393, 36385, 39593],
+    "kg_corridor_b": [39576, 39578, 39587,
+                      1043762, 39569, 39572, 38339],
 }
 
 # Full corridor route — includes all managed junctions in travel order.
 # For kg both managed sets cover the full route (no unmanaged gaps).
+# Passive stubs 10157950 / 11118289 / 1119660 / 39568 removed — they carried
+# no detectors, phases, or sections and contributed nothing to control or KPIs.
 CORRIDOR_ROUTE_GROUPS = {
-    "kg_corridor_a": [39606, 39590, 36393, 36385, 39593,
-                      10157950],
-    "kg_corridor_b": [39576, 11118289, 39578, 39587, 1119660,
-                      1043762, 39569, 39568, 39572, 38339],
+    "kg_corridor_a": [39606, 39590, 36393, 36385, 39593],
+    "kg_corridor_b": [39576, 39578, 39587,
+                      1043762, 39569, 39572, 38339],
 }
 
 TSP_ACTIVE_INTERSECTIONS = None   # None = all active (39573 fully removed from system)
 
 Inter = {
     39606: 'INT39606', 39590: 'INT39590', 36393: 'INT36393', 36385: 'INT36385', 39593: 'INT39593',
-    10157950: 'INT10157950',                                      # passive; corridor_a
     39587: 'INT39587', 39576: 'INT39576', 39578: 'INT39578', 1043762: 'INT1043762', 39569: 'INT39569',
-    11118289: 'INT11118289', 1119660: 'INT1119660',               # passive; corridor_b
-    39568: 'INT39568',                                            # passive; corridor_b
+    39572: 'INT39572', 38339: 'INT38339',
 }
 
 INTERSECTIONS_CONFIG = {
@@ -42,13 +40,13 @@ INTERSECTIONS_CONFIG = {
         'BusPhaseDuration': 81,
         'SignalGroupIDList': [[1, 2], [1, 5, 2], [2], [2, 4], [5, 3]],
         'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 1, 6: 1},
-        'UpDetList': [[11137146, 11137146], [11137153, 11137149, 11137154]],
-        'BusDet': [11137146, 11137146],
-        'BusCallDetectors': [11137146, 11137146, 11137153, 11137149, 11137154],
+        'UpDetList': [[11137146], [11137153, 11137149, 11137154]],
+        'BusDet': [11137146],
+        'BusCallDetectors': [11137146, 11137153, 11137149, 11137154],
         'BusExitDetectors': [11137142, 11137143, 11137155, 11137156, 11137159, 11137157],
         'MainSections': [21530, 1078795],
         'SideSections': [21504, 10157987],
-        'DetDistance': [[40.0, 40.0], [40.0, 40.0, 40.0]],
+        'DetDistance': [[40.0], [40.0, 40.0, 40.0]],
         'NumberOfLanes': 3,
         'VehLength': 4.5,
         'DetLength': 2,
@@ -77,7 +75,7 @@ INTERSECTIONS_CONFIG = {
             'min_green':  {1: 23.6, 2: 15.2, 3: 6.8, 4: 6.8, 5: 6.8},
             'max_green':  {1: 70.9, 2: 45.6, 3: 20.2, 4: 20.2, 5: 20.2},
             'sections':   [],
-            'bus_det':    [11137146, 11137146, 11137153, 11137149, 11137154],
+            'bus_det':    [11137146, 11137153, 11137149, 11137154],
             'bus_sg':     1,
             'intergreen_duration':    4.0,
             'starvation_threshold': 270.0,
@@ -593,152 +591,6 @@ INTERSECTIONS_CONFIG = {
             'starvation_threshold': 220.0,
             'max_extension':         16.5,
         },
-    },
-
-    # ============================================================
-    # NEW CORRIDOR MEMBERS — stubs; TSP actions are active (TSP_ACTIVE_INTERSECTIONS=None).
-    # BusPhase / MainSections / SideSections / BusDet must be populated from Aimsun model.
-    # Until populated:  corridor coordinator will pre-arm these via upstream bus tracking,
-    # and TSP actions fire on BusPhase=1 by default.
-    # corridor_pos is resolved from Aimsun geometry at runtime (set_corridor_positions).
-    # Positions in CORRIDOR_ROUTE_GROUPS are approximate — verify in Aimsun and reorder.
-
-    # ── corridor_a ────────────────────────────────────────────────────────────
-    10157950: {
-        'IntersectionID': 10157950,
-        'BusPhase': 1,
-        'CarOcc': 1.5,
-        'BusOcc': 40.0,
-        'BusDet': [],
-        'MainSections': [],
-        'SideSections': [],
-        'UpDetList': [],
-        'SignalGroupIDList': [],
-        'PhaseIndex': {},
-        'DetDistance': [[40.0]],
-        'NumberOfLanes': 2,
-        'VehLength': 4.5,
-        'DetLength': 2,
-        'JamDensity': 200,
-        'SaturationFlow': 1800,
-        'SaturationDensity': 36,
-        'GE_lower_bound': 5,
-        'GE_upper_bound': 15,
-        'BP_lower_bound': 15,
-        'BP_upper_bound': 65,
-        'max_iterations': 40,
-        'harmony_memory_size': 10,
-        'hmcr': 0.9,
-        'par': 0.3,
-        'GE_extension': 15.0,
-        'insertion_min_duration': 10.0,
-        'insertion_max_duration': 65.0,
-        'cycle_length': 120.0,
-        'detection_window_m': 40.0,
-        'priority_pt_line_ids': [],
-    },
-
-    # ── corridor_b ────────────────────────────────────────────────────────────
-    11118289: {
-        'IntersectionID': 11118289,
-        'BusPhase': 1,
-        'CarOcc': 1.5,
-        'BusOcc': 40.0,
-        'BusDet': [],
-        'MainSections': [],
-        'SideSections': [],
-        'UpDetList': [],
-        'SignalGroupIDList': [],
-        'PhaseIndex': {},
-        'DetDistance': [[40.0]],
-        'NumberOfLanes': 2,
-        'VehLength': 4.5,
-        'DetLength': 2,
-        'JamDensity': 200,
-        'SaturationFlow': 1800,
-        'SaturationDensity': 36,
-        'GE_lower_bound': 5,
-        'GE_upper_bound': 15,
-        'BP_lower_bound': 15,
-        'BP_upper_bound': 65,
-        'max_iterations': 40,
-        'harmony_memory_size': 10,
-        'hmcr': 0.9,
-        'par': 0.3,
-        'GE_extension': 15.0,
-        'insertion_min_duration': 10.0,
-        'insertion_max_duration': 65.0,
-        'cycle_length': 120.0,
-        'detection_window_m': 40.0,
-        'priority_pt_line_ids': [],
-    },
-
-    1119660: {
-        'IntersectionID': 1119660,
-        'BusPhase': 1,
-        'CarOcc': 1.5,
-        'BusOcc': 40.0,
-        'BusDet': [],
-        'MainSections': [],
-        'SideSections': [],
-        'UpDetList': [],
-        'SignalGroupIDList': [],
-        'PhaseIndex': {},
-        'DetDistance': [[40.0]],
-        'NumberOfLanes': 2,
-        'VehLength': 4.5,
-        'DetLength': 2,
-        'JamDensity': 200,
-        'SaturationFlow': 1800,
-        'SaturationDensity': 36,
-        'GE_lower_bound': 5,
-        'GE_upper_bound': 15,
-        'BP_lower_bound': 15,
-        'BP_upper_bound': 65,
-        'max_iterations': 40,
-        'harmony_memory_size': 10,
-        'hmcr': 0.9,
-        'par': 0.3,
-        'GE_extension': 15.0,
-        'insertion_min_duration': 10.0,
-        'insertion_max_duration': 65.0,
-        'cycle_length': 120.0,
-        'detection_window_m': 40.0,
-        'priority_pt_line_ids': [],
-    },
-
-    39568: {
-        'IntersectionID': 39568,
-        'BusPhase': 1,
-        'CarOcc': 1.5,
-        'BusOcc': 40.0,
-        'BusDet': [],
-        'MainSections': [],
-        'SideSections': [],
-        'UpDetList': [],
-        'SignalGroupIDList': [],
-        'PhaseIndex': {},
-        'DetDistance': [[40.0]],
-        'NumberOfLanes': 2,
-        'VehLength': 4.5,
-        'DetLength': 2,
-        'JamDensity': 200,
-        'SaturationFlow': 1800,
-        'SaturationDensity': 36,
-        'GE_lower_bound': 5,
-        'GE_upper_bound': 15,
-        'BP_lower_bound': 15,
-        'BP_upper_bound': 65,
-        'max_iterations': 40,
-        'harmony_memory_size': 10,
-        'hmcr': 0.9,
-        'par': 0.3,
-        'GE_extension': 15.0,
-        'insertion_min_duration': 10.0,
-        'insertion_max_duration': 65.0,
-        'cycle_length': 120.0,
-        'detection_window_m': 40.0,
-        'priority_pt_line_ids': [],
     },
 
     # ============================================================

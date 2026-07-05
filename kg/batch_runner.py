@@ -45,6 +45,13 @@ from PyANGKernel import GKSystem
 # Script directory — used for dashboard import
 _SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
+# Module-level path constants derived from script location.
+# These are accessed by batch_runner_wavegate.py when it imports this module,
+# so they must be defined at module scope (not inside main()).
+PROJECT_DIR     = _SCRIPT_DIR
+CONTROLLER_PATH = _os.path.join(_SCRIPT_DIR, "intersection_controller.py")
+RUN_CONFIG_PATH = _os.path.join(_SCRIPT_DIR, "run_config.py")
+
 # Weighted-objective (Z1/Z2 composite) metric collection lives in
 # collect_run_metrics() section 7 below: it reads the per-run
 # logs/weighted_objective_<experiment>_<timestamp>.csv trace written by
@@ -165,7 +172,7 @@ EXPERIMENTS = [
             # Previous runs: NF=1.0 → all DCTSP modes worse than NO_TSP (+114% for INV_DELAY).
             # NF=4.0 makes the reward penalise coordination disruption 4× more, preventing
             # TSP fires when car network impact > bus benefit.
-            "NETWORK_FACTOR":        4.0,
+            "NETWORK_FACTOR":        1.0,
         },
     },
     # ── DC TSP V2X / BOCS-inspired reward ─────────────────────────────────────
@@ -194,7 +201,7 @@ EXPERIMENTS = [
             # Need NF=5 (same as ZIG) to scale car_term up to be meaningful:
             #   car_term = 0.7 × 100×5 / 25 = 14s → fires only when bus_delay > 14s (reasonable).
             # ZIG at NF=5 achieved 24.3% action rate; V2X at NF=5 targets ~25-30%.
-            "NETWORK_FACTOR":     5.0,    # tuned: match ZIG's NF=5.0 for calibrated car costs
+            "NETWORK_FACTOR":     1.0,
             "DCTSP_CAR_WEIGHT":   0.5,    # tuned: increase from 0.35 → less car-cost underestimate
             # V2X_BALANCE_FACTOR: ZIG-style pax·s cost-benefit guard.
             # Without it, car_term = car_pax/bus_occ ≈ 3-14s << bus_delay ≈ 30-80s → always fires.
@@ -244,7 +251,7 @@ EXPERIMENTS = [
             # NF=3.0: corridor amplification for PCE comparison (was 2.0 before PCE fix).
             # With NF=3.0 + PCE: balance check fires only when bus delay meaningfully exceeds
             # cross-traffic disruption in PCE-equivalent terms.
-            "NETWORK_FACTOR":              3.0,   # tuned: corridor amplification (NF=3 matches INV_DELAY NF=4 at lower sensitivity)
+            "NETWORK_FACTOR":              1.0,
         },
     },
     # ── DC TSP ZIG (Zero-Interference-Grant, shockwave-optimal) ──────────────
@@ -270,17 +277,13 @@ EXPERIMENTS = [
             "REWARD_INV_DELAY_MODE":  False,
             "REWARD_V2X_MODE":        False,
             "DCTSP_ZIG_MODE":         True,
-            "ZIG_PHASE_OVERLAP_S":    0.5,    # set to overlap duration if applicable
-            # ZIG_BALANCE_FACTOR is now the COST-BENEFIT threshold (not OtherDelay ratio).
-            # With fixed saturation avoidance (uses car_pax_cost / bus_pax_saved):
-            #   0.75 → fire only when car network cost < 75% of bus saving
-            #   0.50 → more conservative: fire only when car cost < 50% of bus saving
-            # Previous runs: broken OtherDelay check never triggered → ZIG fired
-            # every detection at MAX duration → +256% entry delay vs NO_TSP.
-            "ZIG_BALANCE_FACTOR":     0.50,   # tuned: conservative cost-benefit threshold
-            # NETWORK_FACTOR: corrects local cross-traffic cost underestimate.
-            # NF=5.0 makes ZIG's cost-benefit ratio realistic for corridor spillback.
-            "NETWORK_FACTOR":         5.0,
+            "ZIG_PHASE_OVERLAP_S":    0.5,
+            # Break-even gate: fire when bus pax saving >= car pax cost (ratio <= 1.0).
+            # NETWORK_FACTOR removed — was an unprincipled amplifier. Use WOBJ weights
+            # to vary objective priority instead (see batch_runner_wavegate.py).
+            "ZIG_BALANCE_FACTOR":     1.0,
+            "NETWORK_FACTOR":         1.0,
+            "NETWORK_FACTOR_DENSITY_RAMP": False,
         },
     },
     # ── DC TSP MP-ECTM (Mathematical Programming + Enhanced CTM) ─────────────
@@ -822,7 +825,7 @@ for _ma in MARL_HS_SWEEP_WOBJ_ALPHAS:
 # duration selection — the simplest and most interpretable game-theoretic method.
 ZIG_SWEEP_ENABLED          = False            # was True — not needed for slides
 ZIG_SWEEP_BALANCE_FACTORS  = [0.25, 0.50, 0.75, 1.00]
-ZIG_SWEEP_NETWORK_FACTORS  = [3.0, 5.0, 7.0]
+ZIG_SWEEP_NETWORK_FACTORS  = [1.0]   # NETWORK_FACTOR fixed at 1.0 — not a tuning param
 for _zbf in ZIG_SWEEP_BALANCE_FACTORS:
     for _znf in ZIG_SWEEP_NETWORK_FACTORS:
         EXPERIMENTS.append({
@@ -867,7 +870,7 @@ for _wm in MAIN_SIDE_SWEEP_W_MAIN:
                 "DCTSP_ZIG_MODE":             True,
                 "ZIG_PHASE_OVERLAP_S":        0.5,
                 "ZIG_BALANCE_FACTOR":         0.50,
-                "NETWORK_FACTOR":             5.0,
+                "NETWORK_FACTOR":             1.0,
                 "REWARD_MAIN_SECTION_WEIGHT": _wm,
                 "REWARD_SIDE_SECTION_WEIGHT": _ws,
             },
@@ -1097,14 +1100,14 @@ _PREDICTOR_STRATEGIES = [
             "MDN_DELAY_MODE":         False,
             "HS_EXT_MODE":            False,
             "ZIG_PHASE_OVERLAP_S":    0.5,
-            "ZIG_BALANCE_FACTOR":     0.50,
-            "NETWORK_FACTOR":         5.0,
+            "ZIG_BALANCE_FACTOR":     1.0,   # break-even: fire when bus saving >= car cost
+            "NETWORK_FACTOR":         1.0,   # no amplification — use raw measured cost
+            "NETWORK_FACTOR_DENSITY_RAMP": False,
             # DE solver parameters (Storn & Price 1997, DE/rand/1/bin)
             "ZIG_DE_POP":             12,
             "ZIG_DE_ITER":            30,
             "ZIG_DE_F":               0.8,
             "ZIG_DE_CR":              0.9,
-            # ZIG_MIN_GAIN_S=0.0: let ZIG_BALANCE_FACTOR alone guard against marginal actions
             "ZIG_MIN_GAIN_S":         0.0,
         },
     },
@@ -1211,8 +1214,8 @@ _TRACKING_STRATEGIES = [
             "REWARD_SELFORG_MODE":    False,
             "DCTSP_ZIG_MODE":         True,
             "ZIG_PHASE_OVERLAP_S":    0.5,
-            "ZIG_BALANCE_FACTOR":     0.50,
-            "NETWORK_FACTOR":         5.0,
+            "ZIG_BALANCE_FACTOR":     1.0,
+            "NETWORK_FACTOR":         1.0,
         },
     },
     {
@@ -1311,8 +1314,8 @@ _STRATEGIES = [
     ("ZIG",    {"DCTSP_ZIG_MODE": True,
                 "REWARD_SELFORG_MODE": False,
                 "ZIG_PHASE_OVERLAP_S": 0.5,
-                "NETWORK_FACTOR": 5.0},
-     "ZIG_BALANCE_FACTOR", [0.25, 0.50, 0.75]),
+                "NETWORK_FACTOR": 1.0},
+     "ZIG_BALANCE_FACTOR", [0.75, 1.0, 1.25]),
 
     ("MDN",    {"MDN_DELAY_MODE": True,
                 "MDN_N_COMPONENTS": 3},
@@ -1423,8 +1426,8 @@ def _wavegate_base_overrides():
         "REWARD_V2X_MODE":        False,
         "DCTSP_ZIG_MODE":         True,
         "ZIG_PHASE_OVERLAP_S":    0.5,
-        "ZIG_BALANCE_FACTOR":     0.50,
-        "NETWORK_FACTOR":         5.0,
+        "ZIG_BALANCE_FACTOR":     1.0,
+        "NETWORK_FACTOR":         1.0,
         "ZIG_MIN_GAIN_S":         0.0,
     }
 
@@ -1911,6 +1914,8 @@ def set_reward_weights(controller_path, overrides=None):
         "HS_EXT_MODE":           False,
         "META_TSP_MODE":         False,
         "MDN_DELAY_MODE":        False,
+        "PHASE_ROTATION_MODE":   False,
+        "OFFSET_CORRECTION_MODE": False,
     }
     # ── Float params (all default to neutral/baseline values) ──────────────────
     float_cfg = {
@@ -1962,6 +1967,11 @@ def set_reward_weights(controller_path, overrides=None):
         "BG_CASCADE_MULT":         1.5,
         "DCTSP_CONGESTION_GATE_FRACTION": 0.85,
         "META_LATENESS_TAKEOVER_S":  9999.0,   # disabled by default
+        "PHASE_ROTATION_N_SEQS":     3.0,
+        "PHASE_ROTATION_THRESHOLD_S": 5.0,
+        "DCTSP_OC_THRESH_S":         3.0,
+        "DCTSP_OC_MAX_ADJ_S":        15.0,
+        "OFFSET_CORRECTION_STALE_S": 60.0,
     }
     bool_cfg["DCTSP_CONGESTION_GATE"] = False
     if overrides:
@@ -2109,6 +2119,112 @@ def write_run_config(experiment_name, strategy, seed, scalar,
 # =============================================================================
 # ── REPLICATION HELPERS ───────────────────────────────────────────────────────
 # =============================================================================
+def set_junctions_external_control(junction_ids, replication=None):
+    """
+    Attempt to set the given junction IDs to External (API) control type in the
+    active Aimsun model so the TSP controller can override their phases.
+
+    PREREQUISITE: each junction must already have a signal plan (phases/signal
+    groups) in the Aimsun model.  If a junction is a roundabout or give-way
+    (no signal plan) this will log a warning and skip it — you must add a
+    signal plan to that junction in the Aimsun scenario editor first.
+
+    Call this once before the simulation loop starts (e.g. after
+    get_first_replication() in the batch runner).  The change is written to the
+    scenario so it persists across replications in the same session.
+
+    Returns a dict: {junction_id: "ok" | "no_signal_plan" | "error:<msg>"}
+    """
+    model = GKSystem.getSystem().getActiveModel()
+    if model is None:
+        log("WARNING: set_junctions_external_control — no active model")
+        return {}
+
+    # Aimsun uses scenario-based control plans.  We need the active scenario's
+    # master plan to change a node's control type.
+    # Try GKNode → getControlJunction(scenario) → setControlType(2)
+    node_type = model.getType("GKNode")
+    if node_type is None:
+        log("WARNING: GKNode type not found in model catalog")
+        return {}
+
+    results = {}
+    for jid in junction_ids:
+        try:
+            # Find node by ID
+            node = model.getCatalog().find(int(jid))
+            if node is None:
+                results[jid] = "error:node_not_found"
+                log(f"[CTRL_TYPE] jct={jid}: node not found in model catalog")
+                continue
+
+            # Get the active master plan / control junction for this scenario
+            ctrl_jct = None
+            for getter in ("getControlJunction", "getSignalControl",
+                           "getCurrentControlJunction"):
+                fn = getattr(node, getter, None)
+                if callable(fn):
+                    try:
+                        ctrl_jct = fn() if getter == "getControlJunction" \
+                                   else fn(model.getActiveScenario() if hasattr(model, "getActiveScenario") else None)
+                        if ctrl_jct is not None:
+                            break
+                    except Exception:
+                        pass
+
+            if ctrl_jct is None:
+                # No control junction → no signal plan at all
+                results[jid] = "no_signal_plan"
+                log(f"[CTRL_TYPE] jct={jid}: no GKControlJunction — "
+                    f"junction has no signal plan (roundabout/give-way). "
+                    f"Add a signal plan in the Aimsun scenario editor first.")
+                continue
+
+            # Read current control type
+            cur_type = None
+            for getter in ("getControlType", "getSignalControlType", "getType"):
+                fn = getattr(ctrl_jct, getter, None)
+                if callable(fn):
+                    try:
+                        cur_type = fn()
+                        break
+                    except Exception:
+                        pass
+
+            if cur_type in (2, 3):
+                results[jid] = "ok"
+                log(f"[CTRL_TYPE] jct={jid}: already External (type={cur_type}) — no change needed")
+                continue
+
+            # Attempt to set to External (type 2 = external with phases)
+            set_ok = False
+            for setter in ("setControlType", "setSignalControlType"):
+                fn = getattr(ctrl_jct, setter, None)
+                if callable(fn):
+                    try:
+                        fn(2)
+                        set_ok = True
+                        break
+                    except Exception as _e:
+                        log(f"[CTRL_TYPE] jct={jid}: {setter}(2) failed: {_e}")
+
+            if set_ok:
+                results[jid] = "ok"
+                log(f"[CTRL_TYPE] jct={jid}: control type set to External (2) "
+                    f"(was {cur_type})")
+            else:
+                results[jid] = "error:setter_failed"
+                log(f"[CTRL_TYPE] jct={jid}: could not set control type — "
+                    f"set junction to External manually in Aimsun scenario editor")
+
+        except Exception as ex:
+            results[jid] = f"error:{ex}"
+            log(f"[CTRL_TYPE] jct={jid}: unexpected error: {ex}")
+
+    log(f"[CTRL_TYPE] Results: { {k: v for k, v in results.items()} }")
+    return results
+
+
 def get_first_replication():
     model = GKSystem.getSystem().getActiveModel()
     if model is None:
@@ -3358,6 +3474,9 @@ def main():
     print("=" * 68)
     log("Batch runner starting (REV06)")
 
+    # Resolve project dir at runtime (confirms model is open) and update the
+    # module-level constants so sub-scripts importing this module stay in sync.
+    global PROJECT_DIR, CONTROLLER_PATH, RUN_CONFIG_PATH
     try:
         PROJECT_DIR = get_project_dir()
     except RuntimeError as e:
@@ -3415,6 +3534,15 @@ def main():
     except RuntimeError as e:
         log("FATAL: " + str(e))
         return
+
+    # ── Attempt to promote passive junctions to External control ─────────────
+    # Junctions 10157950, 11118289, 1119660, 39568 are currently uncontrolled
+    # (ControlType -2007 = give-way/roundabout in Aimsun model).  Once you
+    # add a signal plan to each in the Aimsun scenario editor, this call will
+    # automatically set their control type to External so the TSP controller
+    # can override their phases.  Until then it logs "no_signal_plan" + skips.
+    _PASSIVE_JCTS = [10157950, 11118289, 1119660, 39568]
+    set_junctions_external_control(_PASSIVE_JCTS)
 
     run_num      = 0
     failures     = []
@@ -3744,6 +3872,34 @@ def main():
     except Exception as _rbe:
         log(f"WARNING: Reward breakdown generation failed: {_rbe}")
 
+    # ── Generate offset-correction cycle dashboard ────────────────────────────
+    # Reads OFFSET_CORRECTION rows from reward_cycle_*.csv and generates a
+    # cycle-dependent (not bus-dependent) dashboard showing offset corrections
+    # for green-wave alignment recovery.  Triggered a few seconds before cycle
+    # end, independent of individual bus arrivals.
+    try:
+        import importlib as _ilib
+        if _SCRIPT_DIR not in _sys.path:
+            _sys.path.insert(0, _SCRIPT_DIR)
+        import plot_offset_correction_cycle as _pocc
+        _ilib.reload(_pocc)
+        # Find the latest reward_cycle CSV
+        _logs_dir = _os.path.join(PROJECT_DIR, "logs")
+        _reward_csvs = sorted(
+            [f for f in _os.listdir(_logs_dir) if f.startswith("reward_cycle_") and f.endswith(".csv")],
+            key=lambda x: _os.path.getmtime(_os.path.join(_logs_dir, x)),
+            reverse=True
+        )
+        if _reward_csvs:
+            _latest_reward_csv = _os.path.join(_logs_dir, _reward_csvs[0])
+            _pocc.generate_offset_correction_cycle_dashboard(
+                _latest_reward_csv,
+                _os.path.join(PROJECT_DIR, "offset_correction_cycle.html")
+            )
+            log(f"Offset-correction cycle dashboard generated")
+    except Exception as _oce:
+        log(f"WARNING: Offset-correction cycle dashboard generation failed: {_oce}")
+
     # ── Print seed-averaged summary table ─────────────────────────────────────
     try:
         import importlib.util as _ilu
@@ -3819,4 +3975,5 @@ def main():
     print("=" * 68)
 
 
-main()
+if __name__ == "__main__":
+    main()

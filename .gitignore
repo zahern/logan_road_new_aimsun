@@ -10,6 +10,10 @@
 *.json
 *.txt
 *.md
+*.tex
+*.pdf
+*.pptx
+*.docx
 
 # Python cache
 __pycache__/

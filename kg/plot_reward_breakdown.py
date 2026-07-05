@@ -31,6 +31,8 @@ _KNOWN_ACTIONS = {
     "INS_PRETERM_8": "#8e44ad", "INS_PRETERM_10": "#8e44ad",
     "INS_PRETERM_15": "#8e44ad", "INS_PRETERM_18": "#8e44ad",
     "INS_PRETERM_20": "#8e44ad",
+    "OFFSET_CORRECTION_5": "#f39c12", "OFFSET_CORRECTION_10": "#e67e22", 
+    "OFFSET_CORRECTION_15": "#d35400", "OFFSET_CORRECTION_20": "#ba4a00",
 }
 
 def _action_color(label: str) -> str:
