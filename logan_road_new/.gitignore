@@ -1,7 +1,6 @@
 *.md
 .claude
 *.apa
-*.ang
 *.sang
 *.sqlite
 *.txt
