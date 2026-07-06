@@ -2,7 +2,7 @@
 gen_paper_figures.py — Generate figures for the paper:
   1. Bus delay distribution per strategy (histogram)
   2. Corridor coordinates for Figure 1 (from detection GeoJSON)
-  3. Updated dashboard with all KPIs
+  3. Updated dashboard with all KPIs k
 
 No pandas. Uses matplotlib if available, else writes CSV summaries.
 """
