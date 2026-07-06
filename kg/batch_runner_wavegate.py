@@ -96,12 +96,8 @@ from PyANGKernel import GKSystem
 _SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 
 # ── Signalized (active) junctions — derived from INTERSECTIONS_CONFIG ──────────
-# Passive junctions (10157950, 11118289, 1119660, 39568) have SignalGroupIDList=[]
-# in intersection_configs.py and cannot be controlled by the TSP controller
-# (no signal plan exists in Aimsun — ControlType=-2007 give-way/roundabout).
-# Passing this list to set_control_mode() as TSP_ACTIVE_INTERSECTIONS excludes
-# them from ZIG evaluation, avoiding spurious "no_signal_plan" log noise.
-_PASSIVE_JCT_IDS = {10157950, 11118289, 1119660, 39568}
+# All configured junctions are signalised; former passive stubs (10157950,
+# 11118289, 1119660, 39568) were removed from intersection_configs.py.
 try:
     from intersection_configs import INTERSECTIONS_CONFIG as _IC_CFG
     _ACTIVE_JCTS_LIST = [jid for jid, cfg in _IC_CFG.items()
@@ -340,15 +336,8 @@ if __name__ == "__main__":
     failures     = []
     base_demands = {}  # persists across scalars to prevent factor compounding
 
-    # ── Attempt to promote passive junctions to External control ─────────────
-    # Junctions 10157950, 11118289, 1119660, 39568 currently have ControlType
-    # -2007 (uncontrolled/give-way in Aimsun).  To make them TSP-controllable
-    # you must FIRST add a signal plan to each junction in the Aimsun scenario
-    # editor (phases, signal groups, green splits).  Once signal plans exist,
-    # this call will set their control type to External (API) so the controller
-    # can override phases.  Until then it will log "no_signal_plan" and skip.
-    _PASSIVE_JCTS = [10157950, 11118289, 1119660, 39568]
-    set_junctions_external_control(_PASSIVE_JCTS)
+    # Passive junctions were removed from intersection_configs.py — nothing
+    # to promote to External control any more.
 
     for scalar in DEMAND_SCALARS:
         try:

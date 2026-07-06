@@ -1916,6 +1916,14 @@ def set_reward_weights(controller_path, overrides=None):
         "MDN_DELAY_MODE":        False,
         "PHASE_ROTATION_MODE":   False,
         "OFFSET_CORRECTION_MODE": False,
+        "PHASE_SEQUENCE_MODE":   False,
+        # ZIG action-set toggles default True (full action set) — the
+        # signal-sequencing sweep disables GE/INS to isolate phase-adjustment
+        # actions (sequence swaps / green reallocation).
+        "ZIG_ENABLE_GE":         True,
+        "ZIG_ENABLE_INS":        True,
+        "ZIG_ENABLE_GR":         True,
+        "ZIG_ENABLE_SEQ":        True,
     }
     # ── Float params (all default to neutral/baseline values) ──────────────────
     float_cfg = {
@@ -3535,14 +3543,9 @@ def main():
         log("FATAL: " + str(e))
         return
 
-    # ── Attempt to promote passive junctions to External control ─────────────
-    # Junctions 10157950, 11118289, 1119660, 39568 are currently uncontrolled
-    # (ControlType -2007 = give-way/roundabout in Aimsun model).  Once you
-    # add a signal plan to each in the Aimsun scenario editor, this call will
-    # automatically set their control type to External so the TSP controller
-    # can override their phases.  Until then it logs "no_signal_plan" + skips.
-    _PASSIVE_JCTS = [10157950, 11118289, 1119660, 39568]
-    set_junctions_external_control(_PASSIVE_JCTS)
+    # Passive junctions (10157950, 11118289, 1119660, 39568) were removed from
+    # the corridor system — they are give-way/roundabout accesses with no
+    # signal plan and contributed nothing to control or KPIs.
 
     run_num      = 0
     failures     = []

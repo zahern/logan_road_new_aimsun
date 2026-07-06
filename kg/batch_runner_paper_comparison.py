@@ -211,7 +211,12 @@ DEMAND_SCALARS = [1.0]
 
 BATCH_RESULTS_CSV = _os.path.join(_SCRIPT_DIR, "batch_results_paper_comparison.csv")
 PLOTS_DIR         = _os.path.join(_SCRIPT_DIR, "plots", "paper_comparison")
-TARGET_DEMAND_NAMES = ["01d Logan Rd 2025 AM", "01d Logan Rd 2025 PM"]
+# NOTE: The Kelvin Grove model's demand matrices are NOT named "01d Logan Rd 2025 *".
+# Setting TARGET_DEMAND_NAMES = None tells _is_target_demand() to match ALL
+# GKTrafficDemand objects, which is correct for this corridor regardless of naming.
+# The local variable below has NO effect on the imported _br.set_demand_scalar — we
+# must override _br.TARGET_DEMAND_NAMES directly in __main__ (done below).
+TARGET_DEMAND_NAMES = None
 
 # =============================================================================
 # ── Shared infrastructure — imported from batch_runner.py ────────────────────
@@ -700,6 +705,13 @@ if __name__ == "__main__":
 
     _br._QUIET = False
 
+    # ── CRITICAL: override TARGET_DEMAND_NAMES to None so set_demand_scalar()
+    # matches ALL GKTrafficDemand objects in the Kelvin Grove model.
+    # The default in batch_runner.py is ["01d Logan Rd 2025 AM/PM"] which matches
+    # zero matrices here, causing demand scaling to silently do nothing.
+    _br.TARGET_DEMAND_NAMES = None
+    print(f"[PC] Demand name filter: None (matches ALL GKTrafficDemand objects)")
+
     try:
         _rt_proj = _br.get_project_dir()
         CONTROLLER_PATH = _os.path.join(_rt_proj, "intersection_controller.py")
@@ -751,6 +763,7 @@ if __name__ == "__main__":
     for scalar in DEMAND_SCALARS:
         try:
             set_demand_scalar(scalar, base_demands)
+            print(f"[PC] Demand scalar {scalar}x applied (check log above for n_scaled)")
         except Exception as e:
             log(f"WARNING: demand scalar {scalar}: {e}")
 
@@ -847,6 +860,7 @@ if __name__ == "__main__":
     for scalar in _DEMAND_SCALARS_S:
         try:
             set_demand_scalar(scalar, base_demands)
+            print(f"[PC] Demand sensitivity scalar {scalar}x applied")
         except Exception as e:
             log(f"WARNING: demand scalar {scalar}: {e}")
 
