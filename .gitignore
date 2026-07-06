@@ -17,7 +17,9 @@
 *.toc
 *.png
 *.html
-*_slides.py*
+*_slides.py
+*.bib
+*.geojson
 
 # Python cache
 __pycache__/
