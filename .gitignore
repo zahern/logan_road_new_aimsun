@@ -16,6 +16,7 @@
 *.docx
 *.toc
 *.png
+*.html
 *_slides.py*
 
 # Python cache
