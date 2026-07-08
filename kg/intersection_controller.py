@@ -1818,6 +1818,24 @@ REWARD_BETA          = 1.0
 REWARD_GAMMA         = 1.0
 REWARD_GE_CANDIDATES = [5.0, 10.0, 15.0, 20.0]  # candidate GE durations (s)
 
+# Per-action-type enable switches for REWARD_TSP's candidate evaluation.
+# GE = green extension of the currently-active bus phase (a phase TIMING
+# change — the phase's duration grows, its position in the sequence doesn't).
+# INS = phase insertion, forcing the bus phase to run ahead of its scheduled
+# turn (a phase ORDER change — the sequence is disrupted, no phase's own
+# duration changes). Disabling one isolates the other for sensitivity sweeps
+# (see batch_runner_signal_sequencing.py) without inventing a new action type.
+REWARD_TSP_ENABLE_GE  = True
+REWARD_TSP_ENABLE_INS = True
+
+# Re-evaluation cooldown after a TSP grant (HARMONY/REWARD_TSP), in seconds.
+# None = use each mode's hardcoded default (60.0 s, ~one full cycle on most
+# plans). A batch sweep can patch this module constant directly (simple
+# top-level assignment, matches the pattern used for other *_OVERRIDE knobs)
+# to control how many TSP decisions can fire per cycle without touching
+# per-junction config.
+TSP_COOLDOWN_OVERRIDE_S = None
+
 # ── CC ETA algorithm parameters ───────────────────────────────────────────────
 COORDINATION_ALGO    = "KALMAN"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
 COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
@@ -4625,7 +4643,9 @@ class IntersectionController:
         self.BP_upper_bound   = config.get("BP_upper_bound", 60)
                 # === TSP COOLDOWN (prevents spam) ===
         self.last_tsp_action_time = 0.0          # ← ADD THIS
-        self.tsp_cooldown_seconds = 60.0         # 60 s = one full cycle on most plans
+        self.tsp_cooldown_seconds = (
+            TSP_COOLDOWN_OVERRIDE_S if TSP_COOLDOWN_OVERRIDE_S is not None else 60.0)
+        # 60 s default = one full cycle on most plans
         # Per-bus approach detection debounce: {bus_id: last_detection_record_t}
         # Prevents per-step recording inflating skip/detection counts.
         # Reset when a bus leaves the zone (zone_exit) or after 120 s.
@@ -7032,7 +7052,11 @@ class IntersectionController:
             f"eta={bus_eta_s:.1f}s phase={current_phase} "
             f"R(NO_ACTION)={reward_no_action:.1f}")
 
-        if current_phase == self.BusPhase:
+        if current_phase == self.BusPhase and not REWARD_TSP_ENABLE_GE:
+            pass  # GE disabled for this sweep — only NO_ACTION available
+        elif current_phase != self.BusPhase and not REWARD_TSP_ENABLE_INS:
+            pass  # INS disabled for this sweep — only NO_ACTION available
+        elif current_phase == self.BusPhase:
             # ── Evaluate GE candidates ────────────────────────────────────
             _ps = ECIGetStartingTimePhase(self.node_id)
             _pd = GetPhaseDuration(self.node_id, current_phase, timeSta)

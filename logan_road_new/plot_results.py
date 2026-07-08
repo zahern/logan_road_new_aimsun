@@ -29,6 +29,16 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+# Load the 12 configured intersection IDs so plots are restricted to them
+try:
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    if _script_dir not in sys.path:
+        sys.path.insert(0, _script_dir)
+    from intersection_configs import INTERSECTIONS_CONFIG as _IC
+    _CONFIG_INTERSECTION_IDS = set(int(k) for k in _IC)
+except Exception:
+    _CONFIG_INTERSECTION_IDS = None   # no filter — show whatever the data has
+
 # =============================================================================
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 # =============================================================================
@@ -55,6 +65,12 @@ STRATEGY_COLOURS = {
     "GROUP_BASED_URTSP":    "#673AB7",
     "GROUP_BASED_HARMONY":  "#3F51B5",
     "GROUP_BASED_FIXED":    "#E91E63",
+    "NO_TSP":               "#FF9800",
+    "DCTSP_MARL":           "#2196F3",
+    "DCTSP_INV_DELAY":      "#4CAF50",
+    "DCTSP_V2X":            "#9C27B0",
+    "DCTSP_SELFORG":        "#FF5722",
+    "DCTSP_ZIG":            "#00BCD4",
 }
 DEFAULT_COLOUR = "#9E9E9E"
 
@@ -407,11 +423,19 @@ def plot_intersection_delay(df_inter, out_dir):
         ("AvgBusPassDelay_s",   "Avg Bus Delay (s/pax)"),
         ("AvgCarPassDelay_s",   "Avg Car Delay (s/pax)"),
         ("TotalPassDelay_hrs",  "Pax Delay (hrs)"),
+        ("TotalGreen_s",        "Total Green Time (s)"),
+        ("TotalRed_s",          "Total Red Time (s)"),
     ]
     kpis = [(c, l) for c, l in kpis if c in df_inter.columns]
 
     strategies    = ordered_strategies(df_inter)
     intersections = sorted(df_inter['IntersectionID'].unique())
+    # Restrict to configured intersections only (the 12 managed by KG controller)
+    if _CONFIG_INTERSECTION_IDS:
+        intersections = [i for i in intersections if int(i) in _CONFIG_INTERSECTION_IDS]
+    if not intersections:
+        print("[PLOT] No intersection data after filtering to INTERSECTIONS_CONFIG.")
+        return
     n_inter       = len(intersections)
     x             = np.arange(n_inter)
     width         = 0.8 / max(len(strategies), 1)
@@ -554,6 +578,8 @@ def print_summary(df_global, df_inter):
     if not df_inter.empty and 'AvgPassDelay_s' in df_inter.columns:
         print(f"\nPER-INTERSECTION AvgPassDelay_s (mean over seeds):")
         intersections = sorted(df_inter['IntersectionID'].unique())
+        if _CONFIG_INTERSECTION_IDS:
+            intersections = [i for i in intersections if int(i) in _CONFIG_INTERSECTION_IDS]
         header2 = f"{'IntersectionID':<20}" + "".join(f"{_lbl(s):>14}" for s in strategies)
         print(header2)
         print("-" * (20 + 14 * len(strategies)))
@@ -567,6 +593,118 @@ def print_summary(df_global, df_inter):
                 row += f"{np.mean(vals):>14.3g}" if vals else f"{'N/A':>14}"
             print(row)
         print("=" * 80)
+
+
+# =============================================================================
+# ── TOTAL DELAY TIME-SERIES ───────────────────────────────────────────────────
+# =============================================================================
+
+def plot_delay_timeseries(out_dir: str):
+    """
+    Plot cumulative total passenger delay over simulation time per strategy.
+
+    Data source: ``logs/reward_cycle_<STRATEGY>_*.csv`` files produced by
+    the DCTSP controller.  Each row represents one bus-detection decision cycle
+    and carries:
+
+        sim_time_s               — simulation time of the decision (s)
+        strategy_min_delay_pax_s — minimum achievable pax delay under the
+                                   chosen action (pax·s) for this cycle
+        no_strategy_delay_pax_s  — pax delay if NO_ACTION (pax·s) — baseline
+
+    The strategy name is parsed from the filename:
+        reward_cycle_<STRATEGY>_<timestamp>.csv
+
+    Two series are plotted per strategy:
+        • cumulative strategy_min_delay_pax_s   (solid line)
+        • cumulative no_strategy_delay_pax_s    (dashed, same colour, lighter)
+
+    Saves ``total_delay_timeseries.png`` in *out_dir*.
+    Returns the figure (or None if no data is found).
+    """
+    logs_dir = os.path.join(os.path.dirname(out_dir), 'logs')
+    if not os.path.isdir(logs_dir):
+        # Try relative to script
+        logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+    if not os.path.isdir(logs_dir):
+        print(f"[PLOT] plot_delay_timeseries: logs dir not found ({logs_dir}), skipping.")
+        return None
+
+    csv_files = _glob.glob(os.path.join(logs_dir, 'reward_cycle_*.csv'))
+    if not csv_files:
+        print("[PLOT] plot_delay_timeseries: no reward_cycle_*.csv found, skipping.")
+        return None
+
+    # Group files by strategy name (second segment of filename)
+    strategy_dfs: dict = {}
+    for fp in csv_files:
+        base = os.path.basename(fp)            # reward_cycle_STRATEGY_TIMESTAMP.csv
+        parts = base.replace('.csv', '').split('_', 2)  # ['reward', 'cycle', 'STRATEGY_TS']
+        if len(parts) < 3:
+            continue
+        rest   = parts[2]                      # STRATEGY_TIMESTAMP
+        # Strategy name is everything up to the last _YYYYMMDD_HHMMSS suffix
+        # (two underscore-delimited numeric segments at the end)
+        tokens = rest.rsplit('_', 2)
+        if len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
+            strat = tokens[0]
+        else:
+            strat = rest  # no timestamp suffix — use whole thing
+
+        try:
+            df = pd.read_csv(fp, low_memory=False)
+        except Exception as e:
+            print(f"[PLOT] reward_cycle read error ({base}): {e}")
+            continue
+
+        req = {'sim_time_s', 'strategy_min_delay_pax_s', 'no_strategy_delay_pax_s'}
+        if not req.issubset(df.columns):
+            continue
+        df = df[['sim_time_s', 'strategy_min_delay_pax_s', 'no_strategy_delay_pax_s']].copy()
+        df['sim_time_s'] = pd.to_numeric(df['sim_time_s'], errors='coerce')
+        df['strategy_min_delay_pax_s'] = pd.to_numeric(df['strategy_min_delay_pax_s'], errors='coerce').fillna(0.0)
+        df['no_strategy_delay_pax_s']  = pd.to_numeric(df['no_strategy_delay_pax_s'],  errors='coerce').fillna(0.0)
+        df = df.dropna(subset=['sim_time_s']).sort_values('sim_time_s')
+
+        if strat in strategy_dfs:
+            strategy_dfs[strat] = pd.concat([strategy_dfs[strat], df], ignore_index=True)
+        else:
+            strategy_dfs[strat] = df
+
+    if not strategy_dfs:
+        print("[PLOT] plot_delay_timeseries: no usable data after parsing, skipping.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.set_xlabel('Simulation time (s)', fontsize=11)
+    ax.set_ylabel('Cumulative total passenger delay (pax·s)', fontsize=11)
+    ax.set_title('Total passenger delay over simulation run\n(per strategy, cumulative from reward-cycle log)',
+                 fontsize=12)
+
+    sorted_strats = sorted(strategy_dfs.keys())
+    for strat in sorted_strats:
+        df = strategy_dfs[strat].sort_values('sim_time_s')
+        # Aggregate to unique time stamps (sum across junctions / replications)
+        df_grp = df.groupby('sim_time_s', as_index=False).sum()
+        t      = df_grp['sim_time_s'].values
+        cum_s  = df_grp['strategy_min_delay_pax_s'].cumsum().values
+        cum_ns = df_grp['no_strategy_delay_pax_s'].cumsum().values
+
+        col   = STRATEGY_COLOURS.get(strat, DEFAULT_COLOUR)
+        label = STRATEGY_LABELS.get(strat, strat)
+        ax.plot(t, cum_s,  color=col, linewidth=1.8, label=f'{label} (strategy)')
+        ax.plot(t, cum_ns, color=col, linewidth=1.0, linestyle='--', alpha=0.5,
+                label=f'{label} (no-TSP baseline)')
+
+    ax.legend(fontsize=8, ncol=2, loc='upper left')
+    ax.grid(axis='y', alpha=0.3)
+    plt.tight_layout()
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, 'total_delay_timeseries.png')
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[PLOT] total_delay_timeseries → {out_path}")
+    return fig
 
 
 # =============================================================================
@@ -594,6 +732,7 @@ def main():
     plot_global_dashboard(df_global, PLOTS_OUT)
     plot_global_delay(df_global, PLOTS_OUT)
     plot_intersection_delay(df_inter, PLOTS_OUT)
+    plot_delay_timeseries(PLOTS_OUT)
 
     print(f"\n[PLOT] All plots saved to: {PLOTS_OUT}")
 

@@ -35,6 +35,19 @@ _AIMSUN_PACKAGES = r"C:\AimsunPackages"
 if os.path.isdir(_AIMSUN_PACKAGES) and _AIMSUN_PACKAGES not in sys.path:
     sys.path.insert(0, _AIMSUN_PACKAGES)
 
+# Inject the shared project venv so contextily/folium/pyproj/etc. are importable
+# when this script is called from inside Aimsun.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+for _vsp in [
+    os.path.join(_THIS_DIR, '..', 'logan_road_new', '.venv', 'Lib', 'site-packages'),
+    os.path.join(_THIS_DIR, '.venv', 'Lib', 'site-packages'),
+]:
+    _vsp = os.path.normpath(_vsp)
+    if os.path.isdir(_vsp) and _vsp not in sys.path:
+        sys.path.insert(1, _vsp)
+        break
+del _THIS_DIR, _vsp
+
 # ── Projection used in the Aimsun model ───────────────────────────────────────
 AIMSUN_CRS = "EPSG:7856"   # GDA2020 MGA Zone 56 (SE QLD)
 

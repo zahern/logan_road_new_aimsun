@@ -16,6 +16,18 @@ import random
 import datetime
 import os
 import math
+import glob
+import sqlite3
+
+# Inject the shared project venv site-packages so post-simulation plot scripts
+# (plot_shockwave, plot_queue_monitor, etc.) can import pandas / plotly / etc.
+# The venv lives at ../logan_road_new/.venv relative to this file's directory.
+_venv_sp = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 '..', 'logan_road_new', '.venv', 'Lib', 'site-packages'))
+if os.path.isdir(_venv_sp) and _venv_sp not in sys.path:
+    sys.path.insert(1, _venv_sp)
+del _venv_sp
 
 # =============================================================================
 # LOGGING FLAGS  —  set each True/False to control verbosity
@@ -23,30 +35,30 @@ import math
 # =============================================================================
 
 # ── Core control modes ────────────────────────────────────────────────────────
-LOG_HARMONY   = True  # [HARMONY]    GE/insertion decisions in HARMONY mode
-LOG_URTSP     = True   # [URTSP]      detection/extension/insertion in URTSP mode
-LOG_REWARD    = True   # [REWARD]     action-reward evaluation in REWARD_TSP mode
-LOG_TSP_EVT   = True   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
+LOG_HARMONY   = False  # [HARMONY]    GE/insertion decisions in HARMONY mode
+LOG_URTSP     = False   # [URTSP]      detection/extension/insertion in URTSP mode
+LOG_REWARD    = False   # [REWARD]     action-reward evaluation in REWARD_TSP mode
+LOG_TSP_EVT   = False   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
 
 # ── Initialisation ────────────────────────────────────────────────────────────
-LOG_INIT      = True   # [INIT]       controller creation, phase list, veh types
-LOG_NODE_ID   = True   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
-LOG_SECTION   = True  # [SECTION]    incoming-section & topology init detail
-LOG_JUNC_XY   = True  # [JUNC_XY]   junction centroid coordinate resolution
-LOG_SIDE_DISC = True  # [SIDE_DISC]  side-street section discovery
+LOG_INIT      = False   # [INIT]       controller creation, phase list, veh types
+LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
+LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
+LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
+LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
 
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
-LOG_PT_SCAN   = True  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
-LOG_DEMAND    = True  # [DEMAND]     vehicle-type position detection at startup
+LOG_PT_SCAN   = False  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
+LOG_DEMAND    = False  # [DEMAND]     vehicle-type position detection at startup
 
 # ── Delay & statistics ────────────────────────────────────────────────────────
-LOG_STATS     = True   # [STATS]      end-of-simulation results summary
-LOG_DELAY     = True  # [DELAY]      IntersectionController collect_delay detail
+LOG_STATS     = False   # [STATS]      end-of-simulation results summary
+LOG_DELAY     = False  # [DELAY]      IntersectionController collect_delay detail
 
 # ── Diagnostic heartbeat ──────────────────────────────────────────────────────
-LOG_HEARTBEAT = True  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
-LOG_CORRIDOR  = True   # [CORRIDOR]   corridor-group coordination events and state
+LOG_HEARTBEAT = False  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
+LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and state
 
 # ── Per-intersection detection-level logging ──────────────────────────────────
 # List junction IDs to enable verbose per-step detection scans for those junctions.
@@ -87,7 +99,18 @@ BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 #
 # Set False to skip (e.g. if you only want the CSV / PNG outputs).
 # =============================================================================
-OVERLAY_DETECTIONS_ON_MAP: bool = True
+OVERLAY_DETECTIONS_ON_MAP: bool = False
+
+# Safety switch: block all script-driven model catalog mutations
+# (newObject/deleteObject/addObjectToFolder) unless explicitly enabled.
+# Keep False for normal simulation runs so this script never edits model objects.
+ALLOW_MODEL_CATALOG_WRITES: bool = False
+
+# Storage safety preflight: read-only quick_check of companion *.sqlite files.
+# If corruption is detected and strict mode is enabled, abort AAPIInit early so
+# the simulation does not continue on a damaged model database.
+ENABLE_MODEL_DB_PREFLIGHT: bool = True
+MODEL_DB_PREFLIGHT_STRICT: bool = True
 
 # =============================================================================
 # LIVE STATUS DASHBOARD
@@ -101,7 +124,7 @@ OVERLAY_DETECTIONS_ON_MAP: bool = True
 #
 #   Set to 0 to disable the dashboard.
 # =============================================================================
-STATUS_DASHBOARD_INTERVAL_S: float = 60.0   # 0 = disabled
+STATUS_DASHBOARD_INTERVAL_S: float = 0.0   # 0 = disabled
 
 # =============================================================================
 # MASTER CONSOLE SWITCH
@@ -110,7 +133,7 @@ STATUS_DASHBOARD_INTERVAL_S: float = 60.0   # 0 = disabled
 #                   goes to the log file so you can review it after the run.
 #                   Critical errors (simulation halted) are always shown.
 # =============================================================================
-VERBOSE = True
+VERBOSE = False
 
 try:
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -144,6 +167,16 @@ _RUN_SUMMARY_TXT = os.path.join(LOG_DIR, f"tsp_run_summary_{timestamp}.txt")
 _ALGORITHM_EXPLANATION_TEX = os.path.join(LOG_DIR, f"tsp_algorithm_explanation_{timestamp}.tex")
 _WAVE_EVENTS_CSV = os.path.join(LOG_DIR, f"corridor_wave_events_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
 _BUS_TRACKING_CSV = os.path.join(LOG_DIR, f"bus_positions_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
+_PRESENCE_SNAPSHOT_CSV = os.path.join(LOG_DIR, f"presence_snapshot_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
+_NO_INS_SUMMARY_CSV = os.path.join(LOG_DIR, f"no_ins_summary_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
+_OBJECTIVE_TRACE_CSV = os.path.join(LOG_DIR, f"objective_trace_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
+_objective_trace_header_written: bool = False
+# ── Per-cycle reward evaluation CSV (REWARD_TSP mode) ─────────────────────────
+# One row per candidate action evaluated. Columns: sim_time_s, junction_id,
+# veh_id, bus_eta_s, action, reward, bus_saved_pax_s, other_inc_pax_s,
+# side_inc_pax_s, is_chosen.  Lets you plot the full reward surface per cycle.
+_REWARD_CYCLE_CSV = os.path.join(LOG_DIR, f"reward_cycle_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
+_reward_cycle_header_written: bool = False
 # ── Green-wave offset CSV (one row per bus grant, recording inter-junction offsets) ────
 _OFFSET_CSV = os.path.join(LOG_DIR, f"green_offsets_{_CURRENT_EXPERIMENT}_{timestamp}.csv")
 _offset_header_written: bool = False
@@ -160,12 +193,17 @@ _marked_detections: dict = {}
 _MARK_DET_REARM_S: float = 120.0  # allow re-detect after bus leaves and returns
 
 # ── Bus position tracking (continuous) ────────────────────────────────────
-_BUS_TRACK_INTERVAL_S = 5.0   # log every N seconds (keep lightweight)
+# Use 1 s updates so zone presence, bus_positions CSV, and transit-link based
+# detections are fine-grained enough for per-second TSP decisions.
+_BUS_TRACK_INTERVAL_S = 1.0
 _bus_track_last_t: float = -1e9
 _bus_track_header_written: bool = False
+_presence_snapshot_header_written: bool = False
 _jct_xy_cache: dict = None
 # Track zone state per (veh_id, junction_id) for entry/exit events
 _bus_zone_state: dict = {}   # (veh_id, jct_id) → bool (in zone)
+# Track when each bus entered each zone to enforce maximum zone occupancy time
+_bus_zone_entry_time: dict = {}  # (veh_id, jct_id) → entry_time_s (force exit after 120s)
 # Live zone-presence snapshot shared with controller detect_bus as Tier 0.
 # Updated every _BUS_TRACK_INTERVAL_S.  Format: {jct_id: {veh_id: (bx, by, spd_kmh)}}
 _tracking_zone_presence: dict = {}   # jct_id → {veh_id: (bx, by, spd_kmh)}
@@ -188,6 +226,8 @@ _corridor_jct_incoming: dict = {}# {jct_id: set(section_ids)} from INTERSECTIONS
 # {veh_id: [jct_id, ...]}  Used as a real-time route fallback when _pt_line_jct_route
 # has no entry for this bus's PT line (bus-route-aware pre-arm targeting).
 _bus_observed_jcts: dict = {}    # {veh_id: [jct_id, ...]} ordered zone-enters
+# Treat PT-line followers as buses until a real bus type is confirmed.
+_bus_type_provisional: bool = False
 # Accumulates GeoJSON features; flushed to file in AAPIFinish
 _geojson_features: list = []
 # Records (sim_time, intersection_id, ge_s, recovery_trimmed_s) for schedule recovery plot
@@ -366,7 +406,7 @@ def _network_stats_section_ids():
 
 
 def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
-                          sim_time: float, tier: str):
+                          sim_time: float, tier: str, meta: dict = None):
     """
     Record the first detection event for this (junction, vehicle) pair.
 
@@ -381,9 +421,10 @@ def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
 
     if not MARK_DETECTION_POINTS:
         return
+    meta = dict(meta or {})
     key = (junction_id, veh_id)
     _last_t = _marked_detections.get(key, -9999.0)
-    if sim_time - _last_t < _MARK_DET_REARM_S:
+    if not meta.get("force_write") and sim_time - _last_t < _MARK_DET_REARM_S:
         return
     _marked_detections[key] = sim_time
     _mark_calls_written += 1
@@ -406,6 +447,26 @@ def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
     except Exception:
         pass
 
+    meta = dict(meta or {})
+    _prearm_status = str(meta.get("prearm_status", "") or "")
+    _prearm_eta_s = meta.get("prearm_eta_s", "")
+    _prearm_eta_abs_s = meta.get("prearm_eta_abs_s", "")
+    _prearm_fired_t = meta.get("prearm_fired_t", "")
+    _prearm_resolved_t = meta.get("prearm_resolved_t", "")
+    _prearm_note = str(meta.get("prearm_note", "") or "")
+    _focus_role = "none"
+    _focus_active = 1 if _focus_bus_id > 0 else 0
+    if _focus_active:
+        _focus_role = "focused_bus" if veh_id == _focus_bus_id else "blocked_by_focus"
+    if str(tier).startswith("focus_acquire"):
+        _focus_role = "focus_acquire"
+    elif str(tier).startswith("focus_suppress"):
+        _focus_role = "focus_suppress"
+    _focus_held_s = (
+        max(0.0, float(sim_time) - float(_focus_start_t))
+        if _focus_active and _focus_start_t >= 0.0 else 0.0
+    )
+
     # ── 1. CSV ────────────────────────────────────────────────────────────────
     # Look up the junction centroid so the map can overlay intersection markers.
     _jct_entry = (_jct_xy_cache or {}).get(junction_id)
@@ -418,10 +479,20 @@ def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
             if write_header:
                 w.writerow(["sim_time_s", "junction_id", "veh_id",
                              "x", "y", "tier", "signal_phase", "bus_phase",
-                             "phase_start_t", "jct_x", "jct_y"])
+                             "phase_start_t", "jct_x", "jct_y",
+                             "prearm_status", "prearm_eta_s",
+                             "prearm_eta_abs_s", "prearm_fired_t",
+                             "prearm_resolved_t", "prearm_note",
+                             "focus_active", "focus_bus_id", "focus_jct_id",
+                             "focus_start_t", "focus_held_s", "focus_role"])
             w.writerow([f"{sim_time:.1f}", junction_id, veh_id,
                         f"{x:.3f}", f"{y:.3f}", tier, _signal_phase, _bus_phase,
-                        f"{_phase_start_t:.1f}", _jct_cx, _jct_cy])
+                        f"{_phase_start_t:.1f}", _jct_cx, _jct_cy,
+                        _prearm_status, _prearm_eta_s, _prearm_eta_abs_s,
+                        _prearm_fired_t, _prearm_resolved_t, _prearm_note,
+                        _focus_active, _focus_bus_id, _focus_jct_id,
+                        f"{_focus_start_t:.1f}", f"{_focus_held_s:.1f}",
+                        _focus_role])
     except Exception as _e:
         log_to_file(f"[MARK] CSV write failed: {_e}", force=True)
 
@@ -434,6 +505,8 @@ def _mark_detection_point(junction_id: int, veh_id: int, x: float, y: float,
             "veh_id":      veh_id,
             "sim_time_s":  round(sim_time, 1),
             "tier":        tier,
+            "prearm_status": _prearm_status,
+            "focus_role": _focus_role,
         },
     })
 
@@ -484,6 +557,33 @@ def _record_wave_event(time_s: float, group_name: str, event: str,
     _wave_events.append(_row)
 
 
+def _record_objective_trace(row: dict):
+    """Append one objective-evaluation trace row for GE/INS diagnostics."""
+    global _objective_trace_header_written
+    _fields = [
+        "sim_time_s", "junction_id", "veh_id",
+        "mode", "decision", "reason",
+        "current_phase", "bus_phase",
+        "bus_eta_s", "time_to_bp_s", "natural_end_s", "next_red_s",
+        "ge_lb_s", "ge_ub_s", "opt_ge_s",
+        "bp_lb_s", "bp_ub_s", "opt_bp_s",
+        "wave_active", "focus_bus_id", "note",
+    ]
+    _row = {}
+    for _f in _fields:
+        _row[_f] = row.get(_f, "")
+    try:
+        _write_header = (not _objective_trace_header_written) and (not os.path.isfile(_OBJECTIVE_TRACE_CSV))
+        with open(_OBJECTIVE_TRACE_CSV, "a", newline="", encoding="utf-8") as _f_obj:
+            _w = csv.DictWriter(_f_obj, fieldnames=_fields)
+            if _write_header:
+                _w.writeheader()
+                _objective_trace_header_written = True
+            _w.writerow(_row)
+    except Exception as _e:
+        log_to_file(f"[OBJ TRACE] write failed: {_e}")
+
+
 def _track_all_bus_positions(time: float, jct_xy: dict):
     """
     Log every PT-line bus position every _BUS_TRACK_INTERVAL_S seconds.
@@ -496,7 +596,8 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
     jct_xy: {junction_id: (x, y, detection_zone_m)} — pre-built from controllers.
     If empty, still records raw bus positions with nearest_jct=-1.
     """
-    global _bus_track_last_t, _bus_track_header_written, _bus_zone_state
+    global _bus_track_last_t, _bus_track_header_written, _presence_snapshot_header_written
+    global _bus_zone_state
     global _bus_seen_ids, _bus_last_nearest_jct, _bus_line_id
     global _tracking_zone_presence, _bus_observed_jcts
     global _active_corridor_bus_count
@@ -543,18 +644,27 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
                     _bus_sec = int(getattr(inf, 'idSection', -1))
                     if _bus_sec > 0 and _bus_sec in _sec_to_corridor_jct:
                         _sec_jcts = _sec_to_corridor_jct[_bus_sec]
-                        if len(_sec_jcts) == 1:
-                            _mark_detection_point(_sec_jcts[0], veh_id, bx, by, time, "track-section")
-                        elif jct_xy:
+                        _eligible_sec_jcts = []
+                        for _jid in _sec_jcts:
+                            if _jid in _bus_observed_jcts.get(veh_id, set()):
+                                continue
+                            _zst = _bus_zone_state.get((veh_id, _jid), "out")
+                            if _zst != "out":
+                                continue
+                            _eligible_sec_jcts.append(_jid)
+
+                        if len(_eligible_sec_jcts) == 1:
+                            _mark_detection_point(_eligible_sec_jcts[0], veh_id, bx, by, time, "track-section")
+                        elif len(_eligible_sec_jcts) > 1 and jct_xy:
                             _nearest_sec_jct = min(
-                                _sec_jcts,
+                                _eligible_sec_jcts,
                                 key=lambda _j: math.sqrt(
                                     (bx - jct_xy[_j][0])**2 + (by - jct_xy[_j][1])**2
                                 ) if _j in jct_xy else 1e9
                             )
                             _mark_detection_point(_nearest_sec_jct, veh_id, bx, by, time, "track-section")
-                        else:
-                            _mark_detection_point(_sec_jcts[0], veh_id, bx, by, time, "track-section")
+                        elif len(_eligible_sec_jcts) > 1:
+                            _mark_detection_point(_eligible_sec_jcts[0], veh_id, bx, by, time, "track-section")
                 except Exception:
                     pass
 
@@ -585,12 +695,23 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
                         zkey = (veh_id, jid)
                         was_in = _bus_zone_state.get(zkey, False)
                         event = "track"
+                        
+                        # ── Zone occupancy timeout (120s maximum per bus per junction) ──
+                        # Prevents buses from staying "near jct" indefinitely if they slow
+                        # down or loop within the detection zone.
+                        _ZONE_OCCUPANCY_TIMEOUT_S = 120.0
+                        zone_entry_t = _bus_zone_entry_time.get(zkey)
+                        if zone_entry_t is not None and time - zone_entry_t > _ZONE_OCCUPANCY_TIMEOUT_S:
+                            # Force zone exit if bus has been in zone too long
+                            now_in = False
+                        
                         if now_in:
                             # Keep live zone-presence snapshot current so that
                             # detect_bus / _detect_bus can use it as Tier 0.
                             _tracking_zone_presence.setdefault(jid, {})[veh_id] = (bx, by, bspd)
                         if now_in and not was_in:
                             _bus_zone_state[zkey] = True
+                            _bus_zone_entry_time[zkey] = time  # Record entry time for timeout
                             # Only fire zone_enter events for the nearest newly-entered
                             # junction.  Other overlapping zones are marked in-state so
                             # they don't re-fire, but their events are suppressed so the
@@ -617,6 +738,9 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
                         elif not now_in and was_in:
                             event = "zone_exit"
                             _bus_zone_state[zkey] = False
+                            # Clear zone entry time on exit
+                            if zkey in _bus_zone_entry_time:
+                                del _bus_zone_entry_time[zkey]
                             # ── Bus TT zone-exit ──────────────────────────────
                             try:
                                 stats.record_pt_bus_exit(jid, veh_id, time)
@@ -745,6 +869,9 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
     stale_keys = [k for k in _bus_zone_state if k[0] not in active_veh_ids]
     for k in stale_keys:
         del _bus_zone_state[k]
+        # Also clear zone entry times for stale vehicles
+        if k in _bus_zone_entry_time:
+            del _bus_zone_entry_time[k]
 
     # Add lifecycle events: first time seen in network and nearest-junction change
     if rows:
@@ -784,6 +911,66 @@ def _track_all_bus_positions(time: float, jct_xy: dict):
             w.writerows(rows)
     except Exception as _e:
         log_to_file(f"[BUS_TRACK] CSV write failed: {_e}")
+
+    # Write a separate 1-second presence snapshot for diagnostics.
+    # This keeps event-style detection_points compact while giving
+    # continuous per-bus/per-junction state for strategy inspection.
+    try:
+        if jct_xy and _bus_xy:
+            _presence_rows = []
+            for _vid, (_bx, _by) in _bus_xy.items():
+                _line_id = int(_bus_line_id.get(_vid, -1) or -1)
+                _seen_jcts = set()
+
+                _best_j = -1
+                _best_d = 1e12
+                _best_z = 0.0
+                for _jid, (_jx, _jy, _zr) in jct_xy.items():
+                    _d = math.sqrt((_bx - _jx) ** 2 + (_by - _jy) ** 2)
+                    if _d < _best_d:
+                        _best_d = _d
+                        _best_j = int(_jid)
+                        _best_z = float(_zr)
+
+                if _best_j > 0:
+                    _presence_rows.append((
+                        f"{time:.1f}", int(_vid), _line_id, _best_j,
+                        f"{_best_d:.1f}", f"{_best_z:.1f}",
+                        1 if _best_d <= _best_z else 0,
+                        "nearest",
+                        f"{_bx:.1f}", f"{_by:.1f}",
+                    ))
+                    _seen_jcts.add(_best_j)
+
+                for _jid, _veh_map in _tracking_zone_presence.items():
+                    if int(_jid) in _seen_jcts or _vid not in _veh_map:
+                        continue
+                    _jxy = jct_xy.get(_jid)
+                    if not _jxy:
+                        continue
+                    _jx, _jy, _zr = _jxy
+                    _d = math.sqrt((_bx - _jx) ** 2 + (_by - _jy) ** 2)
+                    _presence_rows.append((
+                        f"{time:.1f}", int(_vid), _line_id, int(_jid),
+                        f"{_d:.1f}", f"{float(_zr):.1f}",
+                        1,
+                        "in_zone",
+                        f"{_bx:.1f}", f"{_by:.1f}",
+                    ))
+
+            if _presence_rows:
+                _hdr = not _presence_snapshot_header_written
+                with open(_PRESENCE_SNAPSHOT_CSV, "a", newline="", encoding="utf-8") as _pf:
+                    _pw = csv.writer(_pf)
+                    if _hdr:
+                        _pw.writerow([
+                            "sim_time_s", "veh_id", "line_id", "junction_id",
+                            "dist_m", "zone_radius_m", "in_zone", "scope", "x", "y",
+                        ])
+                        _presence_snapshot_header_written = True
+                    _pw.writerows(_presence_rows)
+    except Exception as _pe:
+        log_to_file(f"[PRESENCE_SNAPSHOT] CSV write failed: {_pe}")
 
 
 def _write_queue_snapshot(time: float):
@@ -1038,6 +1225,90 @@ def log_to_file(message, force=False):
             f.write(full_msg + "\n")
     except Exception as _log_err:
         AKIPrintString(f"[LOG] file write failed ({LOG_FILE}): {_log_err}")
+
+
+def _preflight_model_db_health() -> bool:
+    """
+    Read-only integrity preflight for model companion SQLite files.
+
+    Returns True if all checked files look healthy or preflight is disabled.
+    Returns False when corruption is detected in strict mode.
+    """
+    if not ENABLE_MODEL_DB_PREFLIGHT:
+        return True
+
+    try:
+        _base = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        _base = os.getcwd()
+
+    _all_sqlite = sorted(
+        [p for p in glob.glob(os.path.join(_base, "*.sqlite")) if os.path.isfile(p)],
+        key=os.path.getmtime,
+        reverse=True,
+    )
+
+    if not _all_sqlite:
+        log_to_file("[PREFLIGHT] No companion .sqlite files found; skipping DB check", force=True)
+        return True
+
+    # Choose the active companion DB instead of scanning every stale file in
+    # the folder.  Scanning all *.sqlite can fail a valid recovered run when an
+    # unrelated historical model DB is corrupted.
+    _candidate_files = []
+    _lock_stems = set()
+    for _lk in glob.glob(os.path.join(_base, "*.ang.lck")) + glob.glob(os.path.join(_base, "*.sang.lck")):
+        try:
+            _lock_stems.add(os.path.splitext(os.path.splitext(os.path.basename(_lk))[0])[0])
+        except Exception:
+            pass
+    if _lock_stems:
+        for _st in sorted(_lock_stems):
+            _p = os.path.join(_base, f"{_st}.sqlite")
+            if os.path.isfile(_p):
+                _candidate_files.append(_p)
+
+    if not _candidate_files:
+        _recover_sqlite = [p for p in _all_sqlite if "_RECOVER" in os.path.basename(p).upper()]
+        if _recover_sqlite:
+            _candidate_files = [_recover_sqlite[0]]
+        else:
+            _candidate_files = [_all_sqlite[0]]
+
+    _chosen_names = ", ".join(os.path.basename(_p) for _p in _candidate_files)
+    log_to_file(f"[PREFLIGHT] Checking active companion DB(s): {_chosen_names}", force=True)
+
+    _bad = []
+    for _p in _candidate_files:
+        try:
+            _conn = sqlite3.connect(f"file:{_p}?mode=ro", uri=True)
+            try:
+                _row = _conn.execute("PRAGMA quick_check(1)").fetchone()
+            finally:
+                _conn.close()
+            _msg = str(_row[0]) if _row else "unknown"
+            if _msg.lower() == "ok":
+                log_to_file(f"[PREFLIGHT] DB OK: {os.path.basename(_p)}", force=True)
+            else:
+                _bad.append((_p, _msg))
+        except Exception as _e:
+            _bad.append((_p, f"check_failed: {_e}"))
+
+    if _bad:
+        for _p, _why in _bad:
+            log_to_file(
+                f"[PREFLIGHT] DB CORRUPT: {os.path.basename(_p)} :: {_why}",
+                force=True,
+            )
+        if MODEL_DB_PREFLIGHT_STRICT:
+            log_to_file(
+                "[FATAL] Model DB preflight failed. Open a recovered .ang/.sang copy and rerun. "
+                "Aborting AAPIInit to prevent running on corrupted storage.",
+                force=True,
+            )
+            return False
+
+    return True
 
 
 def _plot_schedule_recovery():
@@ -1470,74 +1741,90 @@ def _vprint(msg):
 
 
 # =============================================================================
-# CONTROL MODE SWITCH
-# "NORMAL"              — fixed signal plan, no TSP
-# "HARMONY"             — harmony search TSP (phase-based GE + INS at each junction)
-# "URTSP"               — Unrestricted TSP: green extension + phase insertion
-# "REWARD_TSP"          — action-reward TSP: cost-benefit per step
-# "DYNAOPAC"            — DynaROPAC + GROUP_BASED controller (corridor-aware)
-# "DYNAOPAC_HARMONY"    — DynaROPAC optimizer selects the single best intersection
-#                         action each step (network-wide delay-optimal selection)
+# CONTROL MODE
+#
+#   "NORMAL"          — Fixed signal plan, no bus priority.
+#
+#   "URTSP"           — Unrestricted TSP: green extension (GE) or phase
+#                       insertion (INS) at each junction independently.
+#
+#   "REWARD_TSP"      — Cost-benefit TSP: each step scores GE / INS / hold
+#                       in passenger-delay units and takes the best action.
+#
+#   "HARMONY"         — Phase-based coordination: GE + phase insertion at
+#                       each junction; the Corridor Coordinator (CC) pre-arms
+#                       downstream junctions as a bus moves along the route.
+#
+#   "DYNAOPAC"        — Discrete-time best-action: every second the optimizer
+#                       tests all candidate durations across all junctions and
+#                       activates the network-optimal action (corridor-aware).
+#
+#   "DYNAOPAC_HARMONY"— Discrete-time best-action + phase-based coordination:
+#                       optimizer and CC pre-arming run together.
 # =============================================================================
-CONTROL_MODE = "HARMONY"
-GROUP_BASED_BUS_PRIORITY = True
+CONTROL_MODE = "DRL_DENSITY"
+GROUP_BASED_BUS_PRIORITY = False
 
 # =============================================================================
-# CORRIDOR COORDINATION SETTINGS
+# CORRIDOR COORDINATOR (CC) SETTINGS
 #
-# COORDINATED_TSP : True  → intersections in the same INTERSECTION_GROUPS key
-#   coordinate their TSP signals.  Bus priority at junction[i] pre-arms
-#   junction[i+1..i+3] so downstream greens are ready on arrival.
-#   False → each junction runs independently (original behaviour).
+# The Corridor Coordinator tracks each bus along the route using a Kalman
+# filter, predicts arrival time at each downstream junction, and fires a
+# pre-arm request early enough for that junction to complete its current
+# phase and be ready on green when the bus arrives.
 #
-# COORDINATION_ALGO : algorithm used when COORDINATED_TSP=True.
+# COORDINATED_TSP
+#   True  — CC is active; junctions in the same INTERSECTION_GROUPS entry
+#           coordinate their signals (pre-arm up to MAX_PRE_ARM junctions
+#           ahead of the current bus position).
+#   False — Each junction runs independently; no pre-arming.
 #
-#   "KALMAN"    — 1-D Kalman filter (position + speed state vector).
-#                 Robust to measurement noise, adapts to varying bus speeds.
-#                 Best choice for free-flow / lightly congested corridors.
+# COORDINATION_ALGO   — ETA prediction method used by CC.
 #
-#   "SHOCKWAVE" — Kalman ETA plus a queue-clearance correction derived from
-#                 shockwave theory (ShockwaveSpeed functions).  When the
-#                 downstream intersection has a large queue the discharge wave
-#                 propagation time is added to the bus travel ETA, giving a
-#                 more accurate pre-arm moment under congested conditions.
+#   "KALMAN"    — 1-D Kalman filter on position + speed.  Best for free-flow
+#                 or lightly congested conditions.
 #
-#   "OBJECTIVE" — Adaptive lead time: instead of a fixed PRE_GREEN_LEAD_S the
-#                 coordinator picks the lead time that maximises a combined
-#                 person-level objective:
-#                   J = COORD_OBJ_ALPHA * bus_delay_saved_persons
-#                     - COORD_OBJ_BETA  * normal_throughput_displaced_persons
-#                 This prevents the perverse incentive of pure delay
-#                 minimisation (which can game the metric by serving fewer
-#                 vehicles). Adjust ALPHA/BETA to reflect your priorities.
+#   "SHOCKWAVE" — Kalman ETA plus a queue-clearance correction: when the
+#                 downstream junction has a large queue, adds the time for
+#                 the discharge wave to reach the stop line.
 #
-#   "ADAPTIVE"  — Hybrid strategy: starts from Kalman ETA, applies the
-#                 shockwave queue-clearance correction under congestion, then
-#                 adapts lead time using ETA uncertainty + downstream phase
-#                 transition time so bus phases are armed early enough.
+#   "OBJECTIVE" — Variable lead time: CC picks the lead that maximises
+#                   J = COORD_OBJ_ALPHA * bus_delay_saved  (pax-s)
+#                     - COORD_OBJ_BETA  * normal_traffic_displaced  (pax-s)
+#                 Tune ALPHA / BETA to balance bus priority vs. general delay.
 #
-# COORD_OBJ_ALPHA / COORD_OBJ_BETA only apply when COORDINATION_ALGO="OBJECTIVE".
+#   "ADAPTIVE"  — Hybrid: Kalman ETA → shockwave correction under congestion
+#                 → dynamic lead scaled by ETA uncertainty and phase-remaining.
+#
+# COORD_OBJ_ALPHA / COORD_OBJ_BETA apply only with COORDINATION_ALGO="OBJECTIVE".
 # =============================================================================
-COORDINATED_TSP = True        # True to enable corridor-wide TSP coordination, False for independent intersection control
-MAX_GE_EXTENSION_S = 10.0      # Hard ceiling on any green extension (seconds). If a bus requires more, the extension is skipped.
-MAX_BP_INSERTION_S = 40.0      # Hard ceiling on any bus phase insertion (seconds).
+COORDINATED_TSP = True   # True = CC active (corridor coordination)
 
-# ── REWARD_TSP mode weights ───────────────────────────────────────────────────
-# R(action) = -α·ΔD_bus - β·ΔD_other - γ·ΔD_side
-# Higher α → stronger bus priority; β,γ penalise disruption to other traffic.
-# REWARD_TSP now scores actions in consistent passenger-delay units
-# (passenger-seconds saved / incurred), so equal weights minimise total
-# passenger delay directly.
+MAX_GE_EXTENSION_S   = 10.0   # Max green extension per bus request (s)
+MAX_BP_INSERTION_S   = 40.0   # Max bus-phase insertion per request (s)
+INS_TRIGGER_MARGIN_S = 5.0    # Require bus ETA to exceed natural end by this margin before INS
+INS_CLEARANCE_BUFFER_S = 8.0  # Add clearance buffer to ETA when deciding if natural bus phase is truly catchable
+INS_MAX_WAIT_TRIGGER_S = 8.0  # If predicted wait for next natural bus phase exceeds this, evaluate INS
+# Adaptive bounds for INS trigger margin. A larger ETA should require a
+# slightly larger miss of the natural window before forcing insertion.
+INS_TRIGGER_MARGIN_MIN_S = 3.0
+INS_TRIGGER_MARGIN_MAX_S = 12.0
+
+# ── Reward-TSP weights  (REWARD_TSP mode only) ────────────────────────────────
+# Score = -ALPHA*bus_delay_saved - BETA*other_delay_cost - GAMMA*side_delay_cost
+# Equal weights (1 / 1 / 1) minimise total passenger delay directly.
 REWARD_ALPHA = 1.0
-REWARD_BETA  = 1.0
+REWARD_BETA = 1.0
 REWARD_GAMMA = 1.0
-REWARD_GE_CANDIDATES = [5.0, 10.0, 15.0, 20.0]  # candidate GE durations (seconds)
+REWARD_GE_CANDIDATES = [5.0, 10.0, 15.0, 20.0]  # candidate GE durations (s)
 
-COORDINATION_ALGO   = "KALMAN"   # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
-COORD_OBJ_ALPHA     = 1.0        # weight on bus person-delay savings
-COORD_OBJ_BETA      = 0.5        # weight on displaced normal-traffic throughput
-PREARM_MAX_SIGMA_S  = 60.0       # floor sigma threshold (s); actual gate is max(60, 0.5*ETA)
-MAX_PREARM_HORIZON_S = 90.0      # max look-ahead horizon for queued prearms
+# ── CC ETA algorithm parameters ───────────────────────────────────────────────
+COORDINATION_ALGO = "SHOCKWAVE"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
+COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
+COORD_OBJ_BETA       = 0.5       # general-traffic weight      (OBJECTIVE mode)
+PREARM_MAX_SIGMA_S   = 90.0      # max ETA uncertainty (s) to allow a pre-arm;
+                                  #   gate = max(PREARM_MAX_SIGMA_S, 0.80 * ETA)
+MAX_PREARM_HORIZON_S = 90.0      # pre-arm look-ahead window (s)
 
 from Simulation_Stats import SimulationStats
 stats = SimulationStats(CONTROL_MODE, verbose=VERBOSE)
@@ -1562,7 +1849,7 @@ else:
         "logan_south": [19196, 19363, 19474, 19882, 21895],
     }
 
-TSP_ACTIVE_INTERSECTIONS = _cfg_active_ints   # None = all active; set in intersection_configs.py
+TSP_ACTIVE_INTERSECTIONS = None
 _bus_type_needs_recheck = False   # set True at AAPIInit when bus_pos unresolved
 
 # DynaROPAC optimizer — imported lazily so controller loads even without it.
@@ -1645,7 +1932,7 @@ _tsp_active_vehicles = {}   # {veh_id: (strategy_name, start_time, inter_id)}
 # Logged as [BUS_FOCUS] in the Aimsun log and recorded in the detection CSV
 # with tier="focus_acquire" / "focus_release" / "focus_suppress".
 # =============================================================================
-_FOCUS_TIMEOUT_S  = 120.0   # auto-release if focus bus stalls
+_FOCUS_TIMEOUT_S  = 60.0    # auto-release if focus bus stalls
 _focus_bus_id:     int   = -1
 _focus_jct_id:     int   = -1
 _focus_start_t:    float = -1.0
@@ -2321,8 +2608,21 @@ class BusKalmanTracker:
 
 class CorridorCoordinator:
     """
-    Corridor-level GroupBasedController synchronisation and (optionally)
-    Kalman-based green-wave TSP coordination.
+    Corridor Coordinator (CC) — links junctions along a bus route so that
+    a priority grant at junction[i] automatically pre-arms junction[i+1..n].
+
+    How it works
+    ------------
+    1. Bus detected at junction[i] → CC is notified via notify_bus_at_junction().
+    2. CC computes an ETA for each downstream junction using the configured
+       COORDINATION_ALGO (KALMAN / SHOCKWAVE / OBJECTIVE / ADAPTIVE).
+    3. When ETA - PRE_GREEN_LEAD_S is reached, CC fires a pre-arm request on
+       the downstream junction's GroupBasedController (or sets _harmony_prearm
+       on a phase-based IntersectionController).
+    4. The downstream junction holds its bus phase ready so the bus arrives
+       into green rather than red.
+    5. Pre-arm requests expire after PRE_REQ_TIMEOUT_S if the bus is delayed
+       or diverts; the junction then returns to its normal cycle.
     """
 
     LOG_CORRIDOR_INTERVAL = 30.0   # seconds between periodic state dumps
@@ -2335,9 +2635,10 @@ class CorridorCoordinator:
     # 25 s was too short — a junction mid-phase routinely has 30–50 s remaining,
     # so the bus arrived before the phase could be set up, defeating coordination.
     # 50 s covers worst-case phase-remaining + intergreen for all Logan Rd junctions.
-    PRE_GREEN_LEAD_S      = 50.0
-    MAX_PRE_ARM            = 1      # pre-arm only the immediately next junction
-    PRE_REQ_TIMEOUT_S     = 120.0  # stale pre-request expiry (was 90 s)
+    PRE_GREEN_LEAD_S          = 50.0
+    MIN_EFFECTIVE_PREARM_LEAD_S = 10.0  # discard prearm if bus is already this close
+    MAX_PRE_ARM               = 1      # pre-arm only the immediately next junction
+    PRE_REQ_TIMEOUT_S         = 90.0   # stale pre-request expiry
     MIN_UNMANAGED_DELAY_S = 10.0   # delay buffer per unmanaged in-system junction
     MAX_UNMANAGED_DELAY_S = 25.0
 
@@ -2463,6 +2764,11 @@ class CorridorCoordinator:
         # ── Per-bus grant time tracker (for offset computation) ──────────────────────
         # {veh_id: {jct_id: sim_time_s}} — updated in notify_bus_granted.
         self._grant_times: dict = {}
+        # {(veh_id, jct_id): last_logged_time_s} — suppress duplicate log rows
+        self._last_offset_logged: dict = {}
+        # {(veh_id, jct_id): last_notify_t} — debounce repeated grant callbacks
+        # from the same junction while a bus is still in the same detection zone.
+        self._last_grant_notify_t: dict = {}
 
     # ------------------------------------------------------------------
     def _shockwave_eta_adjust(self, next_gb, next_bus_sg, eta: float, next_ic=None):
@@ -2603,10 +2909,26 @@ class CorridorCoordinator:
             return eta, 0, 0.0, sw_diag
 
     # ------------------------------------------------------------------
-    def _record_prearm_fired(self, inter_id: int, veh_id: int, eta_t: float, fired_at_t: float):
+    def _record_prearm_fired(self, inter_id: int, veh_id: int, eta_t: float,
+                             fired_at_t: float, source_jct: int = -1,
+                             algo: str = "", lead_reason: str = ""):
+        # Do NOT overwrite an existing active prearm entry.  Once a prearm has
+        # been fired for a (junction, bus) pair, keep the original eta/fired_t
+        # so that _record_prearm_success (which pops the entry) only logs
+        # ONE success per logical prearm event.  Re-overwriting here would let
+        # the coordinator re-populate the entry every management step, causing
+        # prearm_success to fire on every subsequent notify_bus_granted call.
+        key = (inter_id, veh_id)
+        if key in self._fired_prearms:
+            return  # already pending — skip (deduplication)
         self._prearm_stats["fired"] += 1
-        self._fired_prearms[(inter_id, veh_id)] = (float(eta_t), float(fired_at_t))
+        self._fired_prearms[key] = (
+            float(eta_t), float(fired_at_t), int(source_jct),
+            str(algo or COORDINATION_ALGO), str(lead_reason or "fixed")
+        )
         # Lift the wave ban for this junction as soon as its prearm is committed.
+        # Without this the junction stays banned until notify_bus_granted fires,
+        # which may never happen if the coordinator never re-arms it.
         self._wave_served_ids.add(inter_id)
         # Deduplicate: only write a wave event if no recent prearm_fired was written
         # for this (veh_id, inter_id) pair within 60 s.  Prevents wave-event CSV spam
@@ -2618,12 +2940,16 @@ class CorridorCoordinator:
         if fired_at_t - _last_log < 60.0:
             return   # suppress duplicate within 60 s window
         self._prearm_fired_log_t[_fire_key] = fired_at_t
+        _src = int(source_jct) if int(source_jct) > 0 else int(self._wave_origin)
+        _algo = str(algo or COORDINATION_ALGO)
         _record_wave_event(
             fired_at_t, self.name, "prearm_fired",
-            source_jct=self._wave_origin,
+            source_jct=_src,
             target_jct=inter_id,
             veh_id=veh_id,
             eta_s=max(0.0, float(eta_t) - float(fired_at_t)),
+            note=str(lead_reason or "fixed"),
+            algo=_algo,
         )
 
     # ------------------------------------------------------------------
@@ -2642,7 +2968,10 @@ class CorridorCoordinator:
         rec = self._fired_prearms.pop(key, None)
         if rec is None:
             return
-        eta_t, _fired_t = rec
+        eta_t = float(rec[0])
+        _fired_t = float(rec[1])
+        _source_jct = int(rec[2]) if len(rec) >= 3 else int(self._wave_origin)
+        _algo = str(rec[3]) if len(rec) >= 4 else str(COORDINATION_ALGO)
         self._prearm_stats["success"] += 1
         eta_err_s = float(actual_t) - float(eta_t)
         self._prearm_stats["eta_errors_s"].append(eta_err_s)
@@ -2651,11 +2980,28 @@ class CorridorCoordinator:
             self._prearm_stats["late_success_delay_s"] += eta_err_s
         _record_wave_event(
             actual_t, self.name, "prearm_success",
-            source_jct=self._wave_origin,
+            source_jct=_source_jct,
             target_jct=inter_id,
             veh_id=veh_id,
             eta_s=eta_err_s,
             note=("late" if eta_err_s > 0.0 else "on_time_or_early"),
+            algo=_algo,
+        )
+        _xy = (_jct_xy_cache or {}).get(inter_id, (0.0, 0.0))
+        _mark_detection_point(
+            inter_id, veh_id, _xy[0], _xy[1], actual_t,
+            f"coord-prearm-success/{COORDINATION_ALGO}",
+            {
+                "force_write": True,
+                "prearm_status": "success",
+                "prearm_eta_s": round(max(0.0, float(eta_t) - float(_fired_t)), 1),
+                "prearm_eta_abs_s": round(float(eta_t), 1),
+                "prearm_fired_t": round(float(_fired_t), 1),
+                "prearm_resolved_t": round(float(actual_t), 1),
+                "prearm_note": (
+                    f"{_algo}:late" if eta_err_s > 0.0 else f"{_algo}:on_time_or_early"
+                ),
+            },
         )
 
     # ------------------------------------------------------------------
@@ -2663,19 +3009,36 @@ class CorridorCoordinator:
         """Close unresolved fired pre-arms as misses after ETA grace period."""
         grace_s = 30.0
         stale = []
-        for key, (eta_t, _fired_t) in self._fired_prearms.items():
+        for key, rec in self._fired_prearms.items():
+            eta_t = float(rec[0])
+            _fired_t = float(rec[1])
+            _source_jct = int(rec[2]) if len(rec) >= 3 else int(self._wave_origin)
+            _algo = str(rec[3]) if len(rec) >= 4 else str(COORDINATION_ALGO)
             if time > eta_t + grace_s:
-                stale.append(key)
-        for key in stale:
+                stale.append((key, eta_t, _source_jct, _algo))
+        for key, eta_t, _source_jct, _algo in stale:
             inter_id, veh_id = key
             self._fired_prearms.pop(key, None)
             self._prearm_stats["missed"] += 1
             _record_wave_event(
                 time, self.name, "prearm_missed",
-                source_jct=self._wave_origin,
+                source_jct=_source_jct,
                 target_jct=inter_id,
                 veh_id=veh_id,
                 note="arrival_after_eta_grace",
+                algo=_algo,
+            )
+            _xy = (_jct_xy_cache or {}).get(inter_id, (0.0, 0.0))
+            _mark_detection_point(
+                inter_id, veh_id, _xy[0], _xy[1], time,
+                f"coord-prearm-missed/{COORDINATION_ALGO}",
+                {
+                    "force_write": True,
+                    "prearm_status": "missed",
+                    "prearm_eta_abs_s": round(float(eta_t), 1),
+                    "prearm_resolved_t": round(float(time), 1),
+                    "prearm_note": f"{_algo}:arrival_after_eta_grace",
+                },
             )
 
     # ------------------------------------------------------------------
@@ -2730,6 +3093,15 @@ class CorridorCoordinator:
                                 f"jct={at_inter_id} → {targets} (from PT route)"
                             )
                         return targets
+                    # Bus line is known but this junction is not on that route.
+                    # Do NOT fall back to geographic targets, otherwise prearms can
+                    # jump to unrelated intersections.
+                    if LOG_CORRIDOR:
+                        log_to_file(
+                            f"[PT-ROUTE MISMATCH] bus={veh_id} line={line_id} "
+                            f"jct={at_inter_id} not in route — suppress prearm"
+                        )
+                    return []
 
         # ── Fallback tier 2: observed-route targeting ─────────────────────────
         # Use the per-bus zone-enter history (_bus_observed_jcts) to determine
@@ -2791,7 +3163,7 @@ class CorridorCoordinator:
             except ValueError:
                 return []
             if is_northbound:
-                return self.inter_ids[my_idx + 1:my_idx + 2]   # next 1 only
+                return self.inter_ids[my_idx + 1:my_idx + 2]
             lo = max(0, my_idx - 1)
             return list(reversed(self.inter_ids[lo:my_idx]))
 
@@ -2898,6 +3270,21 @@ class CorridorCoordinator:
         # If this junction had an active pre-arm record for this bus, mark outcome.
         self._record_prearm_success(at_inter_id, veh_id, time)
 
+        # Debounce grant spam from repeated natural-green checks at the same
+        # junction. Without this, the same bus can retrigger notify_bus_granted()
+        # every step and create contradictory direction flips + out-of-order
+        # downstream pre-arms in the dashboard.
+        _notify_key = (int(veh_id), int(at_inter_id))
+        _last_notify_t = self._last_grant_notify_t.get(_notify_key, -9999.0)
+        if (time - _last_notify_t) < 8.0:
+            if LOG_CORRIDOR:
+                log_to_file(
+                    f"[CORRIDOR DEDUP] suppress notify bus={veh_id} jct={at_inter_id} "
+                    f"dt={time - _last_notify_t:.1f}s"
+                )
+            return
+        self._last_grant_notify_t[_notify_key] = float(time)
+
         # ── Compute and log green-wave offset from previous junction ────────────────
         _bus_grants = self._grant_times.setdefault(veh_id, {})
         _at_idx = self._route_index.get(at_inter_id, -1)
@@ -2908,44 +3295,61 @@ class CorridorCoordinator:
         ]
         if _prev_candidates:
             _, _prev_jct, _prev_t = max(_prev_candidates, key=lambda x: x[0])
-            _offset_s = time - _prev_t
-            _dist_m   = abs(at_pos - (self.corridor_pos.get(_prev_jct) or at_pos))
-            log_to_file(
-                f"[GREEN_OFFSET] bus={veh_id} "
-                f"jct{_prev_jct}->{at_inter_id} "
-                f"offset={_offset_s:.1f}s dist={_dist_m:.0f}m "
-                f"(grant_prev={_prev_t:.1f}s grant_now={time:.1f}s)",
-                force=True)
-            # Append to offset CSV
-            try:
-                global _offset_header_written
-                import csv as _csv_mod
-                _row_off = {
-                    'sim_time_s': round(time, 1),
-                    'experiment': _CURRENT_EXPERIMENT,
-                    'group':      self.name,
-                    'veh_id':     veh_id,
-                    'from_jct':   _prev_jct,
-                    'to_jct':     at_inter_id,
-                    'offset_s':   round(_offset_s, 2),
-                    'dist_m':     round(_dist_m, 1),
-                    'speed_est_ms': round(_dist_m / max(_offset_s, 0.1), 2),
-                    'grant_from_t': round(_prev_t, 1),
-                    'grant_to_t':   round(time, 1),
-                }
-                _write_hdr = not _offset_header_written
-                with open(_OFFSET_CSV, 'a', newline='') as _f_off:
-                    _w = _csv_mod.DictWriter(_f_off, fieldnames=list(_row_off.keys()))
-                    if _write_hdr:
-                        _w.writeheader()
-                        _offset_header_written = True
-                    _w.writerow(_row_off)
-            except Exception as _oe:
-                log_to_file(f"[OFFSET CSV] write failed: {_oe}")
+            _offset_s  = time - _prev_t
+            # Fix: corridor_pos for the first junction is 0.0 (falsy), so use
+            # an explicit None-check instead of `or at_pos`.
+            _prev_pos = self.corridor_pos.get(_prev_jct)
+            _dist_m   = abs(at_pos - (_prev_pos if _prev_pos is not None else at_pos))
+            # Speed sanity: if implied speed >25 m/s (90 km/h) or offset <5 s,
+            # this is almost certainly a wave/pre-arm grant, not an actual traversal.
+            _speed_est = _dist_m / max(_offset_s, 0.1)
+            _quality   = ("wave/pre-arm" if (_offset_s < 5.0 or _speed_est > 25.0)
+                          else "observed")
+            # Suppress duplicate log rows: only log if grant time changed since last log.
+            _log_key = (veh_id, at_inter_id)
+            _last_logged_t = self._last_offset_logged.get(_log_key, -999.0)
+            _should_log = (abs(time - _last_logged_t) > 1.0)
+            if _should_log:
+                self._last_offset_logged[_log_key] = time
+                log_to_file(
+                    f"[GREEN_OFFSET] bus={veh_id} "
+                    f"jct{_prev_jct}->{at_inter_id} "
+                    f"offset={_offset_s:.1f}s dist={_dist_m:.0f}m "
+                    f"speed={_speed_est:.1f}m/s [{_quality}] "
+                    f"(grant_prev={_prev_t:.1f}s grant_now={time:.1f}s)",
+                    force=True)
+                # Append to offset CSV
+                try:
+                    global _offset_header_written
+                    import csv as _csv_mod
+                    _row_off = {
+                        'sim_time_s': round(time, 1),
+                        'experiment': _CURRENT_EXPERIMENT,
+                        'group':      self.name,
+                        'veh_id':     veh_id,
+                        'from_jct':   _prev_jct,
+                        'to_jct':     at_inter_id,
+                        'offset_s':   round(_offset_s, 2),
+                        'dist_m':     round(_dist_m, 1),
+                        'speed_est_ms': round(_speed_est, 2),
+                        'quality':    _quality,
+                        'grant_from_t': round(_prev_t, 1),
+                        'grant_to_t':   round(time, 1),
+                    }
+                    _write_hdr = not _offset_header_written
+                    with open(_OFFSET_CSV, 'a', newline='') as _f_off:
+                        _w = _csv_mod.DictWriter(_f_off, fieldnames=list(_row_off.keys()))
+                        if _write_hdr:
+                            _w.writeheader()
+                            _offset_header_written = True
+                        _w.writerow(_row_off)
+                except Exception as _oe:
+                    log_to_file(f"[OFFSET CSV] write failed: {_oe}")
         _bus_grants[at_inter_id] = time
 
         # Update (or create) Kalman tracker for this vehicle
         tracker = self._trackers.get(veh_id)
+        _tracker_is_new = (tracker is None)
         if tracker is None:
             tracker = BusKalmanTracker(initial_pos_m=at_pos)
             self._trackers[veh_id] = tracker
@@ -2976,6 +3380,26 @@ class CorridorCoordinator:
             # First detection in this corridor — assume northbound (positive velocity)
             is_northbound = (tracker.x[1] >= 0)
         tracker._prev_inter_idx = my_idx
+
+        # ── Prearm pass-gate: only queue downstream prearms if bus speed is healthy ──────────
+        # When notify_bus_granted() is called, the bus has just ARRIVED at at_inter_id
+        # (it won the green wave, received TSP, or got natural green). At this moment,
+        # the bus might still be accelerating from the stop line.  If we immediately
+        # queue prearms for junction[next] based on kinematic ETA, the prearm fires
+        # before the bus has left junction[at_inter_id], creating a "too early" prearm.
+        #
+        # Gate: Only queue prearms if:
+        #   1. This is NOT the first time we see this bus (tracker existed before), OR
+        #   2. The tracker's speed estimate is > 4 m/s (bus actively traveling, not stopped)
+        #
+        # This ensures prearms queue only after the bus has demonstrated movement.
+        _bus_speed_ms = abs(tracker.x[1])
+        _should_queue_prearms = (not _tracker_is_new) or (_bus_speed_ms > 4.0)
+        if not _should_queue_prearms and LOG_CORRIDOR:
+            log_to_file(
+                f"[PREARM GATE] bus={veh_id} jct={at_inter_id} speed={_bus_speed_ms:.1f}m/s — "
+                f"skip queuing prearms (bus still accelerating at stop line)"
+            )
 
         if LOG_CORRIDOR:
             _dir_tag = "NB" if is_northbound else "SB"
@@ -3017,7 +3441,44 @@ class CorridorCoordinator:
                     f"served={self._wave_served_ids}"
                 )
 
-        for next_id in self._iter_managed_targets(at_inter_id, is_northbound, veh_id=veh_id):
+        _allowed_targets = set(self._iter_managed_targets(at_inter_id, is_northbound, veh_id=veh_id)[:1])
+        
+        # ── Strict guard: ensure only the immediate next junction gets prearms ──
+        # CRITICAL: Prearms should ONLY be queued for the immediate next managed junction.
+        # If somehow more than one target is selected, this is a bug and must be logged.
+        if len(_allowed_targets) > 1:
+            log_to_file(
+                f"[PREARM GUARD ERROR] bus={veh_id} from_jct={at_inter_id} "
+                f"_allowed_targets has {len(_allowed_targets)} targets: {_allowed_targets} "
+                f"— should be exactly 1 or 0. Limiting to first target only.",
+                force=True
+            )
+            _allowed_targets = set(list(_allowed_targets)[:1])
+        
+        if self._pre_requests:
+            _removed_targets = []
+            for _tid, _req in list(self._pre_requests.items()):
+                try:
+                    _r_veh = int(_req[0])
+                except Exception:
+                    _r_veh = -1
+                if _r_veh != int(veh_id):
+                    continue
+                if _tid in _allowed_targets:
+                    continue
+                del self._pre_requests[_tid]
+                _removed_targets.append(int(_tid))
+
+            for _old_tid in _removed_targets:
+                _record_wave_event(
+                    time, self.name, "prearm_superseded",
+                    source_jct=at_inter_id,
+                    target_jct=_old_tid,
+                    veh_id=veh_id,
+                    note="grant advanced to immediate next target",
+                )
+
+        for next_id in _allowed_targets:
             next_pos = self.corridor_pos.get(next_id)
             # Sanity check: target must be in direction of travel
             if next_pos is None:
@@ -3026,6 +3487,18 @@ class CorridorCoordinator:
                 continue   # next junction must be north (larger pos)
             if not is_northbound and next_pos >= at_pos:
                 continue   # next junction must be south (smaller pos)
+            
+            # ── Apply prearm pass-gate ───────────────────────────────────
+            # Skip queuing prearms if bus speed indicates it hasn't cleared the stop line.
+            # This prevents prearms from firing before the bus has actually entered the corridor.
+            if not _should_queue_prearms:
+                if LOG_CORRIDOR:
+                    log_to_file(
+                        f"[PREARM GATE SKIP] bus={veh_id} from={at_inter_id} to={next_id} "
+                        f"speed={_bus_speed_ms:.1f}m/s ≤ 4.0 threshold"
+                    )
+                continue
+            
             # Signal-aware ETA: chains through intermediate junctions, adding
             # kinematic travel + expected red-wait at each signal encountered
             # before the target.  Falls back to pure kinematic when position data
@@ -3051,8 +3524,8 @@ class CorridorCoordinator:
             # scales with inter-junction distance.  A fixed 35 s threshold blocks ALL
             # pre-arms beyond ~900 m.  Allow sigma up to 50 % of ETA (capped at 60 s
             # floor) so that uncertainty is judged relative to the prediction horizon.
-            _PREARM_SIGMA_FLOOR = float(globals().get('PREARM_MAX_SIGMA_S', 60.0) or 60.0)
-            _PREARM_MAX_SIGMA = max(_PREARM_SIGMA_FLOOR, 0.50 * max(_eta_from_now, 0.0))
+            _PREARM_SIGMA_FLOOR = float(globals().get('PREARM_MAX_SIGMA_S', 120.0) or 120.0)
+            _PREARM_MAX_SIGMA = max(_PREARM_SIGMA_FLOOR, 0.80 * max(_eta_from_now, 0.0))
             if sigma > _PREARM_MAX_SIGMA:
                 # Lift the wave ban for this junction so it can run its own
                 # independent detection rather than wait for a stale prearm.
@@ -3074,11 +3547,44 @@ class CorridorCoordinator:
                         f"sigma={sigma:.1f}s > {_PREARM_MAX_SIGMA:.0f}s — prediction too uncertain"
                     )
                 continue
-            # Don't queue prearms where the bus is more than 2 cycles away —
-            # by the time it fires the ETA will be very stale.
+            # Don't queue prearms where the bus is more than ~90 s away —
+            # beyond that the ETA is too stale and produces prearms that fire
+            # at junctions the bus won't reach for 6+ minutes.
+            # Use MAX_PREARM_HORIZON_S global if set, otherwise default to 90 s
+            # (same cap used in _process_pre_requests).
             _max_prearm_horizon_s = float(
-                getattr(self, '_max_prearm_horizon_s', float(globals().get('MAX_PREARM_HORIZON_S', 240.0) or 240.0))
+                getattr(self, '_max_prearm_horizon_s', float(globals().get('MAX_PREARM_HORIZON_S', 90.0) or 90.0))
             )
+            # Route-order guard: refuse to prearm a junction that the bus has
+            # already passed.  Compare the target's route-index against the
+            # highest route-index seen in the bus's observed-junction history.
+            # If next_id's index ≤ last observed index the bus is heading away
+            # from it (or already served it) — skip.
+            _next_route_idx = self._route_index.get(next_id, -1)
+            if _next_route_idx >= 0:
+                _obs_jcts = _bus_observed_jcts.get(veh_id, [])
+                if _obs_jcts:
+                    _obs_indices = [self._route_index[j] for j in _obs_jcts if j in self._route_index]
+                    if _obs_indices:
+                        _max_obs_idx = max(_obs_indices)
+                        _min_obs_idx = min(_obs_indices)
+                        # Determine direction from observed history
+                        if is_northbound and _next_route_idx <= _max_obs_idx:
+                            if LOG_CORRIDOR:
+                                log_to_file(
+                                    f"[PREARM SKIP OBS] bus={veh_id} next_id={next_id} "
+                                    f"route_idx={_next_route_idx} <= max_observed={_max_obs_idx} "
+                                    "— bus has already passed this junction, skipping prearm"
+                                )
+                            continue
+                        if not is_northbound and _next_route_idx >= _min_obs_idx:
+                            if LOG_CORRIDOR:
+                                log_to_file(
+                                    f"[PREARM SKIP OBS] bus={veh_id} next_id={next_id} "
+                                    f"route_idx={_next_route_idx} >= min_observed={_min_obs_idx} "
+                                    "— bus has already passed this junction (SB), skipping prearm"
+                                )
+                            continue
             if _eta_from_now > _max_prearm_horizon_s:
                 _skip_key_horizon = (at_inter_id, next_id, "horizon")
                 if _skip_key_horizon not in self._prearm_skip_logged_jcts:
@@ -3126,7 +3632,7 @@ class CorridorCoordinator:
             # same downstream junctions causing prearm spam in the wave events CSV.
             _prev_fire = self._fired_prearms.get((next_id, veh_id))
             if _prev_fire is not None:
-                _, _prev_fire_t = _prev_fire
+                _prev_fire_t = float(_prev_fire[1])
                 if time - _prev_fire_t < 150.0:  # 150 s cooldown per (junction, bus)
                     if LOG_CORRIDOR:
                         log_to_file(
@@ -3433,6 +3939,23 @@ class CorridorCoordinator:
         return -1
 
     # ------------------------------------------------------------------
+    def _has_passed_source_jct(self, veh_id: int, source_jct: int,
+                               is_northbound: bool, min_pass_m: float = 25.0) -> bool:
+        """True when tracker position is at least min_pass_m past source_jct."""
+        trk = self._trackers.get(veh_id)
+        src_pos = self.corridor_pos.get(source_jct)
+        if trk is None or src_pos is None:
+            return False
+        try:
+            pos_m = float(trk.x[0])
+            pass_m = max(5.0, float(min_pass_m))
+        except Exception:
+            return False
+        if is_northbound:
+            return pos_m >= (float(src_pos) + pass_m)
+        return pos_m <= (float(src_pos) - pass_m)
+
+    # ------------------------------------------------------------------
     def _process_pre_requests(self, time: float, timeSta: float):
         """Fire pre-green requests when the bus is within the algorithm's lead time."""
         for inter_id, req in list(self._pre_requests.items()):
@@ -3442,10 +3965,59 @@ class CorridorCoordinator:
                 veh_id, eta_t, bus_sg, issued_t = req
                 source_jct = -1
 
-            # Re-evaluate immediate-next target at fire time using current
-            # Kalman state. This prevents stale long-range prearms while
-            # retaining global corridor prediction knowledge.
-            expected_next = self._next_managed_target_from_tracker(veh_id)
+            # Enforce that prearms always retain a valid source junction context.
+            # Requests without source are unsafe to retarget/fire and can jump route.
+            if source_jct <= 0:
+                if LOG_CORRIDOR:
+                    log_to_file(
+                        f"[PREARM DROP] jct={inter_id} bus={veh_id} "
+                        f"missing source_jct (legacy/invalid request)"
+                    )
+                del self._pre_requests[inter_id]
+                continue
+
+            # If PT line is known, ensure source_jct belongs to that line route.
+            _line_id = _bus_line_id.get(veh_id, -1)
+            _line_route = _pt_line_jct_route.get(_line_id) if _line_id > 0 else None
+            if _line_route and source_jct not in _line_route:
+                if LOG_CORRIDOR:
+                    log_to_file(
+                        f"[PREARM DROP] jct={inter_id} bus={veh_id} src={source_jct} "
+                        f"not on PT route line={_line_id}"
+                    )
+                del self._pre_requests[inter_id]
+                continue
+
+            _tracker_live = self._trackers.get(veh_id)
+            _is_nb = True
+            if _tracker_live is not None:
+                try:
+                    _is_nb = float(_tracker_live.x[1]) >= 0.0
+                except Exception:
+                    _is_nb = True
+
+            # Re-evaluate immediate-next target at fire time using intended
+            # route first (PT route / observed route), then tracker fallback.
+            expected_next = -1
+            if source_jct > 0:
+                _intended = self._iter_managed_targets(source_jct, _is_nb, veh_id=veh_id)
+                if _intended:
+                    expected_next = int(_intended[0])
+            if expected_next <= 0:
+                expected_next = self._next_managed_target_from_tracker(veh_id)
+
+            # Hard gate: do not fire downstream prearm until the bus has physically
+            # moved past the source junction that queued this request.
+            _pass_gate_m = float(globals().get('PREARM_SOURCE_PASS_M', 25.0) or 25.0)
+            if source_jct > 0 and _tracker_live is not None:
+                if not self._has_passed_source_jct(veh_id, source_jct, _is_nb, _pass_gate_m):
+                    if LOG_CORRIDOR:
+                        log_to_file(
+                            f"[PREARM HOLD] bus={veh_id} src={source_jct} tgt={inter_id} "
+                            f"waiting_pass>{_pass_gate_m:.0f}m before fire"
+                        )
+                    continue
+
             if expected_next > 0 and expected_next != inter_id:
                 if LOG_CORRIDOR:
                     log_to_file(
@@ -3583,6 +4155,74 @@ class CorridorCoordinator:
                 if abs(float(lead_s) - float(self.PRE_GREEN_LEAD_S)) > 0.1:
                     self._algo_diag["adaptive_dynamic_count"] = int(self._algo_diag.get("adaptive_dynamic_count", 0) or 0) + 1
 
+            # ── Refresh ETA from live Kalman before fire check ─────────────
+            # The stored eta_t was computed at queue time.  If the tracker has
+            # been updated since then, use its current estimate so the fire
+            # condition reacts to the bus's actual progress.  This prevents
+            # prearms firing when the bus is already at (or past) the target.
+            _tracker_live_pre = self._trackers.get(veh_id)
+            _target_pos_pre   = self.corridor_pos.get(inter_id)
+            if _tracker_live_pre is not None and _target_pos_pre is not None:
+                try:
+                    _refreshed_eta = _tracker_live_pre.eta(_target_pos_pre, time)
+                    if _refreshed_eta is not None:
+                        _prev_eta_t = float(eta_t)
+                        eta_t = float(_refreshed_eta)
+                        # Keep queued request ETA aligned to the latest tracker
+                        # estimate so fire/horizon checks don't act on stale ETA.
+                        if abs(eta_t - _prev_eta_t) > 0.5 and inter_id in self._pre_requests:
+                            self._pre_requests[inter_id] = (
+                                veh_id, eta_t, bus_sg, issued_t, source_jct
+                            )
+                            if LOG_CORRIDOR:
+                                log_to_file(
+                                    f"[PREARM ETA REFRESH] jct={inter_id} bus={veh_id} "
+                                    f"eta_in {_prev_eta_t - time:.1f}s -> {eta_t - time:.1f}s"
+                                )
+                except Exception:
+                    pass
+
+            # Re-apply horizon gate after ETA refresh so requests that moved far
+            # out in time do not fire too early with stale queue-time ETA.
+            if (eta_t - time) > _max_prearm_horizon_s:
+                del self._pre_requests[inter_id]
+                self._record_prearm_discarded(inter_id)
+                _record_wave_event(
+                    time, self.name, "prearm_discarded",
+                    source_jct=source_jct,
+                    target_jct=inter_id,
+                    veh_id=veh_id,
+                    eta_s=max(0.0, eta_t - time),
+                    note=f"over_horizon_refreshed>{_max_prearm_horizon_s:.0f}s",
+                )
+                continue
+
+            # Discard prearm if the bus is already too close to benefit.
+            # With < MIN_PREARM_LEAD_S lead time the downstream signal cannot
+            # finish its current phase and enter the bus phase in time.
+            _min_prearm_lead_s = float(
+                getattr(self, 'MIN_EFFECTIVE_PREARM_LEAD_S',
+                        globals().get('MIN_EFFECTIVE_PREARM_LEAD_S', 10.0) or 10.0)
+            )
+            if eta_t - time < _min_prearm_lead_s:
+                del self._pre_requests[inter_id]
+                self._prearm_stats.setdefault("too_late_to_act", 0)
+                self._prearm_stats["too_late_to_act"] += 1
+                _record_wave_event(
+                    time, self.name, "prearm_discarded",
+                    source_jct=source_jct,
+                    target_jct=inter_id,
+                    veh_id=veh_id,
+                    eta_s=max(0.0, eta_t - time),
+                    note="too_late_to_act",
+                )
+                if LOG_CORRIDOR:
+                    log_to_file(
+                        f"[PREARM TOO LATE] jct={inter_id} bus={veh_id} "
+                        f"eta_in={eta_t - time:.1f}s < min={_min_prearm_lead_s:.0f}s — discarded"
+                    )
+                continue
+
             if eta_t - time <= lead_s:
                 # ── Revalidate ETA with current Kalman state ──────────
                 # The prearm was queued earlier — recheck that the tracker
@@ -3593,7 +4233,7 @@ class CorridorCoordinator:
                 _target_pos   = self.corridor_pos.get(inter_id)
                 if _tracker_live is not None and _target_pos is not None:
                     try:
-                        _live_eta = _tracker_live.eta(_target_pos)
+                        _live_eta = _tracker_live.eta(_target_pos, time)
                         if _live_eta is not None and _live_eta > eta_t + 30.0:
                             if LOG_CORRIDOR:
                                 log_to_file(
@@ -3642,7 +4282,12 @@ class CorridorCoordinator:
                         # Lift the wave ban for this junction: it is now reacting
                         # to coordination, not acting independently.
                         self._wave_served_ids.add(inter_id)
-                        self._record_prearm_fired(inter_id, veh_id, eta_t, time)
+                        self._record_prearm_fired(
+                            inter_id, veh_id, eta_t, time,
+                            source_jct=source_jct,
+                            algo=COORDINATION_ALGO,
+                            lead_reason=lead_reason,
+                        )
                         # Use the bus's live position (from position tracker) so
                         # prearm marks show WHERE the bus was when the prearm
                         # fired, not where the downstream junction is.  This
@@ -3657,7 +4302,15 @@ class CorridorCoordinator:
                                 _prearm_x, _prearm_y = _junc_xy_fb
                         _mark_detection_point(
                             inter_id, veh_id, _prearm_x, _prearm_y,
-                            time, f"coord-prearm/{COORDINATION_ALGO}"
+                            time, f"coord-prearm/{COORDINATION_ALGO}",
+                            {
+                                "force_write": True,
+                                "prearm_status": "fired",
+                                "prearm_eta_s": round(max(0.0, eta_t - time), 1),
+                                "prearm_eta_abs_s": round(float(eta_t), 1),
+                                "prearm_fired_t": round(float(time), 1),
+                                "prearm_note": lead_reason,
+                            },
                         )
                         if LOG_CORRIDOR:
                             _vprint(
@@ -3673,7 +4326,12 @@ class CorridorCoordinator:
                     if ic._harmony_prearm is None:
                         ic._harmony_prearm = (veh_id, eta_t, time)
                         self._wave_served_ids.add(inter_id)
-                        self._record_prearm_fired(inter_id, veh_id, eta_t, time)
+                        self._record_prearm_fired(
+                            inter_id, veh_id, eta_t, time,
+                            source_jct=source_jct,
+                            algo=COORDINATION_ALGO,
+                            lead_reason=lead_reason,
+                        )
                         # Same as GB path: mark bus's live position, not junction.
                         _bus_live_xy_h = _bus_xy.get(veh_id)
                         _prearm_hx = _bus_live_xy_h[0] if _bus_live_xy_h else 0.0
@@ -3687,7 +4345,15 @@ class CorridorCoordinator:
                                 pass
                         _mark_detection_point(
                             inter_id, veh_id, _prearm_hx, _prearm_hy,
-                            time, f"coord-prearm-harmony/{COORDINATION_ALGO}"
+                            time, f"coord-prearm-harmony/{COORDINATION_ALGO}",
+                            {
+                                "force_write": True,
+                                "prearm_status": "fired",
+                                "prearm_eta_s": round(max(0.0, eta_t - time), 1),
+                                "prearm_eta_abs_s": round(float(eta_t), 1),
+                                "prearm_fired_t": round(float(time), 1),
+                                "prearm_note": lead_reason,
+                            },
                         )
                         if LOG_CORRIDOR:
                             _vprint(
@@ -3728,7 +4394,7 @@ class CorridorCoordinator:
             if iid != self._wave_origin
         )
 
-        if not pending and not any_coord_pending:
+        if not pending and not any_coord_pending and not any_harmony_pending:
             self._wave_active     = False
             self._wave_veh_id     = -1
             self._wave_origin     = -1
@@ -3772,7 +4438,7 @@ class CorridorCoordinator:
         # previous junction.  As the bus travels (tracker advances above) and
         # queue conditions change, the ETA shifts.  Refresh it every
         # _ETA_REFRESH_INTERVAL_S so the timing window fires at the right moment.
-        _ETA_REFRESH_INTERVAL_S = 5.0
+        _ETA_REFRESH_INTERVAL_S = 1.0
         if COORDINATED_TSP and self._pre_requests:
             _refresh_due = time - getattr(self, '_last_eta_refresh_t', -999.0) >= _ETA_REFRESH_INTERVAL_S
             if _refresh_due:
@@ -5707,11 +6373,31 @@ class IntersectionController:
         jx = jy = None
         if junc_xy is not None:
             jx, jy = junc_xy
+        _bus_type_is_provisional = bool(globals().get('_bus_type_provisional', False))
 
         _prev_presence = int(self.BusPresence[0][0]) if len(self.BusPresence[0]) else 0
 
         def _hit(veh_id, speed_kph, hit_x=None, hit_y=None):
             speed_ms = max(speed_kph / 3.6, 0.5)
+            if jx is not None and hit_x is not None and _jct_xy_cache:
+                try:
+                    _self_dist = math.sqrt((float(hit_x) - jx) ** 2 + (float(hit_y) - jy) ** 2)
+                    _nearest_jid, _nearest_dist = min(
+                        (
+                            (int(_jid), math.sqrt((float(hit_x) - float(_xy[0])) ** 2 + (float(hit_y) - float(_xy[1])) ** 2))
+                            for _jid, _xy in _jct_xy_cache.items()
+                            if _xy is not None and len(_xy) >= 2
+                        ),
+                        key=lambda _item: _item[1],
+                    )
+                    # Only let the nearest junction claim the live IC-detect.
+                    # This suppresses overlapping-junction artefacts where one
+                    # bus position creates simultaneous detections several
+                    # hundred metres upstream of multiple intersections.
+                    if _nearest_jid != self.id and (_self_dist - _nearest_dist) > 25.0:
+                        return
+                except Exception:
+                    pass
             self.BusPresence[0][0]    = 1
             self.BusSpeed[0][0]       = speed_ms
             self.last_detected_bus_id = veh_id
@@ -5775,7 +6461,7 @@ class IntersectionController:
                     if inf.report < 0:
                         continue
                     seen.add(veh_id)
-                    if inf.type != self.bus_type_pos:
+                    if self.bus_type_pos > 0 and not _bus_type_is_provisional and inf.type != self.bus_type_pos:
                         continue
 
                     if jx is not None:
@@ -5842,7 +6528,7 @@ class IntersectionController:
                         inf = AKIVehStateGetVehicleInfSection(sec_id, vi)
                         if inf.idVeh in seen:
                             continue
-                        if inf.type == self.bus_type_pos:
+                        if self.bus_type_pos <= 0 or _bus_type_is_provisional or inf.type == self.bus_type_pos:
                             _hit(inf.idVeh, inf.CurrentSpeed)
                             break
                 except Exception:
@@ -6333,6 +7019,14 @@ class IntersectionController:
         best_reward = reward_no_action
         best_ge = 0.0
 
+        # Per-cycle reward log: accumulate one row per candidate, write once at end.
+        _reward_rows = []
+        # NO_ACTION: reward = -α·bus_cost; no savings on others; store baseline bus cost
+        # in bus_saved_pax_s as a negative (cost, not saving) so analysts can read it.
+        _reward_rows.append((
+            "NO_ACTION", reward_no_action,
+            -no_action_bus_cost, 0.0, 0.0))  # bus_saved<0 encodes the baseline bus cost
+
         log_to_file(
             f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
             f"eta={bus_eta_s:.1f}s phase={current_phase} "
@@ -6358,6 +7052,7 @@ class IntersectionController:
                 reward = (REWARD_ALPHA * bus_saved
                           - REWARD_BETA * other_inc
                           - REWARD_GAMMA * side_inc)
+                _reward_rows.append((f"GE_{ge_s:.0f}", reward, bus_saved, other_inc, side_inc))
 
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} "
@@ -6378,6 +7073,7 @@ class IntersectionController:
             reward_ins = (REWARD_ALPHA * bus_saved
                           - REWARD_BETA * other_inc
                           - REWARD_GAMMA * side_inc)
+            _reward_rows.append((f"INS_{ins_dur:.0f}", reward_ins, bus_saved, other_inc, side_inc))
 
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} "
@@ -6389,6 +7085,36 @@ class IntersectionController:
                 best_reward = reward_ins
                 best_action = "INS"
                 best_ge = ins_dur
+
+        # ── Write per-cycle reward CSV ────────────────────────────────────────
+        global _reward_cycle_header_written
+        try:
+            _upflow_bus  = round(float(self.UpFlowList[0][0]), 1)  if self.UpFlowList.shape[1]  > 0 else 0.0
+            _maxq_bus    = round(float(self.MaxQueueLength[0][0]), 1) if self.MaxQueueLength.shape[1] > 0 else 0.0
+            _reddur_bus  = round(float(self.RedDurationList[0][0]), 1) if self.RedDurationList.shape[1] > 0 else 0.0
+            with open(_REWARD_CYCLE_CSV, "a", newline="", encoding="utf-8") as _rcf:
+                import csv as _csv_mod
+                _rcw = _csv_mod.writer(_rcf)
+                if not _reward_cycle_header_written:
+                    _rcw.writerow([
+                        "sim_time_s", "junction_id", "veh_id", "bus_eta_s",
+                        "current_phase", "action",
+                        "reward", "bus_saved_pax_s", "other_inc_pax_s", "side_inc_pax_s",
+                        "is_chosen",
+                        "upflow_bus_vph", "max_queue_bus_veh", "red_dur_bus_s",
+                    ])
+                    _reward_cycle_header_written = True
+                for _act, _r, _bs, _oi, _si in _reward_rows:
+                    _rcw.writerow([
+                        round(time, 1), self.id, int(veh_id or -1),
+                        round(bus_eta_s, 1), current_phase,
+                        _act,
+                        round(_r, 3), round(_bs, 3), round(_oi, 3), round(_si, 3),
+                        1 if _act == best_action else 0,
+                        _upflow_bus, _maxq_bus, _reddur_bus,
+                    ])
+        except Exception as _rce:
+            log_to_file(f"[REWARD_CYCLE_CSV] write error: {_rce}")
 
         # ── Record detection (debounce-guarded) ──────────────────────────────
         if stats_ok:
@@ -6698,7 +7424,34 @@ class IntersectionController:
             )
 
     def restore_phase_if_needed(self, time, timeSta, acycle):
+        global _focus_bus_id, _focus_jct_id, _focus_passed_jcts
         current_phase = ECIGetCurrentPhase(self.node_id)
+
+        # ── Safety restore: force nominal plan at cycle boundary ────────────
+        # If a prior recovery/update path missed restoration bookkeeping,
+        # this guard reasserts nominal durations when BusPhase starts.
+        # It prevents permanent drift of phase durations across cycles.
+        if current_phase == self.BusPhase:
+            if not getattr(self, '_nominal_safety_restore_fired', False):
+                _n_safety = 0
+                for _ph, _nom in (self._nominal_phase_durations or {}).items():
+                    try:
+                        _cur = float(GetPhaseDuration(self.node_id, _ph, timeSta) or 0.0)
+                    except Exception:
+                        _cur = float(_nom)
+                    if abs(_cur - float(_nom)) > 0.5:
+                        try:
+                            ECIChangeTimingPhase(self.node_id, _ph, float(_nom), timeSta)
+                            _n_safety += 1
+                        except Exception:
+                            pass
+                if _n_safety > 0:
+                    log_to_file(
+                        f"[HARMONY] Nominal safety restore inter={self.id} restored {_n_safety} phase durations"
+                    )
+                self._nominal_safety_restore_fired = True
+        else:
+            self._nominal_safety_restore_fired = False
 
         # ── Restore phases trimmed by cycle recovery in the PREVIOUS cycle ───
         # When BusPhase next becomes current (start of a new cycle) we reset
@@ -6739,8 +7492,31 @@ class IntersectionController:
                 self.flag        = 0
                 self.TSPStrategy = 0
                 self.reset_bus_color(self.last_detected_bus_id)
-                # ── Release global bus focus ──────────────────────────────
-                _release_focus(time, "harmony_ge_done")
+                # ── Release global bus focus (only when wave truly idle) ───
+                _defer_focus_release = False
+                if self._corridor_coord is not None and COORDINATED_TSP:
+                    try:
+                        _same_focus_bus = (
+                            _focus_bus_id > 0
+                            and int(self.last_detected_bus_id or -1) == int(_focus_bus_id)
+                        )
+                        _coord_has_pending = (
+                            bool(getattr(self._corridor_coord, '_pre_requests', {}))
+                            or bool(getattr(self._corridor_coord, '_wave_active', False))
+                        )
+                        _defer_focus_release = _same_focus_bus and _coord_has_pending
+                    except Exception:
+                        _defer_focus_release = False
+                if _defer_focus_release:
+                    if _focus_jct_id >= 0 and _focus_jct_id != self.id:
+                        _focus_passed_jcts.add(_focus_jct_id)
+                    _focus_jct_id = self.id
+                    if LOG_HARMONY:
+                        _vprint(
+                            f"[BUS_FOCUS] t={time:.1f} inter={self.id} "
+                            f"defer release after GE (downstream wave pending)")
+                else:
+                    _release_focus(time, "harmony_ge_done")
                 # ── Cycle recovery: spread the GE debt across remaining phases
                 self._apply_cycle_recovery(timeSta)
                 if LOG_HARMONY:
@@ -6768,7 +7544,30 @@ class IntersectionController:
                         timeSta, time, acycle, 0)
                 self.flag        = 0
                 self.TSPStrategy = 0
-                _release_focus(time, "harmony_ins_done")
+                _defer_focus_release = False
+                if self._corridor_coord is not None and COORDINATED_TSP:
+                    try:
+                        _same_focus_bus = (
+                            _focus_bus_id > 0
+                            and int(self.last_detected_bus_id or -1) == int(_focus_bus_id)
+                        )
+                        _coord_has_pending = (
+                            bool(getattr(self._corridor_coord, '_pre_requests', {}))
+                            or bool(getattr(self._corridor_coord, '_wave_active', False))
+                        )
+                        _defer_focus_release = _same_focus_bus and _coord_has_pending
+                    except Exception:
+                        _defer_focus_release = False
+                if _defer_focus_release:
+                    if _focus_jct_id >= 0 and _focus_jct_id != self.id:
+                        _focus_passed_jcts.add(_focus_jct_id)
+                    _focus_jct_id = self.id
+                    if LOG_HARMONY:
+                        _vprint(
+                            f"[BUS_FOCUS] t={time:.1f} inter={self.id} "
+                            f"defer release after INS (downstream wave pending)")
+                else:
+                    _release_focus(time, "harmony_ins_done")
                 # ── Cycle recovery: recover the insertion's time cost from
                 # the remaining phases this cycle (same as GE recovery).
                 self._apply_cycle_recovery(timeSta)
@@ -7535,8 +8334,18 @@ class IntersectionController:
                             f"[HARMONY COORD] notify_bus_granted failed "
                             f"inter={self.id} bus={_pa_veh}: {_coord_e}"
                         )
-            # Clear stale or already-expired pre-arms
-            if _eta_from_now < -20.0 or time - _pa_issued_t > 120.0:
+            # Clear stale or already-expired pre-arms.
+            # Use a tight negative tolerance (-5 s) so that once the predicted
+            # ETA has passed (bus should have arrived), the pre-arm is discarded
+            # immediately and local Harmony detection is allowed to take over.
+            # The old -20 s threshold created a deadlock window where the bus
+            # was present but neither the pre-arm fired (eta < 0) nor local
+            # Harmony ran (authority gate still active).
+            _prearm_timeout_s = (
+                float(getattr(self._corridor_coord, 'PRE_REQ_TIMEOUT_S', 90.0))
+                if self._corridor_coord is not None else 90.0
+            )
+            if _eta_from_now < -5.0 or time - _pa_issued_t > _prearm_timeout_s:
                 self._harmony_prearm = None
             elif 0.0 <= _eta_from_now <= getattr(self, '_eta_max_s', 90.0):
                 # ── Fire immediately — no secondary hold ──────────────────────
@@ -7616,6 +8425,16 @@ class IntersectionController:
                                 self.stats.record_tsp_event(self.id, 'detection')
                                 self.stats.record_tsp_event(self.id, 'extension')
                                 self.stats.record_tsp_extension_duration(self.id, float(_prearm_dur))
+                                _mark_detection_point(
+                                    self.id, _pa_veh, 0.0, 0.0, time,
+                                    "harmony-ge-prearm",
+                                    {
+                                        "force_write": True,
+                                        "prearm_status": "action",
+                                        "prearm_eta_s": round(max(0.0, float(_eta_from_now)), 1),
+                                        "prearm_note": f"GE {float(_prearm_dur):.1f}s prearm",
+                                    },
+                                )
                                 if _pa_veh and _pa_veh > 0:
                                     _acquire_focus(_pa_veh, self.id, time)
                                 _notify_coord_prearm_consumed()
@@ -7686,6 +8505,16 @@ class IntersectionController:
                             self.stats.record_tsp_event(self.id, 'insertion')
                             self.stats.record_tsp_insertion_duration(self.id, float(_prearm_dur))
                             self.stats.record_tsp_insertion_wait(self.id, _ins_wait_s)
+                            _mark_detection_point(
+                                self.id, _pa_veh, 0.0, 0.0, time,
+                                "harmony-ins-prearm",
+                                {
+                                    "force_write": True,
+                                    "prearm_status": "action",
+                                    "prearm_eta_s": round(max(0.0, float(_eta_from_now)), 1),
+                                    "prearm_note": f"INS {float(_prearm_dur):.1f}s prearm",
+                                },
+                            )
                             if _pa_veh and _pa_veh > 0:
                                 _acquire_focus(_pa_veh, self.id, time)
                             _notify_coord_prearm_consumed()
@@ -7694,12 +8523,24 @@ class IntersectionController:
                         log_to_file(f"[HARMONY COORD INS] inter={self.id} failed: {_e}")
 
         # ── Pre-arm authority gate ────────────────────────────────────────────
-        # If a coordinator pre-arm is still live (bus en route but not yet in
-        # the fire window), suppress ALL local detection so the pre-arm remains
-        # the sole TSP trigger for this junction.  This prevents local Harmony
-        # Search from inserting/extending independently while the wave is being
-        # orchestrated by the CorridorCoordinator.
-        if getattr(self, '_harmony_prearm', None) is not None:
+        # If a coordinator pre-arm is still live (bus en route and ETA > -5s),
+        # suppress ALL local detection so the pre-arm remains the sole TSP
+        # trigger for this junction.  This prevents local Harmony Search from
+        # inserting/extending independently while the wave is orchestrated by
+        # the CorridorCoordinator.  The -5 s stale threshold above guarantees
+        # the gate clears as soon as the bus has arrived (ETA < -5 s), so a
+        # bus that arrives earlier than predicted falls through to local Harmony.
+        _lingering = getattr(self, '_harmony_prearm', None)
+        if _lingering is not None:
+            if LOG_HARMONY:
+                _lpa_veh, _lpa_eta_t, _ = _lingering
+                _lp_eta_rem = _lpa_eta_t - time
+                _t60 = int(time) // 60
+                if _t60 != getattr(self, '_prearm_gate_warn_t', -1):
+                    self._prearm_gate_warn_t = _t60
+                    _vprint(
+                        f"[PREARM GATE] inter={self.id} t={time:.1f} "
+                        f"bus={_lpa_veh} eta_rem={_lp_eta_rem:.1f}s — local detection suppressed")
             return False
 
         # ── TSP state snapshot (once per check, not per detector) ─────────────
@@ -7770,6 +8611,83 @@ class IntersectionController:
                     f"inter={self.id} bus={veh_id} reason={reason}: {_coord_e}"
                 )
 
+        def _log_local_decision(_tier: str, _note: str, _eta_s: float | None = None):
+            """Write one debounced decision row so the dashboard can show it."""
+            _vid = int(self.last_detected_bus_id or -1)
+            if _vid <= 0:
+                return
+            if not hasattr(self, '_last_local_decision_log_t'):
+                self._last_local_decision_log_t = {}
+            _key = (_vid, _tier, _note)
+            _last_t = self._last_local_decision_log_t.get(_key, -9999.0)
+            if time - _last_t < 1.0:
+                return
+            self._last_local_decision_log_t[_key] = float(time)
+            _meta = {
+                "force_write": True,
+                "prearm_status": "decision",
+                "prearm_note": _note,
+            }
+            if _eta_s is not None:
+                try:
+                    _meta["prearm_eta_s"] = round(max(0.0, float(_eta_s)), 1)
+                except Exception:
+                    pass
+            _mark_detection_point(self.id, _vid, 0.0, 0.0, time, _tier, _meta)
+
+        def _fmt_noins_reason(_base: str, **_vals) -> str:
+            """Compact, parseable reason string for NO_INS / NO_GE diagnostics."""
+            _parts = [_base]
+            for _k, _v in _vals.items():
+                try:
+                    if isinstance(_v, float):
+                        _parts.append(f"{_k}={_v:.1f}")
+                    else:
+                        _parts.append(f"{_k}={_v}")
+                except Exception:
+                    _parts.append(f"{_k}=na")
+            return " | ".join(_parts)
+
+        def _trace_objective(_mode: str, _decision: str, _reason: str,
+                             _bus_eta_s=None, _time_to_bp_s=None, _natural_end_s=None,
+                             _next_red_s=None, _ge_lb_s=None, _ge_ub_s=None, _opt_ge_s=None,
+                             _bp_lb_s=None, _bp_ub_s=None, _opt_bp_s=None, _note=""):
+            # ── Validate bounds are reasonable before logging ──
+            # GE window should never exceed MAX_GE_EXTENSION_S (10s hard cap)
+            if _ge_ub_s is not None:
+                _ge_ub_s = min(float(_ge_ub_s), MAX_GE_EXTENSION_S)
+            if _ge_lb_s is not None and _ge_ub_s is not None:
+                _ge_lb_s = min(float(_ge_lb_s), _ge_ub_s)
+            # BP window should be reasonable (upper bound capped at MAX_BP_INSERTION_S)
+            if _bp_ub_s is not None:
+                _bp_ub_s = min(float(_bp_ub_s), MAX_BP_INSERTION_S)
+            if _bp_lb_s is not None and _bp_ub_s is not None:
+                _bp_lb_s = min(float(_bp_lb_s), _bp_ub_s)
+            
+            _record_objective_trace({
+                "sim_time_s": round(float(time), 1),
+                "junction_id": int(self.id),
+                "veh_id": int(self.last_detected_bus_id or -1),
+                "mode": str(_mode),
+                "decision": str(_decision),
+                "reason": str(_reason),
+                "current_phase": int(current_phase),
+                "bus_phase": int(self.BusPhase),
+                "bus_eta_s": (round(float(_bus_eta_s), 3) if _bus_eta_s is not None else ""),
+                "time_to_bp_s": (round(float(_time_to_bp_s), 3) if _time_to_bp_s is not None else ""),
+                "natural_end_s": (round(float(_natural_end_s), 3) if _natural_end_s is not None else ""),
+                "next_red_s": (round(float(_next_red_s), 3) if _next_red_s is not None else ""),
+                "ge_lb_s": (round(float(_ge_lb_s), 3) if _ge_lb_s is not None else ""),
+                "ge_ub_s": (round(float(_ge_ub_s), 3) if _ge_ub_s is not None else ""),
+                "opt_ge_s": (round(float(_opt_ge_s), 3) if _opt_ge_s is not None else ""),
+                "bp_lb_s": (round(float(_bp_lb_s), 3) if _bp_lb_s is not None else ""),
+                "bp_ub_s": (round(float(_bp_ub_s), 3) if _bp_ub_s is not None else ""),
+                "opt_bp_s": (round(float(_opt_bp_s), 3) if _opt_bp_s is not None else ""),
+                "wave_active": int(bool(self._corridor_coord and getattr(self._corridor_coord, '_wave_active', False))),
+                "focus_bus_id": int(_focus_bus_id if _focus_bus_id > 0 else -1),
+                "note": str(_note or ""),
+            })
+
         # Iterate at least 1 slot: detect_bus() populates index 0 of
         # BusPresence/BusSpeed even when BusDet is empty (no physical detectors).
         _n_det_slots = max(len(self.BusDet), 1)
@@ -7815,6 +8733,11 @@ class IntersectionController:
                         self.stats.record_tsp_event(self.id, 'detection')
                         _detection_recorded_this_call = True
                     self.stats.record_tsp_skip(self.id, 'natural_green')
+                    _log_local_decision(
+                        "harmony-no-ge-local",
+                        "NO_GE natural_green_current_phase",
+                        bus_stopline_time - time,
+                    )
                     _notify_coord_bus_progress(self.last_detected_bus_id, 'natural_green_current_phase')
                     log_to_file(
                         f"[GREEN_GRANT] inter={self.id} t={time:.1f} "
@@ -7827,6 +8750,11 @@ class IntersectionController:
                             f"[HARMONY] NAT_GREEN | inter={self.id} "
                             f"bus_arr={bus_stopline_time:.1f}s < red={next_red_start:.1f}s "
                             f"— no action needed")
+                    _trace_objective(
+                        "GE", "SKIP", "natural_green_current_phase",
+                        _bus_eta_s=(bus_stopline_time - time),
+                        _next_red_s=(next_red_start - time),
+                    )
                     continue
 
                 if bus_stopline_time > next_red_start and self.TSPStrategy == 0:
@@ -7843,11 +8771,24 @@ class IntersectionController:
                             self.stats.record_tsp_event(self.id, 'detection')
                             _detection_recorded_this_call = True
                         self.stats.record_tsp_skip(self.id, 'ge_trivial')
+                        _trace_objective(
+                            "GE", "SKIP", "over_max_extension",
+                            _bus_eta_s=(bus_stopline_time - time),
+                            _next_red_s=(next_red_start - time),
+                            _ge_lb_s=GE_lb,
+                            _ge_ub_s=min(float(self.GE_upper_bound), MAX_GE_EXTENSION_S),
+                        )
+                        _log_local_decision(
+                            "harmony-no-ge-local",
+                            "NO_GE over_max_extension",
+                            bus_stopline_time - time,
+                        )
                         continue
 
                     _ge_ub = min(float(self.GE_upper_bound), MAX_GE_EXTENSION_S)
 
                     # Block local Harmony Search while coordinator wave is active.
+                    # The wave manages this junction's TSP via the pre-arm mechanism.
                     if self._corridor_coord is not None and COORDINATED_TSP:
                         _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
                         _this_bus = int(self.last_detected_bus_id or -1)
@@ -7920,6 +8861,20 @@ class IntersectionController:
                             self.stats.record_tsp_event(self.id, 'detection')
                             _detection_recorded_this_call = True
                         self.stats.record_tsp_skip(self.id, 'ge_trivial')
+                        _trace_objective(
+                            "GE", "SKIP", "insufficient_cycle_headroom",
+                            _bus_eta_s=(bus_stopline_time - time),
+                            _next_red_s=(next_red_start - time),
+                            _ge_lb_s=GE_lb,
+                            _ge_ub_s=_ge_ub,
+                            _opt_ge_s=opt_GE,
+                            _note=f"recoverable={_recoverable:.2f}",
+                        )
+                        _log_local_decision(
+                            "harmony-no-ge-local",
+                            "NO_GE insufficient_cycle_headroom",
+                            bus_stopline_time - time,
+                        )
                         continue
 
                     # Skip if harmony says extension is trivially small
@@ -7932,6 +8887,19 @@ class IntersectionController:
                             self.stats.record_tsp_event(self.id, 'detection')
                             _detection_recorded_this_call = True
                         self.stats.record_tsp_skip(self.id, 'ge_trivial')
+                        _trace_objective(
+                            "GE", "SKIP", "not_optimal",
+                            _bus_eta_s=(bus_stopline_time - time),
+                            _next_red_s=(next_red_start - time),
+                            _ge_lb_s=GE_lb,
+                            _ge_ub_s=_ge_ub,
+                            _opt_ge_s=opt_GE,
+                        )
+                        _log_local_decision(
+                            "harmony-no-ge-local",
+                            "NO_GE not_optimal",
+                            bus_stopline_time - time,
+                        )
                         # Log wave event: bus detected, harmony evaluated GE but not beneficial
                         _grp = self._corridor_coord.name if self._corridor_coord else "local"
                         _record_wave_event(
@@ -7968,12 +8936,30 @@ class IntersectionController:
                             f"bus_eta={bus_stopline_time - time:.1f}s "
                             f"next_red={next_red_start - time:.1f}s "
                             f"opt_GE={opt_GE:.1f}s")
+                    _trace_objective(
+                        "GE", "ACTION", "grant_extension",
+                        _bus_eta_s=(bus_stopline_time - time),
+                        _next_red_s=(next_red_start - time),
+                        _ge_lb_s=GE_lb,
+                        _ge_ub_s=_ge_ub,
+                        _opt_ge_s=opt_GE,
+                    )
                     self.highlight_bus(self.last_detected_bus_id)
                     if not _detection_recorded_this_call:
                         self.stats.record_tsp_event(self.id, 'detection')
                         _detection_recorded_this_call = True
                     self.stats.record_tsp_event(self.id, 'extension')
                     self.stats.record_tsp_extension_duration(self.id, float(opt_GE))
+                    _mark_detection_point(
+                        self.id, self.last_detected_bus_id, 0.0, 0.0, time,
+                        "harmony-ge-local",
+                        {
+                            "force_write": True,
+                            "prearm_status": "action",
+                            "prearm_eta_s": round(max(0.0, float(bus_stopline_time - time)), 1),
+                            "prearm_note": f"GE {float(opt_GE):.1f}s local",
+                        },
+                    )
                     # Acquire global bus focus
                     if self.last_detected_bus_id and self.last_detected_bus_id > 0:
                         _acquire_focus(self.last_detected_bus_id, self.id, time)
@@ -8028,26 +9014,91 @@ class IntersectionController:
                     else 200.0
                 )
                 _bus_eta_s = _eta_info[1] if _eta_info else (_det_dist_fb / bus_speed)
+                _bus_eta_effective_s = _bus_eta_s + float(INS_CLEARANCE_BUFFER_S)
 
-                # Only insert if bus will miss the natural BusPhase window:
-                # bus arrives AFTER the natural bus-green ends.
+                if LOG_HARMONY:
+                    _vprint(
+                        f"[INS DEBUG] inter={self.id} bus={self.last_detected_bus_id} "
+                        f"eta={_bus_eta_s:.1f}s eta_eff={_bus_eta_effective_s:.1f}s "
+                        f"(clr_buf={INS_CLEARANCE_BUFFER_S:.1f}s) to_bp={_time_to_bp:.1f}s "
+                        f"bp_dur={self.BusPhaseDuration:.1f}s curr_phase={current_phase} "
+                        f"bus_phase={self.BusPhase} strat={self.TSPStrategy}"
+                    )
+
+                # Insert when either:
+                #  1) bus misses natural bus-phase window, OR
+                #  2) bus would wait too long for next natural bus-phase start.
                 _natural_bus_end = _time_to_bp + self.BusPhaseDuration
-                if _bus_eta_s <= _natural_bus_end:
+                _ins_trigger_margin_s = float(INS_TRIGGER_MARGIN_S)
+                try:
+                    _ins_trigger_margin_s = max(
+                        float(INS_TRIGGER_MARGIN_MIN_S),
+                        min(float(INS_TRIGGER_MARGIN_MAX_S),
+                            float(INS_TRIGGER_MARGIN_S) + 0.15 * max(float(_bus_eta_s), 0.0))
+                    )
+                except Exception:
+                    _ins_trigger_margin_s = float(INS_TRIGGER_MARGIN_S)
+                _ins_trigger_threshold = _natural_bus_end - _ins_trigger_margin_s
+                _wait_to_natural_s = max(0.0, _time_to_bp - _bus_eta_effective_s)
+                _miss_natural_window = (_bus_eta_effective_s > _ins_trigger_threshold)
+                _wait_too_long = (_wait_to_natural_s > float(INS_MAX_WAIT_TRIGGER_S))
+
+                if (not _miss_natural_window) and (not _wait_too_long):
                     # Bus can catch the natural green — no insertion needed
                     if LOG_HARMONY:
                         _vprint(
                             f"[HARMONY] NO INSERT inter={self.id} "
-                            f"bus_eta={_bus_eta_s:.1f}s <= "
-                            f"natural_end={_natural_bus_end:.1f}s "
+                            f"bus_eta_eff={_bus_eta_effective_s:.1f}s <= "
+                            f"threshold={_ins_trigger_threshold:.1f}s "
+                            f"wait_to_bp={_wait_to_natural_s:.1f}s <= wait_thr={INS_MAX_WAIT_TRIGGER_S:.1f}s "
+                            f"(natural_end={_natural_bus_end:.1f}s margin={_ins_trigger_margin_s:.1f}s) "
                             f"(to_bp={_time_to_bp:.1f}s + dur={self.BusPhaseDuration:.1f}s)")
                     if not _detection_recorded_this_call:
                         self.stats.record_tsp_event(self.id, 'detection')
                         _detection_recorded_this_call = True
                     self.stats.record_tsp_skip(self.id, 'natural_green')
+                    _noins_note = _fmt_noins_reason(
+                        "NO_INS natural_green_future_bus_phase",
+                        eta_s=float(_bus_eta_s),
+                        to_bp_s=float(_time_to_bp),
+                        nat_end_s=float(_natural_bus_end),
+                        bp_dur_s=float(self.BusPhaseDuration),
+                    )
+                    _log_local_decision(
+                        "harmony-no-ins-local",
+                        _noins_note,
+                        _bus_eta_s,
+                    )
+                    if LOG_HARMONY:
+                        _vprint(f"[HARMONY NO_INS] inter={self.id} {_noins_note}")
+                    _trace_objective(
+                        "INS", "SKIP", "natural_green_future_bus_phase",
+                        _bus_eta_s=_bus_eta_s,
+                        _time_to_bp_s=_time_to_bp,
+                        _natural_end_s=_natural_bus_end,
+                        _bp_lb_s=float(self.BP_lower_bound),
+                        _bp_ub_s=float(self.BP_upper_bound),
+                        _opt_bp_s=None,  # No optimization performed, skipped
+                        _note=(
+                            f"eta_eff={_bus_eta_effective_s:.1f};"
+                            f"wait_to_bp={_wait_to_natural_s:.1f};"
+                            f"wait_thr={INS_MAX_WAIT_TRIGGER_S:.1f}"
+                        ),
+                    )
                     _notify_coord_bus_progress(self.last_detected_bus_id, 'natural_green_future_bus_phase')
                     continue
 
-                # Bus will miss natural green → evaluate insertion.
+                # Bus misses natural window OR wait is too long → evaluate insertion.
+                if LOG_HARMONY:
+                    _trigger_reason = (
+                        "miss_natural_window" if _miss_natural_window else "wait_too_long"
+                    )
+                    _vprint(
+                        f"[INS DEBUG] evaluate INS inter={self.id} bus={self.last_detected_bus_id} "
+                        f"eta_eff={_bus_eta_effective_s:.1f}s > threshold={_ins_trigger_threshold:.1f}s "
+                        f"(natural_end={_natural_bus_end:.1f}s margin={_ins_trigger_margin_s:.1f}s) "
+                        f"wait_to_bp={_wait_to_natural_s:.1f}s reason={_trigger_reason}"
+                    )
                 # ── Prefer natural phase completion ───────────────────
                 # If the current phase is nearly done (< 8s remaining),
                 # defer the insertion to the natural transition — this
@@ -8078,6 +9129,28 @@ class IntersectionController:
                         self.stats.record_tsp_event(self.id, 'detection')
                         _detection_recorded_this_call = True
                     self.stats.record_tsp_skip(self.id, 'ins_trivial')
+                    _noins_note = _fmt_noins_reason(
+                        "NO_INS impractical_upper_bound",
+                        eta_s=float(_bus_eta_s),
+                        lb_s=float(_bp_lb_effective),
+                        ub_s=float(self.BP_upper_bound),
+                    )
+                    _log_local_decision(
+                        "harmony-no-ins-local",
+                        _noins_note,
+                        _bus_eta_s,
+                    )
+                    if LOG_HARMONY:
+                        _vprint(f"[HARMONY NO_INS] inter={self.id} {_noins_note}")
+                    _trace_objective(
+                        "INS", "SKIP", "impractical_upper_bound",
+                        _bus_eta_s=_bus_eta_s,
+                        _time_to_bp_s=_time_to_bp,
+                        _natural_end_s=_natural_bus_end,
+                        _bp_lb_s=_bp_lb_effective,
+                        _bp_ub_s=float(self.BP_upper_bound),
+                        _opt_bp_s=None,  # No optimization performed, bus too far
+                    )
                     continue
 
                 # Block local Harmony Search while coordinator wave is active.
@@ -8092,25 +9165,125 @@ class IntersectionController:
                     self.BP_upper_bound, self.max_iterations,
                     self.harmony_memory_size, self.hmcr, self.par, 5, time)
 
-                # Skip if harmony says insertion phase is trivially short
-                if math.isnan(opt_BP) or opt_BP < 0.5:
+                # Skip if harmony says insertion phase is trivially short.
+                # Special handling when BP_lower_bound=0 ("don't apply" option):
+                #  • Lower bound becomes max(0, _bus_eta_s + 2.0)
+                #  • If opt_BP < 10s and BP_lower_bound=0, treat as "not optimal" since
+                #    we have the option to not insert, and short insertions are wasteful.
+                _bp_min_viable = max(0.1, float(self.BP_lower_bound) - 0.5)
+                _bp_lb_config = float(self.BP_lower_bound)
+                
+                if math.isnan(opt_BP):
                     if LOG_HARMONY:
                         _vprint(
                             f"[HARMONY] INS skip | inter={self.id} "
-                            f"opt_BP={opt_BP:.2f}s < 0.5 s — no action")
+                            f"opt_BP=NaN — harmony search failed")
                     if not _detection_recorded_this_call:
                         self.stats.record_tsp_event(self.id, 'detection')
                         _detection_recorded_this_call = True
                     self.stats.record_tsp_skip(self.id, 'ins_trivial')
-                    # Log wave event: bus detected, harmony evaluated insertion but not beneficial
-                    _grp = self._corridor_coord.name if self._corridor_coord else "local"
-                    _record_wave_event(
-                        time, _grp, "tsp_skip",
-                        source_jct=self.id, target_jct=self.id,
-                        veh_id=self.last_detected_bus_id or -1,
-                        note="ins_not_optimal",
+                    _noins_note = _fmt_noins_reason(
+                        "NO_INS not_optimal",
+                        eta_s=float(_bus_eta_s),
+                        lb_s=float(_bp_lb_effective),
+                        ub_s=float(self.BP_upper_bound),
+                        opt_bp_s=-1.0,
+                    )
+                    _log_local_decision(
+                        "harmony-no-ins-local",
+                        _noins_note,
+                        _bus_eta_s,
+                    )
+                    if LOG_HARMONY:
+                        _vprint(f"[HARMONY NO_INS] inter={self.id} {_noins_note}")
+                    _trace_objective(
+                        "INS", "SKIP", "harmony_nan",
+                        _bus_eta_s=_bus_eta_s,
+                        _time_to_bp_s=_time_to_bp,
+                        _natural_end_s=_natural_bus_end,
+                        _bp_lb_s=_bp_lb_effective,
+                        _bp_ub_s=float(self.BP_upper_bound),
+                        _opt_bp_s=opt_BP,  # Log the NaN result
                     )
                     continue
+                
+                # Clamp to effective bounds
+                opt_BP_clamped = max(float(_bp_lb_effective), min(float(opt_BP), float(self.BP_upper_bound)))
+                
+                # ── Skip if result is too short (< 10s) when BP_lower_bound=0 ──
+                # When BP_lower_bound=0, it means "don't apply insertion" is a valid option.
+                # If harmony finds opt_BP < 10s, that's not beneficial enough to justify
+                # the insertion action — skip and let natural green or GE handle it.
+                if _bp_lb_config <= 0.0 and opt_BP_clamped < 10.0:
+                    if LOG_HARMONY:
+                        _vprint(
+                            f"[HARMONY] INS skip | inter={self.id} "
+                            f"opt_BP={opt_BP_clamped:.2f}s < 10s with BP_lower_bound=0 "
+                            f"— not optimal (no insertion option available)")
+                    if not _detection_recorded_this_call:
+                        self.stats.record_tsp_event(self.id, 'detection')
+                        _detection_recorded_this_call = True
+                    self.stats.record_tsp_skip(self.id, 'ins_trivial')
+                    _noins_note = _fmt_noins_reason(
+                        "NO_INS too_short",
+                        eta_s=float(_bus_eta_s),
+                        lb_s=0.0,
+                        opt_bp_s=float(opt_BP),
+                    )
+                    _log_local_decision(
+                        "harmony-no-ins-local",
+                        _noins_note,
+                        _bus_eta_s,
+                    )
+                    if LOG_HARMONY:
+                        _vprint(f"[HARMONY NO_INS] inter={self.id} {_noins_note}")
+                    _trace_objective(
+                        "INS", "SKIP", "not_optimal_too_short",
+                        _bus_eta_s=_bus_eta_s,
+                        _time_to_bp_s=_time_to_bp,
+                        _natural_end_s=_natural_bus_end,
+                        _bp_lb_s=0.0,  # Show that no insertion was option
+                        _bp_ub_s=float(self.BP_upper_bound),
+                        _opt_bp_s=float(opt_BP),
+                    )
+                    continue
+                
+                if opt_BP_clamped < _bp_min_viable:
+                    if LOG_HARMONY:
+                        _vprint(
+                            f"[HARMONY] INS skip | inter={self.id} "
+                            f"opt_BP={opt_BP:.2f}s → clamped={opt_BP_clamped:.2f}s < {_bp_min_viable:.2f}s — below viable")
+                    if not _detection_recorded_this_call:
+                        self.stats.record_tsp_event(self.id, 'detection')
+                        _detection_recorded_this_call = True
+                    self.stats.record_tsp_skip(self.id, 'ins_trivial')
+                    _noins_note = _fmt_noins_reason(
+                        "NO_INS not_optimal",
+                        eta_s=float(_bus_eta_s),
+                        lb_s=float(_bp_lb_effective),
+                        ub_s=float(self.BP_upper_bound),
+                        opt_bp_s=float(opt_BP),
+                    )
+                    _log_local_decision(
+                        "harmony-no-ins-local",
+                        _noins_note,
+                        _bus_eta_s,
+                    )
+                    if LOG_HARMONY:
+                        _vprint(f"[HARMONY NO_INS] inter={self.id} {_noins_note}")
+                    _trace_objective(
+                        "INS", "SKIP", "not_optimal",
+                        _bus_eta_s=_bus_eta_s,
+                        _time_to_bp_s=_time_to_bp,
+                        _natural_end_s=_natural_bus_end,
+                        _bp_lb_s=_bp_lb_effective,
+                        _bp_ub_s=float(self.BP_upper_bound),
+                        _opt_bp_s=float(opt_BP),
+                    )
+                    continue
+
+                # Use clamped value for phase insertion
+                opt_BP = opt_BP_clamped
 
                 # Hard cap: never hold bus phase longer than MAX_BP_INSERTION_S
                 opt_BP = min(float(opt_BP), MAX_BP_INSERTION_S)
@@ -8138,6 +9311,20 @@ class IntersectionController:
                         f"[HARMONY] INSERTION | t={time:.1f}s inter={self.id} "
                         f"bus_eta={_bus_eta_s:.1f}s > natural_end={_natural_bus_end:.1f}s "
                         f"opt_BP={opt_BP:.1f}s prev_phase={current_phase}")
+                _trace_objective(
+                    "INS", "ACTION", "grant_insertion",
+                    _bus_eta_s=_bus_eta_s,
+                    _time_to_bp_s=_time_to_bp,
+                    _natural_end_s=_natural_bus_end,
+                    _bp_lb_s=_bp_lb_effective,
+                    _bp_ub_s=float(self.BP_upper_bound),
+                    _opt_bp_s=float(opt_BP),  # Log final value after hard cap to MAX_BP_INSERTION_S
+                    _note=(
+                        f"eta_eff={_bus_eta_effective_s:.1f};"
+                        f"wait_to_bp={max(0.0, _time_to_bp - _bus_eta_effective_s):.1f};"
+                        f"wait_thr={INS_MAX_WAIT_TRIGGER_S:.1f}"
+                    ),
+                )
                 self.highlight_bus(self.last_detected_bus_id)
                 if not _detection_recorded_this_call:
                     self.stats.record_tsp_event(self.id, 'detection')
@@ -8145,6 +9332,16 @@ class IntersectionController:
                 self.stats.record_tsp_event(self.id, 'insertion')
                 self.stats.record_tsp_insertion_duration(self.id, float(opt_BP))
                 self.stats.record_tsp_insertion_wait(self.id, max(0.0, float(_bus_eta_s)))
+                _mark_detection_point(
+                    self.id, self.last_detected_bus_id, 0.0, 0.0, time,
+                    "harmony-ins-local",
+                    {
+                        "force_write": True,
+                        "prearm_status": "action",
+                        "prearm_eta_s": round(max(0.0, float(_bus_eta_s)), 1),
+                        "prearm_note": f"INS {float(opt_BP):.1f}s local",
+                    },
+                )
                 # Acquire global bus focus
                 if self.last_detected_bus_id and self.last_detected_bus_id > 0:
                     _acquire_focus(self.last_detected_bus_id, self.id, time)
@@ -8158,10 +9355,14 @@ class IntersectionController:
                 return True
 
         # ── No GE or INS was applied this call ───────────────────────────────
-        # If this junction is the wave origin and took no action, the bus is
-        # gone or undetectable — cancel the coordination wave so downstream
-        # junctions are immediately freed for independent detection.
-        if self._corridor_coord is not None and COORDINATED_TSP:
+        # Only cancel the coordination wave if NO bus was detected at all this
+        # call.  If a bus was detected but got natural green (or was focus-
+        # suppressed), the wave must continue so downstream junctions keep
+        # their pre-arms.  Only cancel when the wave origin is truly "empty"
+        # (no bus presence at all → bus has passed or was never there).
+        if (not _detection_recorded_this_call and
+                not _coord_notified_this_call and
+                self._corridor_coord is not None and COORDINATED_TSP):
             if (self._corridor_coord._wave_active and
                     self._corridor_coord._wave_origin == self.id):
                 self._corridor_coord._wave_active     = False
@@ -8171,7 +9372,7 @@ class IntersectionController:
                 self._corridor_coord._pre_requests.clear()
                 log_to_file(
                     f"[HARMONY WAVE CANCEL] inter={self.id} t={time:.1f} "
-                    f"no GE/INS applied at wave origin — wave cancelled",
+                    f"no bus detected at wave origin — wave cancelled",
                     force=True)
         return False
 
@@ -8309,7 +9510,7 @@ class IntersectionController:
                         * (self.JamDensity - self.HSUpDenList[i][j]) / 1000
                         + (self.HSQueueDissTime[i][j] - self.HSGreenStartTimeList[i][j])
                         * self.HSMaxQueueLength[i][j] / 2
-                        * (self.SaturationDensity - self.HSUpDenList[i][j])))
+                        * (self.SaturationDensity - self.HSUpDenList[i][j]) / 1000))
                 else:
                     if abs(w3) > 1e-6 and abs(w4) > 1e-6:
                         self.HSMinQueueLength[i][j] = (
@@ -8653,7 +9854,7 @@ class IntersectionController:
                     self.JamDensity)
                 self.TotalVeh[i][j]            = (
                     self.HSUpFlowList[i][j]
-                    * (self.HSRedDurationList[i][j] + 35) / 3600)
+                    * (self.HSRedDurationList[i][j] + max(int(self.config.get('GE_upper_bound', 20)), 10)) / 3600)
 
                 w1i = self.ShockwaveSpeed1List[i][j]
                 w2i = self.ShockwaveSpeed2List[i][j]
@@ -8762,8 +9963,11 @@ def AAPIInit():
     # run, so we re-read it here to get the correct experiment name and stamp
     # fresh output filenames — otherwise all runs append to the same CSV and
     # the dashboard cannot match bus tracking / detection data by experiment.
-    global _CURRENT_EXPERIMENT, _BUS_TRACKING_CSV, _DET_CSV, _WAVE_EVENTS_CSV
+    global _CURRENT_EXPERIMENT, _BUS_TRACKING_CSV, _PRESENCE_SNAPSHOT_CSV
+    global _DET_CSV, _WAVE_EVENTS_CSV
     global _DET_GEOJSON, _JUNC_CSV, _RUN_SUMMARY_TXT
+    global _OFFSET_CSV, _offset_header_written, _QUEUE_SNAPSHOT_CSV, _NO_INS_SUMMARY_CSV
+    global _OBJECTIVE_TRACE_CSV, _objective_trace_header_written
     try:
         _rc_path2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run_config.py')
         _rc_ns2: dict = {}
@@ -8775,34 +9979,48 @@ def AAPIInit():
         pass
     _ts2 = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     _BUS_TRACKING_CSV  = os.path.join(LOG_DIR, f"bus_positions_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
+    _PRESENCE_SNAPSHOT_CSV = os.path.join(LOG_DIR, f"presence_snapshot_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
     _DET_CSV           = os.path.join(LOG_DIR, f"detection_points_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
     _WAVE_EVENTS_CSV   = os.path.join(LOG_DIR, f"corridor_wave_events_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
     _DET_GEOJSON       = os.path.join(LOG_DIR, f"detection_points_{_ts2}.geojson")
     _JUNC_CSV          = os.path.join(LOG_DIR, f"junction_centroids_{_ts2}.csv")
     _RUN_SUMMARY_TXT   = os.path.join(LOG_DIR, f"tsp_run_summary_{_ts2}.txt")
     _QUEUE_SNAPSHOT_CSV = os.path.join(LOG_DIR, f"queue_snapshot_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
+    _NO_INS_SUMMARY_CSV = os.path.join(LOG_DIR, f"no_ins_summary_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
+    _OFFSET_CSV = os.path.join(LOG_DIR, f"green_offsets_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
+    _offset_header_written = False
+    _OBJECTIVE_TRACE_CSV = os.path.join(LOG_DIR, f"objective_trace_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
+    _objective_trace_header_written = False
     _DYNAROPAC_DECISION_CSV = os.path.join(LOG_DIR, f"dynaropac_decisions_{_CURRENT_EXPERIMENT}_{_ts2}.csv")
     _dynaropac_decision_header_written = False
 
+    # ── Read-only model DB integrity preflight (fail-fast) ───────────────────
+    if not _preflight_model_db_health():
+        return -1
+
     # ── Reset per-run detection and tracking state ────────────────────────────
     global _marked_detections, _mark_calls_total, _mark_calls_written
-    global _bus_zone_state, _bus_seen_ids, _bus_last_nearest_jct
+    global _bus_zone_state, _bus_zone_entry_time, _bus_seen_ids, _bus_last_nearest_jct
     global _bus_line_id, _bus_track_last_t, _bus_track_header_written
+    global _presence_snapshot_header_written
     global _geojson_features, _ge_events, _wave_events
     global _pt_line_jct_route, _pt_line_section_set, _sec_to_corridor_jct
     global _corridor_jct_incoming, _bus_observed_jcts
+    global _bus_type_provisional
     global _last_dashboard_t
     global _queue_snap_last_t, _queue_snap_header_written
     _marked_detections.clear()
     _mark_calls_total        = 0
     _mark_calls_written      = 0
     _bus_zone_state.clear()
+    _bus_zone_entry_time.clear()
     _bus_seen_ids.clear()
     _bus_last_nearest_jct.clear()
     _bus_line_id.clear()
     _bus_observed_jcts.clear()
     _bus_track_last_t        = -1e9
     _bus_track_header_written = False
+    _presence_snapshot_header_written = False
     _queue_snap_last_t       = -1e9
     _queue_snap_header_written = False
     _geojson_features.clear()
@@ -8813,6 +10031,7 @@ def AAPIInit():
     _sec_to_corridor_jct.clear()
     _corridor_jct_incoming.clear()
     _last_dashboard_t        = -1e9
+    _bus_type_provisional    = False
 
     # ── Deterministic Python RNG — makes harmony search repeatable ────────────
     # The Aimsun replication seed controls vehicle-level stochasticity; this
@@ -8821,17 +10040,23 @@ def AAPIInit():
     random.seed(12345)
 
     # ── Clear bus-detection polyline circles left from the previous run ────────
-    try:
-        from PyANGKernel import GKSystem as _GKS
-        _model = _GKS.getSystem().getActiveModel()
-        if _model is not None:
-            _pl_type = _model.getType("GKPolyline")
-            _ann_type = _model.getType("GKAnnotation")
-            _n = _clear_existing_markers(_model, [_pl_type, _ann_type])
-            if _n and LOG_INIT:
-                AKIPrintString(f"[INIT] Cleared {_n} TSP marker(s) from previous run")
-    except Exception as _e:
-        pass  # non-fatal — PyANGKernel may not be available in all environments
+    if ALLOW_MODEL_CATALOG_WRITES:
+        try:
+            from PyANGKernel import GKSystem as _GKS
+            _model = _GKS.getSystem().getActiveModel()
+            if _model is not None:
+                _pl_type = _model.getType("GKPolyline")
+                _ann_type = _model.getType("GKAnnotation")
+                _n = _clear_existing_markers(_model, [_pl_type, _ann_type])
+                if _n and LOG_INIT:
+                    AKIPrintString(f"[INIT] Cleared {_n} TSP marker(s) from previous run")
+        except Exception:
+            pass  # non-fatal — PyANGKernel may not be available in all environments
+    else:
+        log_to_file(
+            "[INIT] Catalog writes disabled — skipping in-model marker cleanup",
+            force=True,
+        )
     dm = DemandMonitor()
     dm.print_demand("AAPIInit")
     for inter_id, config in INTERSECTIONS_CONFIG.items():
@@ -8840,6 +10065,12 @@ def AAPIInit():
             controllers[inter_id] = IntersectionController(config)
         except Exception as e:
             if LOG_INIT: AKIPrintString(f"[INIT] ERROR creating controller {inter_id}: {e}")
+
+    # Clear any bus/car/truck type guesses that may have been left behind by a
+    # previous run.  AAPIInit should always resolve these from the current model.
+    stats._car_pos = -1
+    stats._bus_pos = -1
+    stats._truck_pos = -1
 
     # ── Initialise DynaROPAC network-wide optimizer ───────────────────────────
     if CONTROL_MODE == "DYNAOPAC_HARMONY":
@@ -9410,7 +10641,9 @@ def AAPISimulationReady():
     # If bus type still unresolved, schedule a lazy recheck in PostManage
     # (PT vehicles may not exist yet at AAPIInit time)
     global _bus_type_needs_recheck
+    global _bus_type_provisional
     _bus_type_needs_recheck = (bus_pos <= 0)
+    _bus_type_provisional = _bus_type_needs_recheck
     if _bus_type_needs_recheck:
         log_to_file("[VEH TYPES] bus_pos unresolved at init — will retry from PT vehicles in first 120s")
 
@@ -9429,6 +10662,7 @@ def AAPIManage(time, timeSta, timeTrans, acycle):
 def AAPIPostManage(time, timeSta, timeTrans, acycle):
     # Lazy bus-type recheck: PT vehicles may not exist at AAPIInit time
     global _bus_type_needs_recheck
+    global _bus_type_provisional
     global _dynaropac_last_eval_t, _dynaropac_decision_header_written
     if _bus_type_needs_recheck:
         # Try every 30 s for the first 600 s (10 min) to allow time for buses
@@ -9440,6 +10674,7 @@ def AAPIPostManage(time, timeSta, timeTrans, acycle):
             _pt_bus = _infer_bus_type_pos_from_pt()
             if _pt_bus > 0:
                 _bus_type_needs_recheck = False
+                _bus_type_provisional = False
                 for ctrl in controllers.values():
                     ctrl.bus_type_pos = _pt_bus
                     if ctrl.gb is not None:
@@ -10300,6 +11535,13 @@ def _overlay_detections_on_aimsun_map():
         return
     if not MARK_DETECTION_POINTS:
         return
+    if not ALLOW_MODEL_CATALOG_WRITES:
+        log_to_file(
+            "[MAP] Catalog writes disabled (ALLOW_MODEL_CATALOG_WRITES=False). "
+            "Skipping in-model marker creation/deletion; GeoJSON/script outputs only.",
+            force=True,
+        )
+        return
 
     valid_feats = [
         f for f in _geojson_features
@@ -10853,6 +12095,66 @@ def AAPIFinish():
     except Exception as _ds_e:
         log_to_file(f"[DET SUMMARY] error building summary: {_ds_e}", force=True)
 
+    # ── NO_INS summary by intersection (counts by reason) ───────────────────
+    # Reads harmony-no-ins-local decision rows from the detection CSV and
+    # aggregates reason buckets for fast diagnosis of insertion denials.
+    try:
+        _noins_by_jct: dict = {}
+        _noins_total = 0
+        if os.path.isfile(_DET_CSV):
+            with open(_DET_CSV, "r", newline="", encoding="utf-8") as _nf:
+                for _nr in csv.DictReader(_nf):
+                    try:
+                        _tier = str(_nr.get("tier", "") or "").strip()
+                        if _tier != "harmony-no-ins-local":
+                            continue
+                        _jid = int(float(_nr.get("junction_id", -1) or -1))
+                        if _jid <= 0:
+                            continue
+                        _note = str(_nr.get("prearm_note", "") or "").strip()
+                        if not _note:
+                            _note = str(_nr.get("note", "") or "").strip()
+                        _reason = _note if _note else "unspecified"
+                        if "|" in _reason:
+                            _reason = _reason.split("|", 1)[0].strip()
+                        if _reason.upper().startswith("NO_INS "):
+                            _reason = _reason[7:].strip()
+                        if not _reason:
+                            _reason = "unspecified"
+                        _noins_by_jct.setdefault(_jid, collections.Counter())[_reason] += 1
+                        _noins_total += 1
+                    except Exception:
+                        continue
+
+        if _noins_total > 0:
+            with open(_NO_INS_SUMMARY_CSV, "w", newline="", encoding="utf-8") as _nof:
+                _nw = csv.writer(_nof)
+                _nw.writerow(["junction_id", "reason", "count"])
+                for _jid in sorted(_noins_by_jct.keys()):
+                    for _reason, _count in _noins_by_jct[_jid].most_common():
+                        _nw.writerow([_jid, _reason, _count])
+
+            log_to_file(
+                f"[NO_INS SUMMARY] total_no_ins={_noins_total} | "
+                f"junctions={len(_noins_by_jct)} | csv={_NO_INS_SUMMARY_CSV}",
+                force=True,
+            )
+            for _jid in sorted(_noins_by_jct.keys()):
+                _items = _noins_by_jct[_jid].most_common()
+                _reason_txt = " | ".join(f"{_r}:{_c}" for _r, _c in _items)
+                log_to_file(
+                    f"[NO_INS SUMMARY] jct={_jid} total={sum(_noins_by_jct[_jid].values())} "
+                    f"reasons={_reason_txt}",
+                    force=True,
+                )
+        else:
+            log_to_file(
+                "[NO_INS SUMMARY] no harmony-no-ins-local rows in detection CSV",
+                force=True,
+            )
+    except Exception as _nis_e:
+        log_to_file(f"[NO_INS SUMMARY] error building summary: {_nis_e}", force=True)
+
     # ── Bus-tracking diagnostics (always shown) ─────────────────────────────
     try:
         _bt_exists = os.path.isfile(_BUS_TRACKING_CSV)
@@ -10891,6 +12193,46 @@ def AAPIFinish():
         )
     except Exception as _bt_e:
         log_to_file(f"[BUS_TRACK DIAG] error: {_bt_e}", force=True)
+
+    # ── Presence-snapshot diagnostics (always shown) ───────────────────────
+    try:
+        _ps_exists = os.path.isfile(_PRESENCE_SNAPSHOT_CSV)
+        _ps_rows = 0
+        _ps_uniq_bus = set()
+        _ps_uniq_jct = set()
+        _ps_scope = {}
+        if _ps_exists:
+            with open(_PRESENCE_SNAPSHOT_CSV, "r", newline="", encoding="utf-8") as _pf:
+                _pr = csv.DictReader(_pf)
+                for _r in _pr:
+                    _ps_rows += 1
+                    try:
+                        _v = int(float(_r.get("veh_id", 0) or 0))
+                        if _v > 0:
+                            _ps_uniq_bus.add(_v)
+                    except Exception:
+                        pass
+                    try:
+                        _j = int(float(_r.get("junction_id", -1) or -1))
+                        if _j > 0:
+                            _ps_uniq_jct.add(_j)
+                    except Exception:
+                        pass
+                    _sc = str(_r.get("scope", "") or "")
+                    if _sc:
+                        _ps_scope[_sc] = int(_ps_scope.get(_sc, 0)) + 1
+        _scope_text = ", ".join(
+            f"{_k}:{_ps_scope[_k]}" for _k in sorted(_ps_scope.keys())
+        ) if _ps_scope else "none"
+        log_to_file(
+            f"[PRESENCE_SNAPSHOT DIAG] CSV_path={_PRESENCE_SNAPSHOT_CSV} | "
+            f"exists={_ps_exists} | rows={_ps_rows} | "
+            f"unique_buses={len(_ps_uniq_bus)} | unique_jcts={len(_ps_uniq_jct)} | "
+            f"scope={_scope_text}",
+            force=True,
+        )
+    except Exception as _ps_e:
+        log_to_file(f"[PRESENCE_SNAPSHOT DIAG] error: {_ps_e}", force=True)
 
     # ── Corridor wave/coordinator event CSV ──────────────────────────────────
     # ── Global bus focus history CSV ──────────────────────────────────────────
@@ -11093,6 +12435,33 @@ def AAPIFinish():
                     force=True
                 )
 
+            # ── TSP objective trace dashboard ─────────────────────────────────
+            try:
+                import importlib
+                import plot_tsp_objective_trace as _ptot
+                importlib.reload(_ptot)
+                _obj_trace_arg = (
+                    _OBJECTIVE_TRACE_CSV if os.path.isfile(_OBJECTIVE_TRACE_CSV) else None
+                )
+                _obj_out = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "tsp_objective_trace.html"
+                )
+                if _obj_trace_arg:
+                    rows_ot = _ptot._load_objective_csv(_obj_trace_arg)
+                    _ptot._build_html(rows_ot, _obj_trace_arg, _obj_out)
+                    log_to_file(
+                        f"[OBJ TRACE] Objective trace dashboard written ({len(rows_ot)} rows)",
+                        force=True
+                    )
+                else:
+                    log_to_file("[OBJ TRACE] No objective_trace CSV found — skipping", force=True)
+            except Exception as _otot_e:
+                import traceback
+                log_to_file(
+                    f"[OBJ TRACE] Dashboard failed: {_otot_e}\n{traceback.format_exc()}",
+                    force=True
+                )
+
             # ── Queue monitor dashboard ───────────────────────────────────────
             try:
                 import importlib
@@ -11115,12 +12484,21 @@ def AAPIFinish():
                 importlib.reload(_gd)
                 _batch_csv = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), "batch_results.csv")
+                _dash_dir = os.path.dirname(os.path.abspath(__file__))
                 _gd.generate(
                     batch_csv=_batch_csv if os.path.isfile(_batch_csv) else None,
+                    out_html=os.path.join(_dash_dir, "tsp_dashboard.html"),
                     log_dir=os.path.join(
                         os.path.dirname(os.path.abspath(__file__)), "logs")
                 )
-                log_to_file("[DASHBOARD] HTML dashboard written", force=True)
+                # Backward-compatible alias: many workflows still open
+                # plots_dashboard.html directly.
+                _gd.generate(
+                    batch_csv=_batch_csv if os.path.isfile(_batch_csv) else None,
+                    out_html=os.path.join(_dash_dir, "plots_dashboard.html"),
+                    log_dir=os.path.join(_dash_dir, "logs")
+                )
+                log_to_file("[DASHBOARD] HTML dashboards written: tsp_dashboard.html + plots_dashboard.html", force=True)
             except Exception as _dbe:
                 import traceback
                 log_to_file(

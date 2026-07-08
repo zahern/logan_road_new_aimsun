@@ -27,6 +27,19 @@ import glob
 import argparse
 from pathlib import Path
 
+# Inject the shared project venv so pandas/plotly/etc. are importable when this
+# script is called from inside Aimsun (which uses a minimal Python environment).
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+for _vsp in [
+    os.path.join(_THIS_DIR, '..', 'logan_road_new', '.venv', 'Lib', 'site-packages'),
+    os.path.join(_THIS_DIR, '.venv', 'Lib', 'site-packages'),
+]:
+    _vsp = os.path.normpath(_vsp)
+    if os.path.isdir(_vsp) and _vsp not in sys.path:
+        sys.path.insert(1, _vsp)
+        break
+del _THIS_DIR, _vsp
+sys.path.insert(0, r"C:\AimsunPackages")
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -40,21 +53,23 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 OUT_HTML    = os.path.join(os.path.dirname(__file__), "intersection_queues_dashboard.html")
 
 JUNCTION_LABELS = {
-    17249: "17249 (Miles)",
-    17383: "17383 (Wembley)",
-    17963: "17963 (Loganlea)",
-    18942: "18942 (Yagoona)",
-    19196: "19196 (Beenleigh)",
-    19363: "19363 (Paradise)",
-    19474: "19474 (Chambers)",
-    19882: "19882 (Compton)",
-    21895: "21895 (Browns Plains)",
+    39606:   "39606 (A1)",
+    39590:   "39590 (A2)",
+    36393:   "36393 (A3)",
+    36385:   "36385 (A4)",
+    39593:   "39593 (A5)",
+    39576:   "39576 (B1)",
+    39578:   "39578 (B2)",
+    39587:   "39587 (B3)",
+    1043762: "1043762 (B4)",
+    39569:   "39569 (B5)",
+    39572:   "39572 (B6)",
+    38339:   "38339 (B7)",
 }
 
-NORTH_CORRIDOR = [17249, 17383, 17963, 18942]
-SOUTH_CORRIDOR = [19196, 19474, 19882, 21895]
-STANDALONE     = [19363]
-CORRIDOR_ORDER = NORTH_CORRIDOR + [19363] + SOUTH_CORRIDOR
+CORRIDOR_A = [39606, 39590, 36393, 36385, 39593]
+CORRIDOR_B = [39576, 39578, 39587, 1043762, 39569, 39572, 38339]
+CORRIDOR_ORDER = CORRIDOR_A + CORRIDOR_B
 
 STRATEGY_COLORS = {
     "NORMAL":         "#4C72B0",

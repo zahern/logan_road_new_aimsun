@@ -1,564 +1,911 @@
 # ======================================================
-# AUTO-GENERATED FILE - DO NOT EDIT MANUALLY
-# Generated from Aimsun SCATS Control Plan
+# intersection_configs.py -- Logan Road corridor
+# Ported from kg (Kelvin Grove) controller logic -- every junction below is
+# driven by the SAME intersection_controller.py used for the Kelvin Grove
+# corridor (see ../kg/). Detector geometry (UpDetList/BusDet/BusCallDetectors/
+# BusExitDetectors/DetDistance) is derived from
+# logan_road_corridor_detectors(in).csv, cross-checked against
+# Logan_RD_for_QUT_with_detectors.sqlite (all detector/node IDs confirmed to
+# exist in the model, except 4 SB detectors each at junctions 22232 and 17249
+# -- flagged below, controller skips missing detectors gracefully at runtime).
+#
+# Signal-group / phase data (SignalGroupIDList, PhaseIndex, GreenPhaseDuration)
+# is preserved from the original Aimsun SCATS export for the 9 junctions that
+# had it; the remaining junctions run on the controller's phase-index-0
+# fallback until their SCATS data is extracted the same way.
+#
+# Corridor grouping (INTERSECTION_GROUPS / CORRIDOR_ROUTE_GROUPS) is carried
+# over UNCHANGED from the previous file for the junctions it already covered
+# -- HARMONY mode's corridor pre-arm coordination only works for grouped
+# junctions. Newly-added junctions run standalone (fully functional TSP,
+# just without corridor ETA hand-off) until real route-sequence order is
+# confirmed and they are added to a group.
 # ======================================================
-Inter = {
-    20844: {'IntersectionID': 20844, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17628: {'IntersectionID': 17628, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    18044: {'IntersectionID': 18044, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    20280: {'IntersectionID': 20280, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17308: {'IntersectionID': 17308, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    21847: {'IntersectionID': 21847, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17498: {'IntersectionID': 17498, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0,20:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[1,2,3,4], [1,2,5,4], [5], [6,5,7,8], [9,7,6,5], [10,11,12,13], [14,15]], 'SignalIDLookup': {1:55120,2:55121,3:66198,4:66199,5:55122,6:55123,7:55124,8:66200,9:55125,10:55126,11:55127,12:55128,13:66201,14:55129,15:55130}, 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0,13:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0,7:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55504, 55505, 55500, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'SignalIDLookup': {1:55500,2:55501,3:65938,4:55502,5:55503,6:55504,7:55505,8:55506,9:55507,10:55508,11:55509,12:65939,13:55510,14:55511}, 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0,'PhaseIndex': {1:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    21553: {'IntersectionID': 21553, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    21197: {'IntersectionID': 21197, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    20270: {'IntersectionID': 20270, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    22603: {'IntersectionID': 22603, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56245, 56242, 56241, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249]], 'SignalIDLookup': {1:56241,2:56243,3:65138,4:65136,5:56244,6:56245,7:56242,8:56246,9:56247,10:56248,11:56250,12:56251,13:65137,14:56249}, 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1,'BusPhaseDuration':8.0,'PhaseIndex':{1:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    20283: {'IntersectionID': 20283, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    19185: {'IntersectionID': 19185, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    22400: {'IntersectionID': 22400, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65038], [55341, 65038, 55342], [55341, 55342, 65038], [55343, 55344, 55345, 65036]], 'SignalIDLookup': {1:65035,2:65037,3:55339,4:55341,5:65038,6:55340,7:55342,8:55343,9:55344,10:55345,11:65036}, 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1,'BusPhaseDuration':6.0,'PhaseIndex':{1:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    22232: {'IntersectionID': 22232, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusPhase': 1, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650], [54539], [54542, 54543, 54539, 54540]], 'SignalIDLookup': {1:54532,2:54533,3:54534,4:54535,5:64652,6:64651,7:54536,8:54537,9:54538,10:64653,11:54539,12:54540,13:54541,14:64650,15:54542,16:54543}, 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1,'BusPhaseDuration':28.0,'PhaseIndex':{1:0}, 'NumberOfLanes':3,'SaturationFlow':1800,'JamDensity':150,'SaturationDensity':35,'CarOcc':1.5,'BusOcc':40.0, 'detection_zone_m': 150.0, 'eta_min_s': 5.0, 'eta_max_s': 45.0},
-    }
-
-
-
 
 INTERSECTIONS_CONFIG = {
-    #FIXME TYRING TO ADD NEW INTESECTION WITH MINIMIAL INPUTS
-    19363:{
-        'IntersectionID': 19363,
-        'CarOcc': 1.2,
-        'BusOcc': 40.0,
-        'BusPhase': 1,
-        # ── ETA-aware detection tuning ──────────────────────────────────────
-        # detection_zone_m: PT-coord scan radius.  150 m ≈ 13 s at 40 km/h,
-        #   scans are used exclusively (no physical detectors) for consistency.
-        # eta_min_s: don't request if bus is already < 5 s away (too late to act).
-        # eta_max_s: don't request if bus is > 45 s away at current speed.
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
-    },
-    
-    # 17249 - Old Cleveland Road (NB + SB on Logan Road; EW on Old Cleveland Road)
     17249: {
         'IntersectionID': 17249,
-        # AimsunNodeID will be auto-discovered at runtime and logged as [NODE_ID]
-        # Once confirmed, add it here: 'AimsunNodeID': XXXX
-        'NumberOfPhases': 5,
-        'SignalGroupIDList': [[1,2,3,4,5,6], [7,8,9,10], [11,12,13,14,4], [11], [15,16,11,10]],
-        'SignalIDLookup': {1:54532, 2:54533, 3:54534, 4:54535, 5:64652, 6:64651,
-                           7:54536, 8:54537, 9:54538, 10:64653,
-                           11:54539, 12:54540, 13:54541, 14:64650,
-                           15:54542, 16:54543},
-        'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0],
         'BusPhase': 1,
         'BusPhaseDuration': 28.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0},
+        'NumberOfPhases': 5,
+        'SignalGroupIDList': [[1, 2, 3, 4, 5, 6], [7, 8, 9, 10], [11, 12, 13, 14, 4], [11], [15, 16, 11, 10]],
+        'SignalIDLookup': {1: 54532, 2: 54533, 3: 54534, 4: 54535, 5: 64652, 6: 64651, 7: 54536, 8: 54537, 9: 54538, 10: 64653, 11: 54539, 12: 54540, 13: 54541, 14: 64650, 15: 54542, 16: 54543},
+        'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        # ── ETA-aware detection tuning ──────────────────────────────────────
-        # detection_zone_m: PT-coord scan radius.  150 m — scans only, no physical
-        #   detectors, for consistency across all intersections.
-        # eta_min_s: don't request if bus is already < 5 s away (too late to act).
-        # eta_max_s: don't request if bus is > 45 s away at current speed.
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86847, 86848, 86751]],
+        'BusDet': [86847, 86848, 86751],
+        'BusCallDetectors': [86847, 86848, 86751],
+        'BusExitDetectors': [86849, 86753, 86754],
+        'DetDistance': [[50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 65.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 17383 - Holland Rd
+    17308: {
+        'IntersectionID': 17308,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86531, 86532, 86536, 86537]],
+        'BusDet': [86531, 86532, 86536, 86537],
+        'BusCallDetectors': [86531, 86532, 86536, 86537],
+        'BusExitDetectors': [86533, 86534, 86538, 86539],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     17383: {
         'IntersectionID': 17383,
-        'NumberOfPhases': 7,
-        'SignalGroupIDList': [[1,2,3,4,5], [1,6,2,3,4], [7,8], [9,10,11,12], [9,13,10,11], [14,15], [3,2]],
-        'SignalIDLookup': {1:54567,2:54568,3:54569,4:66036,5:66037,6:54570,7:54571,8:54572,9:54573,10:54574,
-                           11:54575,12:66038,13:54576,14:54577,15:54578},
-        'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0],
         'BusPhase': 1,
         'BusPhaseDuration': 6.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0, 21:0, 22:0, 23:0, 24:0},
+        'NumberOfPhases': 7,
+        'SignalGroupIDList': [[1, 2, 3, 4, 5], [1, 6, 2, 3, 4], [7, 8], [9, 10, 11, 12], [9, 13, 10, 11], [14, 15], [3, 2]],
+        'SignalIDLookup': {1: 54567, 2: 54568, 3: 54569, 4: 66036, 5: 66037, 6: 54570, 7: 54571, 8: 54572, 9: 54573, 10: 54574, 11: 54575, 12: 66038, 13: 54576, 14: 54577, 15: 54578},
+        'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0, 24: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86588, 86589, 86590, 86597, 86596, 86594]],
+        'BusDet': [86588, 86589, 86590, 86597, 86596, 86594],
+        'BusCallDetectors': [86588, 86589, 86590, 86597, 86596, 86594],
+        'BusExitDetectors': [86591, 86592, 86593, 86598, 86599, 86600],
+        'DetDistance': [[50, 50, 50, 21, 21, 21]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 95.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 17963 - Gordon Pde
+    17498: {
+        'IntersectionID': 17498,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86553, 86555, 86556, 86561, 86562]],
+        'BusDet': [86553, 86555, 86556, 86561, 86562],
+        'BusCallDetectors': [86553, 86555, 86556, 86561, 86562],
+        'BusExitDetectors': [86557, 86558, 86559, 86563, 86564],
+        'DetDistance': [[33, 33, 33, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    17628: {
+        'IntersectionID': 17628,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86498, 86499, 86502, 86503]],
+        'BusDet': [86498, 86499, 86502, 86503],
+        'BusCallDetectors': [86498, 86499, 86502, 86503],
+        'BusExitDetectors': [86500, 86501, 86504, 86505],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     17963: {
         'IntersectionID': 17963,
-        'NumberOfPhases': 6,
-        'SignalGroupIDList': [[1,2,3,4,5], [1,2,3,6,5], [7,8,9,10], [11,12,7,13,8,14], [15,16], [1]],
-        'SignalIDLookup': {1:54793,2:54794,3:54795,4:66325,5:66326,6:54796,7:54797,8:54798,9:66327,10:66328,
-                           11:54799,12:54800,13:54801,14:54802,15:54803,16:54804},
-        'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0],
         'BusPhase': 1,
         'BusPhaseDuration': 6.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0, 21:0, 22:0, 23:0},
+        'NumberOfPhases': 6,
+        'SignalGroupIDList': [[1, 2, 3, 4, 5], [1, 2, 3, 6, 5], [7, 8, 9, 10], [11, 12, 7, 13, 8, 14], [15, 16], [1]],
+        'SignalIDLookup': {1: 54793, 2: 54794, 3: 54795, 4: 66325, 5: 66326, 6: 54796, 7: 54797, 8: 54798, 9: 66327, 10: 66328, 11: 54799, 12: 54800, 13: 54801, 14: 54802, 15: 54803, 16: 54804},
+        'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86566, 86567, 86568, 86574, 86572]],
+        'BusDet': [86566, 86567, 86568, 86574, 86572],
+        'BusCallDetectors': [86566, 86567, 86568, 86574, 86572],
+        'BusExitDetectors': [86569, 86570, 86571, 86575, 86576],
+        'DetDistance': [[40, 40, 40, 24, 24]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 90.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 18942 - Nursery Rd
+    18044: {
+        'IntersectionID': 18044,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86509, 86510, 86514, 86515]],
+        'BusDet': [86509, 86510, 86514, 86515],
+        'BusCallDetectors': [86509, 86510, 86514, 86515],
+        'BusExitDetectors': [86511, 86512, 86516, 86517],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     18942: {
         'IntersectionID': 18942,
-        'NumberOfPhases': 7,
-        'SignalGroupIDList': [[1,2,3,4], [1,2,5,4], [5], [6,5,7,8], [9,7,6,5], [10,11,12,13], [14,15]],
-        'SignalIDLookup': {1:55120,2:55121,3:66198,4:66199,5:55122,6:55123,7:55124,8:66200,9:55125,
-                           10:55126,11:55127,12:55128,13:66201,14:55129,15:55130},
-        'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0],
         'BusPhase': 1,
         'BusPhaseDuration': 6.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0, 21:0, 22:0, 23:0},
+        'NumberOfPhases': 7,
+        'SignalGroupIDList': [[1, 2, 3, 4], [1, 2, 5, 4], [5], [6, 5, 7, 8], [9, 7, 6, 5], [10, 11, 12, 13], [14, 15]],
+        'SignalIDLookup': {1: 55120, 2: 55121, 3: 66198, 4: 66199, 5: 55122, 6: 55123, 7: 55124, 8: 66200, 9: 55125, 10: 55126, 11: 55127, 12: 55128, 13: 66201, 14: 55129, 15: 55130},
+        'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86578, 86579, 86583, 86584]],
+        'BusDet': [86578, 86579, 86583, 86584],
+        'BusCallDetectors': [86578, 86579, 86583, 86584],
+        'BusExitDetectors': [86580, 86581, 86585, 86586],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 85.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 19196 - Klumpp Rd / Dawson Rd
+    19185: {
+        'IntersectionID': 19185,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86696, 86698, 86699, 86704, 86705]],
+        'BusDet': [86696, 86698, 86699, 86704, 86705],
+        'BusCallDetectors': [86696, 86698, 86699, 86704, 86705],
+        'BusExitDetectors': [86700, 86701, 86702, 86706, 86707],
+        'DetDistance': [[30, 30, 30, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     19196: {
         'IntersectionID': 19196,
-        'NumberOfPhases': 7,
-        'SignalGroupIDList': [[1,2,3,4], [1,5,6,2], [6], [7,8,9,6,10], [11,12,13], [12,11,14], [15,16,17]],
-        'SignalIDLookup': {1:55220,2:55221,3:66884,4:66885,5:55222,6:55223,7:55224,8:55225,9:55226,10:66886,
-                           11:55227,12:55228,13:66887,14:55229,15:55230,16:55231,17:55232},
-        'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0],
         'BusPhase': 1,
         'BusPhaseDuration': 8.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0, 21:0, 22:0, 23:0},
+        'NumberOfPhases': 7,
+        'SignalGroupIDList': [[1, 2, 3, 4], [1, 5, 6, 2], [6], [7, 8, 9, 6, 10], [11, 12, 13], [12, 11, 14], [15, 16, 17]],
+        'SignalIDLookup': {1: 55220, 2: 55221, 3: 66884, 4: 66885, 5: 55222, 6: 55223, 7: 55224, 8: 55225, 9: 55226, 10: 66886, 11: 55227, 12: 55228, 13: 66887, 14: 55229, 15: 55230, 16: 55231, 17: 55232},
+        'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86484, 86485, 86489, 86490]],
+        'BusDet': [86484, 86485, 86489, 86490],
+        'BusCallDetectors': [86484, 86485, 86489, 86490],
+        'BusExitDetectors': [86486, 86487, 86493, 86494],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 85.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 19474 - Cornwall St
+    19363: {
+        'IntersectionID': 19363,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        # No detector CSV coverage for this junction -- physical bus
+        # detection unavailable until detectors are surveyed/added.
+        'UpDetList': [],
+        'BusDet': [],
+        'BusCallDetectors': [],
+        'BusExitDetectors': [],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     19474: {
         'IntersectionID': 19474,
-        'NumberOfPhases': 5,
-        'SignalGroupIDList': [[1,2,3,4,5], [3,6,4,2,5], [4,5,2], [4,7,5,2], [8,9,10,11]],
-        'SignalIDLookup': {1:65035,2:65037,3:55339,4:55341,5:65038,6:55340,7:55342,8:55343,9:55344,10:55345,11:65036},
-        'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0],
         'BusPhase': 1,
         'BusPhaseDuration': 6.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0, 21:0},
+        'NumberOfPhases': 5,
+        'SignalGroupIDList': [[1, 2, 3, 4, 5], [3, 6, 4, 2, 5], [4, 5, 2], [4, 7, 5, 2], [8, 9, 10, 11]],
+        'SignalIDLookup': {1: 65035, 2: 65037, 3: 55339, 4: 55341, 5: 65038, 6: 55340, 7: 55342, 8: 55343, 9: 55344, 10: 55345, 11: 65036},
+        'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86722, 86723, 86724, 86728, 86729, 86730]],
+        'BusDet': [86722, 86723, 86724, 86728, 86729, 86730],
+        'BusCallDetectors': [86722, 86723, 86724, 86728, 86729, 86730],
+        'BusExitDetectors': [86726, 86725, 86727, 86732, 86733, 86734],
+        'DetDistance': [[50, 50, 50, 30, 30, 30]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 70.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 19882 - Arnold St
     19882: {
         'IntersectionID': 19882,
-        'NumberOfPhases': 4,
-        'SignalGroupIDList': [[1,2,3], [4,5,1,6,7,2], [8,9,10,11,12], [8,9,13,10,11,14]],
-        'SignalIDLookup': {1:55500,2:55501,3:65938,4:55502,5:55503,6:55504,7:55505,8:55506,9:55507,10:55508,11:55509,12:65939,13:55510,14:55511},
-        'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0],
         'BusPhase': 1,
         'BusPhaseDuration': 6.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0, 19:0, 20:0},
+        'NumberOfPhases': 4,
+        'SignalGroupIDList': [[1, 2, 3], [4, 5, 1, 6, 7, 2], [8, 9, 10, 11, 12], [8, 9, 13, 10, 11, 14]],
+        'SignalIDLookup': {1: 55500, 2: 55501, 3: 65938, 4: 55502, 5: 55503, 6: 55504, 7: 55505, 8: 55506, 9: 55507, 10: 55508, 11: 55509, 12: 65939, 13: 55510, 14: 55511},
+        'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86601, 86602, 86607, 86609]],
+        'BusDet': [86601, 86602, 86607, 86609],
+        'BusCallDetectors': [86601, 86602, 86607, 86609],
+        'BusExitDetectors': [86604, 86605, 86610, 86611],
+        'DetDistance': [[37, 37, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 100.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
-
-    # 21895 - Sackville St
+    20270: {
+        'IntersectionID': 20270,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86654, 86653, 86651]],
+        'BusDet': [86654, 86653, 86651],
+        'BusCallDetectors': [86654, 86653, 86651],
+        'BusExitDetectors': [86655, 86656, 86657],
+        'DetDistance': [[20, 20, 20]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    20280: {
+        'IntersectionID': 20280,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86519, 86520, 86525, 86524]],
+        'BusDet': [86519, 86520, 86525, 86524],
+        'BusCallDetectors': [86519, 86520, 86525, 86524],
+        'BusExitDetectors': [86522, 86523, 86527, 86528, 86529],
+        'DetDistance': [[50, 50, 45, 45]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    20283: {
+        'IntersectionID': 20283,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86685, 86686, 86687, 86692, 86693]],
+        'BusDet': [86685, 86686, 86687, 86692, 86693],
+        'BusCallDetectors': [86685, 86686, 86687, 86692, 86693],
+        'BusExitDetectors': [86688, 86689, 86690, 86694, 86695],
+        'DetDistance': [[50, 50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    20844: {
+        'IntersectionID': 20844,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86462, 86463, 86478, 86489]],
+        'BusDet': [86462, 86463, 86478, 86489],
+        'BusCallDetectors': [86462, 86463, 86478, 86489],
+        'BusExitDetectors': [86472, 86473, 86481, 86482],
+        'DetDistance': [[50, 50, 48, 48]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    21197: {
+        'IntersectionID': 21197,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86625, 86626, 86645, 86646, 86647]],
+        'BusDet': [86625, 86626, 86645, 86646, 86647],
+        'BusCallDetectors': [86625, 86626, 86645, 86646, 86647],
+        'BusExitDetectors': [86641, 86642, 86643, 86634, 86635, 86636],
+        'DetDistance': [[50, 50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    21553: {
+        'IntersectionID': 21553,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86612, 86614, 86618, 86619]],
+        'BusDet': [86612, 86614, 86618, 86619],
+        'BusCallDetectors': [86612, 86614, 86618, 86619],
+        'BusExitDetectors': [86616, 86615, 86621, 86622],
+        'DetDistance': [[30, 30, 38, 10]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    21847: {
+        'IntersectionID': 21847,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86541, 86542, 86548, 86550]],
+        'BusDet': [86541, 86542, 86548, 86550],
+        'BusCallDetectors': [86541, 86542, 86548, 86550],
+        'BusExitDetectors': [86546, 86547, 86551, 86552],
+        'DetDistance': [[40, 40, 30, 30]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
     21895: {
         'IntersectionID': 21895,
-        'NumberOfPhases': 5,
-        'SignalGroupIDList': [[1,2,3,4], [5,1,6,7,2], [8,9,10], [11,12,13], [14,11,12]],
-        'SignalIDLookup': {1:56241,2:56243,3:65138,4:65136,5:56244,6:56245,7:56242,8:56246,9:56247,10:56248,
-                           11:56250,12:56251,13:65137,14:56249},
-        'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0],
         'BusPhase': 1,
         'BusPhaseDuration': 8.0,
-        'PhaseIndex': {1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, 8:0, 9:0, 10:0, 11:0, 12:0, 13:0, 14:0, 15:0, 16:0, 17:0, 18:0},
+        'NumberOfPhases': 5,
+        'SignalGroupIDList': [[1, 2, 3, 4], [5, 1, 6, 7, 2], [8, 9, 10], [11, 12, 13], [14, 11, 12]],
+        'SignalIDLookup': {1: 56241, 2: 56243, 3: 65138, 4: 65136, 5: 56244, 6: 56245, 7: 56242, 8: 56246, 9: 56247, 10: 56248, 11: 56250, 12: 56251, 13: 65137, 14: 56249},
+        'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0],
+        'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0},
         'NumberOfLanes': 3,
         'SaturationFlow': 1800,
         'JamDensity': 150,
         'SaturationDensity': 35,
         'CarOcc': 1.2,
         'BusOcc': 40.0,
-        'detection_zone_m': 150.0,
-        'eta_min_s':          5.0,
-        'eta_max_s':         45.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86675, 86676, 86677, 86681, 86682, 86683]],
+        'BusDet': [86675, 86676, 86677, 86681, 86682, 86683],
+        'BusCallDetectors': [86675, 86676, 86677, 86681, 86682, 86683],
+        'BusExitDetectors': [86678, 86679, 86680, 86667, 86668, 86669],
+        'DetDistance': [[50, 50, 50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 65.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    22232: {
+        'IntersectionID': 22232,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86736, 86737, 86842, 86841]],
+        'BusDet': [86736, 86737, 86842, 86841],
+        'BusCallDetectors': [86736, 86737, 86842, 86841],
+        'BusExitDetectors': [86739, 86738, 86843, 86844],
+        'DetDistance': [[50, 50, 50, 50]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    22400: {
+        'IntersectionID': 22400,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86711, 86712, 86715, 86716, 86717]],
+        'BusDet': [86711, 86712, 86715, 86716, 86717],
+        'BusCallDetectors': [86711, 86712, 86715, 86716, 86717],
+        'BusExitDetectors': [86713, 86714, 86718, 86719, 86720],
+        'DetDistance': [[50, 50, 40, 40, 40]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
+    },
+    22603: {
+        'IntersectionID': 22603,
+        'BusPhase': 1,
+        # BusPhaseDuration omitted -- auto-discovered from the live
+        # Aimsun signal plan at controller init (GetPhaseDuration).
+        # SignalGroupIDList / PhaseIndex not yet extracted from Aimsun
+        # SCATS export for this junction -- controller falls back to
+        # per-phase-index-0 bookkeeping (works, just less granular).
+        'NumberOfLanes': 2,
+        'SaturationFlow': 1800,
+        'JamDensity': 150,
+        'SaturationDensity': 35,
+        'CarOcc': 1.2,
+        'BusOcc': 40.0,
+        'VehLength': 4.5,
+        'DetLength': 2,
+        # -- detector geometry (from logan_road_corridor_detectors(in).csv) --
+        # Bus-phase through movement serves NB+SB together (standard arterial
+        # coordinated-phase signal plan) -- both directions feed BusDet so a
+        # bus in EITHER direction can trigger priority on the shared phase.
+        'UpDetList': [[86661, 86662, 86663, 86667, 86668, 86669]],
+        'BusDet': [86661, 86662, 86663, 86667, 86668, 86669],
+        'BusCallDetectors': [86661, 86662, 86663, 86667, 86668, 86669],
+        'BusExitDetectors': [86664, 86665, 86666, 86670, 86671, 86672],
+        'DetDistance': [[20, 30, 30, 45, 45, 45]],
+        # MainSections / SideSections intentionally omitted -- the controller
+        # auto-classifies approach sections as main (N-S, Logan Rd through)
+        # vs side (E-W, cross street) from junction/section geometry at Aimsun
+        # runtime (_classify_sections_by_geometry), covering both directions.
+        'cycle_length': 135.0,
+        'detection_window_m': 50.0,
+        'GE_extension': 10.0,
+        'insertion_min_duration': 5.0,
+        'insertion_max_duration': 20.0,
+        'priority_pt_line_ids': [],
     },
 }
 
+# Preserved unchanged from the pre-port file -- see module docstring above.
+INTERSECTION_GROUPS = {'logan_north': [17249, 17383, 17963, 18942], 'logan_south': [19196, 19474, 19882, 21895]}
 
-# =============================================================================
-# INTERSECTION GROUPS — corridor-level coordination
-#
-# Each key is a group name; each value is a list of intersection IDs in
-# order from upstream (northbound entry) to downstream (southbound exit).
-# The CorridorCoordinator in intersection_controller.py uses these groups
-# to coordinate phase transitions across intersections on the same corridor,
-# reducing the effective number of independently-cycling groups and creating
-# a coordinated green-band effect.
-#
-# Rule of thumb: keep ≤5 intersections per group so phase lags don't compound.
-# Intersections not listed here are still controlled normally (no group effect).
-# =============================================================================
-INTERSECTION_GROUPS = {
-    # Logan Road northbound approach — Old Cleveland Rd to Nursery Rd
-    "logan_north": [17249, 17383, 17963, 18942],
+CORRIDOR_ROUTE_GROUPS = {'logan_north': [17249, 17308, 17383, 17498, 17628, 17963, 18044, 18942], 'logan_south': [19196, 19363, 19474, 19882, 21895]}
 
-    # Logan Road southbound approach — Warrigal Rd to Sackville St
-    "logan_south": [19196, 19474, 19882, 21895],
-}
+TSP_ACTIVE_INTERSECTIONS = None   # None = all configured junctions active
 
-# Full corridor route order (including unmanaged system junctions between managed nodes).
-CORRIDOR_ROUTE_GROUPS = {
-    "logan_north": [17249, 17308, 17383, 17498, 17628, 17963, 18044, 18942],
-    "logan_south": [19196, 19363, 19474, 19882, 21895],
-}
-
-TSP_ACTIVE_INTERSECTIONS = None   # None = all intersections active
-
-
-
-
-
-INTERSECTIONS_CONFIG_o = {
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0, 24: 0}, 'UpDetList': [[86588, 86589, 86590]], 'BusDet': [86588, 86589, 86590], 'BusCallDetectors': [86588, 86589, 86590], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0}, 'UpDetList': [[86566, 86567, 86568]], 'BusDet': [86566, 86567, 86568], 'BusCallDetectors': [86566, 86567, 86568], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0}, 'UpDetList': [[86578, 86579]], 'BusDet': [86578, 86579], 'BusCallDetectors': [86578, 86579], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0, 22: 0, 23: 0}, 'UpDetList': [[86484, 86485]], 'BusDet': [86484, 86485], 'BusCallDetectors': [86484, 86485], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0, 21: 0}, 'UpDetList': [[86722, 86723, 86724]], 'BusDet': [86722, 86723, 86724], 'BusCallDetectors': [86722, 86723, 86724], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0}, 'UpDetList': [[86601, 86602]], 'BusDet': [86601, 86602], 'BusCallDetectors': [86601, 86602], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0}, 'UpDetList': [[86675, 86676, 86677]], 'BusDet': [86675, 86676, 86677], 'BusCallDetectors': [86675, 86676, 86677], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'PhaseIndex': {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, 8: 0, 9: 0, 10: 0, 11: 0, 12: 0, 13: 0, 14: 0, 15: 0, 16: 0, 17: 0, 18: 0, 19: 0, 20: 0}, 'UpDetList': [[86747, 86748]], 'BusDet': [86747, 86748], 'BusCallDetectors': [86747, 86748], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-}
-
-
-
-INTERSECTONFIG = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'PhaseIndex': {54532: 0, 54533: 0, 54534: 0, 54535: 2, 54536: 1, 54537: 1, 54538: 1, 54539: 4, 54540: 2, 54541: 2,  54542: 4, 54543: 4, 64649: 2, 64650: 2, 64651: 0,64652: 0,  64653: 4}, 'UpDetList': [[86847, 86848]], 'BusDet': [86847, 86848], 'BusCallDetectors': [86847, 86848], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'BusPhase': 1, 'BusPhaseDuration': 273.0, 'PhaseIndex': {54545: 0, 54546: 0, 66547: 1}, 'UpDetList': [[86531, 86532]], 'BusDet': [86531, 86532], 'BusCallDetectors': [86531, 86532], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {54567: 1, 54568: 6, 54569: 6, 66036: 1, 66037: 0, 54570: 1, 54571: 2, 54572: 2, 54573: 4, 54574: 4, 54575: 4, 66038: 3, 54576: 4, 54577: 5, 54578: 5}, 'UpDetList': [[86588, 86589, 86590]], 'BusDet': [86588, 86589, 86590], 'BusCallDetectors': [86588, 86589, 86590], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {54618: 1, 54619: 5, 66375: 0, 54620: 1, 54621: 4, 54622: 3, 66376: 2, 54623: 4}, 'UpDetList': [[86553, 86555, 86556]], 'BusDet': [86553, 86555, 86556], 'BusCallDetectors': [86553, 86555, 86556], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {54681: 1, 54682: 3, 66708: 0, 54683: 1, 54684: 3, 66723: 2, 54686: 5, 54685: 5}, 'UpDetList': [[86498, 86499]], 'BusDet': [86498, 86499], 'BusCallDetectors': [86498, 86499], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {54793: 5, 54794: 1, 54795: 1, 66325: 0, 66326: 1, 54796: 1, 54797: 3, 54798: 3, 66327: 2, 66328: 2, 54799: 3, 54800: 3, 54801: 3, 54802: 3, 54803: 4, 54804: 4}, 'UpDetList': [[86566, 86567, 86568]], 'BusDet': [86566, 86567, 86568], 'BusCallDetectors': [86566, 86567, 86568], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {54826: 1, 54827: 3, 66654: 0, 54828: 1, 54829: 3, 54830: 5, 54831: 5, 66655: 4}, 'UpDetList': [[86509, 86510]], 'BusDet': [86509, 86510], 'BusCallDetectors': [86509, 86510], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55120: 1, 55121: 1, 66198: 0, 66199: 1, 55122: 4, 55123: 4, 55124: 4, 66200: 3, 55125: 4, 55126: 5, 55127: 5, 55128: 5, 66201: 5, 55129: 6, 55130: 6}, 'UpDetList': [[86578, 86579]], 'BusDet': [86578, 86579], 'BusCallDetectors': [86578, 86579], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55174: 3, 55175: 1, 67025: 0, 55177: 4, 55176: 3, 67026: 4}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'PhaseIndex': {55213: 0, 55214: 0, 55215: 2, 65085: 0, 55216: 2, 55218: 3, 65086: 3}, 'UpDetList': [[86696, 86698, 86699]], 'BusDet': [86696, 86698, 86699], 'BusCallDetectors': [86696, 86698, 86699], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {55220: 1, 55221: 1, 66884: 0, 66885: 0, 55222: 1, 55223: 3, 55224: 3, 55225: 3, 55226: 3, 66886: 3, 55227: 5, 55228: 5, 66887: 4, 55229: 5, 55230: 6, 55231: 6, 55232: 6}, 'UpDetList': [[86484, 86485]], 'BusDet': [86484, 86485], 'BusCallDetectors': [86484, 86485], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55272: 1, 55273: 1, 55274: 1, 64611: 0, 55275: 1, 55276: 2, 55277: 2, 64609: 2, 64610: 2}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {65035: 0, 65037: 3, 55339: 1, 55341: 3, 65038: 3, 55340: 1, 55342: 3, 55343: 4, 55344: 4, 55345: 4, 65036: 4}, 'UpDetList': [[86722, 86723, 86724]], 'BusDet': [86722, 86723, 86724], 'BusCallDetectors': [86722, 86723, 86724], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55500: 1, 55501: 1, 65938: 0, 55502: 1, 55503: 1, 55504: 1, 55505: 1, 55506: 3, 55507: 3, 55508: 3, 55509: 3, 65939: 2, 55510: 3, 55511: 3}, 'UpDetList': [[86601, 86602]], 'BusDet': [86601, 86602], 'BusCallDetectors': [86601, 86602], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55534: 1, 55535: 9, 64952: 3, 64956: 3, 64957: 5, 55536: 1, 55539: 3, 64955: 7, 64953: 8, 55538: 8, 55537: 5, 64954: 5, 55540: 8, 55541: 8}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'BusPhase': 1, 'BusPhaseDuration': 48.0, 'PhaseIndex': {55669: 0, 55670: 0, 55671: 0, 65469: 0, 55672: 1, 55673: 1}, 'UpDetList': [[86653, 86654]], 'BusDet': [86653, 86654], 'BusCallDetectors': [86653, 86654], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 24.0, 'PhaseIndex': {55675: 0, 55676: 0, 55677: 3, 66639: 0, 55678: 1, 55679: 1, 66640: 1, 55680: 2}, 'UpDetList': [[86519, 86520]], 'BusDet': [86519, 86520], 'BusCallDetectors': [86519, 86520], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {65113: 0, 65115: 0, 55682: 3, 55683: 1, 55684: 5, 55687: 3, 55685: 3, 55686: 5, 65114: 2, 55688: 5, 55689: 5}, 'UpDetList': [[86685, 86686, 86687]], 'BusDet': [86685, 86686, 86687], 'BusCallDetectors': [86685, 86686, 86687], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {55893: 3, 55894: 1, 66997: 0, 55895: 3, 55899: 3, 55897: 4, 55898: 4, 55896: 5, 66998: 5}, 'UpDetList': [[86462, 86463]], 'BusDet': [86462, 86463], 'BusCallDetectors': [86462, 86463], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {56040: 9, 56041: 3, 65601: 9, 65602: 9, 65639: 1, 65640: 0, 56042: 5, 65603: 8, 56043: 8, 56044: 5, 65604: 5, 65642: 4, 65605: 5, 56045: 8, 65641: 7}, 'UpDetList': [[86625, 86626]], 'BusDet': [86625, 86626], 'BusCallDetectors': [86625, 86626], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {56146: 1, 56147: 1, 65880: 0, 56148: 1, 56149: 1, 65881: 2, 65882: 2, 56150: 3, 56151: 3}, 'UpDetList': [[86612, 86614]], 'BusDet': [86612, 86614], 'BusCallDetectors': [86612, 86614], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {56234: 1, 56235: 2, 66448: 1, 66449: 2, 66506: 0, 66507: 0, 56237: 2, 66451: 2, 56238: 4, 66452: 4, 66509: 3, 66508: 3, 56239: 6, 66453: 6, 56236: 6, 66450: 6}, 'UpDetList': [[86541, 86542]], 'BusDet': [86541, 86542], 'BusCallDetectors': [86541, 86542], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {56241: 1, 56243: 1, 65138: 0, 65136: 0, 56244: 1, 56245: 1, 56242: 1, 56246: 2, 56247: 2, 56248: 2, 56250: 4, 56251: 4, 65137: 3, 56249: 4}, 'UpDetList': [[86675, 86676, 86677]], 'BusDet': [86675, 86676, 86677], 'BusCallDetectors': [86675, 86676, 86677], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'PhaseIndex': {56307: 1, 56308: 1, 67190: 0, 56309: 1, 56312: 2, 56313: 2, 56310: 3, 56311: 3, 67191: 3}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'PhaseIndex': {56333: 0, 56334: 0, 64619: 1}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'PhaseIndex': {64931: 0, 56403: 1, 56405: 1, 56402: 1, 56404: 1, 56406: 3, 64930: 2, 56407: 3}, 'UpDetList': [[86736, 86737]], 'BusDet': [86736, 86737], 'BusCallDetectors': [86736, 86737], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 42.0, 'PhaseIndex': {56438: 0, 56439: 0, 69680: 0, 69679: 0, 69681: 1, 56445: 2, 56444: 2, 56443: 2, 56441: 2, 56440: 2, 56442: 2, 56446: 3, 56447: 3, 56448: 3}, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'PhaseIndex': {56495: 0, 56496: 0, 56497: 0, 65055: 1, 65056: 1, 65057: 1}, 'UpDetList': [[86711, 86712]], 'BusDet': [86711, 86712], 'BusCallDetectors': [86711, 86712], 'DetDistance': [50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 53.0, 'PhaseIndex': {56576: 0, 56577: 0, 56578: 0, 65159: 0, 56579: 2, 65160: 1, 56580: 2}, 'UpDetList': [[86661, 86662, 86663]], 'BusDet': [86661, 86662, 86663], 'BusCallDetectors': [86661, 86662, 86663], 'DetDistance': [50.0, 50.0, 50.0], 'NumberOfLanes': 3, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-}
-
-
-INTERSECTIONsssssS_CONFIG = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86847, 86848]], 'BusDet': [86847, 86848], 'BusCallDetectors': [86847, 86848], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {54532: 0, 54533: 0, 54534: 0, 54535: 0, 64652: 0, 64651: 0, 54536: 1, 54537: 1, 54538: 1, 64653: 1, 54539: 2, 54540: 2, 54541: 2, 64650: 2, 54542: 4, 54543: 4}, 'GroupBasedConfig': {'bus_det': [86847, 86848], 'bus_sg': 54532}},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'BusPhase': 1, 'BusPhaseDuration': 273.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86531, 86532]], 'BusDet': [86531, 86532], 'BusCallDetectors': [86531, 86532], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {54545: 0, 54546: 0, 66547: 1}, 'GroupBasedConfig': {'bus_det': [86531, 86532], 'bus_sg': 54545}},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86588, 86589, 86590]], 'BusDet': [86588, 86589, 86590], 'BusCallDetectors': [86588, 86589, 86590], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {54567: 0, 54568: 0, 54569: 0, 66036: 0, 66037: 0, 54570: 1, 54571: 2, 54572: 2, 54573: 3, 54574: 3, 54575: 3, 66038: 3, 54576: 4, 54577: 5, 54578: 5}, 'GroupBasedConfig': {'bus_det': [86588, 86589, 86590], 'bus_sg': 54567}},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86553, 86555, 86556]], 'BusDet': [86553, 86555, 86556], 'BusCallDetectors': [86553, 86555, 86556], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {54618: 0, 54619: 0, 66375: 0, 54620: 1, 54621: 1, 54622: 2, 66376: 2, 54623: 3}, 'GroupBasedConfig': {'bus_det': [86553, 86555, 86556], 'bus_sg': 66375}},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86498, 86499]], 'BusDet': [86498, 86499], 'BusCallDetectors': [86498, 86499], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {54681: 0, 54682: 0, 66708: 0, 54683: 1, 54684: 2, 66723: 2, 54686: 2, 54685: 5}, 'GroupBasedConfig': {'bus_det': [86498, 86499], 'bus_sg': 66723}},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86566, 86567, 86568]], 'BusDet': [86566, 86567, 86568], 'BusCallDetectors': [86566, 86567, 86568], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {54793: 0, 54794: 0, 54795: 0, 66325: 0, 66326: 0, 54796: 1, 54797: 2, 54798: 2, 66327: 2, 66328: 2, 54799: 3, 54800: 3, 54801: 3, 54802: 3, 54803: 4, 54804: 4}, 'GroupBasedConfig': {'bus_det': [86566, 86567, 86568], 'bus_sg': 54793}},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86509, 86510]], 'BusDet': [86509, 86510], 'BusCallDetectors': [86509, 86510], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {54826: 0, 54827: 0, 66654: 0, 54828: 1, 54829: 3, 54830: 3, 54831: 4, 66655: 4}, 'GroupBasedConfig': {'bus_det': [86509, 86510], 'bus_sg': 54826}},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86578, 86579]], 'BusDet': [86578, 86579], 'BusCallDetectors': [86578, 86579], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55120: 0, 55121: 0, 66198: 0, 66199: 0, 55122: 1, 55123: 3, 55124: 3, 66200: 3, 55125: 4, 55126: 5, 55127: 5, 55128: 5, 66201: 5, 55129: 6, 55130: 6}, 'GroupBasedConfig': {'bus_det': [86578, 86579], 'bus_sg': 55127}},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {55174: 0, 55175: 0, 67025: 0, 55177: 1, 55176: 3, 67026: 4}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 55174}},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86696, 86698, 86699]], 'BusDet': [86696, 86698, 86699], 'BusCallDetectors': [86696, 86698, 86699], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {55213: 0, 55214: 0, 55215: 0, 65085: 0, 55216: 2, 55218: 3, 65086: 3}, 'GroupBasedConfig': {'bus_det': [86696, 86698, 86699], 'bus_sg': 55213}},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86484, 86485]], 'BusDet': [86484, 86485], 'BusCallDetectors': [86484, 86485], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55220: 0, 55221: 0, 66884: 0, 66885: 0, 55222: 1, 55223: 1, 55224: 3, 55225: 3, 55226: 3, 66886: 3, 55227: 4, 55228: 4, 66887: 4, 55229: 5, 55230: 6, 55231: 6, 55232: 6}, 'GroupBasedConfig': {'bus_det': [86484, 86485], 'bus_sg': 55232}},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {55272: 0, 55273: 0, 55274: 0, 64611: 0, 55275: 1, 55276: 2, 55277: 2, 64609: 2, 64610: 2}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 64609}},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86722, 86723, 86724]], 'BusDet': [86722, 86723, 86724], 'BusCallDetectors': [86722, 86723, 86724], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {65035: 0, 65037: 0, 55339: 0, 55341: 0, 65038: 0, 55340: 1, 55342: 3, 55343: 4, 55344: 4, 55345: 4, 65036: 4}, 'GroupBasedConfig': {'bus_det': [86722, 86723, 86724], 'bus_sg': 55339}},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86601, 86602]], 'BusDet': [86601, 86602], 'BusCallDetectors': [86601, 86602], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55500: 0, 55501: 0, 65938: 0, 55502: 1, 55503: 1, 55504: 1, 55505: 1, 55506: 2, 55507: 2, 55508: 2, 55509: 2, 65939: 2, 55510: 3, 55511: 3}, 'GroupBasedConfig': {'bus_det': [86601, 86602], 'bus_sg': 55500}},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {55534: 0, 55535: 0, 64952: 0, 64956: 0, 64957: 0, 55536: 1, 55539: 3, 64955: 3, 64953: 3, 55538: 5, 55537: 5, 64954: 5, 55540: 7, 55541: 7}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 55534}},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'BusPhase': 1, 'BusPhaseDuration': 48.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86653, 86654]], 'BusDet': [86653, 86654], 'BusCallDetectors': [86653, 86654], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55669: 0, 55670: 0, 55671: 0, 65469: 0, 55672: 1, 55673: 1}, 'GroupBasedConfig': {'bus_det': [86653, 86654], 'bus_sg': 55669}},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 24.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86519, 86520]], 'BusDet': [86519, 86520], 'BusCallDetectors': [86519, 86520], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55675: 0, 55676: 0, 55677: 0, 66639: 0, 55678: 1, 55679: 1, 66640: 1, 55680: 2}, 'GroupBasedConfig': {'bus_det': [86519, 86520], 'bus_sg': 55680}},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86685, 86686, 86687]], 'BusDet': [86685, 86686, 86687], 'BusCallDetectors': [86685, 86686, 86687], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {65113: 0, 65115: 0, 55682: 0, 55683: 0, 55684: 1, 55687: 1, 55685: 2, 55686: 2, 65114: 2, 55688: 5, 55689: 5}, 'GroupBasedConfig': {'bus_det': [86685, 86686, 86687], 'bus_sg': 55682}},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86462, 86463]], 'BusDet': [86462, 86463], 'BusCallDetectors': [86462, 86463], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {55893: 0, 55894: 0, 66997: 0, 55895: 1, 55899: 3, 55897: 4, 55898: 4, 55896: 5, 66998: 5}, 'GroupBasedConfig': {'bus_det': [86462, 86463], 'bus_sg': 55896}},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86625, 86626]], 'BusDet': [86625, 86626], 'BusCallDetectors': [86625, 86626], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {56040: 0, 56041: 0, 65601: 0, 65602: 0, 65639: 0, 65640: 0, 56042: 1, 65603: 3, 56043: 4, 56044: 4, 65604: 4, 65642: 4, 65605: 5, 56045: 7, 65641: 7}, 'GroupBasedConfig': {'bus_det': [86625, 86626], 'bus_sg': 65601}},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86612, 86614]], 'BusDet': [86612, 86614], 'BusCallDetectors': [86612, 86614], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {56146: 0, 56147: 0, 65880: 0, 56148: 1, 56149: 1, 65881: 2, 65882: 2, 56150: 3, 56151: 3}, 'GroupBasedConfig': {'bus_det': [86612, 86614], 'bus_sg': 56146}},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86541, 86542]], 'BusDet': [86541, 86542], 'BusCallDetectors': [86541, 86542], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {56234: 0, 56235: 0, 66448: 0, 66449: 0, 66506: 0, 66507: 0, 56237: 1, 66451: 1, 56238: 3, 66452: 3, 66509: 3, 66508: 3, 56239: 4, 66453: 4, 56236: 6, 66450: 6}, 'GroupBasedConfig': {'bus_det': [86541, 86542], 'bus_sg': 56234}},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86675, 86676, 86677]], 'BusDet': [86675, 86676, 86677], 'BusCallDetectors': [86675, 86676, 86677], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {56241: 0, 56243: 0, 65138: 0, 65136: 0, 56244: 1, 56245: 1, 56242: 1, 56246: 2, 56247: 2, 56248: 2, 56250: 3, 56251: 3, 65137: 3, 56249: 4}, 'GroupBasedConfig': {'bus_det': [86675, 86676, 86677], 'bus_sg': 65137}},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {56307: 0, 56308: 0, 67190: 0, 56309: 1, 56312: 2, 56313: 2, 56310: 3, 56311: 3, 67191: 3}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 67191}},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {56333: 0, 56334: 0, 64619: 1}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 64619}},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86736, 86737]], 'BusDet': [86736, 86737], 'BusCallDetectors': [86736, 86737], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {64931: 0, 56403: 0, 56405: 0, 56402: 1, 56404: 1, 56406: 2, 64930: 2, 56407: 3}, 'GroupBasedConfig': {'bus_det': [86736, 86737], 'bus_sg': 64930}},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 42.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'PhaseIndex': {56438: 0, 56439: 0, 69680: 0, 69679: 0, 69681: 1, 56445: 1, 56444: 1, 56443: 1, 56441: 1, 56440: 2, 56442: 2, 56446: 3, 56447: 3, 56448: 3}, 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 56448}},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86711, 86712]], 'BusDet': [86711, 86712], 'BusCallDetectors': [86711, 86712], 'DetDistance': [50.0, 50.0], 'PhaseIndex': {56495: 0, 56496: 0, 56497: 0, 65055: 1, 65056: 1, 65057: 1}, 'GroupBasedConfig': {'bus_det': [86711, 86712], 'bus_sg': 65056}},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 53.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86661, 86662, 86663]], 'BusDet': [86661, 86662, 86663], 'BusCallDetectors': [86661, 86662, 86663], 'DetDistance': [50.0, 50.0, 50.0], 'PhaseIndex': {56576: 0, 56577: 0, 56578: 0, 65159: 0, 56579: 1, 65160: 1, 56580: 2}, 'GroupBasedConfig': {'bus_det': [86661, 86662, 86663], 'bus_sg': 56576}},
-}
-
-
-
-
-
-INTERSECTIONS_kkkCONFIG = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86847, 86848]], 'BusDet': [86847, 86848], 'BusCallDetectors': [86847, 86848], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86847, 86848], 'bus_sg': 54532}},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'BusPhase': 1, 'BusPhaseDuration': 273.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86531, 86532]], 'BusDet': [86531, 86532], 'BusCallDetectors': [86531, 86532], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86531, 86532], 'bus_sg': 54545}},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86588, 86589, 86590]], 'BusDet': [86588, 86589, 86590], 'BusCallDetectors': [86588, 86589, 86590], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86588, 86589, 86590], 'bus_sg': 54567}},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86553, 86555, 86556]], 'BusDet': [86553, 86555, 86556], 'BusCallDetectors': [86553, 86555, 86556], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86553, 86555, 86556], 'bus_sg': 66375}},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86498, 86499]], 'BusDet': [86498, 86499], 'BusCallDetectors': [86498, 86499], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86498, 86499], 'bus_sg': 66723}},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86566, 86567, 86568]], 'BusDet': [86566, 86567, 86568], 'BusCallDetectors': [86566, 86567, 86568], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86566, 86567, 86568], 'bus_sg': 54793}},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86509, 86510]], 'BusDet': [86509, 86510], 'BusCallDetectors': [86509, 86510], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86509, 86510], 'bus_sg': 54826}},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86578, 86579]], 'BusDet': [86578, 86579], 'BusCallDetectors': [86578, 86579], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86578, 86579], 'bus_sg': 55127}},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 55174}},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86696, 86698, 86699]], 'BusDet': [86696, 86698, 86699], 'BusCallDetectors': [86696, 86698, 86699], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86696, 86698, 86699], 'bus_sg': 55213}},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86484, 86485]], 'BusDet': [86484, 86485], 'BusCallDetectors': [86484, 86485], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86484, 86485], 'bus_sg': 55232}},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 64609}},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86722, 86723, 86724]], 'BusDet': [86722, 86723, 86724], 'BusCallDetectors': [86722, 86723, 86724], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86722, 86723, 86724], 'bus_sg': 55339}},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86601, 86602]], 'BusDet': [86601, 86602], 'BusCallDetectors': [86601, 86602], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86601, 86602], 'bus_sg': 55500}},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 55534}},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'BusPhase': 1, 'BusPhaseDuration': 48.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86653, 86654]], 'BusDet': [86653, 86654], 'BusCallDetectors': [86653, 86654], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86653, 86654], 'bus_sg': 55669}},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 24.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86519, 86520]], 'BusDet': [86519, 86520], 'BusCallDetectors': [86519, 86520], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86519, 86520], 'bus_sg': 55680}},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86685, 86686, 86687]], 'BusDet': [86685, 86686, 86687], 'BusCallDetectors': [86685, 86686, 86687], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86685, 86686, 86687], 'bus_sg': 55682}},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86462, 86463]], 'BusDet': [86462, 86463], 'BusCallDetectors': [86462, 86463], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86462, 86463], 'bus_sg': 55896}},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86625, 86626]], 'BusDet': [86625, 86626], 'BusCallDetectors': [86625, 86626], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86625, 86626], 'bus_sg': 65601}},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86612, 86614]], 'BusDet': [86612, 86614], 'BusCallDetectors': [86612, 86614], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86612, 86614], 'bus_sg': 56146}},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86541, 86542]], 'BusDet': [86541, 86542], 'BusCallDetectors': [86541, 86542], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86541, 86542], 'bus_sg': 56234}},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86675, 86676, 86677]], 'BusDet': [86675, 86676, 86677], 'BusCallDetectors': [86675, 86676, 86677], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86675, 86676, 86677], 'bus_sg': 65137}},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 67191}},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 64619}},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86736, 86737]], 'BusDet': [86736, 86737], 'BusCallDetectors': [86736, 86737], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86736, 86737], 'bus_sg': 64930}},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 42.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [], 'BusDet': [], 'BusCallDetectors': [], 'DetDistance': [], 'GroupBasedConfig': {'bus_det': [], 'bus_sg': 56448}},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86711, 86712]], 'BusDet': [86711, 86712], 'BusCallDetectors': [86711, 86712], 'DetDistance': [50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86711, 86712], 'bus_sg': 65056}},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 53.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'UpDetList': [[86661, 86662, 86663]], 'BusDet': [86661, 86662, 86663], 'BusCallDetectors': [86661, 86662, 86663], 'DetDistance': [50.0, 50.0, 50.0], 'GroupBasedConfig': {'bus_det': [86661, 86662, 86663], 'bus_sg': 56576}},
-}
-
-INTERSECTIONS_CONFIGhhh = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86847, 86848], 'BusDet': [86847, 86848], 'DetDistance': [50.0, 50.0]},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'BusPhase': 1, 'BusPhaseDuration': 273.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86531, 86532], 'BusDet': [86531, 86532], 'DetDistance': [50.0, 50.0]},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86588, 86589], 'BusDet': [86588, 86589], 'DetDistance': [50.0, 50.0]},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86553, 86555], 'BusDet': [86553, 86555], 'DetDistance': [50.0, 50.0]},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86498, 86499], 'BusDet': [86498, 86499], 'DetDistance': [50.0, 50.0]},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86566, 86567], 'BusDet': [86566, 86567], 'DetDistance': [50.0, 50.0]},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86509, 86510], 'BusDet': [86509, 86510], 'DetDistance': [50.0, 50.0]},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86578, 86579], 'BusDet': [86578, 86579], 'DetDistance': [50.0, 50.0]},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86696, 86698], 'BusDet': [86696, 86698], 'DetDistance': [50.0, 50.0]},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86484, 86485], 'BusDet': [86484, 86485], 'DetDistance': [50.0, 50.0]},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86722, 86723], 'BusDet': [86722, 86723], 'DetDistance': [50.0, 50.0]},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86601, 86602], 'BusDet': [86601, 86602], 'DetDistance': [50.0, 50.0]},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'BusPhase': 1, 'BusPhaseDuration': 48.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86654, 86653], 'BusDet': [86654, 86653], 'DetDistance': [50.0, 50.0]},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 24.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86519, 86520], 'BusDet': [86519, 86520], 'DetDistance': [50.0, 50.0]},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86685, 86686], 'BusDet': [86685, 86686], 'DetDistance': [50.0, 50.0]},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86462, 86463], 'BusDet': [86462, 86463], 'DetDistance': [50.0, 50.0]},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86625, 86626], 'BusDet': [86625, 86626], 'DetDistance': [50.0, 50.0]},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86612, 86614], 'BusDet': [86612, 86614], 'DetDistance': [50.0, 50.0]},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86541, 86542], 'BusDet': [86541, 86542], 'DetDistance': [50.0, 50.0]},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86675, 86676], 'BusDet': [86675, 86676], 'DetDistance': [50.0, 50.0]},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86736, 86737], 'BusDet': [86736, 86737], 'DetDistance': [50.0, 50.0]},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 42.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [], 'BusDet': [], 'DetDistance': []},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86711, 86712], 'BusDet': [86711, 86712], 'DetDistance': [50.0, 50.0]},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 53.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0, 'BusCallDetectors': [86661, 86662], 'BusDet': [86661, 86662], 'DetDistance': [50.0, 50.0]},
-}
-
-
-
-
-INTERSECTIONS_CONFIG_oo = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'BusPhase': 1, 'BusPhaseDuration': 273.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'BusPhase': 1, 'BusPhaseDuration': 28.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'BusPhase': 1, 'BusPhaseDuration': 48.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 24.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'BusPhase': 1, 'BusPhaseDuration': 6.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 8.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'BusPhase': 1, 'BusPhaseDuration': 42.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'BusPhase': 1, 'BusPhaseDuration': 54.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'BusPhase': 1, 'BusPhaseDuration': 53.0, 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-}
-
-INTERSECTIONS_CONFIG_o = {
-17249: {'IntersectionID': 17249, 'NumberOfPhases': 5, 'SignalGroupIDList': [[54532, 54533, 54534, 54535, 64652, 64651], [54536, 54537, 54538, 64653], [54539, 54540, 54541, 64650, 54535], [54539], [54542, 54543, 54539, 64653]], 'GreenPhaseDuration': [28.0, 7.0, 17.0, 5.0, 8.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17308: {'IntersectionID': 17308, 'NumberOfPhases': 2, 'SignalGroupIDList': [[54545, 54546], [66547]], 'GreenPhaseDuration': [273.0, 17.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17383: {'IntersectionID': 17383, 'NumberOfPhases': 7, 'SignalGroupIDList': [[54567, 54568, 54569, 66036, 66037], [54567, 54570, 54568, 54569, 66036], [54571, 54572], [54573, 54574, 54575, 66038], [54573, 54576, 54574, 54575], [54577, 54578], [54569, 54568]], 'GreenPhaseDuration': [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17498: {'IntersectionID': 17498, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54618, 54619, 66375], [54618, 54620, 54619, 54621], [54622, 66376], [54622, 54623], [54619, 54621, 54623], [54619]], 'GreenPhaseDuration': [6.0, 50.0, 10.0, 11.0, 8.0, 5.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17628: {'IntersectionID': 17628, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54681, 54682, 66708], [54681, 54683, 54682], [54684, 66723, 54686], [54682, 54684, 54686], [54686], [54685, 54686]], 'GreenPhaseDuration': [6.0, 31.0, 8.0, 5.0, 5.0, 10.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-17963: {'IntersectionID': 17963, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54793, 54794, 54795, 66325, 66326], [54793, 54794, 54795, 54796, 66326], [54797, 54798, 66327, 66328], [54799, 54800, 54797, 54801, 54798, 54802], [54803, 54804], [54793]], 'GreenPhaseDuration': [6.0, 46.0, 8.0, 15.0, 10.0, 5.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18044: {'IntersectionID': 18044, 'NumberOfPhases': 6, 'SignalGroupIDList': [[54826, 54827, 66654], [54826, 54828, 54827], [54827], [54827, 54829, 54830], [54831, 66655], [54831, 54830]], 'GreenPhaseDuration': [6.0, 28.0, 5.0, 7.0, 8.0, 11.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-18942: {'IntersectionID': 18942, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55120, 55121, 66198, 66199], [55120, 55121, 55122, 66199], [55122], [55123, 55122, 55124, 66200], [55125, 55124, 55123, 55122], [55126, 55127, 55128, 66201], [55129, 55130]], 'GreenPhaseDuration': [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19109: {'IntersectionID': 19109, 'NumberOfPhases': 5, 'SignalGroupIDList': [[55174, 55175, 67025], [55174, 55175, 55177], [55174], [55174, 55176], [55177, 67026]], 'GreenPhaseDuration': [6.0, 53.0, 5.0, 10.0, 16.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19185: {'IntersectionID': 19185, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55213, 55214, 55215, 65085], [55215], [55215, 55216], [55218, 65086]], 'GreenPhaseDuration': [28.0, 5.0, 12.0, 25.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19196: {'IntersectionID': 19196, 'NumberOfPhases': 7, 'SignalGroupIDList': [[55220, 55221, 66884, 66885], [55220, 55222, 55223, 55221], [55223], [55224, 55225, 55226, 55223, 66886], [55227, 55228, 66887], [55228, 55227, 55229], [55230, 55231, 55232]], 'GreenPhaseDuration': [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19363: {'IntersectionID': 19363, 'NumberOfPhases': 3, 'SignalGroupIDList': [[55272, 55273, 55274, 64611], [55272, 55273, 55275, 55274], [55276, 55277, 64609, 64610]], 'GreenPhaseDuration': [6.0, 50.0, 14.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19474: {'IntersectionID': 19474, 'NumberOfPhases': 5, 'SignalGroupIDList': [[65035, 65037, 55339, 55341, 65038], [55339, 55340, 55341, 65037, 65038], [55341, 65038, 65037], [55341, 55342, 65038, 65037], [55343, 55344, 55345, 65036]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 10.0, 31.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19882: {'IntersectionID': 19882, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55500, 55501, 65938], [55502, 55503, 55500, 55504, 55505, 55501], [55506, 55507, 55508, 55509, 65939], [55506, 55507, 55510, 55508, 55509, 55511]], 'GreenPhaseDuration': [6.0, 77.0, 8.0, 9.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-19935: {'IntersectionID': 19935, 'NumberOfPhases': 10, 'SignalGroupIDList': [[55534, 55535, 64952, 64956, 64957], [55534, 55536, 55535, 64957, 64956], [64956], [55539, 64955, 64953, 64952, 64956], [64953], [55538, 55537, 64957, 64954, 64953], [55538], [55538, 55540, 55541, 64955, 64953], [55538, 55540, 55535, 55541, 64953], [55535]], 'GreenPhaseDuration': [6.0, 18.0, 5.0, 5.0, 6.0, 9.0, 5.0, 6.0, 15.0, 5.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20270: {'IntersectionID': 20270, 'NumberOfPhases': 2, 'SignalGroupIDList': [[55669, 55670, 55671, 65469], [55672, 55673]], 'GreenPhaseDuration': [48.0, 22.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20280: {'IntersectionID': 20280, 'NumberOfPhases': 4, 'SignalGroupIDList': [[55675, 55676, 55677, 66639], [55678, 55679, 66640], [55677, 55680], [55677]], 'GreenPhaseDuration': [24.0, 14.0, 21.0, 6.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20283: {'IntersectionID': 20283, 'NumberOfPhases': 6, 'SignalGroupIDList': [[65113, 65115, 55682, 55683], [55682, 55683, 55684, 55687], [55685, 55686, 65114], [55685, 55682, 55687, 55686], [55686], [55686, 55688, 55689, 55684]], 'GreenPhaseDuration': [8.0, 28.0, 12.0, 10.0, 5.0, 7.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-20844: {'IntersectionID': 20844, 'NumberOfPhases': 6, 'SignalGroupIDList': [[55893, 55894, 66997], [55893, 55895, 55894], [55893, 55895], [55893, 55895, 55899], [55897, 55898], [55896, 66998]], 'GreenPhaseDuration': [6.0, 46.0, 5.0, 8.0, 8.0, 12.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21197: {'IntersectionID': 21197, 'NumberOfPhases': 10, 'SignalGroupIDList': [[56040, 56041, 65601, 65602, 65639, 65640], [56040, 56041, 56042, 65601, 65602, 65639], [56040, 56041, 56042, 65602], [56040, 56041, 56042, 65602, 65603], [56043, 56044, 56042, 65604, 65642], [56043, 56044, 56042, 65604, 65605], [56043], [56043, 56045, 65601, 65602, 65641], [56043, 56045, 65601, 65602, 65603, 56040], [56040, 65601, 65602]], 'GreenPhaseDuration': [6.0, 34.0, 5.0, 8.0, 8.0, 18.0, 5.0, 8.0, 8.0, 5.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21553: {'IntersectionID': 21553, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56146, 56147, 65880], [56146, 56148, 56147, 56149], [65881, 65882], [56150, 56151]], 'GreenPhaseDuration': [6.0, 78.0, 8.0, 8.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21847: {'IntersectionID': 21847, 'NumberOfPhases': 7, 'SignalGroupIDList': [[56234, 56235, 66448, 66449, 66506, 66507], [56234, 56237, 56235, 66448, 66449, 66451], [56235, 56237, 66449, 66451], [56238, 66452, 66509, 66508], [56239, 56238, 66452, 66453], [56239, 66453], [56236, 66450, 56239, 66453]], 'GreenPhaseDuration': [6.0, 32.0, 3.0, 8.0, 5.0, 5.0, 6.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-21895: {'IntersectionID': 21895, 'NumberOfPhases': 5, 'SignalGroupIDList': [[56241, 56243, 65138, 65136], [56244, 56241, 56245, 56242, 56243], [56246, 56247, 56248], [56250, 56251, 65137], [56249, 56250, 56251]], 'GreenPhaseDuration': [8.0, 38.0, 9.0, 6.0, 4.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22035: {'IntersectionID': 22035, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56307, 56308, 67190], [56309, 56307, 56308], [56312, 56313], [56310, 56311, 67191]], 'GreenPhaseDuration': [6.0, 44.0, 12.0, 18.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22146: {'IntersectionID': 22146, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56333, 56334], [64619]], 'GreenPhaseDuration': [54.0, 16.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22232: {'IntersectionID': 22232, 'NumberOfPhases': 4, 'SignalGroupIDList': [[64931, 56403, 56405], [56402, 56403, 56404, 56405], [56406, 64930], [56407, 56406]], 'GreenPhaseDuration': [8.0, 48.0, 8.0, 6.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22324: {'IntersectionID': 22324, 'NumberOfPhases': 4, 'SignalGroupIDList': [[56438, 56439, 69680, 69679], [69681, 56445, 56444, 56443, 56441], [56440, 56441, 56442, 56443, 56444, 56445], [56446, 56447, 56448]], 'GreenPhaseDuration': [42.0, 6.0, 6.0, 6.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22400: {'IntersectionID': 22400, 'NumberOfPhases': 2, 'SignalGroupIDList': [[56495, 56496, 56497], [65055, 65056, 65057]], 'GreenPhaseDuration': [54.0, 16.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},
-22603: {'IntersectionID': 22603, 'NumberOfPhases': 3, 'SignalGroupIDList': [[56576, 56577, 56578, 65159], [56579, 65160], [56580, 56579]], 'GreenPhaseDuration': [53.0, 10.0, 7.0], 'NumberOfLanes': 1, 'SaturationFlow': 1800, 'JamDensity': 150, 'SaturationDensity': 35, 'CarOcc': 1.2, 'BusOcc': 40.0},}
-
-'''
-
-INTERSECTIONS_CONFIG_NEW_FORMAT = {  # renamed — was overwriting the active config above
-
-    19196: {
-        "IntersectionID": 19196,
-        "NumberOfPhases": 7,
-        "SignalGroupIDList": [[0, 1, 13, 14], [0, 2, 3, 1], [3], [4, 5, 6, 3, 15], [7, 8, 16], [8, 7, 9], [10, 11, 12]],
-        "SignalIDLookup": {0: 55220, 1: 55221, 2: 55222, 3: 55223, 4: 55224, 5: 55225, 6: 55226, 7: 55227, 8: 55228, 9: 55229, 10: 55230, 11: 55231, 12: 55232, 13: 66884, 14: 66885, 15: 66886, 16: 66887},
-        "PhaseIndex": {0: 0, 1: 1, 2: 2, 3: 3, 4: 5, 5: 6, 6: 8},
-        "GreenPhaseDuration": [8.0, 20.0, 5.0, 16.0, 8.0, 8.0, 20.0],
-        "MinPhaseDuration": 5.0,
-        "MaxPhaseDuration": 20.0,
-    },
-
-    17963: {
-        "IntersectionID": 17963,
-        "NumberOfPhases": 6,
-        "SignalGroupIDList": [[0, 1, 2, 12, 13], [0, 1, 2, 3, 13], [4, 5, 14, 15], [6, 7, 4, 8, 5, 9], [10, 11], [0]],
-        "SignalIDLookup": {0: 54793, 1: 54794, 2: 54795, 3: 54796, 4: 54797, 5: 54798, 6: 54799, 7: 54800, 8: 54801, 9: 54802, 10: 54803, 11: 54804, 12: 66325, 13: 66326, 14: 66327, 15: 66328},
-        "PhaseIndex": {0: 0, 1: 1, 2: 3, 3: 4, 4: 6, 5: 7},
-        "GreenPhaseDuration": [6.0, 46.0, 8.0, 15.0, 10.0, 5.0],
-        "MinPhaseDuration": 5.0,
-        "MaxPhaseDuration": 46.0,
-    },
-
-    18942: {
-        "IntersectionID": 18942,
-        "NumberOfPhases": 7,
-        "SignalGroupIDList": [[0, 1, 11, 12], [0, 1, 2, 12], [2], [3, 2, 4, 13], [5, 4, 3, 2], [6, 7, 8, 14], [9, 10]],
-        "SignalIDLookup": {0: 55120, 1: 55121, 2: 55122, 3: 55123, 4: 55124, 5: 55125, 6: 55126, 7: 55127, 8: 55128, 9: 55129, 10: 55130, 11: 66198, 12: 66199, 13: 66200, 14: 66201},
-        "PhaseIndex": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 6, 6: 8},
-        "GreenPhaseDuration": [6.0, 24.0, 5.0, 6.0, 10.0, 19.0, 15.0],
-        "MinPhaseDuration": 5.0,
-        "MaxPhaseDuration": 24.0,
-    },
-
-    17383: {
-        "IntersectionID": 17383,
-        "NumberOfPhases": 7,
-        "SignalGroupIDList": [[0, 1, 2, 12, 13], [0, 3, 1, 2, 12], [4, 5], [6, 7, 8, 14], [6, 9, 7, 8], [10, 11], [2, 1]],
-        "SignalIDLookup": {0: 54567, 1: 54568, 2: 54569, 3: 54570, 4: 54571, 5: 54572, 6: 54573, 7: 54574, 8: 54575, 9: 54576, 10: 54577, 11: 54578, 12: 66036, 13: 66037, 14: 66038},
-        "PhaseIndex": {0: 0, 1: 1, 2: 3, 3: 5, 4: 6, 5: 8, 6: 9},
-        "GreenPhaseDuration": [6.0, 29.0, 22.0, 6.0, 18.0, 9.0, 5.0],
-        "MinPhaseDuration": 5.0,
-        "MaxPhaseDuration": 29.0,
-    },
-
-    19882: {
-        "IntersectionID": 19882,
-        "NumberOfPhases": 4,
-        "SignalGroupIDList": [[0, 1, 12], [2, 3, 0, 4, 5, 1], [6, 7, 8, 9, 13], [6, 7, 10, 8, 9, 11]],
-        "SignalIDLookup": {0: 55500, 1: 55501, 2: 55502, 3: 55503, 4: 55504, 5: 55505, 6: 55506, 7: 55507, 8: 55508, 9: 55509, 10: 55510, 11: 55511, 12: 65938, 13: 65939},
-        "PhaseIndex": {0: 0, 1: 1, 2: 3, 3: 4},
-        "GreenPhaseDuration": [6.0, 77.0, 8.0, 9.0],
-        "MinPhaseDuration": 6.0,
-        "MaxPhaseDuration": 77.0,
-    },
-
-    21895: {
-        "IntersectionID": 21895,
-        "NumberOfPhases": 5,
-        "SignalGroupIDList": [[0, 2, 13, 11], [3, 0, 4, 1, 2], [5, 6, 7], [9, 10, 12], [8, 9, 10]],
-        "SignalIDLookup": {0: 56241, 1: 56242, 2: 56243, 3: 56244, 4: 56245, 5: 56246, 6: 56247, 7: 56248, 8: 56249, 9: 56250, 10: 56251, 11: 65136, 12: 65137, 13: 65138},
-        "PhaseIndex": {0: 0, 1: 1, 2: 3, 3: 5, 4: 6},
-        "GreenPhaseDuration": [8.0, 38.0, 9.0, 6.0, 4.0],
-        "MinPhaseDuration": 4.0,
-        "MaxPhaseDuration": 38.0,
-    },
-
-    19474: {
-        "IntersectionID": 19474,
-        "NumberOfPhases": 5,
-        "SignalGroupIDList": [[7, 9, 0, 2, 10], [0, 1, 2, 9, 10], [2, 10, 9], [2, 3, 10, 9], [4, 5, 6, 8]],
-        "SignalIDLookup": {0: 55339, 1: 55340, 2: 55341, 3: 55342, 4: 55343, 5: 55344, 6: 55345, 7: 65035, 8: 65036, 9: 65037, 10: 65038},
-        "PhaseIndex": {0: 0, 1: 1, 2: 2, 3: 3, 4: 5},
-        "GreenPhaseDuration": [6.0, 18.0, 5.0, 10.0, 31.0],
-        "MinPhaseDuration": 5.0,
-        "MaxPhaseDuration": 31.0,
-    },
-
-}
-
-'''
+# Simple label lookup (matches kg's convention) — consumed by generate_dashboard.py
+# to distinguish active vs passive corridor junctions. All 24 junctions here are
+# in INTERSECTIONS_CONFIG (active), so there are no passive junctions to report.
+Inter = {iid: f'INT{iid}' for iid in INTERSECTIONS_CONFIG}

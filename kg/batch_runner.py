@@ -1917,13 +1917,13 @@ def set_reward_weights(controller_path, overrides=None):
         "PHASE_ROTATION_MODE":   False,
         "OFFSET_CORRECTION_MODE": False,
         "PHASE_SEQUENCE_MODE":   False,
-        # ZIG action-set toggles default True (full action set) — the
-        # signal-sequencing sweep disables GE/INS to isolate phase-adjustment
-        # actions (sequence swaps / green reallocation).
-        "ZIG_ENABLE_GE":         True,
-        "ZIG_ENABLE_INS":        True,
-        "ZIG_ENABLE_GR":         True,
-        "ZIG_ENABLE_SEQ":        True,
+        # REWARD_TSP action-set toggles (live) — default True (both actions
+        # available). GE = phase timing change (extend current bus-phase
+        # green); INS = phase order change (bus phase runs ahead of turn).
+        # batch_runner_signal_sequencing.py disables one at a time to isolate
+        # timing-only vs order-only sweeps.
+        "REWARD_TSP_ENABLE_GE":  True,
+        "REWARD_TSP_ENABLE_INS": True,
     }
     # ── Float params (all default to neutral/baseline values) ──────────────────
     float_cfg = {
@@ -3316,7 +3316,22 @@ def write_core_output(core_path, metrics, reward_overrides):
         for _id in _inter_dicts:
             _iw.writerow(_id)
 
-    log(f"  Core output: global → {_global_path}, intersections → {_inter_path} ({len(_inter_dicts)} rows)")
+    # --- Per-run intersection file: one file per experiment name, saved
+    # alongside core_output.csv (PROJECT_DIR), e.g. "DCTSP_ZIG_intersections.csv".
+    # Appended across replications/seeds of the same experiment name so a
+    # single run's full intersection KPIs live in one dedicated file.
+    _run_name = str(row.get("experiment") or "run").strip() or "run"
+    _safe_run_name = ''.join(ch if ch.isalnum() or ch in ('_', '-') else '_' for ch in _run_name)
+    _run_inter_path = _os.path.join(PROJECT_DIR, f"{_safe_run_name}_intersections.csv")
+    _write_run_hdr = not _os.path.isfile(_run_inter_path)
+    with open(_run_inter_path, "a", newline="", encoding="utf-8") as _rf:
+        _rw = csv.DictWriter(_rf, fieldnames=_inter_keys, extrasaction='ignore')
+        if _write_run_hdr:
+            _rw.writeheader()
+        for _id in _inter_dicts:
+            _rw.writerow(_id)
+
+    log(f"  Core output: global → {_global_path}, intersections → {_inter_path} ({len(_inter_dicts)} rows), per-run → {_run_inter_path}")
 
 
 # ── MASTER RESULTS CSV ────────────────────────────────────────────────────────
@@ -3699,6 +3714,8 @@ def main():
                         "seed": seed, "error": str(e),
                     })
                     success = False
+
+                log(f"Job {run_num}/{n_total} done, {n_total - run_num} to go")
 
                 # ── Collect and save metrics ───────────────────────────────
                 try:

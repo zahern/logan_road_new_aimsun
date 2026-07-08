@@ -8,9 +8,10 @@ Outputs one PNG that shows, per target intersection:
 2) Average prediction/result terms (sigma, ETA delta, ETA to target)
 3) Average passenger-delay KPIs (main / side / total) from
    simulation_results_per_intersection.csv
+4) EARLY_RED action counts and average cut duration from TSP log
 
 Usage:
-  python plot_coord_diagnostics.py [wave_events_csv] [per_intersection_csv] [out_png]
+  python plot_coord_diagnostics.py [wave_events_csv] [per_intersection_csv] [out_png] [tsp_log]
 """
 
 import os
@@ -111,6 +112,38 @@ def _load_delay_map(path):
     return out
 
 
+def _load_early_red_events(tsp_log_path):
+    """
+    Parse a TSP log file for EARLY_RED grant events.
+
+    Looks for log lines of the form:
+        [GREEN_GRANT] inter=X ... type=DCTSP_EARLY_RED cut=Y.Zs ...
+
+    Returns dict: {intersection_id: {"count": N, "total_cut_s": F}}
+    """
+    out = {}
+    if not tsp_log_path or not os.path.isfile(tsp_log_path):
+        return out
+    import re
+    _pat = re.compile(
+        r'\[GREEN_GRANT\].*?inter=(\d+).*?type=DCTSP_EARLY_RED.*?cut=([\d.]+)s',
+        re.IGNORECASE)
+    try:
+        with open(tsp_log_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = _pat.search(line)
+                if m:
+                    iid = int(m.group(1))
+                    cut = float(m.group(2))
+                    if iid not in out:
+                        out[iid] = {"count": 0, "total_cut_s": 0.0}
+                    out[iid]["count"] += 1
+                    out[iid]["total_cut_s"] += cut
+    except Exception:
+        pass
+    return out
+
+
 def _aggregate(rows):
     sums = {}
     cnts = {}
@@ -136,7 +169,7 @@ def _aggregate(rows):
     return agg
 
 
-def run(wave_csv=None, per_inter_csv=None, out_png=None):
+def run(wave_csv=None, per_inter_csv=None, out_png=None, tsp_log=None):
     _ensure_mpl()
 
     if wave_csv is None:
@@ -151,6 +184,12 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
             os.path.join("**", "simulation_results_per_intersection.csv"),
         ])
 
+    if tsp_log is None:
+        tsp_log = _latest_matching([
+            os.path.join("logs", "Aimsun_TSP_Log_*.txt"),
+            os.path.join("**", "Aimsun_TSP_Log_*.txt"),
+        ])
+
     if not wave_csv or not os.path.isfile(wave_csv):
         print("[COORD DIAG] No corridor wave events CSV found; skipping plot.")
         return None
@@ -161,6 +200,7 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
         return None
 
     delay_map = _load_delay_map(per_inter_csv)
+    er_map    = _load_early_red_events(tsp_log)
     agg = _aggregate(rows)
     jcts = sorted(agg.keys())
     x = list(range(len(jcts)))
@@ -178,12 +218,23 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
     d_side = [delay_map.get(j, {}).get("side", 0.0) for j in jcts]
     d_totl = [delay_map.get(j, {}).get("total", 0.0) for j in jcts]
 
+    # EARLY_RED data per intersection
+    er_count = [er_map.get(j, {}).get("count", 0) for j in jcts]
+    er_avg_cut = [
+        er_map.get(j, {}).get("total_cut_s", 0.0) / max(er_map.get(j, {}).get("count", 1), 1)
+        if er_map.get(j, {}).get("count", 0) > 0 else 0.0
+        for j in jcts
+    ]
+
     if out_png is None:
         base_dir = os.path.dirname(wave_csv) or "."
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_png = os.path.join(base_dir, f"coord_shockwave_diagnostics_{stamp}.png")
 
-    fig, axes = plt.subplots(3, 1, figsize=(15, 11), sharex=True)
+    # Use 4 subplots when any EARLY_RED events were logged, 3 otherwise.
+    _has_er = any(c > 0 for c in er_count)
+    n_panels = 4 if _has_er else 3
+    fig, axes = plt.subplots(n_panels, 1, figsize=(15, 4 * n_panels), sharex=True)
 
     w = 0.26
     axes[0].bar([i - w for i in x], q_len, width=w, color="#1f77b4", label="Avg queue (veh)")
@@ -205,9 +256,41 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
     axes[2].bar(x, d_side, width=w, color="#377eb8", label="Side delay (pax·h/h)")
     axes[2].bar([i + w for i in x], d_totl, width=w, color="#e41a1c", label="Total delay (pax·h/h)")
     axes[2].set_ylabel("Passenger delay")
-    axes[2].set_xlabel("Target intersection")
     axes[2].grid(True, axis="y", alpha=0.25)
     axes[2].legend(loc="upper left", fontsize=9)
+
+    if _has_er:
+        # Panel 4: EARLY_RED action count (bars, left axis) + avg cut s (line, right axis).
+        _ax_er = axes[3]
+        _ax_er_r = _ax_er.twinx()
+        _er_col  = "#b05000"   # orange-brown for early-red actions
+        _cut_col = "#e07000"   # lighter orange for avg cut
+        _ax_er.bar(x, er_count, width=0.45, color=_er_col, alpha=0.75,
+                   label="EARLY_RED count")
+        _ax_er_r.plot(x, er_avg_cut, color=_cut_col, linewidth=2.0, marker="^",
+                      linestyle="--", label="Avg cut (s)")
+        _ax_er.set_ylabel("EARLY_RED actions (count)", color=_er_col)
+        _ax_er_r.set_ylabel("Avg cut duration (s)", color=_cut_col)
+        _ax_er.tick_params(axis="y", labelcolor=_er_col)
+        _ax_er_r.tick_params(axis="y", labelcolor=_cut_col)
+        _ax_er.grid(True, axis="y", alpha=0.20)
+        # Combined legend
+        _h1, _l1 = _ax_er.get_legend_handles_labels()
+        _h2, _l2 = _ax_er_r.get_legend_handles_labels()
+        _ax_er.legend(_h1 + _h2, _l1 + _l2, loc="upper left", fontsize=9)
+        _ax_er.set_ylabel("EARLY_RED count")
+        # Annotate count above each bar
+        for i, (cnt, avg_c) in enumerate(zip(er_count, er_avg_cut)):
+            if cnt > 0:
+                _ax_er.text(i, cnt * 1.04, f"n={cnt}\n{avg_c:.1f}s",
+                            ha="center", va="bottom", fontsize=8, color=_er_col)
+        # x-axis label goes on the bottom panel
+        _ax_er.set_xlabel("Target intersection")
+        _ax_er.set_xticks(x)
+        _ax_er.set_xticklabels([str(j) for j in jcts], rotation=35, ha="right")
+        axes[2].set_xlabel("")  # clear xlabel from delay panel
+    else:
+        axes[2].set_xlabel("Target intersection")
 
     axes[2].set_xticks(x)
     axes[2].set_xticklabels([str(j) for j in jcts], rotation=35, ha="right")
@@ -219,7 +302,8 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
 
     fig.suptitle(
         "Coordination Diagnostics by Intersection\n"
-        "Shockwave/Kalman queue-stage averages + per-intersection main/side delay",
+        "Shockwave/Kalman queue-stage averages + per-intersection main/side delay"
+        + (" + EARLY_RED grants" if _has_er else ""),
         fontsize=12,
         fontweight="bold",
     )
@@ -231,6 +315,11 @@ def run(wave_csv=None, per_inter_csv=None, out_png=None):
     print(f"[COORD DIAG] Wave CSV: {wave_csv}")
     if per_inter_csv:
         print(f"[COORD DIAG] Delay CSV: {per_inter_csv}")
+    if tsp_log:
+        print(f"[COORD DIAG] TSP Log: {tsp_log}")
+        if _has_er:
+            total_er = sum(er_count)
+            print(f"[COORD DIAG] EARLY_RED events: {total_er} across {sum(1 for c in er_count if c > 0)} intersections")
     return out_png
 
 
@@ -238,4 +327,5 @@ if __name__ == "__main__":
     _wave = sys.argv[1] if len(sys.argv) > 1 else None
     _peri = sys.argv[2] if len(sys.argv) > 2 else None
     _out = sys.argv[3] if len(sys.argv) > 3 else None
-    run(_wave, _peri, _out)
+    _tsp = sys.argv[4] if len(sys.argv) > 4 else None
+    run(_wave, _peri, _out, _tsp)

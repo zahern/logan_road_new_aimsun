@@ -43,11 +43,13 @@ except ImportError:
   print("[dashboard] plot_green_wave unavailable — using lightweight green-rate fallback")
 
 # Derive active (TSP-controlled) vs passive (all other corridor junctions from Inter dict).
-# Active = INTERSECTIONS_CONFIG junctions with SignalGroupIDList (the 9 controlled junctions).
-# Passive = everything in Inter that is NOT actively controlled.
-# ALL_INTER_JCTS = every junction in the Inter model setup dict (23 total).
-# EXCLUDED_JCTS = passive/uncontrolled junctions removed from dashboard analysis.
-_EXCLUDED_JCTS = set(['39568', '1119660', '10157950', '11118289'])
+# Active = INTERSECTIONS_CONFIG junctions with SignalGroupIDList (all 12 Kelvin Grove
+# corridor junctions). Passive = everything in Inter that is NOT actively controlled.
+# ALL_INTER_JCTS = every junction in the Inter model setup dict.
+# EXCLUDED_JCTS = passive/uncontrolled junctions removed from dashboard analysis
+# (previously 39568/1119660/10157950/11118289 — those stubs carried no detectors,
+# phases, or sections and were removed entirely from intersection_configs.py).
+_EXCLUDED_JCTS = set()
 try:
   from intersection_configs import INTERSECTIONS_CONFIG as _IC
   try:

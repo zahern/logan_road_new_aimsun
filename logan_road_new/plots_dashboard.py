@@ -89,7 +89,7 @@ def _exp_from_filename(name: str) -> str | None:
         detection_points_HARMONY_COORD_20260428_111508_spacetime.png
     Returns the experiment name (e.g. 'HARMONY_COORD') or None.
     """
-    m = re.match(r"detection_points_(.+?)_\d{8}_\d{6}(?:_\w+)?\.png$", name)
+    m = re.match(r"detection_points_(.+)_\d{8}_\d{6}(?:_\w+)?\.png$", name)
     return m.group(1) if m else None
 
 

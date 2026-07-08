@@ -1,4 +1,4 @@
-"""
+﻿"""
 plot_bus_detail.py
 ==================
 Per-bus detailed time-space plot for the Logan Road TSP corridor.
@@ -46,7 +46,7 @@ if _SCRIPT_DIR not in sys.path:
 # Add Aimsun packages path before importing matplotlib
 _AIMSUN_PACKAGES = r"C:\AimsunPackages"
 if os.path.isdir(_AIMSUN_PACKAGES) and _AIMSUN_PACKAGES not in sys.path:
-    sys.path.insert(0, _AIMSUN_PACKAGES)
+    sys.path.append(_AIMSUN_PACKAGES)
 
 import matplotlib
 matplotlib.use("Agg")
@@ -252,8 +252,12 @@ def plot_bus(vid: int, vid_rows: list, all_rows: list,
                     "--", color="#ffeb3b", alpha=0.18, lw=1.2, zorder=2)
 
     # ── Trajectory line ───────────────────────────────────────────────────────
-    pts_t = [r["t"]              for r in vid_rows if r["jct"] in plot_pos]
-    pts_y = [plot_pos[r["jct"]] for r in vid_rows if r["jct"] in plot_pos]
+    arrival_rows = [
+        r for r in vid_rows
+        if r["jct"] in plot_pos and _phase_at_stopline(r) != "prearm"
+    ]
+    pts_t = [r["t"]              for r in arrival_rows]
+    pts_y = [plot_pos[r["jct"]] for r in arrival_rows]
     if len(pts_t) > 1:
         ax.plot(pts_t, pts_y, "-", color="#29b6f6", lw=2.5, alpha=0.85,
                 zorder=4, solid_capstyle="round",
@@ -272,6 +276,8 @@ def plot_bus(vid: int, vid_rows: list, all_rows: list,
             mk, fc, ec, ms = "o", "#69f0ae", "#ffffff", 12
         elif phase == "orange":
             mk, fc, ec, ms = "^", "#ffb300", "#ffffff", 12
+        elif phase == "prearm":
+            mk, fc, ec, ms = "v", "#ab47bc", "#ffffff", 11
         else:   # red
             mk, fc, ec, ms = "X", "#ff5252", "#ffffff", 13
 
@@ -281,7 +287,24 @@ def plot_bus(vid: int, vid_rows: list, all_rows: list,
                 path_effects=[pe.withStroke(linewidth=2, foreground="#000020")])
 
         # Missed-green annotation
-        if phase not in ("green", "orange"):
+        if phase == "prearm":
+            eta_s = float(r.get("prearm_eta_s", 0.0) or 0.0)
+            label = "pre-arm fired"
+            if eta_s > 0.0:
+                label += f"\nETA {eta_s:.0f}s"
+            ax.annotate(
+                label,
+                xy=(r["t"], y),
+                xytext=(r["t"] + 18, y - JUNCTION_SPACING_M * 0.30),
+                fontsize=6.8,
+                color="#d38cff",
+                arrowprops=dict(arrowstyle="->", color="#ab47bc", lw=1.0),
+                bbox=dict(boxstyle="round,pad=0.25", fc="#0a0a1e",
+                          ec="#ab47bc", lw=0.8, alpha=0.82),
+                zorder=10,
+                clip_on=True,
+            )
+        elif phase not in ("green", "orange"):
             reason = _diagnose_miss(r, all_rows, vid)
             col    = _annotation_color(reason)
 
@@ -319,7 +342,10 @@ def plot_bus(vid: int, vid_rows: list, all_rows: list,
     ax.set_ylabel("Corridor (South → North)", fontsize=11, color="#ccccee", labelpad=8)
 
     jcts_visited = sorted(set(r["jct"] for r in vid_rows if r["jct"] in plot_pos))
-    phases_all   = [_phase_at_stopline(r) for r in vid_rows if r["jct"] in plot_pos]
+    phases_all   = [
+        _phase_at_stopline(r) for r in vid_rows if r["jct"] in plot_pos
+        and _phase_at_stopline(r) != "prearm"
+    ]
     n_green  = sum(1 for p in phases_all if p in ("green","orange"))
     n_total  = len(phases_all)
     pct      = 100 * n_green / n_total if n_total else 0
@@ -343,6 +369,8 @@ def plot_bus(vid: int, vid_rows: list, all_rows: list,
                    markerfacecolor="#69f0ae", ms=10, label="● Green on arrival"),
         plt.Line2D([0],[0], marker="^", color="w",
                    markerfacecolor="#ffb300", ms=10, label="▲ Coord pre-arm (arrives green)"),
+        plt.Line2D([0],[0], marker="v", color="w",
+                   markerfacecolor="#ab47bc", ms=10, label="Pre-arm fired/requested"),
         plt.Line2D([0],[0], marker="X", color="w",
                    markerfacecolor="#ff5252", ms=11, label="✕ Missed green (see annotations)"),
         plt.Line2D([0],[0], linestyle="--", color="#ffeb3b", alpha=0.55, lw=1.5,
@@ -421,7 +449,7 @@ def run(csv_path: str = None, junc_csv: str = None,
                  t_global_min, t_global_max, out_png)
         out_paths.append(out_png)
 
-    print(f"[bus_detail] {len(out_paths)} bus plot(s) → {out_dir}")
+    print(f"[bus_detail] {len(out_paths)} bus plot(s) -> {out_dir}")
     return out_paths
 
 

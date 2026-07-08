@@ -53,7 +53,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 _AIMSUN_PACKAGES = r"C:\AimsunPackages"
 if os.path.isdir(_AIMSUN_PACKAGES) and _AIMSUN_PACKAGES not in sys.path:
-    sys.path.insert(0, _AIMSUN_PACKAGES)
+    sys.path.append(_AIMSUN_PACKAGES)
 
 # ---------------------------------------------------------------------------
 # Matplotlib import (non-fatal if missing in Aimsun environment)
@@ -115,8 +115,31 @@ def _load_detections(path: str) -> list:
                     "signal_phase":  int((row.get("signal_phase") or "-1").strip() or -1),
                     "bus_phase":     int((row.get("bus_phase") or "-1").strip() or -1),
                     "phase_start_t": float(row.get("phase_start_t") or -1),
+                    "prearm_status": (row.get("prearm_status") or "").strip().lower(),
+                    "prearm_eta_s":  float(row.get("prearm_eta_s") or 0.0),
+                    "prearm_note":   (row.get("prearm_note") or "").strip(),
+                    "focus_role":    (row.get("focus_role") or "").strip(),
                 })
             except (KeyError, ValueError):
+                continue
+    return rows
+
+
+def _load_focus_history(path: str) -> list:
+    rows = []
+    if not path or not os.path.isfile(path):
+        return rows
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            try:
+                rows.append({
+                    "start_t": float(row.get("start_t") or 0.0),
+                    "end_t":   float(row.get("end_t") or 0.0),
+                    "vid":     int(float(row.get("veh_id") or -1)),
+                    "jct":     int(float(row.get("jct_id") or -1)),
+                    "outcome": (row.get("outcome") or "").strip(),
+                })
+            except (TypeError, ValueError):
                 continue
     return rows
 
@@ -213,6 +236,33 @@ def _phase_color(signal_phase: int, bus_phase: int, tier: str) -> str:
     return C_GREEN if signal_phase == bus_phase else C_RED
 
 
+def _event_phase(row: dict) -> str:
+    status = str(row.get("prearm_status", "") or "").lower()
+    if status in ("fired", "queued"):
+        return "prearm"
+    if status == "success":
+        return "success"
+    if status == "missed":
+        return "red"
+    if "coord-prearm" in row.get("tier", "").lower():
+        return "prearm"
+    sp = row.get("signal_phase", -1)
+    bp = row.get("bus_phase", -1)
+    if sp == bp and sp >= 0:
+        return "green"
+    return "red"
+
+
+def _action_kind(row: dict) -> str:
+    tier = str(row.get("tier", "") or "").lower()
+    note = str(row.get("prearm_note", "") or "").lower()
+    if "harmony-ge" in tier or note.startswith("ge "):
+        return "ge"
+    if "harmony-ins" in tier or note.startswith("ins "):
+        return "ins"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Signal band reconstruction
 # ---------------------------------------------------------------------------
@@ -307,6 +357,9 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
     if not tsp_rows:
         tsp_rows = rows[:200]   # fallback: show first 200 detections
 
+    focus_csv = det_csv.replace("detection_points_", "focus_history_")
+    focus_rows = _load_focus_history(focus_csv)
+
     # Time extent
     t_min = min(r["t"] for r in tsp_rows)
     t_max = max(r["t"] for r in tsp_rows) + 60.0
@@ -366,6 +419,25 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
         # Junction label line
         ax.axhline(d, color="#2a2a50", linewidth=0.6, zorder=2)
 
+    # Focus-bus windows show when the corridor was deliberately holding
+    # decision authority for one bus. These are drawn before trajectories so the
+    # bus lines and pre-arm evidence sit on top.
+    for fr in focus_rows:
+        if fr["jct"] not in dist_map:
+            continue
+        if fr["vid"] not in tsp_vids:
+            continue
+        y = dist_map[fr["jct"]]
+        ax.plot([fr["start_t"], fr["end_t"]], [y, y],
+                color="#00e5ff", linewidth=6.0, alpha=0.28,
+                solid_capstyle="butt", zorder=3)
+        ax.annotate(
+            f"focused bus {fr['vid']}",
+            (fr["start_t"], y),
+            xytext=(4, 10), textcoords="offset points",
+            color="#80f4ff", fontsize=7.2, zorder=8,
+        )
+
     # ── Ideal green-wave diagonals ────────────────────────────────────────────
     # Draw lines at free-flow speed passing through each junction.
     # Each detection event spawns one "ideal" diagonal showing the wave timing.
@@ -396,14 +468,26 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
     for bi, (vid, vrows) in enumerate(sorted(buses_by_id.items())):
         color = PALETTE[bi % len(PALETTE)]
         vrows_sorted = sorted(vrows, key=lambda r: r["t"])
+        is_focused = any(
+            str(r.get("focus_role", "")).lower() in ("focused_bus", "focus_acquire")
+            for r in vrows_sorted
+        )
 
-        # Collect (t, dist) pairs
+        # Collect observed arrivals only. Pre-arm-fired rows are request
+        # evidence at the target junction, not proof that the bus arrived there.
         pts = [(r["t"], dist_map[r["jct"]]) for r in vrows_sorted
-               if r["jct"] in dist_map]
+               if r["jct"] in dist_map and _event_phase(r) != "prearm"]
         if len(pts) >= 2:
             ts, ds = zip(*pts)
-            ax.plot(ts, ds, color=color, linewidth=1.8, alpha=0.75,
-                    zorder=4, solid_capstyle="round")
+            ax.plot(
+                ts, ds,
+                color=color,
+                linewidth=2.6 if is_focused else 1.6,
+                alpha=0.9 if is_focused else 0.62,
+                linestyle="-" if is_focused else "--",
+                zorder=4,
+                solid_capstyle="round",
+            )
 
         # Detection markers at each junction
         for r in vrows_sorted:
@@ -414,16 +498,27 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
             tier = r["tier"]
             sp   = r["signal_phase"]
             bp   = r["bus_phase"]
+            phase = _event_phase(r)
 
-            if "coord-prearm" in tier.lower():
-                # Orange triangle for pre-arm events
+            if phase == "prearm":
+                ax.plot(t_ev, d_ev, marker="v", color=C_PURPLE,
+                        markersize=10, zorder=6,
+                        markeredgecolor="white", markeredgewidth=0.6)
+                eta_s = float(r.get("prearm_eta_s", 0.0) or 0.0)
+                label = "pre-arm"
+                if eta_s > 0.0:
+                    label += f" {eta_s:.0f}s"
+                ax.annotate(label, (t_ev, d_ev),
+                            xytext=(6, 6), textcoords="offset points",
+                            color=C_PURPLE, fontsize=7.2, zorder=7)
+            elif phase == "success":
                 ax.plot(t_ev, d_ev, marker="^", color=C_ORANGE,
                         markersize=11, zorder=6,
                         markeredgecolor="white", markeredgewidth=0.6)
-                ax.annotate("pre-arm", (t_ev, d_ev),
+                ax.annotate("pre-arm success", (t_ev, d_ev),
                             xytext=(6, 6), textcoords="offset points",
                             color=C_ORANGE, fontsize=7.5, zorder=7)
-            elif sp == bp and sp >= 0:
+            elif phase == "green":
                 # Green circle — made the green
                 ax.plot(t_ev, d_ev, marker="o", color=C_GREEN,
                         markersize=9, zorder=6,
@@ -438,8 +533,41 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
                                 xytext=(6, -12), textcoords="offset points",
                                 color=C_RED, fontsize=7, zorder=7)
 
-        handle = Line2D([0], [0], color=color, linewidth=2,
-                        label=f"Bus {vid}")
+            action_kind = _action_kind(r)
+            if action_kind:
+                is_ge = (action_kind == "ge")
+                a_col = "#ffd54f" if is_ge else "#4fc3f7"
+                a_mrk = "P" if is_ge else "D"
+                ax.plot(t_ev, d_ev, marker=a_mrk, color=a_col,
+                        markersize=8.5, zorder=7,
+                        markeredgecolor="white", markeredgewidth=0.6)
+                eta_s = float(r.get("prearm_eta_s", 0.0) or 0.0)
+                note = str(r.get("prearm_note", "") or "")
+                lbl = ("GE" if is_ge else "INS")
+                if note:
+                    lbl += f" {note}"
+                if eta_s > 0.0:
+                    lbl += f" | eta {eta_s:.0f}s"
+                ax.annotate(lbl, (t_ev, d_ev),
+                            xytext=(8, -2 if is_ge else -16), textcoords="offset points",
+                            color=a_col, fontsize=7.1, zorder=8)
+
+            focus_role = str(r.get("focus_role", "") or "").lower()
+            if focus_role in ("blocked_by_focus", "focus_suppress"):
+                ax.plot(t_ev, d_ev, marker="s", color="#b0bec5",
+                        markersize=6.2, zorder=7,
+                        markeredgecolor="#37474f", markeredgewidth=0.5)
+                ax.annotate("not focused", (t_ev, d_ev),
+                            xytext=(5, 9), textcoords="offset points",
+                            color="#b0bec5", fontsize=6.8, zorder=8)
+
+        _lbl = f"Bus {vid} (focused)" if is_focused else f"Bus {vid} (other)"
+        handle = Line2D(
+            [0], [0], color=color,
+            linewidth=2.6 if is_focused else 1.6,
+            linestyle="-" if is_focused else "--",
+            label=_lbl,
+        )
         legend_handles.append(handle)
 
     # ── Y axis labels (junction IDs) ──────────────────────────────────────────
@@ -468,8 +596,18 @@ def plot_spacetime_wave(det_csv: str, junc_csv: str = None,
         mpatches.Patch(color=C_RED,   alpha=0.4,  label="Signal: other phase (red/other)"),
         Line2D([0],[0], color=C_GREEN, alpha=0.3, linewidth=1.5,
                linestyle="--", label=f"Ideal wave ({FREE_FLOW_MS*3.6:.0f} km/h)"),
+        Line2D([0],[0], color=C_PURPLE, marker="v", linestyle="None",
+               markersize=9, label="Pre-arm fired/requested"),
         Line2D([0],[0], color=C_ORANGE, marker="^", linestyle="None",
-               markersize=9, label="Coord pre-arm fired"),
+               markersize=9, label="Pre-arm success"),
+        Line2D([0],[0], color="#00e5ff", alpha=0.5, linewidth=5,
+               label="Focused bus window"),
+         Line2D([0],[0], color="#ffd54f", marker="P", linestyle="None",
+             markersize=8, label="Green extension action"),
+         Line2D([0],[0], color="#4fc3f7", marker="D", linestyle="None",
+             markersize=8, label="Phase insertion action"),
+         Line2D([0],[0], color="#b0bec5", marker="s", linestyle="None",
+             markersize=7, label="Suppressed (not focused)"),
         Line2D([0],[0], color=C_GREEN, marker="o", linestyle="None",
                markersize=9, label="Made the green"),
         Line2D([0],[0], color=C_RED, marker="X", linestyle="None",
