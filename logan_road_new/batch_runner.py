@@ -3566,6 +3566,7 @@ def main():
     failures     = []
     base_demands = {}
     manifest     = []
+    _batch_results_folders = set()
 
     for scalar in DEMAND_SCALARS:
         log(f"==== Demand scalar: {scalar}x ====")
@@ -3726,6 +3727,7 @@ def main():
                     )
                     append_master_csv(MASTER_CSV_PATH, metrics)
                     if success and metrics.get("stats_results_folder"):
+                        _batch_results_folders.add(metrics["stats_results_folder"])
                         try:
                             write_core_output(CORE_OUTPUT_PATH, metrics, reward_overrides)
                         except Exception as _coe:
@@ -3919,6 +3921,31 @@ def main():
             log(f"Offset-correction cycle dashboard generated")
     except Exception as _oce:
         log(f"WARNING: Offset-correction cycle dashboard generation failed: {_oce}")
+
+    # ── Copy batch dashboards into every run's results/ folder ────────────────
+    # The dashboards above compare ALL experiments in this batch and are written
+    # once at PROJECT_DIR level. Copy them into each results/<run>/ folder too,
+    # so browsing a single run's folder also has the full comparison alongside
+    # its own CSVs — no need to hunt for the project-root copy.
+    try:
+        _dash_files = [
+            _os.path.join(PROJECT_DIR, "tsp_dashboard.html"),
+            _os.path.join(PROJECT_DIR, "reward_breakdown.html"),
+            _os.path.join(PROJECT_DIR, "offset_correction_cycle.html"),
+        ]
+        _dash_files = [p for p in _dash_files if _os.path.isfile(p)]
+        _n_copied = 0
+        for _rf in _batch_results_folders:
+            for _df_path in _dash_files:
+                try:
+                    shutil.copy2(_df_path, _os.path.join(_rf, _os.path.basename(_df_path)))
+                    _n_copied += 1
+                except Exception as _cpe:
+                    log(f"WARNING: could not copy {_os.path.basename(_df_path)} to {_rf}: {_cpe}")
+        log(f"Copied {len(_dash_files)} dashboard(s) into {len(_batch_results_folders)} "
+            f"results folder(s) ({_n_copied} file(s) written)")
+    except Exception as _cde:
+        log(f"WARNING: dashboard copy-to-results-folders failed: {_cde}")
 
     # ── Print seed-averaged summary table ─────────────────────────────────────
     try:
