@@ -21,6 +21,7 @@
 *.bib
 *.geojson
 *.zip
+*.xml
 
 
 # Python cache
