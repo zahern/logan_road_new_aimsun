@@ -1,0 +1,6 @@
+<edges>
+    <edge id="s21401" from="n1" to="n2" numLanes="3" speed="16.67" priority="3" shape="0.00,0.00 200.00,0.00"/>
+    <edge id="s21423" from="n2" to="n39578" numLanes="3" speed="16.67" priority="6" shape="200.00,0.00 500.00,0.00"/>
+    <edge id="s21424" from="n39578" to="n4" numLanes="3" speed="16.67" priority="3" shape="500.00,0.00 800.00,0.00"/>
+    <edge id="s78426" from="n5" to="n39578" numLanes="1" speed="13.89" priority="3" shape="500.00,150.00 500.00,0.00"/>
+</edges>

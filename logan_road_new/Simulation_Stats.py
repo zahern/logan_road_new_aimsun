@@ -34,6 +34,7 @@ import csv
 import json
 import math
 import os
+import time
 import numpy as np
 
 # Output folder — resolved relative to this file's directory on startup.
@@ -256,19 +257,23 @@ class SimulationStats:
             main_sections = list(all_sections)
 
         # When a junction has NO detectors and NO explicit MainSections (e.g.
-        # 19363), we still want side delay.  Use topology to discover ALL
-        # incoming sections, classify the corridor ones as main (via BusPhase
-        # approach heuristic) and the rest as side.
+        # 19363), every approach at this junction is still on the managed
+        # corridor -- a missing detector is a data-availability gap, not
+        # evidence the junction carries no corridor traffic. Classify ALL
+        # incoming sections as main by default (side is a supplementary
+        # classification, only applied where we have positive evidence —
+        # i.e. an explicit MainSections config or resolved detectors — that
+        # some entering sections are genuinely cross-street).  Defaulting
+        # unresolved junctions to "side" instead silently half-weighted
+        # (REWARD_SIDE_SECTION_WEIGHT vs REWARD_MAIN_SECTION_WEIGHT) their
+        # delay in the reward/objective calculations for no real reason.
         if not main_sections and not side_sections:
             all_incoming = self._side_sections_from_topology(iid, [])
             if all_incoming:
-                # With no main exclusion list, _side_sections_from_topology
-                # returns ALL incoming sections.  We'll treat them all as side
-                # sections so side delay is at least tracked.
-                side_sections = list(all_incoming)
+                main_sections = list(all_incoming)
                 self._print(
                     f"[STATS] No detectors for inter={iid} — treating all "
-                    f"{len(side_sections)} topology sections as side: {side_sections}"
+                    f"{len(main_sections)} topology sections as main: {main_sections}"
                 )
 
         # if side_sections still empty (single detector group covers only the
@@ -374,6 +379,14 @@ class SimulationStats:
             'n_insertions':   0,
             'n_exit_clears':  0,
             'n_cap_clears':   0,
+            # Timing-altering actions that were previously UNCOUNTED (they call
+            # ECIChangeTimingPhase but recorded nothing) — the real drivers of the
+            # car-delay cascade the ext/ins counters could not see.
+            'n_green_realloc': 0,   # GR — shorten non-bus phase to advance bus green
+            'n_early_red':     0,   # ER — terminate a phase early
+            'n_offset_corr':   0,   # OC — shift phase timing for green-wave alignment
+            'n_phase_skip':    0,   # VP — skip current phase, jump to bus phase
+            'n_phase_rot':     0,   # PT — rotate through N phases to reach bus phase
             # HARMONY skip counters — detected bus but no action taken
             'n_skipped_ge':   0,   # harmony returned GE ≤ 0.5 s (not worth extending)
             'n_skipped_ins':  0,   # harmony returned BP ≤ 0.5 s (not worth inserting)
@@ -519,6 +532,61 @@ class SimulationStats:
             if self._truck_pos > 0 and not self._truck_type_name:
                 self._truck_type_name = "truck(fallback)"
 
+        # ── Corridor-specific vehicle-type override ───────────────────────────
+        # Some models name their types "Car - bcc"/"Truck - bcc" (Logan Road)
+        # rather than plain "Car"/"Truck", and on builds where
+        # AKIVehGetVehTypeName returns SWIG blobs the name scan fails entirely --
+        # so car/truck positions stay unresolved and cars/trucks VANISH from every
+        # per-type stat (network count, delay, passenger throughput, and Option B).
+        # Resolve robustly by explicit Aimsun object ID (run_config:
+        # VEH_TYPE_ID_CAR/_TRUCK/_BUS/_HOV) or candidate NAMES (VEH_TYPE_NAME_*
+        # plus the known "- bcc" variants). An explicit ID overrides a prior guess;
+        # name candidates only fill an unresolved slot.
+        def _pos_from_id(_ang_id):
+            try:
+                _ang_id = int(_ang_id)
+            except Exception:
+                return -1
+            if _ang_id <= 0:
+                return -1
+            try:
+                return _sanitize_type_pos(AKIVehGetVehTypeInternalPosition(_ang_id))
+            except Exception:
+                return -1
+
+        def _resolve_type(cur_pos, id_key, name_key, extra_names):
+            _p = _pos_from_id(globals().get(id_key, 0))
+            if _p > 0:
+                return _p                       # explicit ID wins outright
+            if cur_pos > 0:
+                return cur_pos                  # keep an already-good position
+            _cfg = str(globals().get(name_key, '') or '')
+            for _nm in ([_cfg] if _cfg else []) + list(extra_names):
+                if _nm:
+                    _p = _fallback_type_pos(_nm)
+                    if _p > 0:
+                        return _p
+            return cur_pos
+
+        self._car_pos   = _resolve_type(self._car_pos,   'VEH_TYPE_ID_CAR',
+                                        'VEH_TYPE_NAME_CAR',   ('Car - bcc', 'Car-bcc'))
+        self._truck_pos = _resolve_type(self._truck_pos, 'VEH_TYPE_ID_TRUCK',
+                                        'VEH_TYPE_NAME_TRUCK', ('Truck - bcc', 'Truck-bcc'))
+        self._bus_pos   = _resolve_type(self._bus_pos,   'VEH_TYPE_ID_BUS',
+                                        'VEH_TYPE_NAME_BUS',   ('Bus - bcc', 'Bus-bcc'))
+        # Logan Road: known Aimsun GKVehicle ANG id for "Car - bcc" (74453) as a
+        # final fallback if both the SWIG name scan and the name lookup missed it.
+        if self._car_pos <= 0:
+            self._car_pos = _pos_from_id(74453)
+            if self._car_pos > 0 and not self._car_type_name:
+                self._car_type_name = 'car(id 74453)'
+        if self._car_pos > 0 and not self._car_type_name:
+            self._car_type_name = 'car(override)'
+        if self._truck_pos > 0 and not self._truck_type_name:
+            self._truck_type_name = 'truck(override)'
+        self._print(f"[STATS] resolved veh-type positions: car={self._car_pos} "
+                    f"bus={self._bus_pos} truck={self._truck_pos} hov={self._hov_pos}")
+
         # Positional HOV fallback: runs AFTER car/bus/truck are resolved so
         # _taken is populated.  In this Aimsun build AKIVehGetVehTypeName
         # returns SWIG objects (not strings), so named_scan all=-1 and we
@@ -580,8 +648,28 @@ class SimulationStats:
         # reliable during AAPIInit, so main_sections may be [] for all
         # intersections after register_intersection. Fix them here first,
         # then derive side sections from topology.
-        self._re_resolve_main_sections()
-        self._resolve_side_sections()
+        try:
+            print("[SIDECHK-STATS] finalise_init reached section-resolution")
+        except Exception:
+            pass
+        try:
+            self._re_resolve_main_sections()
+        except Exception as _e:
+            try:
+                print("[SIDECHK-STATS] _re_resolve_main_sections FAILED: " + repr(_e))
+            except Exception:
+                pass
+        try:
+            self._resolve_side_sections()
+        except Exception as _e:
+            try:
+                print("[SIDECHK-STATS] _resolve_side_sections FAILED: " + repr(_e))
+            except Exception:
+                pass
+            try:
+                self._write_side_sections_report()   # report whatever we have
+            except Exception:
+                pass
 
         self._print(
             f"[STATS] finalise_init | "
@@ -918,6 +1006,13 @@ class SimulationStats:
             'insertion':  'n_insertions',
             'exit_clear': 'n_exit_clears',
             'cap_clear':  'n_cap_clears',
+            # Previously-dropped timing actions — now counted (see engine.py
+            # _exec_kind GR/ER/OC/VP/PT blocks; each changes signal timing).
+            'green_reallocation': 'n_green_realloc',
+            'early_red':          'n_early_red',
+            'offset_correction':  'n_offset_corr',
+            'phase_skip':         'n_phase_skip',
+            'phase_rotation':     'n_phase_rot',
         }.get(event_type)
         if key:
             d[key] += 1
@@ -942,6 +1037,9 @@ class SimulationStats:
             'focus_suppressed':   'n_focus_suppressed',
             # ETA horizon — bus detected but too far for any useful strategy
             'eta_horizon':        'n_eta_horizon',
+            # Pre-arm-sourced decision that tried a timing action (OC/GR/ER/PT/VP)
+            # and was hard-vetoed to GE/INS/NO_ACTION (#2, 2026-08-24).
+            'prearm_timing_veto': 'n_prearm_timing_veto',
         }.get(skip_type)
         if key:
             d.setdefault(key, 0)
@@ -1245,6 +1343,56 @@ class SimulationStats:
             return round(float(acc.get(key, 0.0)) / acc['samples'], 4)
         return 0.0
 
+    def add_schedule_dev(self, line_id, dev_s, bus_occ=40.0):
+        """Headway/schedule deviation for one line arrival. dev>0 = late
+        (passengers at stops wait longer); dev<0 = early (bunching risk).
+        Penalty: late full-weight, early half-weight -- both hurt fidelity."""
+        lst = getattr(self, "_sched_devs", None)
+        if lst is None:
+            lst = self._sched_devs = []
+            self._sched_pen_pax = 0.0
+        dev_s = float(dev_s)
+        lst.append(dev_s)
+        pen = dev_s if dev_s > 0 else 0.5 * abs(dev_s)
+        self._sched_pen_pax = getattr(self, "_sched_pen_pax", 0.0) \
+            + max(pen, 0.0) * float(bus_occ)
+
+    def schedule_kpis(self):
+        lst = getattr(self, "_sched_devs", None) or []
+        n = len(lst)
+        if not n:
+            return {"n": 0}
+        late = [d for d in lst if d > 0]
+        early = [d for d in lst if d < -15]
+        return {"n": n,
+                "mean_abs_dev": round(sum(abs(d) for d in lst) / n, 1),
+                "mean_late_dev": round(sum(late) / len(late), 1) if late else 0.0,
+                "pct_late": round(100.0 * len(late) / n, 1),
+                "pct_bunched": round(100.0 * len(early) / n, 1),
+                "total_pen_pax": round(getattr(self, "_sched_pen_pax", 0.0), 1)}
+
+    def add_bus_signal_wait(self, veh_id, junction_id, wait_s, bus_occ=40.0):
+        """Pure signal delay for one bus: seconds held while its phase was red
+        on the approach, per the paper's definition (stop dwell is service,
+        not delay). Passenger-weighted by the engine before it gets here."""
+        self._bus_sig_wait = getattr(self, "_bus_sig_wait", {})
+        rec = self._bus_sig_wait.setdefault(veh_id, {"junction": junction_id,
+                                                     "wait_s": 0.0,
+                                                     "pax_s": 0.0})
+        rec["wait_s"] += float(wait_s)
+        rec["pax_s"] += float(wait_s) * float(bus_occ)
+
+    def bus_signal_wait_kpis(self):
+        """Aggregate pure-red-wait stats. Returns dict with totals."""
+        d = getattr(self, "_bus_sig_wait", {}) or {}
+        n = len(d)
+        tot_wait = sum(r["wait_s"] for r in d.values())
+        tot_paxs = sum(r["pax_s"] for r in d.values())
+        return {"n_buses_measured": n,
+                "total_wait_s": round(tot_wait, 1),
+                "avg_wait_s": round(tot_wait / n, 1) if n else 0.0,
+                "total_pax_wait_s": round(tot_paxs, 1)}
+
     def _global_kpis(self) -> dict:
         """Sum KPIs across all intersections."""
         total_bus_tt_hrs   = 0.0
@@ -1265,6 +1413,11 @@ class SimulationStats:
         total_skipped_ins  = 0
         total_no_action    = 0
         total_natural_green = 0
+        total_green_realloc = 0
+        total_early_red     = 0
+        total_offset_corr   = 0
+        total_phase_skip    = 0
+        total_phase_rot     = 0
         total_extension_s  = 0.0
         total_insertion_s  = 0.0
         total_insertion_wait_s = 0.0
@@ -1296,6 +1449,11 @@ class SimulationStats:
             total_skipped_ins   += k['n_skipped_ins']
             total_no_action     += k['n_detected_no_action']
             total_natural_green += k['n_natural_green']
+            total_green_realloc += d.get('n_green_realloc', 0)
+            total_early_red     += d.get('n_early_red', 0)
+            total_offset_corr   += d.get('n_offset_corr', 0)
+            total_phase_skip    += d.get('n_phase_skip', 0)
+            total_phase_rot     += d.get('n_phase_rot', 0)
             total_extension_s   += k['total_extension_s']
             total_insertion_s   += k['total_insertion_s']
             total_insertion_wait_s += k.get('total_insertion_wait_s', 0.0)
@@ -1321,10 +1479,13 @@ class SimulationStats:
             sim_total_delay / total_passengers
             if total_passengers > 0 else 0.0
         )
-        avg_obj_delay = (
-            self.obj_avg_passenger_delay / self.obj_steps
-            if self.obj_steps > 0 else avg_pass_delay_s
-        )
+        # FIX: always use measured delay for the reported objective so NO_TSP
+        # and solver arms are comparable.  obj_avg_passenger_delay is accumulated
+        # from GE/BP_Objective_Function MODEL estimates (~20 calls per solve) and
+        # previously contaminated the KPI (CELLQLEARN eval 2506 vs NO_TSP 118 with
+        # byte-identical section delays).  Model estimates remain in the
+        # objective-trace CSV for diagnostics; the global KPI must be measured.
+        avg_obj_delay = avg_pass_delay_s
         avg_bus_pass_delay_s = (
             sim_bus_delay / bus_passengers
             if bus_passengers > 0 else 0.0
@@ -1395,6 +1556,123 @@ class SimulationStats:
             sim_truck_delay = _net_pax_delay_truck_pax_s
             total_pass_delay = _net_total_pax_delay_pax_s / 3600.0
 
+        # ── Option B (2026-08-24, rev2): NETWORK-WIDE passenger counts ────────
+        # The car/truck passenger counts summed above are DETECTOR-gated and
+        # collapse to ~0 on corridors whose intersection detectors don't cover
+        # the general-traffic lanes (Logan: N_DistinctCars≈4 while cars accrue
+        # ~4M pax·s of delay), which made AvgCarPassDelay (=delay/passengers)
+        # and the objective (passengers/delay-hr) garbage. Take the passenger
+        # counts from the network source instead: per-type SYSTEM vehicle count
+        # (trips) × occupancy.
+        #
+        # REV2 -- this block used to live INSIDE the network-vs-corridor gate
+        # above, but that gate can never open on Logan: the corridor delay
+        # total is inflated by THIS very bug (uncounted cars still accrue
+        # measured section delay), so corridor > network held on every run
+        # (16:49 run: net≈4.5M vs corr≈12.5M pax·s) and the fix was dead code.
+        # It now runs on BOTH paths; its own guard below is self-contained.
+        # GUARDED: only substitute a type whose network count materially
+        # exceeds the detector count AND whose implied detector-average delay
+        # is physically impossible (>600 s/passenger = the detectors missed
+        # the general-traffic lanes). KG's ~18 s/pax never trips this, so KG
+        # is provably unaffected.
+        _nvc_car   = float(getattr(self, '_net_veh_count_car',   0.0) or 0.0)
+        _nvc_hov   = float(getattr(self, '_net_veh_count_hov',   0.0) or 0.0)
+        _nvc_truck = float(getattr(self, '_net_veh_count_truck', 0.0) or 0.0)
+        _net_car_pax   = (_nvc_car + _nvc_hov) * _car_occ
+        _net_truck_pax = _nvc_truck * _truck_occ
+        _substituted = []
+        _det_car_avg = ((sim_car_delay / car_passengers)
+                        if car_passengers > 0 else 1e9)
+        if _det_car_avg > 600.0 and _net_car_pax > car_passengers:
+            total_passengers += (_net_car_pax - car_passengers)
+            car_passengers = _net_car_pax
+            total_distinct_cars = max(total_distinct_cars,
+                                      int(round(_nvc_car + _nvc_hov)))
+            _substituted.append("car")
+        _det_truck_avg = ((sim_truck_delay / truck_passengers)
+                          if truck_passengers > 0 else 1e9)
+        if _det_truck_avg > 600.0 and _net_truck_pax > truck_passengers:
+            total_passengers += (_net_truck_pax - truck_passengers)
+            truck_passengers = _net_truck_pax
+            total_distinct_trucks = max(total_distinct_trucks,
+                                        int(round(_nvc_truck)))
+            _substituted.append("truck")
+        if _substituted:
+            # Always-visible so batch logs show WHY the car KPIs moved.
+            self._print(
+                "[PAX-FIX] detector %s count broken "
+                "(car avg=%.1f s/pax, trucks=%.1f) -> substituted network "
+                "counts: car_pax=%.0f (%.0f veh @ occ %.2f), "
+                "truck_pax=%.0f (%.0f veh)"
+                % ("/".join(_substituted), _det_car_avg, _det_truck_avg,
+                   car_passengers, _nvc_car + _nvc_hov, _car_occ,
+                   truck_passengers, _nvc_truck),
+                force=True)
+            # Recompute the averages whose denominators just changed.
+            avg_car_pass_delay_s = (sim_car_delay / car_passengers
+                                    if car_passengers > 0 else avg_car_pass_delay_s)
+            avg_truck_pass_delay_s = (sim_truck_delay / truck_passengers
+                                      if truck_passengers > 0 else avg_truck_pass_delay_s)
+            avg_pass_delay_s = (sim_total_delay / total_passengers
+                                if total_passengers > 0 else avg_pass_delay_s)
+
+        # ── Paper delay definition: bus delay = pure red-signal hold ─────────
+        # Stop dwell is service (not delay); cars/trucks unchanged. When a
+        # signal-wait sample exists, the bus delay component of the objective
+        # is replaced by passenger-weighted pure red-light waiting time.
+        try:
+            _swk = self.bus_signal_wait_kpis()
+        except Exception:
+            _swk = {}
+        if _swk.get("n_buses_measured", 0) > 0:
+            _old_bus = sim_bus_delay
+            _new_bus = float(_swk["total_pax_wait_s"])
+            sim_total_delay += (_new_bus - _old_bus)
+            sim_bus_delay = _new_bus
+            if bus_passengers > 0:
+                avg_bus_pass_delay_s = sim_bus_delay / bus_passengers
+            if total_passengers > 0:
+                avg_pass_delay_s = sim_total_delay / total_passengers
+                avg_obj_delay = avg_pass_delay_s
+            total_pass_delay = sim_total_delay / 3600.0
+            print("[SIG-WAIT][KPI] buses=%d avg_red_wait=%.1fs "
+                  "bus_pax_delay=%.0f pax-s (replaces TT-based bus delay)"
+                  % (_swk["n_buses_measured"], _swk["avg_wait_s"], _new_bus))
+            try:
+                import json as _json
+                _rp = self._run_path()
+                with open(os.path.join(_rp, "signal_wait_summary.json"),
+                          "w", encoding="utf-8") as _fh:
+                    _json.dump(_swk, _fh)
+            except Exception:
+                pass
+
+        # ── Schedule fidelity in the objective ─────────────────────────────
+        try:
+            _sk = self.schedule_kpis()
+        except Exception:
+            _sk = {}
+        if getattr(self, "USE_SCHEDULE_IN_OBJECTIVE", True) and _sk.get("n", 0) > 0:
+            _pen = float(_sk["total_pen_pax"])
+            sim_total_delay += _pen
+            total_pass_delay = sim_total_delay / 3600.0
+            if total_passengers > 0:
+                avg_pass_delay_s = sim_total_delay / total_passengers
+                avg_obj_delay = avg_pass_delay_s
+            print("[SCHED-OBJ] approaches=%d mean|dev|=%.1fs mean_late=%.1fs "
+                  "late=%.1f%% bunched=%.1f%% penalty=%.0f pax-s added to objective"
+                  % (_sk["n"], _sk["mean_abs_dev"], _sk["mean_late_dev"],
+                     _sk.get("pct_late", 0), _sk.get("pct_bunched", 0), _pen))
+            try:
+                import json as _json
+                _rp = self._run_path()
+                with open(os.path.join(_rp, "schedule_summary.json"),
+                          "w", encoding="utf-8") as _fh:
+                    _json.dump(_sk, _fh)
+            except Exception:
+                pass
+
         # ── Objective metric ──────────────────────────────────────────────────
         _delay_hrs = sim_total_delay / 3600.0
         throughput_per_delay_hr = (
@@ -1445,6 +1723,11 @@ class SimulationStats:
             'n_tsp_skipped_ins':         total_skipped_ins,
             'n_tsp_detected_no_action':  total_no_action,
             'n_tsp_natural_green':       total_natural_green,
+            'n_tsp_green_realloc':       total_green_realloc,
+            'n_tsp_early_red':           total_early_red,
+            'n_tsp_offset_corr':         total_offset_corr,
+            'n_tsp_phase_skip':          total_phase_skip,
+            'n_tsp_phase_rot':           total_phase_rot,
             'total_extension_s':         total_extension_s,
             'total_insertion_s':         total_insertion_s,
             'avg_extension_s': (total_extension_s / total_exts if total_exts > 0 else 0.0),
@@ -1545,7 +1828,7 @@ class SimulationStats:
                 # ── Flow: use AKIEst 30s window count (completing vehicles) ──────
                 _incr_window_start = max(0.0, time - INCR_NET_INTERVAL_S)
                 try:
-                    st = AKIEstGetParcialStatisticsSection(sec, _incr_window_start, -1)
+                    st = AKIEstGetParcialStatisticsSection(sec, _incr_window_start, 0)
                     if st.report == 0:
                         _count = float(getattr(st, 'count', 0) or 0)
                         _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)
@@ -1668,7 +1951,7 @@ class SimulationStats:
                     queued_veh  = 0
                     _window_start = max(0.0, time - INTERVAL_S)
                     try:
-                        st = AKIEstGetParcialStatisticsSection(sec, _window_start, -1)
+                        st = AKIEstGetParcialStatisticsSection(sec, _window_start, 0)
                         if st.report == 0:
                             _count = float(getattr(st, 'count', 0) or 0)
                             _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)
@@ -1800,10 +2083,28 @@ class SimulationStats:
             self._bus_pos = _fallback_type_pos("Bus")
         if self._car_pos <= 0:
             self._car_pos = _fallback_type_pos("Car")
+            if self._car_pos <= 0:
+                self._car_pos = _fallback_type_pos("Car - bcc")
+            if self._car_pos <= 0:                       # Logan "Car - bcc" by ANG id
+                try:
+                    _p = int(AKIVehGetVehTypeInternalPosition(74453))
+                    self._car_pos = _p if _p > 0 else self._car_pos
+                except Exception:
+                    pass
         if self._hov_pos <= 0:
             self._hov_pos = _fallback_type_pos("HOV")
         if self._truck_pos <= 0:
             self._truck_pos = _fallback_type_pos("Truck")
+            if self._truck_pos <= 0:
+                self._truck_pos = _fallback_type_pos("Truck - bcc")
+        # print() (NOT _print) so this is ALWAYS visible even when batch logging is
+        # off -- it is the definitive check of whether the car type resolved.
+        try:
+            print("[STATS-NET] veh-type positions for network stats: car=%s bus=%s "
+                  "truck=%s hov=%s" % (self._car_pos, self._bus_pos,
+                                       self._truck_pos, self._hov_pos))
+        except Exception:
+            pass
 
         # Initialize vehicle type debug logging for this run
         _debug_type_log = (
@@ -2251,6 +2552,11 @@ class SimulationStats:
                     setattr(self, f'_net_exit_delay_{_key}', round(_t_delay_exit, 2))
                     # Backward compatibility: existing Net_Delay_* columns map to Entry-Based
                     setattr(self, f'_net_delay_{_key}', round(_t_delay_entry, 2))
+                    # NETWORK-WIDE per-type vehicle count (system vehOut/count =
+                    # trips through the whole network, NOT section-summed). Used to
+                    # rebuild passenger counts for corridors whose intersection
+                    # detectors miss the general-traffic lanes (see _global_kpis).
+                    setattr(self, f'_net_veh_count_{_key}', float(_t_entry_count))
 
                 _type_flow_sum = sum(
                     float(getattr(self, f'_net_flow_{_k}', 0.0) or 0.0)
@@ -2283,14 +2589,14 @@ class SimulationStats:
                         _slim_d    = _geom_d['speed_limit_kmh'] or 40.0
                         _st_d = None
                         try:
-                            _st_d = AKIEstGetParcialStatisticsSection(_sec_d, 0.0, -1)
+                            _st_d = AKIEstGetParcialStatisticsSection(_sec_d, 0.0, 0)
                             if getattr(_st_d, 'report', -1) != 0:
                                 _st_d = None
                         except Exception:
                             _st_d = None
                         if _st_d is None:
                             try:
-                                _st_d = AKIEstGetCurrentStatisticsSection(_sec_d, 0.0, -1)
+                                _st_d = AKIEstGetCurrentStatisticsSection(_sec_d, 0)
                                 if getattr(_st_d, 'report', -1) != 0:
                                     _st_d = None
                             except Exception:
@@ -2396,7 +2702,7 @@ class SimulationStats:
             except Exception:
                 pass
             try:
-                st = AKIEstGetCurrentStatisticsSection(sec, 0.0, tp)
+                st = AKIEstGetCurrentStatisticsSection(sec, tp)
                 if getattr(st, 'report', -1) == 0:
                     return st
             except Exception:
@@ -2515,7 +2821,7 @@ class SimulationStats:
             # Entry-Based Speed = (section_length_m / TTa) * 3.6 (km/h)
             # Entry-Based Density = flow / speed (from fundamental relation)
             sec_delay_skm = 0.0  # all-vehicle Entry-Based Delay Time (sec/km)
-            st_all = _read_section_cumul(sec, -1)
+            st_all = _read_section_cumul(sec, 0)
             if st_all is not None:
                 _cnt = float(getattr(st_all, 'count', 0) or 0)
                 _dta = float(getattr(st_all, 'DTa',   0.0) or 0.0)
@@ -2847,7 +3153,7 @@ class SimulationStats:
         sim_hours = sim_time_s / 3600.0 if sim_time_s > 0.0 else 1.0
 
         _tp_keys = ['all', 'car', 'bus', 'hov', 'truck']
-        _tp_pos  = [-1, self._car_pos, self._bus_pos, self._hov_pos, self._truck_pos]
+        _tp_pos  = [0,  self._car_pos, self._bus_pos, self._hov_pos, self._truck_pos]
 
         # Accumulators — direct sums
         total_dist    = {k: 0.0 for k in _tp_keys}   # km
@@ -2958,6 +3264,35 @@ class SimulationStats:
                 if _vqveh > 0 and _wtvq > 0.0:
                     wt_vq_num[key] += _wtvq * _vqveh
                     wt_vq_den[key] += _vqveh
+
+        # ── Reconstruct the 'all' aggregate from the per-type reads ───────────
+        # AKIEstGetGlobalStatisticsSection(sec, -1) — the "all vehicles"
+        # selector — returns count=0 at the SECTION level in this Aimsun build,
+        # so every *_All extended metric came out zero while *_Car / *_Bus /
+        # *_Truck were correct.  Aimsun's own network total IS the sum over
+        # vehicle types, so build 'all' that way (car + bus + hov + truck).
+        _real_types = ['car', 'bus', 'hov', 'truck']
+        for _acc in (total_dist, total_tt_s, total_exit, total_input, total_lc,
+                     mean_queue, max_queue, vq_avg, vq_max, vq_veh,
+                     entry_tt_num, entry_tt_den, exit_tt_num, exit_tt_den,
+                     exit_spd_num, stop_time_num, num_stops_num,
+                     wt_vq_num, wt_vq_den):
+            _acc['all'] = sum(_acc[t] for t in _real_types)
+
+        # ── Zero-clobber guard ───────────────────────────────────────────────
+        # Per-section statistics (AKIEstGetGlobalStatisticsSection) return
+        # count=0 when queried in AAPIFinish (after the sim ends), even though
+        # they work DURING the run.  So this method is also called periodically
+        # from AAPIPostManage; if a later (finish-time) call reads all-zeros but
+        # an earlier in-run call already captured real cumulative totals, keep
+        # the good data instead of blanking the whole Network Statistics table.
+        _this_read_empty = (sum(total_exit.values()) <= 0.0
+                            and sum(entry_tt_den.values()) <= 0.0)
+        _have_prior = getattr(self, '_net_extra_captured', False)
+        if _this_read_empty and _have_prior:
+            return   # don't overwrite good in-run data with a zero finish read
+        if not _this_read_empty:
+            self._net_extra_captured = True
 
         # Store results as instance attributes
         for key in _tp_keys:
@@ -3170,13 +3505,47 @@ class SimulationStats:
             # Filter out invalid IDs (0 or negative mean the detector wasn't found)
             all_sections = [s for s in all_sections if s and s > 0]
 
-            if not all_sections:
+            def _is_real_section(_sid):
+                """True only for ids that are actual simulated GKSections —
+                rejects node/junction ids that leaked in from topology (those
+                return report<0 / -4002 from every AKI section call and silently
+                zero this junction's flow and delay collection)."""
+                try:
+                    _si = AKIInfNetGetSectionANGInf(int(_sid))
+                    return getattr(_si, 'report', -1) >= 0 and float(
+                        getattr(_si, 'length', 0.0) or 0.0) > 0.0
+                except Exception:
+                    return False
+
+            _pre_n = len(all_sections)
+            all_sections = [s for s in all_sections if _is_real_section(s)]
+            if _pre_n and len(all_sections) < _pre_n:
                 self._print(
-                    f"[STATS] WARNING _re_resolve_main_sections: "
-                    f"inter={iid} — no valid sections from detectors "
-                    f"{up_det_list}. Delay collection will be 0 for this intersection."
+                    f"[STATS] inter={iid}: dropped "
+                    f"{_pre_n - len(all_sections)} non-section id(s) from "
+                    f"detector-derived mains")
+
+            if not all_sections:
+                # No detectors resolvable either — same reasoning as the
+                # registration-time fallback: this junction is still on the
+                # managed corridor, so fall back to topology rather than
+                # leaving main_sections empty (which silently zeroes delay
+                # collection for this intersection for the whole run).
+                all_sections = [s for s in self._side_sections_from_topology(iid, [])
+                                if s and s > 0 and _is_real_section(s)]
+                if not all_sections:
+                    self._print(
+                        f"[STATS] WARNING _re_resolve_main_sections: "
+                        f"inter={iid} — no valid sections from detectors "
+                        f"{up_det_list} or topology. Delay collection will be 0 "
+                        f"for this intersection."
+                    )
+                    continue
+                self._print(
+                    f"[STATS] _re_resolve_main_sections: inter={iid} — no "
+                    f"detectors resolvable, using {len(all_sections)} topology "
+                    f"sections as main: {all_sections}"
                 )
-                continue
 
             # All sections from UpDetList are main-corridor approach sections.
             # Side sections are derived from topology in _resolve_side_sections.
@@ -3202,41 +3571,56 @@ class SimulationStats:
         streets. Results are stored directly in self._inter[iid]['side_sections']
         so collect_delay picks them up from the very first simulation step.
         """
+        try:
+            print("[SIDECHK-STATS] _resolve_side_sections START (%d intersections)"
+                  % len(self._inter))
+        except Exception:
+            pass
         n_total    = len(self._inter)
         n_resolved = 0
         n_already  = 0
 
         for iid, d in self._inter.items():
-            # Only skip if side_sections were explicitly provided in the config.
-            # Auto-derived sections from AAPIInit (unreliable topology) are cleared
-            # here and re-derived now that PyANGKernel is fully ready.
-            if list(d.get('config', {}).get('SideSections', [])):
-                d['side_sections'] = [
-                    s for s in d.get('side_sections', [])
-                    if s not in set(d.get('main_sections', []))
-                ]
-                d['side_sections_resolved'] = bool(d['side_sections'])
-                n_already += 1
-                continue   # explicitly configured — preserve it
-            d['side_sections'] = []   # reset auto-derived; re-derive below
+            d['side_sections'] = []
             d['side_sections_resolved'] = False
-            if not d['main_sections']:
+            if not d.get('main_sections'):
+                d['side_sections_source'] = 'none'
                 self._print(
                     f"[STATS] inter={iid}: no main_sections — cannot derive sides"
                 )
                 continue
 
             main_set = set(d['main_sections'])
-            side = [s for s in self._side_sections_from_topology(iid, d['main_sections'])
+            # 1. CONFLICTING-SIGNAL-GROUP sides FIRST (preferred): the cross
+            #    movements that lose green when the bus phase runs -- exactly the
+            #    queue a shockwave prices. Overrides any auto-populated
+            #    config['SideSections'] (which the controller fills from the old
+            #    topology dump). This is the physically-correct cross approach set.
+            _src = "conflicting_sg"
+            side = [s for s in self._side_sections_from_conflicting_sgs(
+                        iid, d['main_sections'])
                     if s not in main_set]
+            # 2. EXPLICIT config SideSections (only if conflicting-SG found nothing).
+            if not side and list(d.get('config', {}).get('SideSections', [])):
+                _src = "config"
+                side = [int(s) for s in d['config']['SideSections']
+                        if int(s) not in main_set]
+            # 3. Trimmed topology fallback (no feeder expansion).
+            if not side:
+                _src = "topology"
+                side = [s for s in self._side_sections_from_topology(
+                            iid, d['main_sections'])
+                        if s not in main_set]
             if side:
                 d['side_sections'] = side
                 d['side_sections_resolved'] = True
+                d['side_sections_source'] = _src
                 n_resolved += 1
                 self._print(
-                    f"[STATS] inter={iid} side_sections resolved → {side}"
+                    f"[STATS] inter={iid} side_sections ({_src}) → {side}"
                 )
             else:
+                d['side_sections_source'] = 'none'
                 self._print(
                     f"[STATS] WARNING inter={iid}: topology returned no side "
                     f"sections (main={d['main_sections']}) — "
@@ -3249,6 +3633,55 @@ class SimulationStats:
             f"{n_total - n_resolved - n_already} unresolved "
             f"(out of {n_total} intersections)"
         )
+        self._write_side_sections_report()
+
+    def _side_diag(self, msg):
+        """Buffer a side-section diagnostic AND print it (always visible). The
+        buffer is flushed into side_sections_report.csv as #diag comment lines so
+        check_side_sections.py can show WHY conflicting-SG resolution fell back
+        without the user hunting through the Aimsun console."""
+        try:
+            if not hasattr(self, '_side_diag_lines'):
+                self._side_diag_lines = []
+            self._side_diag_lines.append(str(msg))
+        except Exception:
+            pass
+        try:
+            print("[SIDEDIAG] " + str(msg))
+        except Exception:
+            pass
+
+    def _write_side_sections_report(self):
+        """Write a per-junction side-section report next to this module so a
+        1-run check script (check_side_sections.py) can read it: intersection,
+        n_main, n_side, source (conflicting_sg | topology | config | none), and
+        the section id lists. Best-effort; never raises."""
+        try:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "side_sections_report.csv")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write("intersection_id,n_main,n_side,source,main_sections,side_sections\n")
+                for iid, d in self._inter.items():
+                    _main = list(d.get('main_sections', []))
+                    _side = list(d.get('side_sections', []))
+                    _src = str(d.get('side_sections_source',
+                               'config' if d.get('config', {}).get('SideSections')
+                               else 'none'))
+                    f.write("%s,%d,%d,%s,%s,%s\n" % (
+                        iid, len(_main), len(_side), _src,
+                        " ".join(str(s) for s in _main),
+                        " ".join(str(s) for s in _side)))
+                for _dl in getattr(self, '_side_diag_lines', []):
+                    f.write("#diag " + str(_dl).replace("\n", " ") + "\n")
+            try:
+                print("[SIDECHK-STATS] side-sections report written -> " + path)
+            except Exception:
+                pass
+        except Exception as _e:
+            try:
+                print("[SIDECHK-STATS] side-sections report write FAILED: " + repr(_e))
+            except Exception:
+                pass
 
     def _run_path(self) -> str:
         """Return the per-run output subfolder path, creating it if needed.
@@ -3287,6 +3720,16 @@ class SimulationStats:
             safe_exp = strategy
 
         folder_name = f"{safe_exp}_seed{seed}_{s}_{e}_{r}"
+        # Append a per-instance timestamp so repeated runs with the same
+        # seed/scenario/experiment/replication each get their own folder.
+        # Previously every run wrote to the SAME folder and simulation_results.csv
+        # accumulated rows across runs, which corrupted per-run metrics and the
+        # batch_runner's "most recent by mtime" selection.  The timestamp sits
+        # at the END of the name so batch_runner._find_results_folder's
+        # startswith('{exp}_seed{seed}') prefix matching still works.
+        if not hasattr(self, '_run_folder_ts'):
+            self._run_folder_ts = time.strftime('%Y%m%d_%H%M%S')
+        folder_name = f"{folder_name}_{self._run_folder_ts}"
 
         # Candidate base directories — tried in order until one succeeds
         try:
@@ -3356,6 +3799,9 @@ class SimulationStats:
                 "AvgPassDelay_s", "AvgBusPassDelay_s", "AvgCarPassDelay_s", "AvgTruckPassDelay_s",
                 "AvgObjPassDelay",
                 "TSP_Detections", "TSP_Extensions", "TSP_Insertions",
+                # Previously-uncounted timing actions (GR/ER/OC/VP/PT)
+                "TSP_GreenRealloc", "TSP_EarlyRed", "TSP_OffsetCorr",
+                "TSP_PhaseSkip", "TSP_PhaseRot",
                 "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction", "TSP_NaturalGreen",
                 "TSP_TotalExtension_s", "TSP_TotalInsertion_s",
                 "TSP_AvgExtension_s", "TSP_AvgInsertion_s", "TSP_AvgInsertionWait_s",
@@ -3466,6 +3912,11 @@ class SimulationStats:
                 g.get('n_tsp_detections', 0),
                 g.get('n_tsp_extensions', 0),
                 g.get('n_tsp_insertions', 0),
+                g.get('n_tsp_green_realloc', 0),
+                g.get('n_tsp_early_red', 0),
+                g.get('n_tsp_offset_corr', 0),
+                g.get('n_tsp_phase_skip', 0),
+                g.get('n_tsp_phase_rot', 0),
                 g.get('n_tsp_skipped_ge', 0),
                 g.get('n_tsp_skipped_ins', 0),
                 g.get('n_tsp_detected_no_action', 0),
@@ -4016,6 +4467,179 @@ class SimulationStats:
         except Exception:
             return call_sections
 
+    def _side_sections_from_conflicting_sgs(self, intersection_id: int,
+                                            main_sections: list) -> list:
+        """Side sections = origin sections of the signal groups that CONFLICT with
+        the bus/through movement, i.e. groups that are NEVER green in the same
+        phase as the main approach. This is the physically-correct cross traffic
+        for shockwave propagation: exactly the queue that grows when the bus phase
+        is extended/served, and nothing else.
+
+        Steps:
+          1. Read per-phase signal groups from the live plan (ECI*ofJunction).
+          2. Map each signal group -> its origin sections (PyANGKernel: the
+             GKSignalGroup's turnings/signals -> getOrigin()).
+          3. MAIN signal groups = those whose origin sections include a
+             main_section; the bus phase(s) are the phases containing them.
+          4. CONFLICTING groups = green only in NON-bus phases.
+          5. side = conflicting groups' origin sections, minus main.
+
+        Returns [] if the signal plan or GKSignalGroup topology cannot be read
+        (caller falls back to the trimmed topology method).
+        """
+        main_set = set(main_sections)
+        try:
+            from PyANGKernel import GKSystem
+            model = GKSystem.getSystem().getActiveModel()
+            if model is None:
+                return []
+            catalog = model.getCatalog()
+
+            # ── 1. per-phase signal groups (live plan) ──────────────────────
+            try:
+                n_phases = int(ECIGetNumberofPhases(intersection_id))
+            except Exception:
+                try:
+                    n_phases = int(ECIGetNumberPhases(intersection_id))
+                except Exception:
+                    n_phases = 0
+            if n_phases <= 0:
+                self._side_diag("inter=%s n_phases<=0 (ECIGetNumberofPhases failed) -> fallback" % intersection_id)
+                return []
+            phase_sgs = {}
+            all_sgs = set()
+            for ph in range(1, n_phases + 1):
+                sgs = set()
+                try:
+                    nsg = int(ECIGetNbSignalGroupsPhaseofJunction(
+                        intersection_id, ph, 0.0))
+                    for pos in range(1, nsg + 1):
+                        try:
+                            sg = int(ECIGetSignalGroupPhaseofJunction(
+                                intersection_id, ph, pos, 0.0))
+                            if sg > 0:
+                                sgs.add(sg); all_sgs.add(sg)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                phase_sgs[ph] = sgs
+            if not all_sgs:
+                self._side_diag("inter=%s n_phases=%d n_sgs=0 (ECI returned no "
+                                "signal groups) -> fallback" % (intersection_id, n_phases))
+                return []
+
+            # ── 2. signal group -> origin sections ──────────────────────────
+            def _sg_sections(sg_id):
+                secs = set()
+                # PRIMARY: AAPI turning enumeration. The sg ids returned by
+                # ECIGetSignalGroupPhaseofJunction are POSITIONAL indices in the
+                # junction's control plan (measured sample_sg=[2,3,4]), NOT ANG
+                # catalog object ids — catalog.find() can never resolve them
+                # (measured: sgs_with_sections=0 at every junction). These two
+                # AAPI calls speak the same positional ids (proven pattern in
+                # intersection_controller_experimental._map_sg_sections).
+                try:
+                    _nt = int(ECIGetNumberTurningsofSignalGroup(
+                        intersection_id, int(sg_id)))
+                    for _ti in range(max(_nt, 0)):
+                        try:
+                            _fp = intp(); _tp = intp()
+                            ECIGetFromToofTurningofSignalGroup(
+                                intersection_id, int(sg_id), _ti, _fp, _tp)
+                            _sec = int(_fp.value())
+                            if _sec > 0:
+                                secs.add(_sec)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+                if secs:
+                    return secs
+                # FALLBACK: PyANGKernel catalog (covers builds where sg ids
+                # really are ANG object ids).
+                try:
+                    sg_obj = catalog.find(int(sg_id))
+                except Exception:
+                    sg_obj = None
+                if sg_obj is None:
+                    return secs
+                for meth in ('getSignals', 'getTurnings', 'getSignalGroupSignals'):
+                    fn = getattr(sg_obj, meth, None)
+                    if not callable(fn):
+                        continue
+                    try:
+                        items = fn()
+                    except Exception:
+                        continue
+                    if items is None:
+                        continue
+                    for it in (list(items) if hasattr(items, '__iter__') else [items]):
+                        turn = it
+                        # A "signal" may wrap the turning; unwrap if needed.
+                        for tmeth in ('getTurning', 'getGKTurning'):
+                            tf = getattr(it, tmeth, None)
+                            if callable(tf):
+                                try:
+                                    t = tf()
+                                    if t is not None:
+                                        turn = t
+                                        break
+                                except Exception:
+                                    pass
+                        for ometh in ('getOrigin', 'getFromSection', 'getSection'):
+                            of = getattr(turn, ometh, None)
+                            if callable(of):
+                                try:
+                                    o = of()
+                                    if o is not None:
+                                        oid = int(o.getId())
+                                        if oid > 0:
+                                            secs.add(oid)
+                                        break
+                                except Exception:
+                                    pass
+                    if secs:
+                        break
+                return secs
+
+            sg_to_secs = {sg: _sg_sections(sg) for sg in all_sgs}
+            try:
+                _res = sum(1 for v in sg_to_secs.values() if v)
+                self._side_diag("inter=%s n_phases=%d n_sgs=%d sgs_with_sections=%d "
+                                "sample_sg=%s" % (intersection_id, n_phases, len(all_sgs),
+                                _res, (sorted(all_sgs)[:3] if all_sgs else [])))
+            except Exception:
+                pass
+            if not any(sg_to_secs.values()):
+                return []   # couldn't resolve any sg->section: use fallback
+
+            # ── 3. main SGs / bus phases ────────────────────────────────────
+            main_sgs = {sg for sg, secs in sg_to_secs.items() if secs & main_set}
+            bus_phases = {ph for ph, sgs in phase_sgs.items() if sgs & main_sgs}
+            # ── 4. conflicting SGs = never green in a bus phase ─────────────
+            conflicting = set()
+            for sg in all_sgs:
+                if sg in main_sgs:
+                    continue
+                if not any(sg in phase_sgs[ph] for ph in bus_phases):
+                    conflicting.add(sg)
+            # ── 5. their origin sections, minus main ────────────────────────
+            side = set()
+            for sg in conflicting:
+                side |= sg_to_secs.get(sg, set())
+            side -= main_set
+            self._print(
+                f"[STATS] inter={intersection_id} conflicting-SG sides: "
+                f"main_sgs={sorted(main_sgs)} bus_phases={sorted(bus_phases)} "
+                f"conflicting_sgs={sorted(conflicting)} -> {sorted(side)}"
+            )
+            return sorted(side)
+        except Exception as e:
+            self._side_diag(
+                f"inter={intersection_id} conflicting-SG resolution FAILED: {e!r}")
+            return []
+
     def _side_sections_from_topology(self, intersection_id: int,
                                      main_sections: list) -> list:
         """
@@ -4073,23 +4697,33 @@ class SimulationStats:
                         result = fn()
                         if result is None:
                             continue
-                        # getInternalConnections returns turning objects with getOrigin()
-                        # entrance/from methods return section objects directly
+                        # getInternalConnections returns TURNING objects whose
+                        # getOrigin() is a SECTION; entrance/from methods return
+                        # SECTION objects whose getOrigin() is a NODE. The old
+                        # code called getOrigin() on everything, so for section
+                        # results it stored the upstream NODE id as a "section"
+                        # (measured: 17498 mains=[17963,20824,22370], all -4002
+                        # — 17963 is the neighbouring JUNCTION). Disambiguate:
+                        # a section's getOrigin() result (a node) has no
+                        # getOrigin of its own, while a turning's (a section)
+                        # does.
                         items = list(result) if hasattr(result, '__iter__') else [result]
                         for item in items:
                             try:
-                                # Try as a turning (has getOrigin)
+                                sid = None
                                 orig = getattr(item, 'getOrigin', None)
                                 if callable(orig):
                                     sec_obj = orig()
-                                    if sec_obj is not None:
+                                    if sec_obj is not None and callable(
+                                            getattr(sec_obj, 'getOrigin', None)):
+                                        # item is a TURNING; sec_obj is a section
                                         sid = sec_obj.getId()
-                                        if sid and 0 < sid < 10_000_000 and sid not in seen_local:
-                                            seen_local.add(sid)
-                                            found.append(sid)
-                                        continue
-                                # Try as a section directly
-                                sid = item.getId()
+                                    else:
+                                        # item is itself a SECTION (its origin
+                                        # is a node) — use the item's own id
+                                        sid = item.getId()
+                                else:
+                                    sid = item.getId()
                                 if sid and 0 < sid < 10_000_000 and sid not in seen_local:
                                     seen_local.add(sid)
                                     found.append(sid)
@@ -4169,8 +4803,14 @@ class SimulationStats:
             )
 
             # Method 5: expand one hop upstream from each side section.
-            # This helps when the section touching the junction is very short
-            # and the queue actually sits on the feeder section behind it.
+            # 2026-08-26: DISABLED by default. For shockwave propagation we want
+            # the IMMEDIATE cross approach (the stop-line section whose queue the
+            # bus phase blocks), not the feeder sections behind it -- the feeder
+            # expansion roughly DOUBLED the corridor side count (Logan 84) and
+            # over-priced the cross cost. Set SIDE_SECTIONS_EXPAND_FEEDERS=True in
+            # globals to restore the old behaviour.
+            if not bool(globals().get('SIDE_SECTIONS_EXPAND_FEEDERS', False)):
+                return sorted(side_secs)
             by_dest_node = {}
             sec_origin = {}
             for sec in all_sections:

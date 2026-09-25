@@ -1,0 +1,9 @@
+<connections>
+    <connection from="s21401" to="s21423" fromLane="0" toLane="0"/>
+    <connection from="s21401" to="s21423" fromLane="1" toLane="1"/>
+    <connection from="s21401" to="s21423" fromLane="2" toLane="2"/>
+    <connection from="s21423" to="s21424" fromLane="0" toLane="0" tl="n39578" linkIndex="0"/>
+    <connection from="s21423" to="s21424" fromLane="1" toLane="1" tl="n39578" linkIndex="1"/>
+    <connection from="s21423" to="s21424" fromLane="2" toLane="2" tl="n39578" linkIndex="2"/>
+    <connection from="s78426" to="s21424" fromLane="0" toLane="0" tl="n39578" linkIndex="3"/>
+</connections>

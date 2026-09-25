@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- generated on 2026-08-22T18:57:09.831459+10:00 by Eclipse SUMO sumo 1.27.1
+<sumoConfiguration xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/sumoConfiguration.xsd">
+
+    <input>
+        <net-file value="C:\Users\ahernz\github_for_aimsun\sumo_bridge\kg_smoke_scenario\kg.net.xml"/>
+        <additional-files value="C:\Users\ahernz\github_for_aimsun\sumo_bridge\kg_smoke_scenario\detectors.add.xml,C:\Users\ahernz\github_for_aimsun\sumo_bridge\kg_smoke_scenario\demand.add.xml"/>
+    </input>
+
+    <output>
+        <summary-output value="C:\Users\ahernz\github_for_aimsun\sumo_bridge\kg_smoke_scenario\summary.xml"/>
+        <tripinfo-output value="C:\Users\ahernz\github_for_aimsun\sumo_bridge\kg_smoke_scenario\tripinfo.xml"/>
+    </output>
+
+    <time>
+        <begin value="0"/>
+        <end value="3600"/>
+        <step-length value="1.0"/>
+    </time>
+
+    <processing>
+        <time-to-teleport value="-1"/>
+        <default.action-step-length value="1.0"/>
+    </processing>
+
+    <report>
+        <no-step-log value="true"/>
+    </report>
+
+    <traci_server>
+        <remote-port value="49675"/>
+    </traci_server>
+
+    <random_number>
+        <seed value="300"/>
+    </random_number>
+
+</sumoConfiguration>
+-->
+
+<tripinfos xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/tripinfo_file.xsd">
+    <tripinfo id="f2_car_s78426.0" depart="0.00" departLane="s78426_0" departPos="4.60" departSpeed="13.32" departDelay="0.00" arrival="36.00" arrivalLane="s21424_0" arrivalPos="296.00" arrivalSpeed="15.08" duration="36.00" routeLength="451.97" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="4.52" rerouteNo="0" devices="tripinfo_f2_car_s78426.0 routing_f2_car_s78426.0" vType="car" speedFactor="0.96" vaporized=""/>
+    <tripinfo id="f2_car_s78426.1" depart="12.00" departLane="s78426_0" departPos="4.60" departSpeed="15.85" departDelay="0.00" arrival="44.00" arrivalLane="s21424_0" arrivalPos="296.00" arrivalSpeed="15.73" duration="32.00" routeLength="451.97" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="3.43" rerouteNo="0" devices="tripinfo_f2_car_s78426.1 routing_f2_car_s78426.1" vType="car" speedFactor="1.14" vaporized=""/>
+    <tripinfo id="f0_car_s21401.0" depart="0.00" departLane="s21401_0" departPos="4.60" departSpeed="16.24" departDelay="0.00" arrival="54.00" arrivalLane="s21424_0" arrivalPos="296.00" arrivalSpeed="15.59" duration="54.00" routeLength="795.50" waitingTime="0.00" waitingCount="0" stopTime="0.00" timeLoss="4.98" rerouteNo="1" devices="tripinfo_f0_car_s21401.0 routing_f0_car_s21401.0" vType="car" speedFactor="0.97" vaporized=""/>
+</tripinfos>

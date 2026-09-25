@@ -341,6 +341,29 @@ EXPERIMENTS = [
             "BXT_GAMMA":              0.01,   # tuned: slightly higher discount
             "BXT_CAR_OCC":            1.2,    # average car occupancy (pax/veh)
             "BXT_BALANCE_FACTOR":     1.1,    # tuned: slightly relaxed saturation guard
+            # ── Analytic cost veto over the learned-Q decider ──
+            "DECIDER_COST_VETO_RATIO": 1.0,   # veto learned action if cross_cost > benefit*ratio
+            # ── Faster convergence: pool experience across all signals ──
+            # Independent per-signal learners are sample-starved (each junction
+            # learns from only its own buses). Sharing one Q-table across all
+            # signals gives ~N_signals x more samples/(state,action) -> converges
+            # in far fewer episodes. Trade-off: one shared policy, no per-junction
+            # specialisation. Default OFF; flip True to test faster learning.
+            "BXT_SHARE_Q_ACROSS_SIGNALS": False,   # tested: full sharing over-generalises → gridlock (§39)
+            # Option 1: per-signal Q, but first-visit states warm-start from a
+            # cross-signal pool (sample-efficiency without losing specialisation).
+            "BXT_WARMSTART_FROM_SHARED":  True,
+            # Log the shockwave-objective delay vs the reliable timing delay so we
+            # can verify the harmony/shockwave predictions are sane.
+            "BXT_DELAY_DIAG":             True,
+            # ── Baked-in traditional-TSP rules (see run_config docs) ──
+            "RULE_MIN_GREEN":                 True,
+            "MIN_GREEN_S":                    5.0,
+            "RULE_TSP_COOLDOWN":              True,
+            "TSP_PER_BUS_COOLDOWN_S":         60.0,
+            "RULE_PERSON_DELAY_WARRANT":      True,
+            "PERSON_DELAY_WARRANT_MIN_PAXS":  0.0,   # 0 = inert; raise to filter near-empty buses
+            "CONDITIONAL_PRIORITY_MIN_LATENESS_S": 0.0,  # 0 = inert; raise to serve only late buses
         },
     },
     # ── DCTSP Bargaining-SPM (TRC 2025 inspired) ─────────────────────────────
@@ -1602,7 +1625,13 @@ SEEDS           = [300, 42, 12345, 7, 99]   # 5 seeds for replication
 DEMAND_SCALARS  = [1.0]              # baseline demand only — no demand scaling yet
 SCALE_TRUCKS    = True   # scale trucks proportionally → consistent car/truck ratio across scalars
 
-TARGET_DEMAND_NAMES = ["01d Logan Rd 2025 AM", "01d Logan Rd 2025 PM"]
+# KG FIX (2026-08-25): these were Logan Rd demand names and matched ZERO
+# GKTrafficDemand objects here, so set_demand_scalar() silently scaled nothing
+# (the entire Phase-3 factorial ran 6 identical demand levels overnight). None
+# = match ALL traffic-demand matrices, which is correct for network-wide
+# demand sweeps regardless of naming. (_is_scalable_matrix still restricts
+# scaling to car/truck matrices, so PT stays untouched.)
+TARGET_DEMAND_NAMES = None
 
 # ── DEMAND SWEEP MODE (sensitivity — demand levels) ──────────────────────────
 # Off by default: DEMAND_SCALARS multiplies the run count for the WHOLE
@@ -1640,7 +1669,9 @@ def log(msg):
     print("[RUNNER] " + str(msg))
 
 
-_QUIET = True  # set False to debug
+_QUIET = False  # False = print progress/warnings. True once muted ALL runner
+                # output, including the [SANITY] gate and zero-scale demand
+                # warnings -- a 10-hour sweep must not fly blind.
 
 
 # =============================================================================
@@ -1723,6 +1754,12 @@ def set_demand_scalar(scalar, base_demands):
             n_scaled += 1
 
     log(f"Demand scalar {scalar}x applied to {n_scaled} matrices.")
+    if n_scaled == 0:
+        # Always-visible: log() is _QUIET'd during batches, and a silent
+        # zero-scale is exactly how the Phase-3 demand axis went fake.
+        print(f"[RUNNER] WARNING: Demand scalar {scalar}x scaled 0 matrices -- "
+              f"every demand level will produce identical results! "
+              f"Check TARGET_DEMAND_NAMES / CAR_KEYWORDS against this model.")
 
 
 # =============================================================================
@@ -1742,24 +1779,49 @@ def _write_controller(path, text):
 
 
 def _purge_pyc(controller_path):
-    """Delete any cached .pyc so Aimsun re-reads the patched .py next run."""
-    base = _os.path.splitext(controller_path)[0]
-    py_dir  = _os.path.dirname(controller_path)
-    py_name = _os.path.basename(base)
-    # __pycache__ is the normal location (Python 3)
-    pycache = _os.path.join(py_dir, '__pycache__')
-    for pyc in glob.glob(_os.path.join(pycache, py_name + '*.pyc')):
-        try:
-            _os.remove(pyc)
-            log(f"Purged pyc cache: {pyc}")
-        except Exception:
-            pass
-    # Legacy same-dir .pyc
-    for pyc in glob.glob(base + '*.pyc'):
-        try:
-            _os.remove(pyc)
-        except Exception:
-            pass
+    """Delete any cached .pyc so Aimsun re-reads the patched .py next run.
+
+    Also purges shared_tsp_engine/engine.py's own cache -- Aimsun's API script
+    setting may point directly at that shared module (self-bootstrapping the
+    active corridor's config) rather than at controller_path, and it can be
+    edited independently of either corridor's intersection_controller.py.
+    Simulation_Stats.py is purged too: it holds the global-KPI logic and is
+    imported by both the controller and the engine, so a stale cache would
+    silently resurrect old KPI behaviour after an edit.
+    """
+    for _base in (
+        _os.path.splitext(controller_path)[0],
+        _os.path.splitext(
+            _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(controller_path))),
+                          "shared_tsp_engine", "engine.py")
+        )[0],
+        _os.path.splitext(
+            _os.path.join(_os.path.dirname(_os.path.abspath(controller_path)),
+                          "Simulation_Stats.py")
+        )[0],
+        # every shared-engine module: partial reloads (new engine
+        # + stale pt_inject) caused a live AttributeError 2026-08-25
+        *glob.glob(_os.path.join(
+            _os.path.dirname(_os.path.dirname(
+                _os.path.abspath(controller_path))),
+            "shared_tsp_engine", "__pycache__", "*.pyc")),
+    ):
+        py_dir  = _os.path.dirname(_base)
+        py_name = _os.path.basename(_base)
+        # __pycache__ is the normal location (Python 3)
+        pycache = _os.path.join(py_dir, '__pycache__')
+        for pyc in glob.glob(_os.path.join(pycache, py_name + '*.pyc')):
+            try:
+                _os.remove(pyc)
+                log(f"Purged pyc cache: {pyc}")
+            except Exception:
+                pass
+        # Legacy same-dir .pyc
+        for pyc in glob.glob(_base + '*.pyc'):
+            try:
+                _os.remove(pyc)
+            except Exception:
+                pass
 
 
 def _set_logging(controller_path, enabled):
@@ -1833,8 +1895,11 @@ def set_control_mode(strategy, controller_path, active_intersections=None):
     if strategy == "GROUP_BASED_FIXED":
         mode     = "GROUP_BASED"
         priority = "False"
-    elif strategy in ("REWARD_TSP", "DRL_DENSITY", "HARMONY", "URTSP", "NORMAL"):
-        # Explicitly keep phase-based strategies out of any group-based path.
+    elif strategy in ("REWARD_TSP", "DRL_DENSITY", "HARMONY", "URTSP", "NORMAL",
+                      "MILP_MPC"):
+        # Explicitly keep phase-based / horizon-controller strategies out of any
+        # group-based path (MILP_MPC is its own per-second CP-SAT controller, not
+        # a group-based bus-priority plan).
         mode     = strategy
         priority = "False"
     elif strategy == "GLOBAL_REWARD":
@@ -1908,6 +1973,8 @@ def set_reward_weights(controller_path, overrides=None):
         "REWARD_SELFORG_MODE":   False,
         "DCTSP_ZIG_MODE":        False,
         "MP_ECTM_MODE":          False,
+        "MP_ECTM_DP_MODE":       False,
+        "CELLQLEARN_DP_MODE":    False,
         "BXT_MODE":              False,
         "DCTSP_GREEN_REALLOC_MODE": False,
         "BARGAIN_SPM_MODE":      False,
@@ -2091,7 +2158,7 @@ def set_coordination_algo(controller_path, algo: str):
 def write_run_config(experiment_name, strategy, seed, scalar,
                      coordinated, coordination_algo, run_config_path,
                      global_reward_mode=False, reward_cfg=None,
-                     bus_predictor="KALMAN"):
+                     bus_predictor="KALMAN", results_csv_name="batch_results.csv"):
     content = (
         "CURRENT_STRATEGY = "        + repr(strategy)           + "\n"
         "CURRENT_EXPERIMENT = "      + repr(experiment_name)    + "\n"
@@ -2104,6 +2171,13 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         "BARGAIN_SPM_MODE = "        + repr(bool((reward_cfg or {}).get('BARGAIN_SPM_MODE', False))) + "\n"
         "DCTSP_GREEN_REALLOC_MODE = "+ repr(bool((reward_cfg or {}).get('DCTSP_GREEN_REALLOC_MODE', False))) + "\n"
         "GREEN_REALLOC_RECOVER_FRACTION = " + repr(float((reward_cfg or {}).get('GREEN_REALLOC_RECOVER_FRACTION', 1.0))) + "\n"
+        # Which batch-results CSV this run's metrics are appended to (e.g.
+        # batch_results.csv for the full batch_runner.py sweep, or
+        # batch_results_gui.csv for a GUI/studio-driven run) -- AAPIFinish's
+        # dashboard generation reads this so tsp_dashboard.html reflects the
+        # run(s) that were actually just performed, not every historical
+        # experiment ever accumulated in the main CSV.
+        "RESULTS_CSV_NAME = "        + repr(str(results_csv_name)) + "\n"
     )
     for k, v in (reward_cfg or {}).items():
         content += f"{k} = {repr(v)}\n"
@@ -2937,9 +3011,7 @@ def _collect_aimsun_network_stats():
                 out["aimsun_avg_speed_kmh"]    = round(wt_speed   / total_len, 4)
                 out["aimsun_avg_delay_s_km"]   = round(wt_delay   / total_len, 2)
             else:
-                # Fallback: use stats_Net_TotalFlowVeh if section stats unavailable
-                _fallback_flow = float(meta.get('stats_Net_TotalFlowVeh', 0) or 0)
-                out["aimsun_total_flow_veh"]   = _fallback_flow if _fallback_flow > 0 else 0.0
+                out["aimsun_total_flow_veh"]   = 0.0
                 out["aimsun_avg_density_vkm"]  = 0.0
                 out["aimsun_avg_speed_kmh"]    = 0.0
                 out["aimsun_avg_delay_s_km"]   = 0.0
@@ -2955,9 +3027,7 @@ def _collect_aimsun_network_stats():
                     out[f"aimsun_speed_{_pfx}"]   = round(_ws   / total_len, 4)
                     out[f"aimsun_delay_{_pfx}"]   = round(_wdly / total_len, 2)
                 else:
-                    # Fallback: use type-specific net stats
-                    _fb_flow = float(meta.get(f'stats_Net_TotalFlow{_pfx.capitalize()}Veh', 0) or 0)
-                    out[f"aimsun_flow_{_pfx}"]    = _fb_flow if _fb_flow > 0 else 0.0
+                    out[f"aimsun_flow_{_pfx}"]    = 0.0
                     out[f"aimsun_density_{_pfx}"] = 0.0
                     out[f"aimsun_speed_{_pfx}"]   = 0.0
                     out[f"aimsun_delay_{_pfx}"]   = 0.0
@@ -3377,6 +3447,9 @@ def append_master_csv(master_path, row_dict):
         "stats_BusTotalTT_hrs",      "stats_N_BusTrips", "stats_N_DistinctBuses",
         # ── TSP action counts ─────────────────────────────────────────────────
         "stats_TSP_Detections",      "stats_TSP_Extensions", "stats_TSP_Insertions",
+        # Previously-uncounted timing actions — the real cascade drivers
+        "stats_TSP_GreenRealloc",    "stats_TSP_EarlyRed",   "stats_TSP_OffsetCorr",
+        "stats_TSP_PhaseSkip",       "stats_TSP_PhaseRot",
         "stats_TSP_Detected_NoAction", "stats_TSP_NaturalGreen",
         "stats_TSP_TotalExtension_s","stats_TSP_AvgExtension_s",
         # ── Global stats (from simulation_results.csv) ────────────────────────
@@ -3922,6 +3995,38 @@ def main():
     except Exception as _oce:
         log(f"WARNING: Offset-correction cycle dashboard generation failed: {_oce}")
 
+    # ── Generate bus tracking dashboard ──────────────────────────────────────
+    try:
+        import importlib as _ilib3
+        if _SCRIPT_DIR not in _sys.path:
+            _sys.path.insert(0, _SCRIPT_DIR)
+        import generate_bus_tracking_dashboard as _gbtd
+        _ilib3.reload(_gbtd)
+        _gbtd_html = _gbtd.generate(
+            log_dir=_os.path.join(PROJECT_DIR, "logs"),
+            out_html=_os.path.join(PROJECT_DIR, "bus_tracking_dashboard.html"),
+        )
+        if _gbtd_html:
+            log(f"Bus tracking dashboard: {_gbtd_html}")
+    except Exception as _btde:
+        log(f"WARNING: Bus tracking dashboard generation failed: {_btde}")
+
+    # ── Generate LaTeX Beamer slides ─────────────────────────────────────────
+    try:
+        import importlib as _ilib4
+        if _SCRIPT_DIR not in _sys.path:
+            _sys.path.insert(0, _SCRIPT_DIR)
+        import generate_beamer_slides as _gbs
+        _ilib4.reload(_gbs)
+        _gbs_tex = _gbs.generate(
+            batch_csv=MASTER_CSV_PATH,
+            out_tex=_os.path.join(PROJECT_DIR, "beamer_slides.tex"),
+        )
+        if _gbs_tex:
+            log(f"Beamer slides: {_gbs_tex}")
+    except Exception as _bse:
+        log(f"WARNING: Beamer slides generation failed: {_bse}")
+
     # ── Copy batch dashboards into every run's results/ folder ────────────────
     # The dashboards above compare ALL experiments in this batch and are written
     # once at PROJECT_DIR level. Copy them into each results/<run>/ folder too,
@@ -3932,6 +4037,8 @@ def main():
             _os.path.join(PROJECT_DIR, "tsp_dashboard.html"),
             _os.path.join(PROJECT_DIR, "reward_breakdown.html"),
             _os.path.join(PROJECT_DIR, "offset_correction_cycle.html"),
+            _os.path.join(PROJECT_DIR, "bus_tracking_dashboard.html"),
+            _os.path.join(PROJECT_DIR, "beamer_slides.tex"),
         ]
         _dash_files = [p for p in _dash_files if _os.path.isfile(p)]
         _n_copied = 0
@@ -3942,6 +4049,17 @@ def main():
                     _n_copied += 1
                 except Exception as _cpe:
                     log(f"WARNING: could not copy {_os.path.basename(_df_path)} to {_rf}: {_cpe}")
+            # Copy dashboard_data/ directory (externalized heavy data)
+            _data_src = _os.path.join(PROJECT_DIR, "dashboard_data")
+            if _os.path.isdir(_data_src):
+                _data_dst = _os.path.join(_rf, "dashboard_data")
+                try:
+                    if _os.path.isdir(_data_dst):
+                        shutil.rmtree(_data_dst, ignore_errors=True)
+                    shutil.copytree(_data_src, _data_dst)
+                    _n_copied += 1
+                except Exception as _cpe:
+                    log(f"WARNING: could not copy dashboard_data/ to {_rf}: {_cpe}")
         log(f"Copied {len(_dash_files)} dashboard(s) into {len(_batch_results_folders)} "
             f"results folder(s) ({_n_copied} file(s) written)")
     except Exception as _cde:

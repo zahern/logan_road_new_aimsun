@@ -52,6 +52,23 @@ PROJECT_DIR     = _SCRIPT_DIR
 CONTROLLER_PATH = _os.path.join(_SCRIPT_DIR, "intersection_controller.py")
 RUN_CONFIG_PATH = _os.path.join(_SCRIPT_DIR, "run_config.py")
 
+# Junction 22400 (Julliette St) excluded from TSP control at user request.
+# Applied wherever an experiment's active_intersections resolves to "all"
+# (None) or specifies an explicit list, so it never receives TSP actions
+# regardless of which experiment is run.
+_EXCLUDED_JCT_22400 = 22400
+
+# Expected replication horizon (h). Runs whose recorded SimDuration_hrs falls
+# below 90% of this are marked run_success=False by the truncated-run guard in
+# collect_run_metrics() so they cannot enter the dashboard as comparable rows.
+EXPECTED_SIM_DURATION_HRS = 1.5
+
+_ALL_CORRIDOR_JCTS = [
+    17249, 17308, 17383, 17498, 17628, 17963, 18044, 18942,
+    19185, 19196, 19363, 19474, 19882, 20270, 20280, 20283,
+    20844, 21197, 21553, 21847, 21895, 22232, 22400, 22603,
+]
+
 # Weighted-objective (Z1/Z2 composite) metric collection lives in
 # collect_run_metrics() section 7 below: it reads the per-run
 # logs/weighted_objective_<experiment>_<timestamp>.csv trace written by
@@ -1640,7 +1657,9 @@ def log(msg):
     print("[RUNNER] " + str(msg))
 
 
-_QUIET = True  # set False to debug
+_QUIET = False  # False = print progress/warnings. True once muted ALL runner
+                # output, including the [SANITY] gate -- a long sweep must not
+                # fly blind.
 
 
 # =============================================================================
@@ -1742,24 +1761,49 @@ def _write_controller(path, text):
 
 
 def _purge_pyc(controller_path):
-    """Delete any cached .pyc so Aimsun re-reads the patched .py next run."""
-    base = _os.path.splitext(controller_path)[0]
-    py_dir  = _os.path.dirname(controller_path)
-    py_name = _os.path.basename(base)
-    # __pycache__ is the normal location (Python 3)
-    pycache = _os.path.join(py_dir, '__pycache__')
-    for pyc in glob.glob(_os.path.join(pycache, py_name + '*.pyc')):
-        try:
-            _os.remove(pyc)
-            log(f"Purged pyc cache: {pyc}")
-        except Exception:
-            pass
-    # Legacy same-dir .pyc
-    for pyc in glob.glob(base + '*.pyc'):
-        try:
-            _os.remove(pyc)
-        except Exception:
-            pass
+    """Delete any cached .pyc so Aimsun re-reads the patched .py next run.
+
+    Also purges shared_tsp_engine/engine.py's own cache -- Aimsun's API script
+    setting may point directly at that shared module (self-bootstrapping the
+    active corridor's config) rather than at controller_path, and it can be
+    edited independently of either corridor's intersection_controller.py.
+    Simulation_Stats.py is purged too: it holds the global-KPI logic and is
+    imported by both the controller and the engine, so a stale cache would
+    silently resurrect old KPI behaviour after an edit.
+    """
+    for _base in (
+        _os.path.splitext(controller_path)[0],
+        _os.path.splitext(
+            _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(controller_path))),
+                          "shared_tsp_engine", "engine.py")
+        )[0],
+        _os.path.splitext(
+            _os.path.join(_os.path.dirname(_os.path.abspath(controller_path)),
+                          "Simulation_Stats.py")
+        )[0],
+        # every shared-engine module: partial reloads (new engine
+        # + stale pt_inject) caused a live AttributeError 2026-08-25
+        *glob.glob(_os.path.join(
+            _os.path.dirname(_os.path.dirname(
+                _os.path.abspath(controller_path))),
+            "shared_tsp_engine", "__pycache__", "*.pyc")),
+    ):
+        py_dir  = _os.path.dirname(_base)
+        py_name = _os.path.basename(_base)
+        # __pycache__ is the normal location (Python 3)
+        pycache = _os.path.join(py_dir, '__pycache__')
+        for pyc in glob.glob(_os.path.join(pycache, py_name + '*.pyc')):
+            try:
+                _os.remove(pyc)
+                log(f"Purged pyc cache: {pyc}")
+            except Exception:
+                pass
+        # Legacy same-dir .pyc
+        for pyc in glob.glob(_base + '*.pyc'):
+            try:
+                _os.remove(pyc)
+            except Exception:
+                pass
 
 
 def _set_logging(controller_path, enabled):
@@ -1833,8 +1877,11 @@ def set_control_mode(strategy, controller_path, active_intersections=None):
     if strategy == "GROUP_BASED_FIXED":
         mode     = "GROUP_BASED"
         priority = "False"
-    elif strategy in ("REWARD_TSP", "DRL_DENSITY", "HARMONY", "URTSP", "NORMAL"):
-        # Explicitly keep phase-based strategies out of any group-based path.
+    elif strategy in ("REWARD_TSP", "DRL_DENSITY", "HARMONY", "URTSP", "NORMAL",
+                      "MILP_MPC"):
+        # Explicitly keep phase-based / horizon-controller strategies out of any
+        # group-based path (MILP_MPC is its own per-second CP-SAT controller, not
+        # a group-based bus-priority plan).
         mode     = strategy
         priority = "False"
     elif strategy == "GLOBAL_REWARD":
@@ -2091,7 +2138,7 @@ def set_coordination_algo(controller_path, algo: str):
 def write_run_config(experiment_name, strategy, seed, scalar,
                      coordinated, coordination_algo, run_config_path,
                      global_reward_mode=False, reward_cfg=None,
-                     bus_predictor="KALMAN"):
+                     bus_predictor="KALMAN", results_csv_name="batch_results.csv"):
     content = (
         "CURRENT_STRATEGY = "        + repr(strategy)           + "\n"
         "CURRENT_EXPERIMENT = "      + repr(experiment_name)    + "\n"
@@ -2104,8 +2151,39 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         "BARGAIN_SPM_MODE = "        + repr(bool((reward_cfg or {}).get('BARGAIN_SPM_MODE', False))) + "\n"
         "DCTSP_GREEN_REALLOC_MODE = "+ repr(bool((reward_cfg or {}).get('DCTSP_GREEN_REALLOC_MODE', False))) + "\n"
         "GREEN_REALLOC_RECOVER_FRACTION = " + repr(float((reward_cfg or {}).get('GREEN_REALLOC_RECOVER_FRACTION', 1.0))) + "\n"
+        # Which batch-results CSV this run's metrics are appended to (e.g.
+        # batch_results.csv for the full batch_runner.py sweep, or
+        # batch_results_gui.csv for a GUI/studio-driven run) -- AAPIFinish's
+        # dashboard generation reads this so tsp_dashboard.html reflects the
+        # run(s) that were actually just performed, not every historical
+        # experiment ever accumulated in the main CSV.
+        "RESULTS_CSV_NAME = "        + repr(str(results_csv_name)) + "\n"
     )
-    for k, v in (reward_cfg or {}).items():
+    # ── Explicit mode toggles (always written, default False) ────────────────
+    # Each experiment's reward_cfg only lists the flags it turns ON.  The engine
+    # module persists across every experiment in one Aimsun session, so a flag
+    # left unwritten keeps its previous experiment's value (mode leak → all
+    # strategies produce identical results).  Writing every toggle explicitly
+    # here makes run_config.py a COMPLETE specification: an unlisted toggle is
+    # definitively False, not "inherit whatever ran last".
+    _MODE_TOGGLES = (
+        'DCTSP_ZIG_MODE', 'MP_ECTM_MODE', 'BXT_MODE', 'BARGAIN_SPM_MODE',
+        'META_TSP_MODE', 'MDN_DELAY_MODE', 'HS_EXT_MODE',
+        'REWARD_SELFORG_MODE', 'REWARD_INV_DELAY_MODE', 'REWARD_V2X_MODE',
+        'CENTRALIZED_MODE',
+        # DCTSP_GREEN_REALLOC_MODE / BARGAIN_SPM_MODE already written above.
+    )
+    _rc = reward_cfg or {}
+    _already_written = {'BARGAIN_SPM_MODE', 'DCTSP_GREEN_REALLOC_MODE',
+                        'GLOBAL_REWARD_MODE'}
+    for _tog in _MODE_TOGGLES:
+        if _tog in _already_written:
+            continue
+        content += f"{_tog} = {repr(bool(_rc.get(_tog, False)))}\n"
+        _already_written.add(_tog)
+    for k, v in _rc.items():
+        if k in _already_written:
+            continue   # don't emit a mode toggle twice
         content += f"{k} = {repr(v)}\n"
     with open(run_config_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -2512,6 +2590,21 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
         if k is not None:
             meta["stats_" + k] = v
 
+    # ── Truncated-run guard ───────────────────────────────────────────────────
+    # A replication that Aimsun aborted early (e.g. the NO_TSP baseline runs on
+    # 2026-07-16 ended at 457-1202 sim-s instead of 5400 s) must not enter the
+    # dashboard as a comparable row: every KPI covers a fraction of the horizon.
+    try:
+        _dur_hrs = float(global_row.get("SimDuration_hrs", 0.0) or 0.0)
+        if 0.0 < _dur_hrs < 0.9 * EXPECTED_SIM_DURATION_HRS:
+            meta["run_success"] = False
+            log(f"  ERROR: run truncated — SimDuration={_dur_hrs:.3f} h "
+                f"(expected {EXPECTED_SIM_DURATION_HRS:.2f} h). "
+                f"Marking run_success=False; check the Aimsun console for a "
+                f"traceback (engine now also logs [FATAL] AAPIPostManage crashes).")
+    except Exception:
+        pass
+
     # ── 2. summary.json ───────────────────────────────────────────────────────
     summary = _read_json(_os.path.join(folder, "summary.json"))
     for k, v in summary.items():
@@ -2575,7 +2668,7 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
 
     # ── 4. Aimsun model network-level statistics (PyANGKernel) ───────────────
     try:
-        aimsun_stats = _collect_aimsun_network_stats()
+        aimsun_stats = _collect_aimsun_network_stats(meta)
         meta.update(aimsun_stats)
     except Exception as e:
         log(f"  INFO: Aimsun network stats not available: {e}")
@@ -2828,7 +2921,7 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
     return meta
 
 
-def _collect_aimsun_network_stats():
+def _collect_aimsun_network_stats(meta=None):
     """
     Read network-level statistics from the Aimsun model object after a run.
 
@@ -2840,8 +2933,13 @@ def _collect_aimsun_network_stats():
       1. getDataValueString / getDataValue (Aimsun Next 25+)
       2. Direct attribute access (getFlow, getDensity, getMeanSpeed)
       3. No-arg getStatistic() for some column IDs
+
+    `meta` is the caller's run-stats dict (already populated with
+    stats_Net_* fields) — used as the fallback source when per-section
+    flow/density/speed can't be read directly from the Aimsun model.
     """
     out = {}
+    meta = meta or {}
     try:
         model = GKSystem.getSystem().getActiveModel()
         if model is None:
@@ -2937,9 +3035,7 @@ def _collect_aimsun_network_stats():
                 out["aimsun_avg_speed_kmh"]    = round(wt_speed   / total_len, 4)
                 out["aimsun_avg_delay_s_km"]   = round(wt_delay   / total_len, 2)
             else:
-                # Fallback: use stats_Net_TotalFlowVeh if section stats unavailable
-                _fallback_flow = float(meta.get('stats_Net_TotalFlowVeh', 0) or 0)
-                out["aimsun_total_flow_veh"]   = _fallback_flow if _fallback_flow > 0 else 0.0
+                out["aimsun_total_flow_veh"]   = 0.0
                 out["aimsun_avg_density_vkm"]  = 0.0
                 out["aimsun_avg_speed_kmh"]    = 0.0
                 out["aimsun_avg_delay_s_km"]   = 0.0
@@ -2955,9 +3051,7 @@ def _collect_aimsun_network_stats():
                     out[f"aimsun_speed_{_pfx}"]   = round(_ws   / total_len, 4)
                     out[f"aimsun_delay_{_pfx}"]   = round(_wdly / total_len, 2)
                 else:
-                    # Fallback: use type-specific net stats
-                    _fb_flow = float(meta.get(f'stats_Net_TotalFlow{_pfx.capitalize()}Veh', 0) or 0)
-                    out[f"aimsun_flow_{_pfx}"]    = _fb_flow if _fb_flow > 0 else 0.0
+                    out[f"aimsun_flow_{_pfx}"]    = 0.0
                     out[f"aimsun_density_{_pfx}"] = 0.0
                     out[f"aimsun_speed_{_pfx}"]   = 0.0
                     out[f"aimsun_delay_{_pfx}"]   = 0.0
@@ -3377,6 +3471,9 @@ def append_master_csv(master_path, row_dict):
         "stats_BusTotalTT_hrs",      "stats_N_BusTrips", "stats_N_DistinctBuses",
         # ── TSP action counts ─────────────────────────────────────────────────
         "stats_TSP_Detections",      "stats_TSP_Extensions", "stats_TSP_Insertions",
+        # Previously-uncounted timing actions — the real cascade drivers
+        "stats_TSP_GreenRealloc",    "stats_TSP_EarlyRed",   "stats_TSP_OffsetCorr",
+        "stats_TSP_PhaseSkip",       "stats_TSP_PhaseRot",
         "stats_TSP_Detected_NoAction", "stats_TSP_NaturalGreen",
         "stats_TSP_TotalExtension_s","stats_TSP_AvgExtension_s",
         # ── Global stats (from simulation_results.csv) ────────────────────────
@@ -3582,6 +3679,10 @@ def main():
             coord_algo    = exp.get("coordination_algo", "KALMAN")
             bus_predictor = exp.get("bus_predictor", "KALMAN")
             active_int    = exp.get("active_intersections", None)
+            if active_int is None:
+                active_int = [j for j in _ALL_CORRIDOR_JCTS if j != _EXCLUDED_JCT_22400]
+            else:
+                active_int = [j for j in active_int if j != _EXCLUDED_JCT_22400]
             reward_overrides = exp.get("reward_overrides", None)
 
             # Ensure offset ETA propagation uses queue-aware shockwave logic

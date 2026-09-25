@@ -1,0 +1,134 @@
+\ProvidesPackage{local}
+
+%%%%%%%%%%%%% general document control %%%%%%%%%%%%%%%%
+\usepackage[document]{ragged2e} % right justify (comment to center justify text
+\usepackage{multicol} % two-column formatting 
+\usepackage{comment}  % for block comments
+\usepackage[usenames,dvipsnames]{color} % load color names
+\usepackage{changepage} % to tweak the margins locally
+\usepackage{setspace} % use this for double-spacing
+\pagestyle{empty} % remove page numbers
+\usepackage[inline,shortlabels]{enumitem} % in-line enumerated items
+\usepackage{lineno} % line numbering 
+\renewcommand\linenumberfont{\normalfont\small}
+
+\usepackage[xcdraw]{xcolor} % 'table' option removed: colortbl breaks longtable p{} columns on recent kernels (unused here anyway)
+\definecolor{Accent}{HTML}{0092BD} 
+\definecolor{Highlight}{HTML}{580F8B} 
+% QUT corporate identity: PMS 541 blue (RGB 0,59,113). Used for the
+% Abstract field labels so the front page carries QUT colours.
+\definecolor{QUTBlue}{HTML}{003B71}
+
+%%%%%%%%%%%%% figures and tables and captions %%%%%%%%%%%%%%%%
+\usepackage{graphicx} 
+\usepackage[margin=10pt,font=small,labelfont=bf,labelsep=colon,justification=raggedright,singlelinecheck=false,format=plain]{caption}
+\DeclareCaptionFont{Highlight}{\color{Highlight}}
+\captionsetup{labelfont={Highlight,bf}}
+\usepackage{grffile} % takes the names of figures out
+\usepackage{pdflscape} % will rotate to landscape where appropriate
+
+\usepackage[labelfont=normalfont]{subcaption} % useful with cleverref 
+\captionsetup[subfigure]{subrefformat=simple,labelformat=simple}
+\renewcommand{\thesubfigure}{\Alph{subfigure}} % use this command to make references to figure sub-panels uppercase change to \alph if you label your figures in lower case
+
+\makeatletter
+\@fpsep\textheight % puts all your figures on separate pages
+\makeatother
+
+\usepackage{booktabs} % nice tables
+\usepackage{longtable} % also nice tables 
+\usepackage{array} % allows you to center text in a table with columns of defined width
+\newcolumntype{P}[1]{>{\centering\arraybackslash}p{#1}}  
+\newcolumntype{M}[1]{>{\centering\arraybackslash}m{#1}}
+
+%%%%%%%%%%%%% fonts %%%%%%%%%%%%%
+% if you want Garamond or TeX Gyre Heros fonts, use XeLaTeX to compile
+
+%\usepackage{mathspec} % note, this loads fontspec
+%\usepackage{fontspec}
+%\setmainfont[Numbers=Lining]{EB Garamond} % (serif) numbers = lining otherwise the numbers in EB Garamond are weird
+%\setmathfont(Digits,Latin,Greek)[Numbers={Lining}]{EB Garamond}
+%\usepackage[cmintegrals,cmbraces]{newtxmath} % if you want Garamond-like math symbols
+%\setmainfont[Numbers=Lining]{TeX Gyre Heros} % (sans serif)
+
+% if you want Montserrat
+\usepackage[defaultfam,  light,  tabular,  lining]{montserrat}
+\makeatletter
+\def\bfseries@sf{bold} % if you want a different bold w/montserrat change this
+\makeatother
+
+%%%%%%%%%%%%% spacing %%%%%%%%%%%%%
+\setlength{\parskip}{.75ex plus 0.25ex minus 0.25ex} % slight space b/w paragraphs
+\setlength{\parindent}{0em} % smaller indent of paragraphs
+
+
+%%%%%%%%%%%%% symbols %%%%%%%%%%%%%
+\usepackage{amsmath}
+\usepackage{textcomp} % some control quote sequences and other symbols
+\usepackage{mathtools} % symbols
+\usepackage{mathrsfs} %allows the /mathscr command for in-line math
+\usepackage{gensymb} % nice \degree 
+\usepackage[autostyle]{csquotes} % nice quotes using \enquote{}
+\usepackage[english]{babel} % multilingual hyphenation support
+
+%%%%%%%%%%%%% section / subsection titles %%%%%%%%%%%%%%%%
+\usepackage{titlesec} % change the "sffamily" to "rmfamily" if you switch to serif fonts
+\titleformat{\section}
+  {\sffamily\normalsize\bfseries\color{Highlight}}
+  {\thesection}{1em}
+  {\MakeUppercase}
+  
+\titleformat{\subsection}
+  {\sffamily\normalsize\bfseries\color{Highlight}}
+  {\thesection}{1em}{}
+  
+\titleformat{\subsubsection}
+  {\sffamily\small\bfseries\color{Highlight}}
+  {\thesection}{1em}{}
+
+\titlespacing*\section{0pt}{*1}{*.5}
+\titlespacing*\subsection{0pt}{*1}{*-.5}
+\titlespacing*\subsubsection{0pt}{*1}{*-.5}
+
+% gets rid of numbers at the beginning of sections / subsections
+\setcounter{secnumdepth}{0} 
+
+%%%%%%%%%%%%% title / abstract %%%%%%%%%%%%%
+\makeatletter
+\renewcommand{\maketitle}{\bgroup\setlength{\parindent}{0pt}
+
+\begin{flushleft}
+    \begin{adjustwidth}{0in}{.5in} % a bit more margin for the title
+        \begin{Huge} 
+            \begin{spacing}{.9} 
+            \textbf{\@title}
+            \end{spacing}
+        \end{Huge}
+    \end{adjustwidth}
+    \bigskip
+    \linespread{1}
+    \@author 
+\end{flushleft}\egroup
+}
+\makeatother
+
+%%%%%%%%%%%%%% bibliography %%%%%%%%%%%%%%%%%
+\usepackage[authoryear,sort&compress]{natbib} % author/year for references
+\setcitestyle{authoryear,open={(},close={)}} % (Author, year) parenthetical
+\renewcommand{\cite}{\citet} % \cite{key} prints Author (year); \citep{key} prints (Author, year)
+
+\setlength{\bibsep}{0pt plus 0.2ex}
+%\usepackage{chapterbib} % uncomment if different included files have their own bibliographies
+
+\usepackage{orcidlink} % puts a nice little ORCID symbol in the authors' list
+\hypersetup{colorlinks,citecolor = Accent, linkcolor = Accent,urlcolor = Accent}
+\usepackage[noabbrev,nameinlink]{cleveref}
+
+%%%%%%%%%%%%%% Deal with supplemental figures / equations by renumbering and starting with "S" %%%%%%%%%%%%%%%%%
+\newcommand{\beginsupplement}{%
+    \setcounter{figure}{0}
+    \renewcommand{\thefigure}{S\arabic{figure}}%
+    \renewcommand{\theequation}{S\arabic{equation}} 
+}
+
+

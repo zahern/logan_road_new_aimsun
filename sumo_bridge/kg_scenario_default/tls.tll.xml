@@ -1,0 +1,74 @@
+<tlLogics>
+    <tlLogic id="n1043762" programID="0" type="static" offset="0">
+        <phase duration="62.4" state="rrrrrrggggggrrrrrr"/>
+        <phase duration="4.0" state="rrrrrryyyyyyrrrrrr"/>
+        <phase duration="62.4" state="ggggggrrrrrrgggggg"/>
+        <phase duration="4.0" state="yyyyyyrrrrrryyyyyy"/>
+    </tlLogic>
+    <tlLogic id="n36385" programID="0" type="static" offset="0">
+        <phase duration="99.0" state="rrrrrrrrrggggggggggrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="4.0" state="rrrrrrrrryyyyyyyyyyrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"/>
+        <phase duration="46.8" state="gggggggggrrrrrrrrrrgggggggggggggggggggggggggggggggggggggggggggggggggg"/>
+        <phase duration="4.0" state="yyyyyyyyyrrrrrrrrrryyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"/>
+    </tlLogic>
+    <tlLogic id="n36393" programID="0" type="static" offset="0">
+        <phase duration="75.8" state="rrrrrrrrrrrrggggrr"/>
+        <phase duration="4.0" state="rrrrrrrrrrrryyyyrr"/>
+        <phase duration="75.8" state="ggggggggggggrrrrgg"/>
+        <phase duration="4.0" state="yyyyyyyyyyyyrrrryy"/>
+    </tlLogic>
+    <tlLogic id="n38339" programID="0" type="static" offset="0">
+        <phase duration="36.3" state="ggrrrrrrrrrrrrrrrrrgrrrr"/>
+        <phase duration="4.0" state="yyrrrrrrrrrrrrrrrrryrrrr"/>
+        <phase duration="36.3" state="rrgggggggggggggggggrgggg"/>
+        <phase duration="4.0" state="rryyyyyyyyyyyyyyyyyryyyy"/>
+    </tlLogic>
+    <tlLogic id="n39569" programID="0" type="static" offset="0">
+        <phase duration="26.2" state="rrrrggggggggrrrrrrrgggggggrrrrrrrrrrrrr"/>
+        <phase duration="4.0" state="rrrryyyyyyyyrrrrrrryyyyyyyrrrrrrrrrrrrr"/>
+        <phase duration="30.0" state="ggggrrrrrrrrgggggggrrrrrrrggggggggggggg"/>
+        <phase duration="4.0" state="yyyyrrrrrrrryyyyyyyrrrrrrryyyyyyyyyyyyy"/>
+    </tlLogic>
+    <tlLogic id="n39572" programID="0" type="static" offset="0">
+        <phase duration="48.9" state="rrrgggggrrrgggg"/>
+        <phase duration="4.0" state="rrryyyyyrrryyyy"/>
+        <phase duration="48.9" state="gggrrrrrgggrrrr"/>
+        <phase duration="4.0" state="yyyrrrrryyyrrrr"/>
+    </tlLogic>
+    <tlLogic id="n39576" programID="0" type="static" offset="0">
+        <phase duration="90.0" state="ggggggggrrrrrrrrrrrrrrrrrgggggrrrrr"/>
+        <phase duration="4.0" state="yyyyyyyyrrrrrrrrrrrrrrrrryyyyyrrrrr"/>
+        <phase duration="90.0" state="rrrrrrrrgggggggggggggggggrrrrrggggg"/>
+        <phase duration="4.0" state="rrrrrrrryyyyyyyyyyyyyyyyyrrrrryyyyy"/>
+    </tlLogic>
+    <tlLogic id="n39578" programID="0" type="static" offset="0">
+        <phase duration="40.9" state="rrrrrrrrrrrrrrrrrrrrrrg"/>
+        <phase duration="4.0" state="rrrrrrrrrrrrrrrrrrrrrry"/>
+        <phase duration="65.2" state="ggggggggggggggggggggggr"/>
+        <phase duration="4.0" state="yyyyyyyyyyyyyyyyyyyyyyr"/>
+    </tlLogic>
+    <tlLogic id="n39587" programID="0" type="static" offset="0">
+        <phase duration="55.5" state="gggrrrrrrggg"/>
+        <phase duration="4.0" state="yyyrrrrrryyy"/>
+        <phase duration="55.5" state="rrrggggggrrr"/>
+        <phase duration="4.0" state="rrryyyyyyrrr"/>
+    </tlLogic>
+    <tlLogic id="n39590" programID="0" type="static" offset="0">
+        <phase duration="30.7" state="rrrrrrrrgggggrrrrrrrrggggg"/>
+        <phase duration="4.0" state="rrrrrrrryyyyyrrrrrrrryyyyy"/>
+        <phase duration="45.5" state="ggggggggrrrrrggggggggrrrrr"/>
+        <phase duration="4.0" state="yyyyyyyyrrrrryyyyyyyyrrrrr"/>
+    </tlLogic>
+    <tlLogic id="n39593" programID="0" type="static" offset="0">
+        <phase duration="53.8" state="rrrrrrrrrrrggggggggggggg"/>
+        <phase duration="4.0" state="rrrrrrrrrrryyyyyyyyyyyyy"/>
+        <phase duration="120.0" state="gggggggggggrrrrrrrrrrrrr"/>
+        <phase duration="4.0" state="yyyyyyyyyyyrrrrrrrrrrrrr"/>
+    </tlLogic>
+    <tlLogic id="n39606" programID="0" type="static" offset="0">
+        <phase duration="70.9" state="rrrrrrggggrrrrrrg"/>
+        <phase duration="4.0" state="rrrrrryyyyrrrrrry"/>
+        <phase duration="45.6" state="ggggggrrrrggggggr"/>
+        <phase duration="4.0" state="yyyyyyrrrryyyyyyr"/>
+    </tlLogic>
+</tlLogics>

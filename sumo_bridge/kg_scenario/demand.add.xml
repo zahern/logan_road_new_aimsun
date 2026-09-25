@@ -1,0 +1,192 @@
+<additional>
+    <vType id="car" length="4.5" maxSpeed="16.7" color="0.60,0.65,0.85"/>
+    <vType id="bus" length="12.0" maxSpeed="13.9" color="1.00,0.35,0.00" guiShape="bus"/>
+    <busStop id="busStop_1" lane="s10157987_0" startPos="32.7" endPos="47.7" friendlyPos="true"/>
+    <busStop id="busStop_2" lane="s21489_0" startPos="6.4" endPos="21.4" friendlyPos="true"/>
+    <busStop id="busStop_3" lane="s11127612_0" startPos="28.3" endPos="43.3" friendlyPos="true"/>
+    <busStop id="busStop_4" lane="s21476_0" startPos="23.5" endPos="38.5" friendlyPos="true"/>
+    <busStop id="busStop_5" lane="s21471_0" startPos="38.8" endPos="53.8" friendlyPos="true"/>
+    <busStop id="busStop_6" lane="s11118205_0" startPos="5.5" endPos="20.5" friendlyPos="true"/>
+    <busStop id="busStop_7" lane="s10158156_0" startPos="96.5" endPos="111.5" friendlyPos="true"/>
+    <busStop id="busStop_8" lane="s21443_0" startPos="6.1" endPos="21.1" friendlyPos="true"/>
+    <busStop id="busStop_9" lane="s71799_0" startPos="44.2" endPos="59.2" friendlyPos="true"/>
+    <busStop id="busStop_10" lane="s66283_0" startPos="24.8" endPos="39.8" friendlyPos="true"/>
+    <busStop id="busStop_11" lane="s21404_0" startPos="50.7" endPos="65.7" friendlyPos="true"/>
+    <busStop id="busStop_12" lane="s21530_0" startPos="33.2" endPos="48.2" friendlyPos="true"/>
+    <busStop id="busStop_13" lane="s11127618_0" startPos="16.4" endPos="31.4" friendlyPos="true"/>
+    <busStop id="busStop_14" lane="s11127653_0" startPos="98.9" endPos="113.9" friendlyPos="true"/>
+    <busStop id="busStop_15" lane="s1026410_0" startPos="61.6" endPos="76.6" friendlyPos="true"/>
+    <busStop id="busStop_16" lane="s11127650_0" startPos="74.7" endPos="89.7" friendlyPos="true"/>
+    <busStop id="busStop_17" lane="s21419_0" startPos="97.7" endPos="112.7" friendlyPos="true"/>
+    <busStop id="busStop_18" lane="s21441_0" startPos="13.1" endPos="28.1" friendlyPos="true"/>
+    <busStop id="busStop_19" lane="s1026371_0" startPos="5.0" endPos="20.0" friendlyPos="true"/>
+    <busStop id="busStop_20" lane="s11127633_0" startPos="31.2" endPos="46.2" friendlyPos="true"/>
+    <busStop id="busStop_21" lane="s21473_0" startPos="64.8" endPos="79.8" friendlyPos="true"/>
+    <busStop id="busStop_22" lane="s1043231_0" startPos="155.1" endPos="170.1" friendlyPos="true"/>
+    <busStop id="busStop_23" lane="s21446_0" startPos="105.4" endPos="120.4" friendlyPos="true"/>
+    <busStop id="busStop_24" lane="s11119123_0" startPos="21.9" endPos="36.9" friendlyPos="true"/>
+    <busStop id="busStop_25" lane="s1026043_0" startPos="142.1" endPos="157.1" friendlyPos="true"/>
+    <busStop id="busStop_26" lane="s11119120_0" startPos="82.7" endPos="97.7" friendlyPos="true"/>
+    <busStop id="busStop_27" lane="s11119114_0" startPos="152.2" endPos="167.2" friendlyPos="true"/>
+    <busStop id="busStop_28" lane="s1043240_0" startPos="83.6" endPos="98.6" friendlyPos="true"/>
+    <busStop id="busStop_29" lane="s22696_0" startPos="281.5" endPos="296.5" friendlyPos="true"/>
+    <busStop id="busStop_30" lane="s71798_0" startPos="18.6" endPos="33.6" friendlyPos="true"/>
+    <busStop id="busStop_31" lane="s1043786_0" startPos="44.6" endPos="59.6" friendlyPos="true"/>
+    <busStop id="busStop_32" lane="s21417_0" startPos="5.0" endPos="20.0" friendlyPos="true"/>
+    <busStop id="busStop_33" lane="s21392_0" startPos="53.4" endPos="68.4" friendlyPos="true"/>
+    <busStop id="busStop_34" lane="s1043867_0" startPos="13.7" endPos="28.7" friendlyPos="true"/>
+    <busStop id="busStop_35" lane="s17668_0" startPos="90.8" endPos="105.8" friendlyPos="true"/>
+    <busStop id="busStop_36" lane="s21394_0" startPos="42.4" endPos="57.4" friendlyPos="true"/>
+    <busStop id="busStop_37" lane="s1043833_0" startPos="41.7" endPos="56.7" friendlyPos="true"/>
+    <busStop id="busStop_38" lane="s21423_0" startPos="160.0" endPos="175.0" friendlyPos="true"/>
+    <busStop id="busStop_39" lane="s48911_0" startPos="18.8" endPos="33.8" friendlyPos="true"/>
+    <busStop id="busStop_40" lane="s17689_0" startPos="440.7" endPos="455.7" friendlyPos="true"/>
+    <busStop id="busStop_41" lane="s11118245_0" startPos="71.1" endPos="86.1" friendlyPos="true"/>
+    <busStop id="busStop_42" lane="s22678_0" startPos="42.6" endPos="57.6" friendlyPos="true"/>
+    <busStop id="busStop_43" lane="s66281_0" startPos="105.7" endPos="120.7" friendlyPos="true"/>
+    <busStop id="busStop_44" lane="s21505_0" startPos="176.1" endPos="191.1" friendlyPos="true"/>
+    <busStop id="busStop_45" lane="s21442_0" startPos="106.4" endPos="121.4" friendlyPos="true"/>
+    <busStop id="busStop_46" lane="s1043761_0" startPos="44.6" endPos="59.6" friendlyPos="true"/>
+    <busStop id="busStop_47" lane="s10158159_0" startPos="69.6" endPos="84.6" friendlyPos="true"/>
+    <busStop id="busStop_48" lane="s11127640_0" startPos="5.0" endPos="20.0" friendlyPos="true"/>
+    <busStop id="busStop_49" lane="s11123182_0" startPos="26.2" endPos="41.2" friendlyPos="true"/>
+    <busStop id="busStop_50" lane="s1026432_0" startPos="5.0" endPos="20.0" friendlyPos="true"/>
+    <busStop id="busStop_51" lane="s11127626_0" startPos="7.3" endPos="22.3" friendlyPos="true"/>
+    <flow id="f0_car_s10157952" type="car" from="s10157952" to="s1026043" begin="0" end="3600" number="14" departLane="best" departSpeed="max"/>
+    <flow id="f1_car_s10157952" type="car" from="s10157952" to="s21505" begin="0" end="3600" number="15" departLane="best" departSpeed="max"/>
+    <flow id="f2_car_s10157952" type="car" from="s10157952" to="s369890" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f3_car_s10157952" type="car" from="s10157952" to="s1026398" begin="0" end="3600" number="48" departLane="best" departSpeed="max"/>
+    <flow id="f4_car_s10157952" type="car" from="s10157952" to="s21490" begin="0" end="3600" number="9" departLane="best" departSpeed="max"/>
+    <flow id="f5_car_s11119120" type="car" from="s11119120" to="s10157978" begin="0" end="3600" number="30" departLane="best" departSpeed="max"/>
+    <flow id="f6_car_s11119120" type="car" from="s11119120" to="s21505" begin="0" end="3600" number="218" departLane="best" departSpeed="max"/>
+    <flow id="f7_car_s11119120" type="car" from="s11119120" to="s369890" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f8_car_s11119120" type="car" from="s11119120" to="s1026413" begin="0" end="3600" number="160" departLane="best" departSpeed="max"/>
+    <flow id="f9_car_s11119120" type="car" from="s11119120" to="s21492" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f10_car_s11119120" type="car" from="s11119120" to="s1026398" begin="0" end="3600" number="534" departLane="best" departSpeed="max"/>
+    <flow id="f11_car_s11119120" type="car" from="s11119120" to="s21490" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f12_car_s11119120" type="car" from="s11119120" to="s21453" begin="0" end="3600" number="58" departLane="best" departSpeed="max"/>
+    <flow id="f13_car_s10157969" type="car" from="s10157969" to="s369890" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f14_car_s10157969" type="car" from="s10157969" to="s1026398" begin="0" end="3600" number="11" departLane="best" departSpeed="max"/>
+    <flow id="f15_car_s10157969" type="car" from="s10157969" to="s21453" begin="0" end="3600" number="8" departLane="best" departSpeed="max"/>
+    <flow id="f16_car_s48911" type="car" from="s48911" to="s1026043" begin="0" end="3600" number="45" departLane="best" departSpeed="max"/>
+    <flow id="f17_car_s48911" type="car" from="s48911" to="s10157970" begin="0" end="3600" number="90" departLane="best" departSpeed="max"/>
+    <flow id="f18_car_s48911" type="car" from="s48911" to="s1026413" begin="0" end="3600" number="9" departLane="best" departSpeed="max"/>
+    <flow id="f19_car_s48911" type="car" from="s48911" to="s21492" begin="0" end="3600" number="83" departLane="best" departSpeed="max"/>
+    <flow id="f20_car_s48911" type="car" from="s48911" to="s1026398" begin="0" end="3600" number="9" departLane="best" departSpeed="max"/>
+    <flow id="f21_car_s48911" type="car" from="s48911" to="s21490" begin="0" end="3600" number="25" departLane="best" departSpeed="max"/>
+    <flow id="f22_car_s48911" type="car" from="s48911" to="s10157963" begin="0" end="3600" number="6" departLane="best" departSpeed="max"/>
+    <flow id="f23_car_s48911" type="car" from="s48911" to="s21453" begin="0" end="3600" number="9" departLane="best" departSpeed="max"/>
+    <flow id="f24_car_s21635" type="car" from="s21635" to="s11125949" begin="0" end="3600" number="32" departLane="best" departSpeed="max"/>
+    <flow id="f25_car_s21635" type="car" from="s21635" to="s21392" begin="0" end="3600" number="115" departLane="best" departSpeed="max"/>
+    <flow id="f26_car_s21635" type="car" from="s21635" to="s11125996" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f27_car_s21635" type="car" from="s21635" to="s11126004" begin="0" end="3600" number="30" departLane="best" departSpeed="max"/>
+    <flow id="f28_car_s66281" type="car" from="s66281" to="s17691" begin="0" end="3600" number="869" departLane="best" departSpeed="max"/>
+    <flow id="f29_car_s66281" type="car" from="s66281" to="s21404" begin="0" end="3600" number="603" departLane="best" departSpeed="max"/>
+    <flow id="f30_car_s66330" type="car" from="s66330" to="s17689" begin="0" end="3600" number="691" departLane="best" departSpeed="max"/>
+    <flow id="f31_car_s66330" type="car" from="s66330" to="s11118264" begin="0" end="3600" number="17" departLane="best" departSpeed="max"/>
+    <flow id="f32_car_s66330" type="car" from="s66330" to="s11125949" begin="0" end="3600" number="15" departLane="best" departSpeed="max"/>
+    <flow id="f33_car_s66330" type="car" from="s66330" to="s21404" begin="0" end="3600" number="213" departLane="best" departSpeed="max"/>
+    <flow id="f34_car_s66330" type="car" from="s66330" to="s11125941" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f35_car_s66330" type="car" from="s66330" to="s11125996" begin="0" end="3600" number="13" departLane="best" departSpeed="max"/>
+    <flow id="f36_car_s66330" type="car" from="s66330" to="s11126004" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f37_car_s11118249" type="car" from="s11118249" to="s17689" begin="0" end="3600" number="171" departLane="best" departSpeed="max"/>
+    <flow id="f38_car_s11118265" type="car" from="s11118265" to="s21413" begin="0" end="3600" number="20" departLane="best" departSpeed="max"/>
+    <flow id="f39_car_s11118265" type="car" from="s11118265" to="s17689" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f40_car_s11118265" type="car" from="s11118265" to="s21392" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f41_car_s11125948" type="car" from="s11125948" to="s21413" begin="0" end="3600" number="20" departLane="best" departSpeed="max"/>
+    <flow id="f42_car_s1043867" type="car" from="s1043867" to="s21413" begin="0" end="3600" number="97" departLane="best" departSpeed="max"/>
+    <flow id="f43_car_s1043867" type="car" from="s1043867" to="s17689" begin="0" end="3600" number="18" departLane="best" departSpeed="max"/>
+    <flow id="f44_car_s1043867" type="car" from="s1043867" to="s11118248" begin="0" end="3600" number="63" departLane="best" departSpeed="max"/>
+    <flow id="f45_car_s1043867" type="car" from="s1043867" to="s11118264" begin="0" end="3600" number="10" departLane="best" departSpeed="max"/>
+    <flow id="f46_car_s1043867" type="car" from="s1043867" to="s11125949" begin="0" end="3600" number="27" departLane="best" departSpeed="max"/>
+    <flow id="f47_car_s1043867" type="car" from="s1043867" to="s11125953" begin="0" end="3600" number="14" departLane="best" departSpeed="max"/>
+    <flow id="f48_car_s1043867" type="car" from="s1043867" to="s11125941" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f49_car_s1043867" type="car" from="s1043867" to="s11125996" begin="0" end="3600" number="64" departLane="best" departSpeed="max"/>
+    <flow id="f50_car_s1043867" type="car" from="s1043867" to="s11126004" begin="0" end="3600" number="39" departLane="best" departSpeed="max"/>
+    <flow id="f51_car_s22696" type="car" from="s22696" to="s17691" begin="0" end="3600" number="449" departLane="best" departSpeed="max"/>
+    <flow id="f52_car_s11127650" type="car" from="s11127650" to="s1026043" begin="0" end="3600" number="50" departLane="best" departSpeed="max"/>
+    <flow id="f53_car_s11127650" type="car" from="s11127650" to="s21505" begin="0" end="3600" number="27" departLane="best" departSpeed="max"/>
+    <flow id="f54_car_s11127650" type="car" from="s11127650" to="s21444" begin="0" end="3600" number="13" departLane="best" departSpeed="max"/>
+    <flow id="f55_car_s11127650" type="car" from="s11127650" to="s1026398" begin="0" end="3600" number="34" departLane="best" departSpeed="max"/>
+    <flow id="f56_car_s11127650" type="car" from="s11127650" to="s21490" begin="0" end="3600" number="13" departLane="best" departSpeed="max"/>
+    <flow id="f57_car_s11127650" type="car" from="s11127650" to="s21453" begin="0" end="3600" number="31" departLane="best" departSpeed="max"/>
+    <flow id="f58_car_s1043849" type="car" from="s1043849" to="s21413" begin="0" end="3600" number="17" departLane="best" departSpeed="max"/>
+    <flow id="f59_car_s1043849" type="car" from="s1043849" to="s17689" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f60_car_s1043849" type="car" from="s1043849" to="s21392" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f61_car_s369889" type="car" from="s369889" to="s1026043" begin="0" end="3600" number="16" departLane="best" departSpeed="max"/>
+    <flow id="f62_car_s369889" type="car" from="s369889" to="s10157978" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f63_car_s369889" type="car" from="s369889" to="s21505" begin="0" end="3600" number="54" departLane="best" departSpeed="max"/>
+    <flow id="f64_car_s369889" type="car" from="s369889" to="s21490" begin="0" end="3600" number="23" departLane="best" departSpeed="max"/>
+    <flow id="f65_car_s1043756" type="car" from="s1043756" to="s21444" begin="0" end="3600" number="8" departLane="best" departSpeed="max"/>
+    <flow id="f66_car_s78424" type="car" from="s78424" to="s1043817" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f67_car_s78424" type="car" from="s78424" to="s11128218" begin="0" end="3600" number="17" departLane="best" departSpeed="max"/>
+    <flow id="f68_car_s21546" type="car" from="s21546" to="s10157978" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f69_car_s21546" type="car" from="s21546" to="s21505" begin="0" end="3600" number="33" departLane="best" departSpeed="max"/>
+    <flow id="f70_car_s21546" type="car" from="s21546" to="s1026398" begin="0" end="3600" number="18" departLane="best" departSpeed="max"/>
+    <flow id="f71_car_s21546" type="car" from="s21546" to="s21490" begin="0" end="3600" number="26" departLane="best" departSpeed="max"/>
+    <flow id="f72_car_s21546" type="car" from="s21546" to="s21453" begin="0" end="3600" number="6" departLane="best" departSpeed="max"/>
+    <flow id="f73_car_s1026397" type="car" from="s1026397" to="s10157951" begin="0" end="3600" number="46" departLane="best" departSpeed="max"/>
+    <flow id="f74_car_s1026397" type="car" from="s1026397" to="s1026043" begin="0" end="3600" number="219" departLane="best" departSpeed="max"/>
+    <flow id="f75_car_s1026397" type="car" from="s1026397" to="s21505" begin="0" end="3600" number="17" departLane="best" departSpeed="max"/>
+    <flow id="f76_car_s1026397" type="car" from="s1026397" to="s21439" begin="0" end="3600" number="137" departLane="best" departSpeed="max"/>
+    <flow id="f77_car_s1026397" type="car" from="s1026397" to="s1043817" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f78_car_s1026397" type="car" from="s1026397" to="s369890" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f79_car_s1026397" type="car" from="s1026397" to="s1026413" begin="0" end="3600" number="56" departLane="best" departSpeed="max"/>
+    <flow id="f80_car_s1026397" type="car" from="s1026397" to="s21490" begin="0" end="3600" number="26" departLane="best" departSpeed="max"/>
+    <flow id="f81_car_s1026397" type="car" from="s1026397" to="s21453" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f82_car_s1026397" type="car" from="s1026397" to="s11128218" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f83_car_s1043231" type="car" from="s1043231" to="s1026043" begin="0" end="3600" number="18" departLane="best" departSpeed="max"/>
+    <flow id="f84_car_s1043231" type="car" from="s1043231" to="s10157978" begin="0" end="3600" number="52" departLane="best" departSpeed="max"/>
+    <flow id="f85_car_s1043231" type="car" from="s1043231" to="s21505" begin="0" end="3600" number="133" departLane="best" departSpeed="max"/>
+    <flow id="f86_car_s1043231" type="car" from="s1043231" to="s1026413" begin="0" end="3600" number="33" departLane="best" departSpeed="max"/>
+    <flow id="f87_car_s1043231" type="car" from="s1043231" to="s21492" begin="0" end="3600" number="70" departLane="best" departSpeed="max"/>
+    <flow id="f88_car_s1043231" type="car" from="s1043231" to="s1026398" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f89_car_s1043231" type="car" from="s1043231" to="s21453" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f90_car_s1043231" type="car" from="s1043231" to="s11125931" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f91_car_s10157964" type="car" from="s10157964" to="s1026043" begin="0" end="3600" number="14" departLane="best" departSpeed="max"/>
+    <flow id="f92_car_s10157964" type="car" from="s10157964" to="s1026398" begin="0" end="3600" number="10" departLane="best" departSpeed="max"/>
+    <flow id="f93_car_s21851" type="car" from="s21851" to="s1026043" begin="0" end="3600" number="67" departLane="best" departSpeed="max"/>
+    <flow id="f94_car_s21851" type="car" from="s21851" to="s10157978" begin="0" end="3600" number="19" departLane="best" departSpeed="max"/>
+    <flow id="f95_car_s21851" type="car" from="s21851" to="s21505" begin="0" end="3600" number="58" departLane="best" departSpeed="max"/>
+    <flow id="f96_car_s21851" type="car" from="s21851" to="s21439" begin="0" end="3600" number="104" departLane="best" departSpeed="max"/>
+    <flow id="f97_car_s21851" type="car" from="s21851" to="s1043817" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f98_car_s21851" type="car" from="s21851" to="s369890" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f99_car_s21851" type="car" from="s21851" to="s1026413" begin="0" end="3600" number="14" departLane="best" departSpeed="max"/>
+    <flow id="f100_car_s21851" type="car" from="s21851" to="s21492" begin="0" end="3600" number="15" departLane="best" departSpeed="max"/>
+    <flow id="f101_car_s21851" type="car" from="s21851" to="s21490" begin="0" end="3600" number="57" departLane="best" departSpeed="max"/>
+    <flow id="f102_car_s21851" type="car" from="s21851" to="s11128218" begin="0" end="3600" number="11" departLane="best" departSpeed="max"/>
+    <flow id="f103_car_s11125942" type="car" from="s11125942" to="s21444" begin="0" end="3600" number="15" departLane="best" departSpeed="max"/>
+    <flow id="f104_car_s11125997" type="car" from="s11125997" to="s21413" begin="0" end="3600" number="10" departLane="best" departSpeed="max"/>
+    <flow id="f105_car_s11125997" type="car" from="s11125997" to="s17689" begin="0" end="3600" number="11" departLane="best" departSpeed="max"/>
+    <flow id="f106_car_s11126005" type="car" from="s11126005" to="s21413" begin="0" end="3600" number="42" departLane="best" departSpeed="max"/>
+    <flow id="f107_car_s11126005" type="car" from="s11126005" to="s17689" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f108_car_s11126005" type="car" from="s11126005" to="s11118248" begin="0" end="3600" number="58" departLane="best" departSpeed="max"/>
+    <flow id="f109_car_s11126005" type="car" from="s11126005" to="s11118264" begin="0" end="3600" number="8" departLane="best" departSpeed="max"/>
+    <flow id="f110_car_s11126005" type="car" from="s11126005" to="s21392" begin="0" end="3600" number="62" departLane="best" departSpeed="max"/>
+    <flow id="f111_car_s21530" type="car" from="s21530" to="s1026043" begin="0" end="3600" number="97" departLane="best" departSpeed="max"/>
+    <flow id="f112_car_s21530" type="car" from="s21530" to="s21505" begin="0" end="3600" number="149" departLane="best" departSpeed="max"/>
+    <flow id="f113_car_s21530" type="car" from="s21530" to="s21439" begin="0" end="3600" number="9" departLane="best" departSpeed="max"/>
+    <flow id="f114_car_s21530" type="car" from="s21530" to="s369890" begin="0" end="3600" number="16" departLane="best" departSpeed="max"/>
+    <flow id="f115_car_s21530" type="car" from="s21530" to="s1026413" begin="0" end="3600" number="132" departLane="best" departSpeed="max"/>
+    <flow id="f116_car_s21530" type="car" from="s21530" to="s1043757" begin="0" end="3600" number="11" departLane="best" departSpeed="max"/>
+    <flow id="f117_car_s21530" type="car" from="s21530" to="s21444" begin="0" end="3600" number="44" departLane="best" departSpeed="max"/>
+    <flow id="f118_car_s21530" type="car" from="s21530" to="s21492" begin="0" end="3600" number="28" departLane="best" departSpeed="max"/>
+    <flow id="f119_car_s21530" type="car" from="s21530" to="s1026398" begin="0" end="3600" number="76" departLane="best" departSpeed="max"/>
+    <flow id="f120_car_s21530" type="car" from="s21530" to="s10157963" begin="0" end="3600" number="19" departLane="best" departSpeed="max"/>
+    <flow id="f121_car_s21530" type="car" from="s21530" to="s21453" begin="0" end="3600" number="52" departLane="best" departSpeed="max"/>
+    <flow id="f122_car_s21530" type="car" from="s21530" to="s11128218" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f123_car_s11128219" type="car" from="s11128219" to="s21444" begin="0" end="3600" number="7" departLane="best" departSpeed="max"/>
+    <flow id="f124_car_s48911" type="car" from="s48911" to="s10157987" begin="0" end="3600" number="15" departLane="best" departSpeed="max"/>
+    <flow id="f125_car_s11118249" type="car" from="s11118249" to="s11125949" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f126_car_s11118265" type="car" from="s11118265" to="s17691" begin="0" end="3600" number="5" departLane="best" departSpeed="max"/>
+    <flow id="f127_car_s1043849" type="car" from="s1043849" to="s17691" begin="0" end="3600" number="20" departLane="best" departSpeed="max"/>
+    <flow id="f128_car_s369889" type="car" from="s369889" to="s11125931" begin="0" end="3600" number="10" departLane="best" departSpeed="max"/>
+    <flow id="f129_s21530" type="bus" begin="0" end="3600" number="12" departLane="best" departSpeed="max">
+        <route edges="s21530 s21504 s10157971 s21489 s21474 s11127626 s21469 s11127612 s1026432 s1026438"/>
+        <stop busStop="busStop_12" duration="20"/>
+        <stop busStop="busStop_2" duration="20"/>
+        <stop busStop="busStop_51" duration="20"/>
+        <stop busStop="busStop_3" duration="20"/>
+        <stop busStop="busStop_50" duration="20"/>
+    </flow>
+</additional>

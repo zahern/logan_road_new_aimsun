@@ -1,0 +1,13 @@
+<connections>
+    <connection from="s30001" to="s30002" fromLane="0" toLane="0"/>
+    <connection from="s30001" to="s30002" fromLane="1" toLane="1"/>
+    <connection from="s30001" to="s30002" fromLane="2" toLane="2"/>
+    <connection from="s30002" to="s30003" fromLane="0" toLane="0" tl="n19196" linkIndex="0"/>
+    <connection from="s30002" to="s30003" fromLane="1" toLane="1" tl="n19196" linkIndex="1"/>
+    <connection from="s30002" to="s30003" fromLane="2" toLane="2" tl="n19196" linkIndex="2"/>
+    <connection from="s30101" to="s30003" fromLane="0" toLane="0" tl="n19196" linkIndex="3"/>
+    <connection from="s30003" to="s30004" fromLane="0" toLane="0" tl="n19474" linkIndex="0"/>
+    <connection from="s30003" to="s30004" fromLane="1" toLane="1" tl="n19474" linkIndex="1"/>
+    <connection from="s30003" to="s30004" fromLane="2" toLane="2" tl="n19474" linkIndex="2"/>
+    <connection from="s30102" to="s30004" fromLane="0" toLane="0" tl="n19474" linkIndex="3"/>
+</connections>

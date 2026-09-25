@@ -1,0 +1,419 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Balke2000DevelopmentConcept}
+\citation{Ekeila2009DevelopmentStrategy}
+\citation{Ma2010DevelopmentApproach}
+\citation{Karthik2023BusStress}
+\citation{Jin2026BusIntersections}
+\citation{Genders2016UsingControl}
+\citation{Long2022DeepEnvironment}
+\citation{Hu2023DeepSpeed}
+\citation{Hu2025CoordinatedApproach}
+\citation{AnsariEsfeh2025AnModel}
+\citation{Bao2026AnControl}
+\citation{Zhou2026GTFSLatency}
+\citation{Ding2022AdaptiveKalman}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{2}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{2}{Introduction}{section.1}{}}
+\newlabel{sec:intro@cref}{{[section][1][]1}{[1][2][]2}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background}{3}{section.2}\protected@file@percent }
+\newlabel{sec:background}{{2}{3}{Background}{section.2}{}}
+\newlabel{sec:background@cref}{{[section][2][]2}{[1][3][]3}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Traffic Dynamics Models}{3}{section.3}\protected@file@percent }
+\newlabel{sec:dynamics}{{3}{3}{Traffic Dynamics Models}{section.3}{}}
+\newlabel{sec:dynamics@cref}{{[section][3][]3}{[1][3][]3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Bus Delay (LWR Kinematic Wave Model)}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Cross-Traffic Delay (Deterministic D/D/1 Shockwave Model)}{4}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Moving-Bottleneck Effect}{5}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}TSP Action Space}{5}{section.4}\protected@file@percent }
+\newlabel{sec:actions}{{4}{5}{TSP Action Space}{section.4}{}}
+\newlabel{sec:actions@cref}{{[section][4][]4}{[1][5][]5}}
+\citation{Long2022PhaseSkipping}
+\citation{Long2022PhaseSkipping}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Variable Phase Action and Phase Skipping}{6}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:phase_skip}{{4.1}{6}{Variable Phase Action and Phase Skipping}{subsection.4.1}{}}
+\newlabel{sec:phase_skip@cref}{{[subsection][1][4]4.1}{[1][6][]6}}
+\@writefile{toc}{\contentsline {paragraph}{Formal definition.}{6}{section*.2}\protected@file@percent }
+\newlabel{eq:vp_action}{{7}{6}{Formal definition}{equation.4.7}{}}
+\newlabel{eq:vp_action@cref}{{[equation][7][]7}{[1][6][]6}}
+\@writefile{toc}{\contentsline {paragraph}{Phase skipping rules (invalid action masking).}{6}{section*.3}\protected@file@percent }
+\newlabel{eq:skip_queue}{{8}{6}{Phase skipping rules (invalid action masking)}{equation.4.8}{}}
+\newlabel{eq:skip_queue@cref}{{[equation][8][]8}{[1][6][]6}}
+\citation{Long2022PhaseSkipping}
+\citation{Yu2022PhaseRotation}
+\citation{Yu2022PhaseRotation}
+\citation{Webster1958Traffic}
+\newlabel{eq:skip_consec}{{9}{7}{Phase skipping rules (invalid action masking)}{equation.4.9}{}}
+\newlabel{eq:skip_consec@cref}{{[equation][9][]9}{[1][6][]7}}
+\newlabel{eq:iam}{{10}{7}{Phase skipping rules (invalid action masking)}{equation.4.10}{}}
+\newlabel{eq:iam@cref}{{[equation][10][]10}{[1][7][]7}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Phase Rotation}{7}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:phase_rot}{{4.2}{7}{Phase Rotation}{subsection.4.2}{}}
+\newlabel{sec:phase_rot@cref}{{[subsection][2][4]4.2}{[1][7][]7}}
+\@writefile{toc}{\contentsline {paragraph}{Binary sequence selection.}{7}{section*.4}\protected@file@percent }
+\newlabel{eq:rot_select}{{11}{7}{Binary sequence selection}{equation.4.11}{}}
+\newlabel{eq:rot_select@cref}{{[equation][11][]11}{[1][7][]7}}
+\@writefile{toc}{\contentsline {paragraph}{Joint green-split optimisation.}{7}{section*.5}\protected@file@percent }
+\newlabel{eq:rot_green}{{12}{7}{Joint green-split optimisation}{equation.4.12}{}}
+\newlabel{eq:rot_green@cref}{{[equation][12][]12}{[1][7][]7}}
+\gdef \LT@i {\LT@entry 
+    {3}{151.74889pt}\LT@entry 
+    {1}{296.52756pt}}
+\@writefile{toc}{\contentsline {paragraph}{Rotation benefit threshold.}{8}{section*.6}\protected@file@percent }
+\newlabel{eq:rot_threshold}{{13}{8}{Rotation benefit threshold}{equation.4.13}{}}
+\newlabel{eq:rot_threshold@cref}{{[equation][13][]13}{[1][7][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Key Notation}{8}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Mathematical Program Formulation (MILP)}{8}{section.5}\protected@file@percent }
+\newlabel{sec:milp}{{5}{8}{Mathematical Program Formulation (MILP)}{section.5}{}}
+\newlabel{sec:milp@cref}{{[section][5][]5}{[1][8][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Sets and Indices}{8}{subsection.5.1}\protected@file@percent }
+\gdef \LT@ii {\LT@entry 
+    {3}{93.11127pt}\LT@entry 
+    {3}{54.10374pt}\LT@entry 
+    {1}{239.62204pt}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Parameters}{9}{subsection.5.2}\protected@file@percent }
+\gdef \LT@iii {\LT@entry 
+    {3}{51.25453pt}\LT@entry 
+    {1}{111.58464pt}\LT@entry 
+    {1}{211.16928pt}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Decision Variables}{10}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Objective Function}{11}{subsection.5.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.1}Primary: Weighted Passenger Delay ($Z_1$)}{11}{subsubsection.5.4.1}\protected@file@percent }
+\newlabel{eq:Z1}{{14}{11}{Primary: Weighted Passenger Delay ($Z_1$)}{equation.5.14}{}}
+\newlabel{eq:Z1@cref}{{[equation][14][]14}{[1][11][]11}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.2}Secondary: Flow-Weighted Bandwidth ($Z_2$)}{11}{subsubsection.5.4.2}\protected@file@percent }
+\newlabel{eq:Z2}{{15}{11}{Secondary: Flow-Weighted Bandwidth ($Z_2$)}{equation.5.15}{}}
+\newlabel{eq:Z2@cref}{{[equation][15][]15}{[1][11][]11}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.3}Tertiary: Bus Lateness ($Z_3$)}{11}{subsubsection.5.4.3}\protected@file@percent }
+\newlabel{eq:Z3}{{16}{11}{Tertiary: Bus Lateness ($Z_3$)}{equation.5.16}{}}
+\newlabel{eq:Z3@cref}{{[equation][16][]16}{[1][11][]11}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.4}Quaternary: Total Corridor Travel Time ($Z_4$)}{11}{subsubsection.5.4.4}\protected@file@percent }
+\newlabel{eq:Z4}{{17}{11}{Quaternary: Total Corridor Travel Time ($Z_4$)}{equation.5.17}{}}
+\newlabel{eq:Z4@cref}{{[equation][17][]17}{[1][11][]11}}
+\citation{Cherukuri2025ParetoIRL}
+\citation{Siddique2025FairMORL}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.4.5}Pareto Formulation with Throughput Constraint}{12}{subsubsection.5.4.5}\protected@file@percent }
+\newlabel{sec:pareto_obj}{{5.4.5}{12}{Pareto Formulation with Throughput Constraint}{subsubsection.5.4.5}{}}
+\newlabel{sec:pareto_obj@cref}{{[subsubsection][5][5,4]5.4.5}{[1][12][]12}}
+\newlabel{eq:Z}{{18}{12}{Pareto Formulation with Throughput Constraint}{equation.5.18}{}}
+\newlabel{eq:Z@cref}{{[equation][18][]18}{[1][12][]12}}
+\@writefile{toc}{\contentsline {paragraph}{Selection from the front.}{12}{section*.7}\protected@file@percent }
+\newlabel{eq:net_pick}{{19}{12}{Selection from the front}{equation.5.19}{}}
+\newlabel{eq:net_pick@cref}{{[equation][19][]19}{[1][12][]12}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Piecewise-Linear Approximation of Convex Delay Functions}{12}{subsection.5.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Generic convex quadratic form.}{13}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tangent hyperplane construction.}{13}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Network-indexed formulation.}{13}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Approximation properties.}{13}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Constraints}{14}{subsection.5.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.1}Action Exclusivity, Duration, and Contiguity}{14}{subsubsection.5.6.1}\protected@file@percent }
+\newlabel{eq:excl}{{28}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.28}{}}
+\newlabel{eq:excl@cref}{{[equation][28][]28}{[1][14][]14}}
+\newlabel{eq:dur_link}{{29}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.29}{}}
+\newlabel{eq:dur_link@cref}{{[equation][29][]29}{[1][14][]14}}
+\newlabel{eq:dur_step}{{30}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.30}{}}
+\newlabel{eq:dur_step@cref}{{[equation][30][]30}{[1][14][]14}}
+\newlabel{eq:ybar_def}{{31}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.31}{}}
+\newlabel{eq:ybar_def@cref}{{[equation][31][]31}{[1][14][]14}}
+\newlabel{eq:ybar_active}{{32}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.32}{}}
+\newlabel{eq:ybar_active@cref}{{[equation][32][]32}{[1][14][]14}}
+\newlabel{eq:ybar_upper}{{33}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.33}{}}
+\newlabel{eq:ybar_upper@cref}{{[equation][33][]33}{[1][14][]14}}
+\newlabel{eq:bounds_min}{{34}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.34}{}}
+\newlabel{eq:bounds_min@cref}{{[equation][34][]34}{[1][14][]14}}
+\newlabel{eq:bounds_max}{{35}{14}{Action Exclusivity, Duration, and Contiguity}{equation.5.35}{}}
+\newlabel{eq:bounds_max@cref}{{[equation][35][]35}{[1][14][]14}}
+\@writefile{toc}{\contentsline {paragraph}{Contiguity via start variables.}{14}{section*.12}\protected@file@percent }
+\newlabel{eq:start_def}{{36}{14}{Contiguity via start variables}{equation.5.36}{}}
+\newlabel{eq:start_def@cref}{{[equation][36][]36}{[1][14][]14}}
+\newlabel{eq:start_once}{{37}{14}{Contiguity via start variables}{equation.5.37}{}}
+\newlabel{eq:start_once@cref}{{[equation][37][]37}{[1][14][]14}}
+\newlabel{eq:start_active}{{38}{14}{Contiguity via start variables}{equation.5.38}{}}
+\newlabel{eq:start_active@cref}{{[equation][38][]38}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.2}Realised Green Time}{15}{subsubsection.5.6.2}\protected@file@percent }
+\newlabel{eq:g_bus}{{39}{15}{Realised Green Time}{equation.5.39}{}}
+\newlabel{eq:g_bus@cref}{{[equation][39][]39}{[1][14][]15}}
+\newlabel{eq:g_er}{{40}{15}{Realised Green Time}{equation.5.40}{}}
+\newlabel{eq:g_er@cref}{{[equation][40][]40}{[1][14][]15}}
+\newlabel{eq:g_donor}{{41}{15}{Realised Green Time}{equation.5.41}{}}
+\newlabel{eq:g_donor@cref}{{[equation][41][]41}{[1][14][]15}}
+\newlabel{eq:g_pi}{{42}{15}{Realised Green Time}{equation.5.42}{}}
+\newlabel{eq:g_pi@cref}{{[equation][42][]42}{[1][14][]15}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.3}Green and Cycle Bounds}{15}{subsubsection.5.6.3}\protected@file@percent }
+\newlabel{eq:g_bounds}{{43}{15}{Green and Cycle Bounds}{equation.5.43}{}}
+\newlabel{eq:g_bounds@cref}{{[equation][43][]43}{[1][15][]15}}
+\newlabel{eq:c_bounds}{{44}{15}{Green and Cycle Bounds}{equation.5.44}{}}
+\newlabel{eq:c_bounds@cref}{{[equation][44][]44}{[1][15][]15}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.4}Action-Specific Constraints}{15}{subsubsection.5.6.4}\protected@file@percent }
+\newlabel{eq:ge_cap}{{45}{15}{Action-Specific Constraints}{equation.5.45}{}}
+\newlabel{eq:ge_cap@cref}{{[equation][45][]45}{[1][15][]15}}
+\newlabel{eq:pi_rem}{{46}{15}{Action-Specific Constraints}{equation.5.46}{}}
+\newlabel{eq:pi_rem@cref}{{[equation][46][]46}{[1][15][]15}}
+\newlabel{eq:er_cap}{{47}{15}{Action-Specific Constraints}{equation.5.47}{}}
+\newlabel{eq:er_cap@cref}{{[equation][47][]47}{[1][15][]15}}
+\newlabel{eq:gr_budget}{{48}{15}{Action-Specific Constraints}{equation.5.48}{}}
+\newlabel{eq:gr_budget@cref}{{[equation][48][]48}{[1][15][]15}}
+\newlabel{eq:gr_donor_min}{{49}{15}{Action-Specific Constraints}{equation.5.49}{}}
+\newlabel{eq:gr_donor_min@cref}{{[equation][49][]49}{[1][15][]15}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.5}Delay Linearisation}{15}{subsubsection.5.6.5}\protected@file@percent }
+\newlabel{eq:eff_main}{{50}{15}{Delay Linearisation}{equation.5.50}{}}
+\newlabel{eq:eff_main@cref}{{[equation][50][]50}{[1][15][]15}}
+\newlabel{eq:eff_side}{{51}{15}{Delay Linearisation}{equation.5.51}{}}
+\newlabel{eq:eff_side@cref}{{[equation][51][]51}{[1][15][]15}}
+\newlabel{eq:delay_tangent}{{52}{15}{Delay Linearisation}{equation.5.52}{}}
+\newlabel{eq:delay_tangent@cref}{{[equation][52][]52}{[1][15][]15}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.6}Corridor Coordination}{16}{subsubsection.5.6.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Offset propagation.}{16}{section*.13}\protected@file@percent }
+\newlabel{eq:offset_state}{{53}{16}{Offset propagation}{equation.5.53}{}}
+\newlabel{eq:offset_state@cref}{{[equation][53][]53}{[1][16][]16}}
+\newlabel{eq:offset_init}{{54}{16}{Offset propagation}{equation.5.54}{}}
+\newlabel{eq:offset_init@cref}{{[equation][54][]54}{[1][16][]16}}
+\@writefile{toc}{\contentsline {paragraph}{Progression constraints.}{17}{section*.14}\protected@file@percent }
+\newlabel{eq:prog}{{55}{17}{Progression constraints}{equation.5.55}{}}
+\newlabel{eq:prog@cref}{{[equation][55][]55}{[1][16][]17}}
+\newlabel{eq:eps_split}{{56}{17}{Progression constraints}{equation.5.56}{}}
+\newlabel{eq:eps_split@cref}{{[equation][56][]56}{[1][16][]17}}
+\newlabel{eq:prog_tol}{{57}{17}{Progression constraints}{equation.5.57}{}}
+\newlabel{eq:prog_tol@cref}{{[equation][57][]57}{[1][16][]17}}
+\@writefile{toc}{\contentsline {paragraph}{Phase skipping constraints (VP).}{17}{section*.15}\protected@file@percent }
+\newlabel{eq:vp_green_zero}{{58}{17}{Phase skipping constraints (VP)}{equation.5.58}{}}
+\newlabel{eq:vp_green_zero@cref}{{[equation][58][]58}{[1][17][]17}}
+\newlabel{eq:vp_queue}{{59}{17}{Phase skipping constraints (VP)}{equation.5.59}{}}
+\newlabel{eq:vp_queue@cref}{{[equation][59][]59}{[1][17][]17}}
+\newlabel{eq:vp_consec}{{60}{17}{Phase skipping constraints (VP)}{equation.5.60}{}}
+\newlabel{eq:vp_consec@cref}{{[equation][60][]60}{[1][17][]17}}
+\@writefile{toc}{\contentsline {paragraph}{Phase rotation constraints (PT).}{17}{section*.16}\protected@file@percent }
+\newlabel{eq:rot_greenp}{{61}{17}{Phase rotation constraints (PT)}{equation.5.61}{}}
+\newlabel{eq:rot_greenp@cref}{{[equation][61][]61}{[1][17][]17}}
+\newlabel{eq:rot_cycle}{{62}{17}{Phase rotation constraints (PT)}{equation.5.62}{}}
+\newlabel{eq:rot_cycle@cref}{{[equation][62][]62}{[1][17][]17}}
+\@writefile{toc}{\contentsline {paragraph}{PHASE TIMING ADJUSTMENT}{17}{section*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Bandwidth variable.}{17}{section*.18}\protected@file@percent }
+\newlabel{eq:bandwidth_var}{{63}{17}{Bandwidth variable}{equation.5.63}{}}
+\newlabel{eq:bandwidth_var@cref}{{[equation][63][]63}{[1][17][]17}}
+\newlabel{eq:bw_nonneg}{{64}{17}{Bandwidth variable}{equation.5.64}{}}
+\newlabel{eq:bw_nonneg@cref}{{[equation][64][]64}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.7}Lateness State Propagation}{18}{subsubsection.5.6.7}\protected@file@percent }
+\newlabel{eq:sigma_lb}{{65}{18}{Lateness State Propagation}{equation.5.65}{}}
+\newlabel{eq:sigma_lb@cref}{{[equation][65][]65}{[1][17][]18}}
+\newlabel{eq:sigma_split}{{66}{18}{Lateness State Propagation}{equation.5.66}{}}
+\newlabel{eq:sigma_split@cref}{{[equation][66][]66}{[1][17][]18}}
+\newlabel{eq:sigma_nonneg}{{67}{18}{Lateness State Propagation}{equation.5.67}{}}
+\newlabel{eq:sigma_nonneg@cref}{{[equation][67][]67}{[1][17][]18}}
+\newlabel{eq:sigma_init}{{68}{18}{Lateness State Propagation}{equation.5.68}{}}
+\newlabel{eq:sigma_init@cref}{{[equation][68][]68}{[1][17][]18}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.8}Operational Gates}{18}{subsubsection.5.6.8}\protected@file@percent }
+\newlabel{eq:gate_det}{{69}{18}{Operational Gates}{equation.5.69}{}}
+\newlabel{eq:gate_det@cref}{{[equation][69][]69}{[1][18][]18}}
+\newlabel{eq:gate_cool}{{70}{18}{Operational Gates}{equation.5.70}{}}
+\newlabel{eq:gate_cool@cref}{{[equation][70][]70}{[1][18][]18}}
+\newlabel{eq:gate_spill}{{71}{18}{Operational Gates}{equation.5.71}{}}
+\newlabel{eq:gate_spill@cref}{{[equation][71][]71}{[1][18][]18}}
+\newlabel{eq:gate_phase}{{72}{18}{Operational Gates}{equation.5.72}{}}
+\newlabel{eq:gate_phase@cref}{{[equation][72][]72}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {5.6.9}Lateness Takeover}{18}{subsubsection.5.6.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Solution Methods}{18}{section.6}\protected@file@percent }
+\newlabel{sec:solutions}{{6}{18}{Solution Methods}{section.6}{}}
+\newlabel{sec:solutions@cref}{{[section][6][]6}{[1][18][]18}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Method 0: Centralised Per-Second Phase Controller}{19}{subsection.6.1}\protected@file@percent }
+\newlabel{sec:sol_centralised}{{6.1}{19}{Method 0: Centralised Per-Second Phase Controller}{subsection.6.1}{}}
+\newlabel{sec:sol_centralised@cref}{{[subsection][1][6]6.1}{[1][19][]19}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Method I: Tabular Q-Learning (CPD-QL)}{20}{subsection.6.2}\protected@file@percent }
+\newlabel{sec:sol_cpd}{{6.2}{20}{Method I: Tabular Q-Learning (CPD-QL)}{subsection.6.2}{}}
+\newlabel{sec:sol_cpd@cref}{{[subsection][2][6]6.2}{[1][19][]20}}
+\newlabel{eq:cpd_reward}{{73}{20}{Method I: Tabular Q-Learning (CPD-QL)}{equation.6.73}{}}
+\newlabel{eq:cpd_reward@cref}{{[equation][73][]73}{[1][20][]20}}
+\newlabel{eq:cpd_hw_scale}{{74}{20}{Method I: Tabular Q-Learning (CPD-QL)}{equation.6.74}{}}
+\newlabel{eq:cpd_hw_scale@cref}{{[equation][74][]74}{[1][20][]20}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Method II: Harmony Search with LWR, (HSLWR)}{20}{subsection.6.3}\protected@file@percent }
+\newlabel{sec:sol_wavegate}{{6.3}{20}{Method II: Harmony Search with LWR, (HSLWR)}{subsection.6.3}{}}
+\newlabel{sec:sol_wavegate@cref}{{[subsection][3][6]6.3}{[1][20][]20}}
+\@writefile{toc}{\contentsline {paragraph}{Harmony Search algorithm.}{20}{section*.19}\protected@file@percent }
+\citation{AnsariEsfeh2025TSPCV}
+\@writefile{toc}{\contentsline {paragraph}{LWR shockwave gate.}{21}{section*.20}\protected@file@percent }
+\newlabel{eq:lwr}{{75}{21}{LWR shockwave gate}{equation.6.75}{}}
+\newlabel{eq:lwr@cref}{{[equation][75][]75}{[1][21][]21}}
+\newlabel{eq:wavegate_balance}{{76}{21}{LWR shockwave gate}{equation.6.76}{}}
+\newlabel{eq:wavegate_balance@cref}{{[equation][76][]76}{[1][21][]21}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.3.1}Shockwave Profile Reconstruction from Simulation Data}{21}{subsubsection.6.3.1}\protected@file@percent }
+\newlabel{sec:shockwave_profile}{{6.3.1}{21}{Shockwave Profile Reconstruction from Simulation Data}{subsubsection.6.3.1}{}}
+\newlabel{sec:shockwave_profile@cref}{{[subsubsection][1][6,3]6.3.1}{[1][21][]21}}
+\newlabel{eq:vq}{{77}{21}{Shockwave Profile Reconstruction from Simulation Data}{equation.6.77}{}}
+\newlabel{eq:vq@cref}{{[equation][77][]77}{[1][21][]21}}
+\newlabel{eq:vc}{{78}{21}{Shockwave Profile Reconstruction from Simulation Data}{equation.6.78}{}}
+\newlabel{eq:vc@cref}{{[equation][78][]78}{[1][21][]21}}
+\newlabel{eq:vp}{{79}{21}{Shockwave Profile Reconstruction from Simulation Data}{equation.6.79}{}}
+\newlabel{eq:vp@cref}{{[equation][79][]79}{[1][21][]21}}
+\newlabel{eq:vd}{{80}{21}{Shockwave Profile Reconstruction from Simulation Data}{equation.6.80}{}}
+\newlabel{eq:vd@cref}{{[equation][80][]80}{[1][21][]21}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.4}Method III:Exhaustive Grid Search (CTMGS)}{22}{subsection.6.4}\protected@file@percent }
+\newlabel{sec:sol_cellsearch}{{6.4}{22}{Method III:Exhaustive Grid Search (CTMGS)}{subsection.6.4}{}}
+\newlabel{sec:sol_cellsearch@cref}{{[subsection][4][6]6.4}{[1][22][]22}}
+\@writefile{toc}{\contentsline {paragraph}{CTM primer.}{22}{section*.21}\protected@file@percent }
+\citation{Chanloha2014CellPriority}
+\citation{AnsariEsfeh2025TSPCV}
+\citation{AnsariEsfeh2025TSPCV}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.5}Method IV: CTM Q-Learning (CellQLearn)}{23}{subsection.6.5}\protected@file@percent }
+\newlabel{sec:sol_cellqlearn}{{6.5}{23}{Method IV: CTM Q-Learning (CellQLearn)}{subsection.6.5}{}}
+\newlabel{sec:sol_cellqlearn@cref}{{[subsection][5][6]6.5}{[1][23][]23}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.6}Method V: Nash Bargaining with Harmony Search (NashHS)}{23}{subsection.6.6}\protected@file@percent }
+\newlabel{sec:sol_nash}{{6.6}{23}{Method V: Nash Bargaining with Harmony Search (NashHS)}{subsection.6.6}{}}
+\newlabel{sec:sol_nash@cref}{{[subsection][6][6]6.6}{[1][23][]23}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.6.1}Corridor-Level Cooperative Bargaining Game}{23}{subsubsection.6.6.1}\protected@file@percent }
+\newlabel{eq:nash_players}{{82}{23}{Corridor-Level Cooperative Bargaining Game}{equation.6.82}{}}
+\newlabel{eq:nash_players@cref}{{[equation][82][]82}{[1][23][]23}}
+\@writefile{toc}{\contentsline {paragraph}{Player utilities.}{23}{section*.22}\protected@file@percent }
+\newlabel{eq:nash_util}{{83}{23}{Player utilities}{equation.6.83}{}}
+\newlabel{eq:nash_util@cref}{{[equation][83][]83}{[1][23][]23}}
+\citation{AnsariEsfeh2025TSPCV}
+\@writefile{toc}{\contentsline {paragraph}{Disagreement point.}{24}{section*.23}\protected@file@percent }
+\newlabel{eq:nash_disagree}{{84}{24}{Disagreement point}{equation.6.84}{}}
+\newlabel{eq:nash_disagree@cref}{{[equation][84][]84}{[1][24][]24}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.6.2}Bargaining Constraints}{24}{subsubsection.6.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{C1 \textnormal  {(Individual rationality)}.}{24}{section*.24}\protected@file@percent }
+\newlabel{eq:c_rationality}{{85}{24}{C1 \textnormal {(Individual rationality)}}{equation.6.85}{}}
+\newlabel{eq:c_rationality@cref}{{[equation][85][]85}{[1][24][]24}}
+\@writefile{toc}{\contentsline {paragraph}{C2 \textnormal  {(Queue clearance at TSP intersection)}.}{24}{section*.25}\protected@file@percent }
+\newlabel{eq:c_clearance}{{86}{24}{C2 \textnormal {(Queue clearance at TSP intersection)}}{equation.6.86}{}}
+\newlabel{eq:c_clearance@cref}{{[equation][86][]86}{[1][24][]24}}
+\@writefile{toc}{\contentsline {paragraph}{C3 \textnormal  {(Maximum cross-traffic queue)}.}{24}{section*.26}\protected@file@percent }
+\newlabel{eq:c_queue}{{87}{24}{C3 \textnormal {(Maximum cross-traffic queue)}}{equation.6.87}{}}
+\newlabel{eq:c_queue@cref}{{[equation][87][]87}{[1][24][]24}}
+\@writefile{toc}{\contentsline {paragraph}{C4 \textnormal  {(Bus approach speed)}.}{24}{section*.27}\protected@file@percent }
+\newlabel{eq:c_speed}{{88}{24}{C4 \textnormal {(Bus approach speed)}}{equation.6.88}{}}
+\newlabel{eq:c_speed@cref}{{[equation][88][]88}{[1][24][]24}}
+\citation{AnsariEsfeh2025TSPCV}
+\@writefile{toc}{\contentsline {paragraph}{C5 \textnormal  {(Green end time)}.}{25}{section*.28}\protected@file@percent }
+\newlabel{eq:c_greenend}{{89}{25}{C5 \textnormal {(Green end time)}}{equation.6.89}{}}
+\newlabel{eq:c_greenend@cref}{{[equation][89][]89}{[1][24][]25}}
+\@writefile{toc}{\contentsline {paragraph}{C6 \textnormal  {(Minimum green preservation)}.}{25}{section*.29}\protected@file@percent }
+\newlabel{eq:c_ming}{{90}{25}{C6 \textnormal {(Minimum green preservation)}}{equation.6.90}{}}
+\newlabel{eq:c_ming@cref}{{[equation][90][]90}{[1][25][]25}}
+\@writefile{toc}{\contentsline {paragraph}{C7 \textnormal  {(TSP start and duration fractions)}.}{25}{section*.30}\protected@file@percent }
+\newlabel{eq:c_fractions}{{91}{25}{C7 \textnormal {(TSP start and duration fractions)}}{equation.6.91}{}}
+\newlabel{eq:c_fractions@cref}{{[equation][91][]91}{[1][25][]25}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.6.3}Corridor Nash Product Objective}{25}{subsubsection.6.6.3}\protected@file@percent }
+\newlabel{eq:nash_product}{{92}{25}{Corridor Nash Product Objective}{equation.6.92}{}}
+\newlabel{eq:nash_product@cref}{{[equation][92][]92}{[1][25][]25}}
+\newlabel{eq:nash_power}{{93}{25}{Corridor Nash Product Objective}{equation.6.93}{}}
+\newlabel{eq:nash_power@cref}{{[equation][93][]93}{[1][25][]25}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.6.4}Harmony Search Improvisation}{25}{subsubsection.6.6.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {6.6.5}Green Reallocation (GR) --- Zero-Cycle-Cost TSP}{26}{subsubsection.6.6.5}\protected@file@percent }
+\newlabel{sec:sol_gr}{{6.6.5}{26}{Green Reallocation (GR) --- Zero-Cycle-Cost TSP}{subsubsection.6.6.5}{}}
+\newlabel{sec:sol_gr@cref}{{[subsubsection][5][6,6]6.6.5}{[1][25][]26}}
+\@writefile{toc}{\contentsline {paragraph}{Decision rule.}{26}{section*.31}\protected@file@percent }
+\newlabel{eq:gr_feas}{{94}{26}{Decision rule}{equation.6.94}{}}
+\newlabel{eq:gr_feas@cref}{{[equation][94][]94}{[1][26][]26}}
+\@writefile{toc}{\contentsline {paragraph}{Reward.}{26}{section*.32}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Outcome in batch results.}{26}{section*.33}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Comparative Analysis}{26}{section.7}\protected@file@percent }
+\newlabel{sec:comparison}{{7}{26}{Comparative Analysis}{section.7}{}}
+\newlabel{sec:comparison@cref}{{[section][7][]7}{[1][26][]26}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Experimental Setup}{26}{section.8}\protected@file@percent }
+\newlabel{sec:setup}{{8}{26}{Experimental Setup}{section.8}{}}
+\newlabel{sec:setup@cref}{{[section][8][]8}{[1][26][]26}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Kelvin Grove Corridor}{26}{subsection.8.1}\protected@file@percent }
+\newlabel{sec:network}{{8.1}{26}{Kelvin Grove Corridor}{subsection.8.1}{}}
+\newlabel{sec:network@cref}{{[subsection][1][8]8.1}{[1][26][]26}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Solution methods mapped to the MILP. All objectives in pax\,s. Every method proposes candidate actions through its own search strategy and state model; the final commit is made by the shared weight-free selection layer of Section~\ref {sec:pareto_obj} (Pareto dominance filter + $Z_4$ throughput gate + net-pax\,s pick), so the Pareto/constraint rows are common to all methods by construction.}}{27}{table.4}\protected@file@percent }
+\newlabel{tab:methods}{{4}{27}{Solution methods mapped to the MILP. All objectives in pax\,s. Every method proposes candidate actions through its own search strategy and state model; the final commit is made by the shared weight-free selection layer of Section~\ref {sec:pareto_obj} (Pareto dominance filter + $Z_4$ throughput gate + net-pax\,s pick), so the Pareto/constraint rows are common to all methods by construction}{table.4}{}}
+\newlabel{tab:methods@cref}{{[table][4][]4}{[1][26][]27}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Kelvin Grove corridor: 12 signalised intersections with real inter-junction spacing derived from UTM coordinates (zone 56S). Corridor spans approximately 3.5\,km north--south.}}{27}{figure.1}\protected@file@percent }
+\newlabel{fig:corridor}{{1}{27}{Kelvin Grove corridor: 12 signalised intersections with real inter-junction spacing derived from UTM coordinates (zone 56S). Corridor spans approximately 3.5\,km north--south}{figure.1}{}}
+\newlabel{fig:corridor@cref}{{[figure][1][]1}{[1][27][]27}}
+\citation{Ding2022AdaptiveKalman}
+\citation{Zhou2026GTFSLatency}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Batch Experiment Design}{28}{subsection.8.2}\protected@file@percent }
+\newlabel{sec:batch}{{8.2}{28}{Batch Experiment Design}{subsection.8.2}{}}
+\newlabel{sec:batch@cref}{{[subsection][2][8]8.2}{[1][27][]28}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Performance Metrics}{29}{subsection.8.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Results}{29}{section.9}\protected@file@percent }
+\newlabel{sec:results}{{9}{29}{Results}{section.9}{}}
+\newlabel{sec:results@cref}{{[section][9][]9}{[1][29][]29}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.1}Strategy Performance}{29}{subsection.9.1}\protected@file@percent }
+\newlabel{sec:res_overall}{{9.1}{29}{Strategy Performance}{subsection.9.1}{}}
+\newlabel{sec:res_overall@cref}{{[subsection][1][9]9.1}{[1][29][]29}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Kelvin Grove corridor performance (1-hour, seed 300). Passenger delay aggregates across all passengers; vehicle TT counts vehicles. Main/Side = passenger delay (pax\,hrs) on the coordinated corridor vs.\ the cross/side streets (same convention as Table~\ref {tab:zig_full}); Main + Side = PaxDelay.}}{30}{table.5}\protected@file@percent }
+\newlabel{tab:results}{{5}{30}{Kelvin Grove corridor performance (1-hour, seed 300). Passenger delay aggregates across all passengers; vehicle TT counts vehicles. Main/Side = passenger delay (pax\,hrs) on the coordinated corridor vs.\ the cross/side streets (same convention as Table~\ref {tab:zig_full}); Main + Side = PaxDelay}{table.5}{}}
+\newlabel{tab:results@cref}{{[table][5][]5}{[1][30][]30}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Four MILP objectives ($Z_1$--$Z_4$) for the six core strategies plus total vehicles in system. $Z_1$ = total weighted passenger delay (\text  {M}\,pax$\cdot $s); $Z_2$ = flow-weighted bandwidth; $Z_3$ $\approx $ Mean\,$\sigma \times $ Trips from Table~\ref {tab:lateness}; $Z_4$ = BusVehTT + CarVehTT (Table~\ref {tab:results}, Truck\,$\approx $\,0). $Z_2 \equiv 0$ by construction (Section~\ref {sec:res_wobj}). $N_{\mathrm  {veh}}$ = total distinct vehicles, estimated from CarVehTT\,/\,AvgCarTT. \textbf  {Bold} = best (lowest for $Z_1$,$Z_3$,$Z_4$; highest for $Z_2$). $\downarrow $ lower is better; $\uparrow $ higher is better.}}{30}{table.6}\protected@file@percent }
+\newlabel{tab:objectives}{{6}{30}{Four MILP objectives ($Z_1$--$Z_4$) for the six core strategies plus total vehicles in system. $Z_1$ = total weighted passenger delay (\text {M}\,pax$\cdot $s); $Z_2$ = flow-weighted bandwidth; $Z_3$ $\approx $ Mean\,$\sigma \times $ Trips from Table~\ref {tab:lateness}; $Z_4$ = BusVehTT + CarVehTT (Table~\ref {tab:results}, Truck\,$\approx $\,0). $Z_2 \equiv 0$ by construction (Section~\ref {sec:res_wobj}). $N_{\mathrm {veh}}$ = total distinct vehicles, estimated from CarVehTT\,/\,AvgCarTT. \textbf {Bold} = best (lowest for $Z_1$,$Z_3$,$Z_4$; highest for $Z_2$). $\downarrow $ lower is better; $\uparrow $ higher is better}{table.6}{}}
+\newlabel{tab:objectives@cref}{{[table][6][]6}{[1][30][]30}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Per-passenger and per-vehicle metrics. Avg passenger delay vs.\ avg vehicle travel time. Grant = fraction of bus detections with TSP $\neq  $ NA.}}{31}{table.7}\protected@file@percent }
+\newlabel{tab:traveltime}{{7}{31}{Per-passenger and per-vehicle metrics. Avg passenger delay vs.\ avg vehicle travel time. Grant = fraction of bus detections with TSP $\neq $ NA}{table.7}{}}
+\newlabel{tab:traveltime@cref}{{[table][7][]7}{[1][31][]31}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Bus vs.\ car passenger delay for each strategy. The green quadrant (both axes below dashed baseline lines) is the Pareto-improvement zone where both bus and car passengers benefit. Point size indicates grant rate; color indicates total passenger delay. WaveGate, NashGate, and CellSearch are the only strategies in the both-better zone. CPD-QL and CellQLearn sit in the both-worse quadrant (no balance guard, or a guard that has not yet converged).}}{32}{figure.2}\protected@file@percent }
+\newlabel{fig:bus_car}{{2}{32}{Bus vs.\ car passenger delay for each strategy. The green quadrant (both axes below dashed baseline lines) is the Pareto-improvement zone where both bus and car passengers benefit. Point size indicates grant rate; color indicates total passenger delay. WaveGate, NashGate, and CellSearch are the only strategies in the both-better zone. CPD-QL and CellQLearn sit in the both-worse quadrant (no balance guard, or a guard that has not yet converged)}{figure.2}{}}
+\newlabel{fig:bus_car@cref}{{[figure][2][]2}{[1][32][]32}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Per-strategy bus passenger delay reduction relative to the NoPriority baseline (72.6\,s/pax). Percentages show relative improvement; parenthetical values are absolute bus delay after TSP. CPD-QL and CPD-QL-HS achieve bus savings but at high car cost (see Fig.\,\ref {fig:bus_car}).}}{32}{figure.3}\protected@file@percent }
+\newlabel{fig:bus_improvement}{{3}{32}{Per-strategy bus passenger delay reduction relative to the NoPriority baseline (72.6\,s/pax). Percentages show relative improvement; parenthetical values are absolute bus delay after TSP. CPD-QL and CPD-QL-HS achieve bus savings but at high car cost (see Fig.\,\ref {fig:bus_car})}{figure.3}{}}
+\newlabel{fig:bus_improvement@cref}{{[figure][3][]3}{[1][32][]32}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.2}Bus Lateness: Strategy Comparison}{32}{subsection.9.2}\protected@file@percent }
+\newlabel{sec:res_lateness}{{9.2}{32}{Bus Lateness: Strategy Comparison}{subsection.9.2}{}}
+\newlabel{sec:res_lateness@cref}{{[subsection][2][9]9.2}{[1][32][]32}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces NoPriority bus delay distribution and lateness violation rates by threshold.}}{32}{figure.4}\protected@file@percent }
+\newlabel{fig:lateness}{{4}{32}{NoPriority bus delay distribution and lateness violation rates by threshold}{figure.4}{}}
+\newlabel{fig:lateness@cref}{{[figure][4][]4}{[1][32][]32}}
+\@writefile{toc}{\contentsline {subsubsection}{\numberline {9.2.1}Coordination Cascades}{32}{subsubsection.9.2.1}\protected@file@percent }
+\newlabel{sec:cascade}{{9.2.1}{32}{Coordination Cascades}{subsubsection.9.2.1}{}}
+\newlabel{sec:cascade@cref}{{[subsubsection][1][9,2]9.2.1}{[1][32][]32}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces Bus lateness ($\sigma $) by strategy, sorted by Mean $\sigma $ ascending. Scheduled TT = 10th-percentile NoPriority travel time. $\sigma > 30$\,s = moderately late; $\sigma > 60$\,s = severely late. \textbf  {No configuration tested in this study improves on NoPriority's Mean $\sigma $}; CPD-QL is by far the worst.}}{33}{table.8}\protected@file@percent }
+\newlabel{tab:lateness}{{8}{33}{Bus lateness ($\sigma $) by strategy, sorted by Mean $\sigma $ ascending. Scheduled TT = 10th-percentile NoPriority travel time. $\sigma > 30$\,s = moderately late; $\sigma > 60$\,s = severely late. \textbf {No configuration tested in this study improves on NoPriority's Mean $\sigma $}; CPD-QL is by far the worst}{table.8}{}}
+\newlabel{tab:lateness@cref}{{[table][8][]8}{[1][32][]33}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.3}Summary}{34}{subsection.9.3}\protected@file@percent }
+\newlabel{sec:res_summary}{{9.3}{34}{Summary}{subsection.9.3}{}}
+\newlabel{sec:res_summary@cref}{{[subsection][3][9]9.3}{[1][33][]34}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {9.4}Primary Results}{34}{subsection.9.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Conclusion}{34}{section.10}\protected@file@percent }
+\newlabel{sec:conclusion}{{10}{34}{Conclusion}{section.10}{}}
+\newlabel{sec:conclusion@cref}{{[section][10][]10}{[1][34][]34}}
+\bibcite{Balke2000DevelopmentConcept}{1}
+\bibcite{Ekeila2009DevelopmentStrategy}{2}
+\bibcite{Ma2010DevelopmentApproach}{3}
+\bibcite{Karthik2023BusStress}{4}
+\bibcite{Jin2026BusIntersections}{5}
+\bibcite{Genders2016UsingControl}{6}
+\bibcite{Long2022DeepEnvironment}{7}
+\bibcite{Hu2023DeepSpeed}{8}
+\bibcite{Hu2025CoordinatedApproach}{9}
+\bibcite{AnsariEsfeh2025AnModel}{10}
+\bibcite{Bao2026AnControl}{11}
+\bibcite{Chanloha2014CellPriority}{12}
+\bibcite{Stevanovic2008StochasticVISSIM}{13}
+\bibcite{Ahmed2024OCC-MP:Vehicles}{14}
+\bibcite{Liu2009Real-timeIntersections}{15}
+\bibcite{Wu2019EstimatingApproach}{16}
+\bibcite{Cesme2025Next-GenerationLogic}{17}
+\bibcite{Abdelhalim2022AEnvironment}{18}
+\bibcite{Ghanim2014AFunctions}{19}
+\bibcite{Zlatkovic2012DevelopmentRequests}{20}
+\bibcite{Slavin2013StatisticalPerformance}{21}
+\bibcite{Viti2010ProbabilisticSignals}{22}
+\bibcite{Hu2014TransitTechnology}{23}
+\bibcite{Hu2015CoordinatedTechnology}{24}
+\bibcite{Li2020ConnectedEngineering}{25}
+\bibcite{Teng2019TransitEnvironment}{26}
+\bibcite{He2014Multi-modalCoordination}{27}
+\bibcite{He2012PAMSCOD:Data}{28}
+\bibcite{Little1981MAXBAND:Networks}{29}
+\bibcite{Gartner1991AMULTIBAND}{30}
+\bibcite{Christofa2013Person-BasedOptimization}{31}
+\bibcite{Xianmin2018OptimizationEnvironment}{32}
+\bibcite{Liang2022OptimalProcess}{33}
+\bibcite{Dion2004EvaluationArterial}{34}
+\bibcite{Arasan2010MicrosimulationFlow}{35}
+\bibcite{Katsuragi1999MultilateralCity}{36}
+\bibcite{Viegas2004TheArea}{37}
+\bibcite{Bayrak2021OptimizationDynamics}{38}
+\bibcite{Qin2025GameReview}{39}
+\bibcite{Tian2022Game-TheoreticValidation}{40}
+\bibcite{Long2025Multi-AgentAdherence}{41}
+\bibcite{Pan2021IntegratedApproach}{42}
+\bibcite{Zhou2026GTFSLatency}{43}
+\bibcite{Ding2022AdaptiveKalman}{44}
+\bibcite{AnsariEsfeh2025TSPCV}{45}
+\bibcite{Cherukuri2025ParetoIRL}{46}
+\bibcite{Siddique2025FairMORL}{47}
+\gdef \@abspage@last{38}

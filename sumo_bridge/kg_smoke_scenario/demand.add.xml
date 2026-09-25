@@ -1,0 +1,7 @@
+<additional>
+    <vType id="car" length="4.5" maxSpeed="16.7"/>
+    <vType id="bus" length="12.0" maxSpeed="13.9"/>
+    <flow id="f0_car_s21401" type="car" from="s21401" to="s21424" begin="0" end="3600" number="600" departLane="best" departSpeed="max"/>
+    <flow id="f1_bus_s21401" type="bus" from="s21401" to="s21424" begin="0" end="3600" number="12" departLane="best" departSpeed="max"/>
+    <flow id="f2_car_s78426" type="car" from="s78426" to="s21424" begin="0" end="3600" number="300" departLane="best" departSpeed="max"/>
+</additional>

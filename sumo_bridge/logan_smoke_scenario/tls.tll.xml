@@ -1,0 +1,14 @@
+<tlLogics>
+    <tlLogic id="n19196" programID="0" type="static" offset="0">
+        <phase duration="60.5" state="gggr"/>
+        <phase duration="4.0" state="yyyr"/>
+        <phase duration="33.0" state="rrrg"/>
+        <phase duration="4.0" state="rrry"/>
+    </tlLogic>
+    <tlLogic id="n19474" programID="0" type="static" offset="0">
+        <phase duration="60.5" state="gggr"/>
+        <phase duration="4.0" state="yyyr"/>
+        <phase duration="33.0" state="rrrg"/>
+        <phase duration="4.0" state="rrry"/>
+    </tlLogic>
+</tlLogics>

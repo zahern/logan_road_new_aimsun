@@ -20,6 +20,8 @@
 *_slides.py
 *.bib
 *.geojson
+*.zip
+
 
 # Python cache
 __pycache__/
