@@ -3614,6 +3614,21 @@ def run_replication(rep):
     # SRC experiment). The old code discarded the return and then sat in the wait
     # loop for 1800 s re-issuing the same doomed execute -- the "stuck waiting for
     # start, log never updates" symptom. Detect refusal and fail fast. (2026-10-02)
+    # Pre-execute diagnostics: the replication's current status + identity. A
+    # status of 1 here BEFORE we execute means Aimsun still thinks it is running
+    # (stuck from a prior sim) -- which is exactly when it answers execute with
+    # "cannot be executed". (2026-10-02)
+    try:
+        _pre_status = rep.getSimulationStatus()
+    except Exception:
+        _pre_status = '?'
+    try:
+        log("  pre-execute: replication id=%s name=%r status=%r "
+            "(status==1 => Aimsun thinks it is already running)" % (
+                getattr(rep, 'getId', lambda: '?')(),
+                getattr(rep, 'getName', lambda: '?')(), _pre_status))
+    except Exception:
+        pass
     _exec_res = GKSystem.getSystem().executeAction("execute", rep, [], "")
     # Log the raw return so we can see what Aimsun hands back (async executes
     # return a not-yet-"done" handle, which is NORMAL -- do NOT treat that as a
