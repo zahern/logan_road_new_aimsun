@@ -18,8 +18,8 @@ import os
 import math
 BXT_FREEZE_ON_EVAL = True
 BXT_TRAIN_EPSILON = 0.3
-BXT_EVAL_SEEDS = [300, 400, 500, 600, 700, 1200, 1300, 1400, 1500, 1600]
-BXT_TRAIN_SEEDS = [800, 900, 1000, 1100]
+BXT_EVAL_SEEDS = []
+BXT_TRAIN_SEEDS = []
 CPDQL_MODE = False
 CPDQL_TRAIN_EPSILON = 0.3
 CPDQL_EVAL_SEEDS = []
@@ -310,7 +310,7 @@ MILP_MPC_Z4_BASELINE     = 380.0   # fixed-time baseline corridor TT (veh·h)
 # CONTROL MODE
 # =============================================================================
 TSP_COOLDOWN_OVERRIDE_S = None
-CONTROL_MODE = "DRL_DENSITY"
+CONTROL_MODE = "NORMAL"
 GROUP_BASED_BUS_PRIORITY = False
 GROUP_BASED_BUS_PRIORITY = False
 
@@ -347,7 +347,7 @@ GROUP_BASED_BUS_PRIORITY = False
 #
 # COORD_OBJ_ALPHA / COORD_OBJ_BETA apply only with COORDINATION_ALGO="OBJECTIVE".
 # =============================================================================
-COORDINATED_TSP = True   # True = CC active (corridor coordination)
+COORDINATED_TSP = False   # True = CC active (corridor coordination)
 
 MAX_GE_EXTENSION_S   = 10.0   # Max green extension per bus request (s)
 MAX_BP_INSERTION_S   = 40.0   # Max bus-phase insertion per request (s)
@@ -427,7 +427,7 @@ WOBJ_BETA = 1.0    # Z2 downstream passenger-delay weight
 WOBJ_GAMMA = 0.1   # Z3 schedule-lateness weight (small, tie-break only)
 
 # ── CC ETA algorithm parameters ───────────────────────────────────────────────
-COORDINATION_ALGO = "SHOCKWAVE"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
+COORDINATION_ALGO = "KALMAN"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
 COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
 COORD_OBJ_BETA       = 0.5       # general-traffic weight      (OBJECTIVE mode)
 PREARM_MAX_SIGMA_S   = 90.0      # max ETA uncertainty (s) to allow a pre-arm;
