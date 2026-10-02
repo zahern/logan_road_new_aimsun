@@ -3851,10 +3851,24 @@ def run_replication(rep):
             status = rep.getSimulationStatus()
         except Exception:
             status = -1
+        # STALE-STATUS GUARD (2026-10-02): getSimulationStatus() can be stuck at 1
+        # ("running") from the PREVIOUS sim on this same replication. If we trust it
+        # as "started" we log "Simulation running..." for a sim that never began,
+        # which disables the re-issue AND the no-start abort -> infinite hang (and
+        # the stale "running" is also why Aimsun answers executeAction with "cannot
+        # be executed"). Only trust status==1 once a NEW engine log / [LOAD] marker
+        # since THIS execute confirms a fresh sim actually started.
         if not started and status == 1:
-            started = True
-            _init_s = _time.time() - _t_exec
-            log("Simulation running...")
+            try:
+                _new_since = bool(set(glob.glob(_os.path.join(
+                    _logdir, 'Aimsun_TSP_Log_*.txt'))) - _pre_logs)
+            except Exception:
+                _new_since = False
+            _s_now, _, _ = _log_marker_counts()
+            if _new_since or _s_now > _pre_starts:
+                started = True
+                _init_s = _time.time() - _t_exec
+                log("Simulation running...")
         if started and status != 1:
             # Status says not running - start 5s grace timer, then assume done
             if status_not_running_since is None:

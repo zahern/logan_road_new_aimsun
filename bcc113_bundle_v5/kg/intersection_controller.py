@@ -18,8 +18,8 @@ import os
 import math
 BXT_FREEZE_ON_EVAL = True
 BXT_TRAIN_EPSILON = 0.3
-BXT_EVAL_SEEDS = []
-BXT_TRAIN_SEEDS = []
+BXT_EVAL_SEEDS = [300, 400]
+BXT_TRAIN_SEEDS = [800, 900, 1000, 1100]
 CPDQL_MODE = False
 CPDQL_TRAIN_EPSILON = 0.3
 CPDQL_EVAL_SEEDS = []
@@ -310,7 +310,7 @@ MILP_MPC_Z4_BASELINE     = 380.0   # fixed-time baseline corridor TT (veh·h)
 # CONTROL MODE
 # =============================================================================
 TSP_COOLDOWN_OVERRIDE_S = None
-CONTROL_MODE = "NORMAL"
+CONTROL_MODE = "DRL_DENSITY"
 GROUP_BASED_BUS_PRIORITY = False
 GROUP_BASED_BUS_PRIORITY = False
 
