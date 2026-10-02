@@ -60,6 +60,78 @@ PROJECT_DIR     = _SCRIPT_DIR
 CONTROLLER_PATH = _os.path.join(_SCRIPT_DIR, "intersection_controller.py")
 RUN_CONFIG_PATH = _os.path.join(_SCRIPT_DIR, "run_config.py")
 
+# ── Execute liveness / re-issue tuning ────────────────────────────────────────
+# SET TO 3 s ON REQUEST (2026-10-01): re-issue almost immediately when no new sim
+# log has appeared, rather than waiting out the measured init.
+#
+# READ THIS BEFORE TRUSTING IT. The re-issue fires every EXEC_REISSUE_SILENCE_S
+# while `not started and not _new_log_files`. Nothing suppresses it until a sim
+# log APPEARS -- and Aimsun's own replication init (network + demand + trip-gen)
+# can run for minutes BEFORE the engine writes [LOAD]. So with a 3 s window and
+# the old cap of 12, the runner can stack up to 12 executes in ~36 s, each of
+# which is a FULL replication. That is 12 runs where you wanted 1, and it is the
+# same stacking failure that produced the near-identical duplicate result folders
+# (observed: CELLQ_LEARN_UNCOORD_CTM_seed300 at 15:24 and again at 15:34).
+#
+# Damage is therefore bounded by EXEC_MAX_RETRIES, now 1: at most ONE extra
+# execute per replication. So the worst case is 2 runs instead of 1, and the best
+# case (a genuinely dropped execute) recovers in 3 s instead of 300 s. If you want
+# zero duplicates, set EXEC_MAX_RETRIES = 0 -- then a dropped execute is never
+# recovered and the arm fails after the dead-man instead.
+#
+# WATCH [RESULT-DIR]: it logs every candidate folder for an arm/seed and marks
+# -> PICKED. Two or more candidates means this window IS double-firing, and for a
+# LEARNING arm the twins differ, so which one feeds the CSV starts to matter.
+EXEC_REISSUE_SILENCE_S = 3.0
+EXEC_MAX_RETRIES      = 1
+# ── ADAPTIVE RE-ISSUE WINDOW (2026-10-01) ─────────────────────────────────────
+# The 90 s above is only a FIRST-RUN FALLBACK. There is no defensible fixed value:
+# a healthy init on this machine has been observed to exceed 180 s, and the engine
+# grows between sessions, so any constant is either too short (re-fires into a
+# healthy init -- the double-fire that doubles wall clock and result folders) or too
+# long (a dropped execute wastes that much time). The runner already MEASURES each
+# init (`[TIMING] init took Ns`); so use it. After the first replication the window
+# becomes INIT_MULTIPLE x the longest init seen this session, floored at
+# EXEC_REISSUE_SILENCE_MIN_S. Set _LAST_INIT_S[0] manually to prime it.
+EXEC_REISSUE_SILENCE_MIN_S = 30.0
+EXEC_INIT_MULTIPLE         = 2.0     # re-issue only well past a known-good init
+_LAST_INIT_S = [0.0]                 # longest observed executeAction->[LOAD] (s)
+# Aimsun is BUSY (trip generation / SRC / teardown) if its own CPU advanced by at
+# least this many seconds inside the trailing window.
+#
+# ── 2026-10-01: CPU IS NOW DIAGNOSTIC ONLY, NOT A GATE ────────────────────────
+# This signal CANNOT answer "was the execute dropped?", and tuning it is hopeless,
+# for a structural reason: os.times() measures THE WHOLE PROCESS, and the runner
+# runs IN-PROCESS with Aimsun. So the runner's own polling loop -- 2 Hz
+# app.processEvents(), getSimulationStatus(), log globbing, _close_dialogs --
+# contributes directly to the number we are trying to attribute to Aimsun.
+# Observed: "CPU busy (4.25s CPU / 10s window, needs <1.00s to re-issue)" at 30s
+# elapsed, i.e. 42% of a core sustained. Either that is a real init (in which case
+# holding is correct but the signal is redundant with the new-log check), or it is
+# loop overhead (in which case no threshold above it ever re-issues, and we are
+# back to the 2026-09-13 failure where a swallowed execute was NEVER recovered).
+# We cannot tell which from inside the process, so the re-issue decision now rests
+# only on signals that are unambiguous about the SIMULATION:
+#   * a new Aimsun_TSP_Log_*.txt with [LOAD]  -> it started
+#   * >= 2 new log files                       -> Aimsun queued them, do not stack
+#   * an Aimsun dialog                         -> busy
+#   * silence past _reissue_window             -> re-issue
+# Waiting too long costs bounded wall clock. Re-firing into a live init costs a
+# duplicate simulation AND duplicate result folders -- worse. So we err long.
+EXEC_CPU_BUSY_DELTA_S = 1.0
+EXEC_CPU_WINDOW_S     = 10.0
+# Absolute backstop: if NOTHING has appeared after this long, the start is stuck
+# whatever the CPU says, so re-issue regardless of liveness. Without this a busy
+# reading can stall the batch indefinitely, which is worse than the double-fire
+# this whole guard exists to prevent.
+EXEC_ABSOLUTE_START_DEADLINE_S = 300.0
+# How long to wait before re-issuing WHEN AIMSUN IS DEMONSTRABLY BUSY (CPU above
+# EXEC_CPU_BUSY_DELTA_S). Set to 3 s on request (2026-10-01), same as the idle
+# window, so busy and idle behave alike. NOTE this INVERTS the earlier reasoning:
+# a busy start is usually a HEALTHY init, so waiting longer was the safe choice,
+# and 3 s will fire into a live init. Bounded by EXEC_MAX_RETRIES = 1.
+EXEC_BUSY_START_WINDOW_S = 3.0
+
 # Weighted-objective (Z1/Z2 composite) metric collection lives in
 # collect_run_metrics() section 7 below: it reads the per-run
 # logs/weighted_objective_<experiment>_<timestamp>.csv trace written by
@@ -2947,6 +3019,10 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         "TSP_ACTIVE_INTERSECTIONS = " + repr(active_intersections) + "\n"
         "COORDINATED_TSP = "         + repr(bool(coordinated))  + "\n"
         "COORDINATION_ALGO = "       + repr(coordination_algo)  + "\n"
+        # Always emit (default True) so a False on one arm never carries over to
+        # the next arm in a multi-arm session. When False the coordinator stays
+        # live but suppresses the downstream pre-arm push (corridor coupling only).
+        "COORD_PREARM_ENABLED = "    + repr(bool((reward_cfg or {}).get('COORD_PREARM_ENABLED', True))) + "\n"
         "BUS_PREDICTOR_TYPE = "      + repr(str(bus_predictor).upper()) + "\n"
         "GLOBAL_REWARD_MODE = "      + repr(bool(global_reward_mode)) + "\n"
         "BARGAIN_SPM_MODE = "        + repr(bool((reward_cfg or {}).get('BARGAIN_SPM_MODE', False))) + "\n"
@@ -3103,7 +3179,101 @@ def get_first_replication():
     reps = model.getCatalog().getObjectsByType(rep_type)
     if not reps:
         raise RuntimeError("No replications found.")
-    return next(iter(reps.values())) if isinstance(reps, dict) else reps[0]
+    _vals = list(reps.values()) if isinstance(reps, dict) else list(reps)
+
+    def _rid(r):
+        try: return int(r.getId())
+        except Exception: return -1
+    def _rname(r):
+        try: return str(r.getName() or '')
+        except Exception: return ''
+
+    # ── Explicit override wins (set REPLICATION_ID or REPLICATION_NAME on this
+    # module, e.g. _br.REPLICATION_NAME = "Replication 1 560 - TSP1"). Use it when
+    # the model has several replications and you want a specific known-good one.
+    _want_id = globals().get('REPLICATION_ID')
+    _want_name = globals().get('REPLICATION_NAME')
+    if _want_id is not None:
+        for r in _vals:
+            if _rid(r) == int(_want_id):
+                log("get_first_replication -> OVERRIDE id=%s name=%r" % (_rid(r), _rname(r)))
+                return r
+        raise RuntimeError("REPLICATION_ID=%r not found among %d replications."
+                           % (_want_id, len(_vals)))
+    if _want_name:
+        for r in _vals:
+            if _rname(r) == str(_want_name):
+                log("get_first_replication -> OVERRIDE name=%r id=%s" % (_rname(r), _rid(r)))
+                return r
+        raise RuntimeError("REPLICATION_NAME=%r not found among %d replications."
+                           % (_want_name, len(_vals)))
+
+    # ── Auto-pick. Only a real, EXECUTABLE child replication accepts "execute";
+    # getObjectsByType also returns the experiment AVERAGE/result (executing it
+    # raises "Action execute for object type GKReplication cannot be executed").
+    # isAverage() does not exist in this Aimsun build, so the reliable test is
+    # MEMBERSHIP in the experiment's child-replication list (the average is NOT in
+    # it). Also skip synthetic auto-named entries ("Replication <id>"), which are
+    # not the real seeded replications. (2026-10-02)
+    def _child_ids(exp):
+        out = set()
+        for _getter in ('getReplications', 'getReplicationList'):
+            try:
+                _kids = getattr(exp, _getter)()
+                for k in (_kids.values() if hasattr(_kids, 'values') else (_kids or [])):
+                    out.add(_rid(k))
+                if out:
+                    return out
+            except Exception:
+                continue
+        return out
+
+    _exec = []
+    for r in _vals:
+        try:
+            e = r.getExperiment()
+            if e is None:
+                continue
+            _kids = _child_ids(e)
+            # keep if it's a known child, or if the experiment exposes no child
+            # list at all (then we cannot prove it's the average -> allow it).
+            if _kids and _rid(r) not in _kids:
+                continue
+            _exec.append(r)
+        except Exception:
+            continue
+    if not _exec:
+        _exec = list(_vals)
+    # prefer real seeded replications over synthetic "Replication <id>" ones, then
+    # LOWEST id -- this reproduces the pick (id=11129240 'Replication 1 560') that
+    # actually started a sim ("Simulation running...") in the 12:22 run. Use the
+    # REPLICATION_NAME/ID override above to force a different one.
+    _real = [r for r in _exec if _rname(r).strip() != ("Replication %d" % _rid(r))] or _exec
+    try:
+        _real = sorted(_real, key=_rid)
+    except Exception:
+        pass
+    if not _real:
+        raise RuntimeError(
+            "No runnable GKReplication found in the open model. Set "
+            "_br.REPLICATION_NAME to the replication you normally run, then re-run.")
+    rep = _real[0]
+    try:
+        log("get_first_replication -> id=%s name=%r exp=%r "
+            "(%d real, %d total; set _br.REPLICATION_NAME to override)" % (
+                _rid(rep), _rname(rep),
+                (rep.getExperiment().getName() if rep.getExperiment() else None),
+                len(_real), len(_vals)))
+    except Exception:
+        pass
+    return rep
+
+
+# Optional explicit replication selection (see get_first_replication). Leave as
+# None for auto-pick; set to force a specific replication, e.g.
+#   REPLICATION_NAME = "Replication 1 560 - TSP1"
+REPLICATION_ID = None
+REPLICATION_NAME = None
 
 
 def set_seed(rep, seed):
@@ -3438,7 +3608,30 @@ def run_replication(rep):
         pass
 
     _t_exec = _time.time()   # [TIMING] executeAction issued
-    GKSystem.getSystem().executeAction("execute", rep, [], "")
+    # Capture the action result. Aimsun prints "Action execute for object type
+    # GKReplication cannot be executed." and returns a FAILED result when the
+    # replication is not individually runnable (e.g. a base/average rep in a Micro
+    # SRC experiment). The old code discarded the return and then sat in the wait
+    # loop for 1800 s re-issuing the same doomed execute -- the "stuck waiting for
+    # start, log never updates" symptom. Detect refusal and fail fast. (2026-10-02)
+    _exec_res = GKSystem.getSystem().executeAction("execute", rep, [], "")
+    # Log the raw return so we can see what Aimsun hands back (async executes
+    # return a not-yet-"done" handle, which is NORMAL -- do NOT treat that as a
+    # refusal or we abort a sim that is actually starting). Only an explicit False
+    # is a hard refusal; everything else proceeds to the start-detection loop,
+    # which has its own bounded no-start abort. (2026-10-02)
+    try:
+        log("  executeAction('execute') returned %r" % (_exec_res,))
+    except Exception:
+        pass
+    if _exec_res is False:
+        raise RuntimeError(
+            "executeAction('execute') returned False for replication id=%s name=%r "
+            "('Action execute for object type GKReplication cannot be executed'). "
+            "Set _cs._br.REPLICATION_NAME to the replication you run with Play in "
+            "the GUI, then re-run." % (
+                getattr(rep, 'getId', lambda: '?')(),
+                getattr(rep, 'getName', lambda: '?')()))
     _time.sleep(2.0)
     if app:
         app.processEvents()
@@ -3588,7 +3781,17 @@ def run_replication(rep):
     # in-process). A slow init (teardown + trip-gen + SRC: minutes) is BUSY,
     # not swallowed -- re-firing into it stacks full simulations (proven:
     # near-identical folder pairs for every arm-seed). Re-issue only after
-    # 20 s of TOTAL silence: no LOAD, no dialogs, CPU idle.
+    # EXEC_REISSUE_SILENCE_S of TOTAL silence: no LOAD, no dialogs, CPU idle.
+    #
+    # 2026-10-01: the window was hardcoded at 20 s, which was safe when a
+    # healthy execute produced its [LOAD] marker in ~5 s. The engine has since
+    # grown (engine.py 1.2 MB, specialized_modes.py 342 KB), so a healthy init
+    # now overruns 20 s and the ORIGINAL execute gets fired at again while still
+    # queued. Observed cost: "[TIMING] run_replication total 491s (sim ~22s)" --
+    # two full inits, ~2x the wall clock, and the duplicate result folders. The
+    # window is now a module constant so it can be tuned without editing the
+    # loop, and defaults well clear of a healthy init.
+    _init_s = None             # executeAction -> [LOAD] seconds, once known
     _cpu_samples = []          # (waited, proc_user+sys_s), trailing ~15 s
     _last_life = 0.0           # last waited with any sign of Aimsun life
     while waited < 1800.0:
@@ -3601,6 +3804,48 @@ def run_replication(rep):
                 _cpu_samples.pop(0)
         except Exception:
             pass
+        # CPU-delta (2026-10-01): Aimsun burning CPU in the trailing window means it
+        # is BUSY -- trip generation, SRC path calc, teardown -- not idle with a
+        # dropped execute. It WIDENS the re-issue window (below) and does NOT latch
+        # liveness. It must not touch _last_life: doing so made _alive permanently
+        # true, so the advertised window never applied and only the absolute deadline
+        # fired -- producing the self-contradictory log
+        #   "quiet 210s of 90s ... will re-issue at 90s (attempt 0/12, 210s elapsed)"
+        # i.e. a 90 s window it could never reach.
+        _cpu_busy = False
+        try:
+            _win = [c for _t, c in _cpu_samples if waited - _t <= EXEC_CPU_WINDOW_S]
+            if len(_win) >= 2 and (_win[-1] - _win[0]) >= EXEC_CPU_BUSY_DELTA_S:
+                _cpu_busy = True
+        except Exception:
+            pass
+        # A dialog since the execute is a sign of life (busy init / finishing teardown).
+        # Only a DISCRETE, unambiguous event latches: a dialog closes for good, so
+        # this window genuinely expires. CPU cannot be used this way.
+        _alive = (waited - _last_life) < EXEC_REISSUE_SILENCE_S
+        # Effective window: once a real init has been measured this session, sit
+        # well clear of it; before that, fall back to the constant. When Aimsun is
+        # demonstrably busy we wait the BUSY window instead of the idle one.
+        try:
+            _known = float(_LAST_INIT_S[0])
+        except Exception:
+            _known = 0.0
+        _reissue_window = (max(EXEC_REISSUE_SILENCE_MIN_S,
+                               EXEC_INIT_MULTIPLE * _known)
+                           if _known > 0.0 else EXEC_REISSUE_SILENCE_S)
+        if _cpu_busy:
+            _reissue_window = max(_reissue_window, EXEC_BUSY_START_WINDOW_S)
+        if _reissue_window > EXEC_ABSOLUTE_START_DEADLINE_S:
+            _reissue_window = EXEC_ABSOLUTE_START_DEADLINE_S
+        # EFFECTIVE window: the re-issue predicate ALSO demands the absolute
+        # deadline when _alive (a dialog closed recently). Reporting
+        # _reissue_window alone made the log disagree with the code whenever a
+        # dialog was present -- it announced "will re-issue at 180s" while the
+        # predicate actually required 300 s. Same class of message/predicate drift
+        # as the CPU-latch bug; fixed by deriving the number from the SAME
+        # condition the predicate uses.
+        _eff_window = (_reissue_window if not _alive
+                       else max(_reissue_window, EXEC_ABSOLUTE_START_DEADLINE_S))
         # Fast path: if status polling DOES work, use it.
         try:
             status = rep.getSimulationStatus()
@@ -3608,6 +3853,7 @@ def run_replication(rep):
             status = -1
         if not started and status == 1:
             started = True
+            _init_s = _time.time() - _t_exec
             log("Simulation running...")
         if started and status != 1:
             # Status says not running - start 5s grace timer, then assume done
@@ -3665,9 +3911,17 @@ def run_replication(rep):
                         started = True
                         _sim_started = True
                         _assert_engine_stamp()
+                        _init_s = _time.time() - _t_exec
+                        # remember the slowest healthy init seen this session so the
+                        # re-issue window can exceed it (see _reissue_window below)
+                        try:
+                            if _init_s > _LAST_INIT_S[0]:
+                                _LAST_INIT_S[0] = float(_init_s)
+                        except Exception:
+                            pass
                         log(f"  sim started (new sim log {_os.path.basename(_nl)} "
                             f"with [LOAD]) | [TIMING] init took "
-                            f"{_time.time() - _t_exec:.0f}s")
+                            f"{_init_s:.0f}s")
                     if ('stats saved OK' in _nt) or ('[SIM_END]' in _nt):
                         log(f"  completion: new sim log {_os.path.basename(_nl)} "
                             f"has [FINISH]")
@@ -3718,13 +3972,14 @@ def run_replication(rep):
             # we can safely re-fire early: at 20 s we clear the ~5 s healthy start
             # with margin (never double-firing a healthy init) yet recover a
             # swallow ~15x faster than before. Re-issue every 20 s (not one shot),
-            # up to 12x (~240 s) so it keeps trying until Aimsun accepts one; the
+            # up to EXEC_MAX_RETRIES times so it keeps trying until Aimsun accepts one; the
             # _sim_started gate stops the instant any [LOAD] appears. If a DOUBLE
             # [LOAD] is ever seen (starts jumps by 2), Aimsun is queuing not
             # dropping -- raise this back and prefer the idle-handshake instead.
-            # LIVENESS (2026-09-12): fire ONLY after 20 s of total silence
-            # (above). Slow inits are busy, not lost -- firing into them is what
-            # stacked every arm-seed into near-identical folder pairs.
+            # LIVENESS (2026-09-12, retuned 2026-10-01): fire ONLY after
+            # _reissue_window of silence (measured init x2, else the constant).
+            # Slow inits are busy, not lost -- firing into them is what stacked
+            # every arm-seed into near-identical folder pairs.
             # Reliable swallow signal: has a NEW engine log FILE appeared since
             # this run's execute? The sim writes its own timestamped
             # Aimsun_TSP_Log_*.txt when it starts -- none present => Aimsun dropped
@@ -3737,19 +3992,37 @@ def run_replication(rep):
             if len(_new_log_files) >= 2 and not started:
                 log(f"  {len(_new_log_files)} new sim logs since execute -- Aimsun "
                     f"queues executes; re-issue halted (no stacking)")
-                _exec_retries = 12
+                _exec_retries = EXEC_MAX_RETRIES
             elif (not started and not _new_log_files
-                    and (waited - _last_exec) >= 20.0
-                    and (waited - _last_life) >= 20.0
-                    and _exec_retries < 12):
+                    and (waited - _last_exec) >= _reissue_window
+                    and _exec_retries < EXEC_MAX_RETRIES
+                    and (not _alive
+                         or (waited - _last_exec) >= EXEC_ABSOLUTE_START_DEADLINE_S)):
                 try:
                     GKSystem.getSystem().executeAction("execute", rep, [], "")
                     _exec_retries += 1
                     _last_exec = waited
-                    log(f"  execute swallowed (no new sim log {waited:.0f}s after "
-                        f"execute) -- re-issued (attempt {_exec_retries}/12)")
+                    log(f"  execute swallowed (no new sim log after {waited:.0f}s"
+                        f"{', CPU busy but past the %.0fs deadline' % EXEC_ABSOLUTE_START_DEADLINE_S if _cpu_busy else ''}"
+                        f") -- re-issued (attempt {_exec_retries}/{EXEC_MAX_RETRIES})")
                 except Exception as _ee:
                     log(f"  execute retry failed: {_ee!r}")
+        # Early no-start abort: retries exhausted and still no [LOAD]/new sim log
+        # after a grace window => Aimsun is REFUSING this replication, not just
+        # slow. Fail fast with a pointer instead of sitting out the 1800s deadline
+        # ("stuck waiting for start, log never updates"). (2026-10-02)
+        if (not started and _exec_retries >= EXEC_MAX_RETRIES
+                and (waited - _last_exec) >= max(_eff_window, EXEC_ABSOLUTE_START_DEADLINE_S)):
+            raise RuntimeError(
+                "run_replication: sim NEVER STARTED after %d execute attempts "
+                "(%.0fs; no [LOAD] marker, no new sim log). Aimsun is refusing "
+                "replication id=%s name=%r ('Action execute for object type "
+                "GKReplication cannot be executed'). It is not individually "
+                "runnable -- set  _cs._br.REPLICATION_NAME = \"<name>\"  (the "
+                "replication you run with Play in the GUI) and re-run." % (
+                    _exec_retries, waited,
+                    getattr(rep, 'getId', lambda: '?')(),
+                    getattr(rep, 'getName', lambda: '?')()))
         if waited - _last_heartbeat >= 30.0:
             _last_heartbeat = waited
             if started:
@@ -3761,9 +4034,39 @@ def run_replication(rep):
                         _logdir, 'Aimsun_TSP_Log_*.txt'))) - _pre_logs)
                 except Exception:
                     _nlf = 0
+                # Say WHY it is not re-issuing. "attempt 0/12" with no reason was
+                # undiagnosable: a continuously-busy CPU reading and a mere quiet
+                # wait produce the same line.
+                try:
+                    _wd = [c for _t, c in _cpu_samples
+                           if waited - _t <= EXEC_CPU_WINDOW_S]
+                    _cd = (_wd[-1] - _wd[0]) if len(_wd) >= 2 else 0.0
+                except Exception:
+                    _cd = 0.0
+                # Say WHY the window is what it is. CPU widens it, a live dialog
+                # forces the absolute deadline, and neither ever suppresses the
+                # re-issue entirely -- name whichever applied.
+                if _cpu_busy:
+                    _cpunote = (' [cpu %.2fs/%.0fs -> BUSY, window widened to '
+                                '%.0fs]' % (_cd, EXEC_CPU_WINDOW_S,
+                                            EXEC_BUSY_START_WINDOW_S))
+                elif _cd > 0:
+                    _cpunote = ' [cpu %.2fs/%.0fs -> idle]' % (_cd, EXEC_CPU_WINDOW_S)
+                else:
+                    _cpunote = ''
+                if _alive:
+                    _cpunote += (' [dialog seen %.0fs ago -> waiting the %.0fs '
+                                 'deadline]' % (waited - _last_life,
+                                                EXEC_ABSOLUTE_START_DEADLINE_S))
+                _why = ("quiet %.0fs of %.0fs%s, will re-issue at %.0fs"
+                          % (waited - _last_exec, _eff_window,
+                             (' (measured init %.0fs)' % _known)
+                             if _known > 0.0 else
+                             ' (no measured init yet, using fallback)',
+                             _eff_window)) + _cpunote
                 log(f"  waiting for sim to START -- no new sim log yet "
-                    f"(new_logs={_nlf}); re-issuing every 20s (attempt "
-                    f"{_exec_retries}/12) ({waited:.0f}s elapsed)")
+                    f"(new_logs={_nlf}); {_why} "
+                    f"(attempt {_exec_retries}/{EXEC_MAX_RETRIES}, {waited:.0f}s elapsed)")
         _time.sleep(0.5)
         waited += 0.5
 
@@ -3782,8 +4085,22 @@ def run_replication(rep):
         app.processEvents()
         _close_dialogs(app)
     # [TIMING] whole cycle + mark done so the NEXT call can report the gap.
-    log(f"  [TIMING] run_replication total {_time.time() - _t_call:.0f}s "
-        f"(sim ~{waited:.0f}s + init/overhead)")
+    # Report the init/sim SPLIT honestly: `waited` is the completion-loop time and
+    # it INCLUDES the replication init, because the loop starts the moment
+    # executeAction is issued. Labelling all of `waited` as "sim" (as this line
+    # used to) hid the fact that init is the dominant cost -- and init time is
+    # exactly the number needed to size EXEC_BUSY_START_WINDOW_S, so mislabelling
+    # it made that tuning impossible to do from the logs.
+    _tot = _time.time() - _t_call
+    if _init_s is not None:
+        log(f"  [TIMING] run_replication total {_tot:.0f}s "
+            f"(init {_init_s:.0f}s + sim {max(0.0, waited - _init_s):.0f}s "
+            f"+ teardown {max(0.0, _tot - waited):.0f}s)")
+        log(f"  [TIMING] SET EXEC_BUSY_START_WINDOW_S ~= {1.5 * _init_s:.0f}s "
+            f"(1.5 x this init) if re-issues keep firing early")
+    else:
+        log(f"  [TIMING] run_replication total {_tot:.0f}s "
+            f"(init UNKNOWN -- no [LOAD] marker seen; sim+teardown {waited:.0f}s)")
     _RUN_REPL_LAST_DONE[0] = _time.time()
 
 
@@ -3826,6 +4143,29 @@ def _find_results_folder(project_dir, strategy, seed, scalar, exp_name=None):
 
     if not candidates:
         return None
+
+    # A re-execution writes a SECOND timestamped folder rather than overwriting,
+    # so twins exist and this function silently picks the newest by mtime. For
+    # non-learning arms the twins are bit-identical so the choice is harmless; for
+    # a LIVE Q-table they legitimately differ, and then the picked folder decides
+    # the CSV row. Log every candidate with its mtime so that selection is visible
+    # in the run log instead of being an invisible coin-flip on filesystem order.
+    if len(candidates) > 1:
+        try:
+            import time as _tlog
+            _ordered = sorted(candidates, key=lambda d: d.stat().st_mtime)
+            print("[RESULT-DIR] %d candidates for prefix=%r -- picking NEWEST "
+                  "(st_mtime)" % (len(candidates), prefix))
+            for _i, _d in enumerate(_ordered):
+                _ts = _tlog.strftime('%Y-%m-%d %H:%M:%S',
+                                     _tlog.localtime(_d.stat().st_mtime))
+                print("[RESULT-DIR]   %s %s %s" % (
+                    '-> PICKED' if _i == len(_ordered) - 1 else '   (ignored)', _ts,
+                    _d.name))
+            print("[RESULT-DIR]   note: a live-learner re-run produces DIFFERENT "
+                  "twins; only the picked folder feeds the CSV row.")
+        except Exception as _e:
+            print("[RESULT-DIR] WARN could not log candidates: %r" % (_e,))
 
     return max(candidates, key=lambda d: d.stat().st_mtime).path
 

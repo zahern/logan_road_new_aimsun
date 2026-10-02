@@ -46,33 +46,33 @@ del _venv_candidates, _venv_sp, _script_dir
 # =============================================================================
 
 # ── Core control modes ────────────────────────────────────────────────────────
-LOG_HARMONY   = False  # [HARMONY]    GE/insertion decisions in HARMONY mode
-LOG_URTSP     = False   # [URTSP]      detection/extension/insertion in URTSP mode
-LOG_REWARD    = False   # [REWARD]     action-reward evaluation in REWARD_TSP mode
-LOG_TSP_EVT   = False   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
-LOG_COST_VETO = False  # [COST VETO]  per-event decider cost-veto lines (the
+LOG_HARMONY   = True  # [HARMONY]    GE/insertion decisions in HARMONY mode
+LOG_URTSP     = True   # [URTSP]      detection/extension/insertion in URTSP mode
+LOG_REWARD    = True   # [REWARD]     action-reward evaluation in REWARD_TSP mode
+LOG_TSP_EVT   = True   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
+LOG_COST_VETO = True  # [COST VETO]  per-event decider cost-veto lines (the
                        #   veto still applies + is counted in TSP_Skipped_*;
                        #   _set_logging(False) silences this during batches)
 
 # ── Initialisation ────────────────────────────────────────────────────────────
-LOG_INIT      = False   # [INIT]       controller creation, phase list, veh types
-LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
-LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
-LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
-LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
+LOG_INIT      = True   # [INIT]       controller creation, phase list, veh types
+LOG_NODE_ID   = True   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
+LOG_SECTION   = True  # [SECTION]    incoming-section & topology init detail
+LOG_JUNC_XY   = True  # [JUNC_XY]   junction centroid coordinate resolution
+LOG_SIDE_DISC = True  # [SIDE_DISC]  side-street section discovery
 
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
-LOG_PT_SCAN   = False  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
-LOG_DEMAND    = False  # [DEMAND]     vehicle-type position detection at startup
+LOG_PT_SCAN   = True  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
+LOG_DEMAND    = True  # [DEMAND]     vehicle-type position detection at startup
 
 # ── Delay & statistics ────────────────────────────────────────────────────────
-LOG_STATS     = False   # [STATS]      end-of-simulation results summary
-LOG_DELAY     = False  # [DELAY]      IntersectionController collect_delay detail
+LOG_STATS     = True   # [STATS]      end-of-simulation results summary
+LOG_DELAY     = True  # [DELAY]      IntersectionController collect_delay detail
 
 # ── Diagnostic heartbeat ──────────────────────────────────────────────────────
-LOG_HEARTBEAT = False  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
-LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and state
+LOG_HEARTBEAT = True  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
+LOG_CORRIDOR  = True   # [CORRIDOR]   corridor-group coordination events and state
 
 # ── Per-intersection detection-level logging ──────────────────────────────────
 # List junction IDs to enable verbose per-step detection scans for those junctions.
@@ -91,7 +91,7 @@ LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to en
 #     The GeoJSON can be loaded via File → Import in Aimsun or opened in QGIS/ArcGIS
 #     to see coloured dots exactly where each bus was first detected.
 # Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
-MARK_DETECTION_POINTS: bool = False
+MARK_DETECTION_POINTS: bool = True
 TRACK_BUS_POSITIONS: bool = False
 BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 
@@ -113,7 +113,7 @@ BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 #
 # Set False to skip (e.g. if you only want the CSV / PNG outputs).
 # =============================================================================
-OVERLAY_DETECTIONS_ON_MAP: bool = False
+OVERLAY_DETECTIONS_ON_MAP: bool = True
 
 # Safety switch: block all script-driven model catalog mutations
 # (newObject/deleteObject/addObjectToFolder) unless explicitly enabled.
@@ -143,7 +143,7 @@ BUS_FREQ_INJECT_SCALAR = 0.0
 #
 #   Set to 0 to disable the dashboard.
 # =============================================================================
-STATUS_DASHBOARD_INTERVAL_S: float = 0.0
+STATUS_DASHBOARD_INTERVAL_S: float = 60.0
 
 # =============================================================================
 # MASTER CONSOLE SWITCH
@@ -152,7 +152,7 @@ STATUS_DASHBOARD_INTERVAL_S: float = 0.0
 #                   goes to the log file so you can review it after the run.
 #                   Critical errors (simulation halted) are always shown.
 # =============================================================================
-VERBOSE = False
+VERBOSE = True
 
 try:
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -301,7 +301,7 @@ MILP_MPC_Z4_BASELINE     = 380.0   # fixed-time baseline corridor TT (veh·h)
 # CONTROL MODE
 # =============================================================================
 TSP_COOLDOWN_OVERRIDE_S = None
-CONTROL_MODE = "DRL_DENSITY"
+CONTROL_MODE = "NORMAL"
 GROUP_BASED_BUS_PRIORITY = False
 GROUP_BASED_BUS_PRIORITY = False
 
@@ -338,7 +338,7 @@ GROUP_BASED_BUS_PRIORITY = False
 #
 # COORD_OBJ_ALPHA / COORD_OBJ_BETA apply only with COORDINATION_ALGO="OBJECTIVE".
 # =============================================================================
-COORDINATED_TSP = True   # True = CC active (corridor coordination)
+COORDINATED_TSP = False   # True = CC active (corridor coordination)
 
 MAX_GE_EXTENSION_S   = 10.0   # Max green extension per bus request (s)
 MAX_BP_INSERTION_S   = 40.0   # Max bus-phase insertion per request (s)
@@ -384,7 +384,7 @@ WOBJ_BETA = 1.0    # Z2 downstream passenger-delay weight
 WOBJ_GAMMA = 0.1   # Z3 schedule-lateness weight (small, tie-break only)
 
 # ── CC ETA algorithm parameters ───────────────────────────────────────────────
-COORDINATION_ALGO = "SHOCKWAVE"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
+COORDINATION_ALGO = "KALMAN"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
 COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
 COORD_OBJ_BETA       = 0.5       # general-traffic weight      (OBJECTIVE mode)
 PREARM_MAX_SIGMA_S   = 90.0      # max ETA uncertainty (s) to allow a pre-arm;

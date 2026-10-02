@@ -41,6 +41,9 @@ ARMS (all GLOBAL_REWARD, KALMAN/SHOCKWAVE as in champion_search.py)
                              bus-delay gate + veto 2.0 (selective MARL).
   NASH_BASE               -- reference from run_logan_nash_test.py (utilitarian
                              continuous-Nash, min-gain 50 pax-s).
+  NASH_BASE_INTDUR        -- NASH_BASE + integer-duration search: candidates
+                             bargain over GE 1..15 s and INS 5..20 s (whole
+                             seconds, exact) instead of fixed grid magnitudes.
 
 HOW TO RUN (inside Aimsun, Logan model open)
 --------------------------------------------
@@ -72,10 +75,10 @@ WHAT TO GREP AFTERWARDS
 import os as _os, sys as _sys, time as _time, importlib.util as _ilu
 
 # ── Editable test design ──────────────────────────────────────────────────────
-SEEDS = [300]                      # 1-seed sanity first; extend to [300,400,500] once green
+SEEDS = [300, 400, 500]              # multi-seed confirmation (CELLQ CONT vs DE)
 DEMAND_SCALAR = 1.0
 RESULTS_CSV_NAME = "logan_cellq_cont_marl_test.csv"
-EXPECTED_ENGINE_BUILD = "2026-09-25T17:00-seeddecay-mongate"
+EXPECTED_ENGINE_BUILD = "2026-09-28T09:20-plandump"
 
 # ── Base configs (mirrors champion_search.py Logan arms) ─────────────────────
 _CELLQ_BASE = {
@@ -128,6 +131,16 @@ _NASH_BASE = {
     "CONTINUOUS_MONITOR_MIN_GAIN_PAXS": 50.0,
     "DIAG_FLOW_STAGE": True, "DIAG_DECISION": True,
 }
+# Nash integer durations: bargain over a RANGE of whole seconds per action
+# type (GE 1..MAX_GE_EXTENSION_S, INS DCTSP_MIN..MAX_INS_DURATION_S) via the
+# exact coarse+refine search, instead of fixed grid magnitudes. All bounds
+# are per-arm propagatable (MODE_FLAGS) with deterministic integer output.
+_NASH_INTDUR = {
+    "NASH_INTEGER_DURATIONS": True,
+    "MAX_GE_EXTENSION_S": 15,
+    "DCTSP_MIN_INS_DURATION_S": 5,
+    "DCTSP_MAX_INS_DURATION_S": 20,
+}
 # MARL continuous: monitor-only. BXT_CONTINUOUS_MODE is intentionally absent --
 # it only re-routes the BXT learner's no-bus ticks (specialized_modes.py) and
 # DCTSP_MARL runs with BXT_MODE False, so the flag would be dead config.
@@ -145,30 +158,104 @@ _MARL_PURPOSE = {
     "DECIDER_COST_VETO_RATIO": 2.0,
 }
 
+# ── Single-junction hypothesis test (2026-09-26) ────────────────────────────
+# MARL's loss concentrates at 20270 (+59h of 122h, 71 commits). If that
+# junction's actions are the whole story, running MARL_CONT everywhere EXCEPT
+# 20270 (fixed-time there, via active_intersections) should recover ~+8pp.
+# _NO20270 = all 23 Logan junctions minus 20270.
+_ALL_JUNCTIONS = [17249, 17308, 17383, 17498, 17628, 17963, 18044, 18942,
+                  19185, 19196, 19363, 19474, 19882, 20270, 20280, 20283,
+                  20844, 21197, 21553, 21847, 21895, 22232, 22603]
+_NO20270 = [j for j in _ALL_JUNCTIONS if j != 20270]
+
 EXPERIMENTS_TEST = [
+    # Already ran 2026-09-27 (11xx session): left disabled so this batch runs
+    # ONLY the new EASE arm (same seeds => NO_TSP baselines reused offline).
+    # Overnight batch 2026-09-27 (~12 runs, ~3h). Nothing here ran on the
+    # current phasemap build: NO_TSP gives the in-session baseline (fixes
+    # NOBASE verdicts); EASE re-confirms +0.28% under push-wiring/phasemaps;
+    # CELLQLEARN (bus-triggered only, never ran) tests whether car-only
+    # acting was ever needed; MARL_CONT (champion restraint: veto 3.5 +
+    # congestion gate, no PURPOSE easing) tests whether restraint fixes MARL.
+    # EXACT/MARL_PURPOSE/CONT/DE ran tonight -- left disabled.
     {"name": "NO_TSP", "strategy": "NORMAL", "coordinated": False,
      "coordination_algo": "KALMAN", "reward_overrides": {}},
-    {"name": "CELLQLEARN", "strategy": "GLOBAL_REWARD",
+    # NO_TSP_RETIME (2026-09-28): base strategy on the retimed splits
+    # (RETIME_APPLY). Isolates the PLAN effect before any TSP acts; judge vs
+    # NO_TSP same seeds with the guarded verdict + relief plots.
+    {"name": "NO_TSP_RETIME", "strategy": "NORMAL", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {
+         "RETIME_APPLY": True,
+         "RETIME_CSV": r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\retime\retime_v1.csv"}},
+    {"name": "CELLQLEARN", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "SHOCKWAVE",
      "reward_overrides": dict(_CELLQ_BASE)},
-    {"name": "CELLQLEARN_CONT", "strategy": "GLOBAL_REWARD",
+    {"name": "CELLQLEARN_CONT", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "SHOCKWAVE",
      "reward_overrides": {**_CELLQ_BASE, **_CONT}},
-    {"name": "CELLQLEARN_CONT_PURPOSE", "strategy": "GLOBAL_REWARD",
+    {"name": "CELLQLEARN_CONT_PURPOSE", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "SHOCKWAVE",
      "reward_overrides": {**_CELLQ_BASE, **_CONT, **_PURPOSE}},
-    {"name": "DCTSP_MARL", "strategy": "GLOBAL_REWARD",
+    {"name": "CELLQLEARN_CONT_DE", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_BASE, **_CONT, **_PURPOSE,
+                          "BXT_SOLVER": "de"}},
+    # EASE ran 2026-09-27/28 (+0.3%, all green): reference config below.
+    {"name": "CELLQLEARN_CONT_DE_EASE", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_BASE, **_CONT, **_PURPOSE,
+                          "BXT_SOLVER": "de",
+                          "CELLQLEARN_MIN_GAIN_S": 8.0,
+                          "DECIDER_COST_VETO_RATIO": 2.5,
+                          "REWARD_GE_SOLVER": "exact"}},
+    # EASE_K2/K3 (2026-09-28): EASE + multi-cycle recovery. Saturated Logan
+    # has no per-cycle headroom, so K=1 recovery never fires (ret=0 入金 all
+    # arms) and every extension drifts the cycle permanently. K=2/3 spreads
+    # repayment via _solve_recovery_plan + carry-over, trading permanent drift
+    # for temporary debt. Only change vs EASE is the horizon.
+    {"name": "CELLQLEARN_CONT_DE_EASE_K2", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_BASE, **_CONT, **_PURPOSE,
+                          "BXT_SOLVER": "de",
+                          "CELLQLEARN_MIN_GAIN_S": 8.0,
+                          "DECIDER_COST_VETO_RATIO": 2.5,
+                          "REWARD_GE_SOLVER": "exact",
+                          "RECOVERY_MAX_CYCLES": 2}},
+    {"name": "CELLQLEARN_CONT_DE_EASE_K3", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_BASE, **_CONT, **_PURPOSE,
+                          "BXT_SOLVER": "de",
+                          "CELLQLEARN_MIN_GAIN_S": 8.0,
+                          "DECIDER_COST_VETO_RATIO": 2.5,
+                          "REWARD_GE_SOLVER": "exact",
+                          "RECOVERY_MAX_CYCLES": 3}},
+    {"name": "DCTSP_MARL", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "KALMAN",
      "reward_overrides": dict(_MARL)},
-    {"name": "DCTSP_MARL_CONT", "strategy": "GLOBAL_REWARD",
+    {"name": "DCTSP_MARL_CONT", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "KALMAN",
      "reward_overrides": {**_MARL, **_MARL_CONT}},
-    {"name": "DCTSP_MARL_CONT_PURPOSE", "strategy": "GLOBAL_REWARD",
+    {"name": "DCTSP_MARL_CONT_PURPOSE", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "KALMAN",
      "reward_overrides": {**_MARL, **_MARL_CONT, **_MARL_PURPOSE}},
-    {"name": "NASH_BASE", "strategy": "GLOBAL_REWARD",
+    # MARL exact-GE test (2026-09-27): the generic pool decides everything on
+    # MARL arms (no BXT mode), so this is the live proving ground for
+    # REWARD_GE_SOLVER=exact vs the fixed grid. All else = PURPOSE config.
+    {"name": "DCTSP_MARL_CONT_PURPOSE_EXACT", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_MARL, **_MARL_CONT, **_MARL_PURPOSE,
+                          "REWARD_GE_SOLVER": "exact"}},
+    {"name": "DCTSP_MARL_CONT_NO20270", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_MARL, **_MARL_CONT},
+     "active_intersections": _NO20270},
+    {"name": "NASH_BASE", "enabled": False, "strategy": "GLOBAL_REWARD",
      "coordinated": True, "coordination_algo": "KALMAN",
      "reward_overrides": dict(_NASH_BASE)},
+    {"name": "NASH_BASE_INTDUR", "enabled": False, "strategy": "GLOBAL_REWARD",
+     "coordinated": True, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_NASH_BASE, **_NASH_INTDUR}},
 ]
 
 # Same global feed the champion matrix uses (setdefaults -- an arm can override).
@@ -250,7 +337,20 @@ import csv as _csv, glob as _glob
 
 _KPI_KEYS = ("Objective_PaxPerDelayHr", "AvgBusPassDelay_s", "AvgCarPassDelay_s",
              "AvgBusTT_s", "Net_MeanQueue_All", "TSP_Extensions", "TSP_Insertions",
-             "SimDuration_hrs")
+             "SimDuration_hrs",
+             # Completion-guarded verdict (2026-09-27): obj is a ratio and avg
+             # hides scale, so judge on the fixed-demand total + completion.
+             # Same seed = same demand, so TotalPassDelay_hrs is directly
+             # comparable (lower=better); served must match NO_TSP or the arm
+             # is STARVED (cut totals by stranding vehicles); N_BusTrips shows
+             # whether a bus "win" rests on a SMALLN handful of buses.
+             "TotalPassDelay_hrs", "PaxEquivPassages", "BusPaxEquivPassages",
+             "AvgPassDelay_s", "Net_ExitCount_All", "Net_VQVeh_All",
+             "N_BusTrips", "N_DistinctBuses",
+             # Total-action accounting (2026-09-27): every timing family, so
+             # the summary verdict covers ALL acting, not just extensions.
+             "TSP_GreenRealloc", "TSP_EarlyRed", "TSP_OffsetCorr",
+             "TSP_PhaseSkip", "TSP_PhaseRot")
 _SESSION = []
 
 
@@ -284,10 +384,19 @@ def _print_run_kpis(name, seed):
         print(f"[CELLQ_CONT_MARL]   (no KPIs found for {name} seed {seed} yet)")
         return
     _SESSION.append((name, seed, k))
+    _tot = sum(k.get(kk, 0.0) or 0.0 for kk in (
+        "TSP_Extensions", "TSP_Insertions", "TSP_GreenRealloc",
+        "TSP_EarlyRed", "TSP_OffsetCorr", "TSP_PhaseSkip", "TSP_PhaseRot"))
     print(f"[CELLQ_CONT_MARL]   {name} seed {seed}: obj={k['Objective_PaxPerDelayHr']:.1f} "
           f"bus={k['AvgBusPassDelay_s']:.1f}s car={k['AvgCarPassDelay_s']:.1f}s "
           f"queue={k['Net_MeanQueue_All']:.0f} ext={k['TSP_Extensions']:.0f} "
-          f"ins={k['TSP_Insertions']:.0f} dur={k['SimDuration_hrs']:.2f}h")
+          f"ins={k['TSP_Insertions']:.0f} dur={k['SimDuration_hrs']:.2f}h "
+          f"totDelay={k['TotalPassDelay_hrs']:.1f}h served={k['PaxEquivPassages']:.0f} "
+          f"exits={k['Net_ExitCount_All']:.0f} vq={k['Net_VQVeh_All']:.0f} "
+          f"busTrips={k['N_BusTrips']:.0f} "
+          f"actions={_tot:.0f} (gr={k['TSP_GreenRealloc']:.0f} "
+          f"er={k['TSP_EarlyRed']:.0f} oc={k['TSP_OffsetCorr']:.0f} "
+          f"vp={k['TSP_PhaseSkip']:.0f} pt={k['TSP_PhaseRot']:.0f})")
 
 
 def _print_summary():
@@ -300,14 +409,18 @@ def _print_summary():
             byarm[name].append(k)
     print("\n" + "=" * 64)
     print("[CELLQ_CONT_MARL] SESSION SUMMARY (mean over full runs; obj higher=better)")
-    print(f"  {'arm':22s} {'obj':>7s} {'bus_s':>6s} {'car_s':>6s} {'queue':>6s} {'ext':>5s}")
+    print(f"  {'arm':22s} {'obj':>7s} {'bus_s':>6s} {'car_s':>6s} {'queue':>6s} {'ext':>5s} {'totAct':>7s}")
     base = None
     for name, ks in byarm.items():
         def m(kk): return sum(k[kk] for k in ks) / len(ks)
         row = (m("Objective_PaxPerDelayHr"), m("AvgBusPassDelay_s"),
                m("AvgCarPassDelay_s"), m("Net_MeanQueue_All"), m("TSP_Extensions"))
+        tot = sum(m(kk) for kk in ("TSP_Extensions", "TSP_Insertions",
+                                   "TSP_GreenRealloc", "TSP_EarlyRed",
+                                   "TSP_OffsetCorr", "TSP_PhaseSkip",
+                                   "TSP_PhaseRot"))
         print(f"  {name:22s} {row[0]:7.1f} {row[1]:6.1f} {row[2]:6.1f} "
-              f"{row[3]:6.0f} {row[4]:5.0f}")
+              f"{row[3]:6.0f} {row[4]:5.0f} {tot:7.0f}")
         if name == "NO_TSP":
             base = row[0]
     if base:
@@ -316,6 +429,57 @@ def _print_summary():
                 continue
             o = sum(k["Objective_PaxPerDelayHr"] for k in ks) / len(ks)
             print(f"  -> {name} objective vs NO_TSP: {(o-base)/base*100:+.1f}%")
+    # ── Completion-guarded verdict (2026-09-27) ──────────────────────────
+    # Same seed = same demand, so TotalPassDelay_hrs is the fair head-to-head
+    # (lower=better): serving more vehicles cannot hurt it, starving entries
+    # cannot help it. Served (PaxEquivPassages) vs NO_TSP same-seed guards
+    # the ratio/avg against completion gaming (<99% = STARVED); N_BusTrips
+    # guards bus wins on a SMALLN handful (<50 trips); Net_VQVeh_All shows
+    # stranded vehicles outright.
+    print("-" * 64)
+    print(f"  {'arm':22s} {'totDelay%':>10s} {'served%':>8s} {'vq':>8s} "
+          f"{'busTrips':>9s} verdict")
+    _base_by_seed = {}
+    for _bn, _bs, _bk in _SESSION:
+        if _bn == "NO_TSP" and _bk.get("SimDuration_hrs", 0) >= 1.4:
+            _base_by_seed[_bs] = _bk
+    for name, ks in byarm.items():
+        if name == "NO_TSP":
+            continue
+        def m(kk): return sum(k[kk] for k in ks) / len(ks)
+        _td = _sv = None
+        _ok = 0
+        for _k in ks:
+            _seed = None
+            for (_sn, _ss, _sk) in _SESSION:
+                if _sk is _k:
+                    _seed = _ss
+                    break
+            _bb = _base_by_seed.get(_seed)
+            if _bb and _bb.get("TotalPassDelay_hrs"):
+                _td = ((_td or 0.0) + (_k["TotalPassDelay_hrs"]
+                       - _bb["TotalPassDelay_hrs"])
+                       / _bb["TotalPassDelay_hrs"] * 100.0)
+                _ok += 1
+            if _bb and _bb.get("PaxEquivPassages"):
+                _sv = ((_sv or 0.0) + _k["PaxEquivPassages"]
+                       / _bb["PaxEquivPassages"] * 100.0)
+        _td = (_td / _ok) if (_td is not None and _ok) else float("nan")
+        _sv = (_sv / len(ks)) if (_sv is not None and ks) else float("nan")
+        _vq = m("Net_VQVeh_All")
+        _bt = m("N_BusTrips")
+        _tags = []
+        if _sv == _sv and _sv < 99.0:
+            _tags.append("STARVED")
+        if _bt == _bt and _bt < 50.0:
+            _tags.append("SMALLN-bus")
+        if not _tags:
+            if _td != _td:
+                _tags.append("NOBASE")
+            else:
+                _tags.append("WIN" if _td < 0.0 else "LOSE")
+        print(f"  {name:22s} {_td:+9.1f}% {_sv:7.1f}% {_vq:8.0f} "
+              f"{_bt:9.0f} {' '.join(_tags)}")
     print("=" * 64)
 
 
@@ -361,8 +525,10 @@ def main():
             _br.write_run_config(
                 name, exp["strategy"], seed, DEMAND_SCALAR,
                 exp["coordinated"], exp["coordination_algo"], RUN_CONFIG_PATH,
-                global_reward_mode=gr, reward_cfg=cfg, bus_predictor="KALMAN",
-                results_csv_name=RESULTS_CSV_NAME, active_intersections=None)
+                global_reward_mode=gr, reward_cfg=cfg,
+                bus_predictor=exp.get("bus_predictor", "ADAPTIVE_KALMAN"),
+                results_csv_name=RESULTS_CSV_NAME,
+                active_intersections=exp.get("active_intersections", None))
             _br._purge_pyc(CONTROLLER_PATH)
             t0 = _time.time()
             try:

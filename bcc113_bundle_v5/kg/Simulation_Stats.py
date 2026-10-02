@@ -689,8 +689,13 @@ class SimulationStats:
                                         'VEH_TYPE_NAME_CAR',   ('Car - bcc', 'Car-bcc'))
         self._truck_pos = _resolve_type(self._truck_pos, 'VEH_TYPE_ID_TRUCK',
                                         'VEH_TYPE_NAME_TRUCK', ('Truck - bcc', 'Truck-bcc'))
+        # 'bus' and 'BUS' added 2026-09-30: this model registers the PT type under
+        # the plain lowercase name (the AKI probe asks for name='bus'), which
+        # matched neither 'Bus - bcc' nor 'Bus-bcc', leaving the position at the
+        # not-found sentinel and silently disabling PT demand scaling.
         self._bus_pos   = _resolve_type(self._bus_pos,   'VEH_TYPE_ID_BUS',
-                                        'VEH_TYPE_NAME_BUS',   ('Bus - bcc', 'Bus-bcc'))
+                                        'VEH_TYPE_NAME_BUS',
+                                        ('Bus - bcc', 'Bus-bcc', 'bus', 'BUS', 'Bus'))
         if self._car_pos > 0 and not self._car_type_name:
             self._car_type_name = 'car(override)'
         if self._truck_pos > 0 and not self._truck_type_name:
@@ -1668,20 +1673,53 @@ class SimulationStats:
                                     f"{type(_e).__name__}: {_e}")
             except Exception as _e:
                 self._probe_log(f"[ESTAD-PROBE] veh-name pointer read failed: {_e!r}")
-            # 2. ANGConn object-id path for vehicle-type positions.
-            if hasattr(_apimod, "ANGConnGetObjectId"):
-                for _nm in ("car", "truck", "bus"):
+            # 2. Vehicle-type position lookup -- CORRECTED 2026-10-01.
+            #
+            # WHAT WAS WRONG: this probe called
+            #     ANGConnGetObjectId(AKIConvertFromAsciiString(name), False)
+            # which returns a KERNEL object id. AKIVehGetVehTypeInternalPosition
+            # expects a GKVehicle-type id, so the two live in different id spaces
+            # and the call returned -4008 (= AKI_ERROR_SECTION_NOTEXIST) for
+            # EVERY name -- car, truck and bus alike. That reads exactly like a
+            # bus-specific model failure, and it was misread as one (the bus-type
+            # hunt), when in fact the engine resolves all three fine through a
+            # different path. The working lookup is
+            # ANGConnGetObjectIdByType(name, "GKVehicle", False).
+            #
+            # The probe now uses that, and also prints the position the ENGINE
+            # actually resolved (self._car_pos / _truck_pos / _bus_pos) so a
+            # failing lookup can be told apart from a failing resolver at a glance.
+            _probe_ok = False
+            if hasattr(_apimod, "ANGConnGetObjectIdByType"):
+                for _nm, _res in (("car", getattr(self, "_car_pos", -1)),
+                                  ("truck", getattr(self, "_truck_pos", -1)),
+                                  ("bus", getattr(self, "_bus_pos", -1))):
                     try:
-                        _oid = _apimod.ANGConnGetObjectId(
-                            _apimod.AKIConvertFromAsciiString(_nm), False)
+                        _oid = _apimod.ANGConnGetObjectIdByType(
+                            _apimod.AKIConvertFromAsciiString(_nm),
+                            _apimod.AKIConvertFromAsciiString("GKVehicle"), False)
                         _pos = _apimod.AKIVehGetVehTypeInternalPosition(_oid)
-                        self._probe_log(f"[ESTAD-PROBE] ANGConn name={_nm!r} -> "
-                                    f"objId={_oid} internalPos={_pos}")
+                        _ok = int(_pos) > 0
+                        _probe_ok = _probe_ok or _ok
+                        self._probe_log(
+                            f"[ESTAD-PROBE] vehtype name={_nm!r} objId={_oid} "
+                            f"internalPos={_pos} engine_resolved={_res} "
+                            f"{'OK' if _ok else 'LOOKUP-FAILED (trust engine_resolved)'}")
                     except Exception as _e:
-                        self._probe_log(f"[ESTAD-PROBE] ANGConn name={_nm!r} ERR "
+                        self._probe_log(f"[ESTAD-PROBE] vehtype name={_nm!r} ERR "
                                     f"{type(_e).__name__}: {_e}")
             else:
-                self._print("[ESTAD-PROBE] ANGConnGetObjectId NOT present on this build")
+                self._print("[ESTAD-PROBE] ANGConnGetObjectIdByType NOT present "
+                            "on this build -- use engine_resolved values")
+            # A failed lookup is NOT a failed model. Say so explicitly, because
+            # this line was previously read as evidence the bus object was broken.
+            for _nm, _res in (("car", getattr(self, "_car_pos", -1)),
+                              ("truck", getattr(self, "_truck_pos", -1)),
+                              ("bus", getattr(self, "_bus_pos", -1))):
+                self._probe_log(
+                    f"[ESTAD-PROBE] RESOLVED {_nm}_pos={_res} "
+                    f"{'OK' if int(_res) > 0 else 'UNRESOLVED -- scaling/type split affected'}"
+                    f" (name={getattr(self, '_' + _nm + '_type_name', '')!r})")
             # 3. ANG section enumeration + misc thesis-time utilities.
             for _fn in ("AKIInfNetNbSectionsANG", "AKIInfNetGetSectionANGId",
                         "AKIInfNetGetSectionANGInf", "AKIGetTotalLengthSystem",
@@ -2797,8 +2835,15 @@ class SimulationStats:
             })
             return
 
-        # Ensure vehicle type positions are resolved
-        def _fallback_type_pos(type_name: str):
+        # Ensure vehicle type positions are resolved.
+        # 2026-09-30: this local helper was name-scan ONLY. On this Aimsun build
+        # AKIVehGetVehTypeNamePos returns SWIG reprs rather than strings, so
+        # `type_name.lower() in str(vtype).lower()` never matched and an
+        # unresolvable type stayed at the not-found sentinel (observed -4008)
+        # instead of being recovered. finalise_init() already had a working
+        # object-id resolver (ANGConnGetObjectIdByType) for the same problem; this
+        # now tries that first and keeps the name scan only as a last resort.
+        def _fallback_type_pos_by_name(type_name: str):
             try:
                 for pos in range(1, AKIVehGetNbVehTypes() + 1):
                     vtype = AKIVehGetVehTypeNamePos(pos)
@@ -2807,7 +2852,32 @@ class SimulationStats:
             except Exception:
                 pass
             return -1
-        
+
+        def _fallback_type_pos(type_name: str):
+            """Object-id lookup first, then the name scan.
+
+            The object-id path is authoritative; the name scan is only a last
+            resort because it is unreliable on this build. Keeping both under one
+            name means every existing call site (Car/Bus/Truck/HOV) gets the
+            robust behaviour without being rewritten.
+            """
+            _p = _fallback_type_pos_by_id(type_name)
+            if _p > 0:
+                return _p
+            return _fallback_type_pos_by_name(type_name)
+
+        def _fallback_type_pos_by_id(type_name: str):
+            try:
+                obj_id = ANGConnGetObjectIdByType(
+                    AKIConvertFromAsciiString(type_name),
+                    AKIConvertFromAsciiString("GKVehicle"),
+                    False)
+                if obj_id > 0:
+                    return _sanitize_type_pos(AKIVehGetVehTypeInternalPosition(obj_id))
+            except Exception:
+                return -1
+            return -1
+
         if self._bus_pos <= 0:
             self._bus_pos = _fallback_type_pos("Bus")
         if self._car_pos <= 0:

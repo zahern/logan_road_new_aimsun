@@ -2711,6 +2711,10 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         "TSP_ACTIVE_INTERSECTIONS = " + repr(active_intersections) + "\n"
         "COORDINATED_TSP = "         + repr(bool(coordinated))  + "\n"
         "COORDINATION_ALGO = "       + repr(coordination_algo)  + "\n"
+        # Always emit (default True) so a False on one arm never carries over to
+        # the next arm in a multi-arm session. When False the coordinator stays
+        # live but suppresses the downstream pre-arm push (corridor coupling only).
+        "COORD_PREARM_ENABLED = "    + repr(bool((reward_cfg or {}).get('COORD_PREARM_ENABLED', True))) + "\n"
         "BUS_PREDICTOR_TYPE = "      + repr(str(bus_predictor).upper()) + "\n"
         "GLOBAL_REWARD_MODE = "      + repr(bool(global_reward_mode)) + "\n"
         "BARGAIN_SPM_MODE = "        + repr(bool((reward_cfg or {}).get('BARGAIN_SPM_MODE', False))) + "\n"
@@ -2891,7 +2895,82 @@ def get_first_replication():
     reps = model.getCatalog().getObjectsByType(rep_type)
     if not reps:
         raise RuntimeError("No replications found.")
-    return next(iter(reps.values())) if isinstance(reps, dict) else reps[0]
+    _vals = list(reps.values()) if isinstance(reps, dict) else list(reps)
+
+    def _rid(r):
+        try: return int(r.getId())
+        except Exception: return -1
+    def _rname(r):
+        try: return str(r.getName() or '')
+        except Exception: return ''
+
+    _want_id = globals().get('REPLICATION_ID')
+    _want_name = globals().get('REPLICATION_NAME')
+    if _want_id is not None:
+        for r in _vals:
+            if _rid(r) == int(_want_id):
+                log("get_first_replication -> OVERRIDE id=%s name=%r" % (_rid(r), _rname(r)))
+                return r
+        raise RuntimeError("REPLICATION_ID=%r not found." % (_want_id,))
+    if _want_name:
+        for r in _vals:
+            if _rname(r) == str(_want_name):
+                log("get_first_replication -> OVERRIDE name=%r id=%s" % (_rname(r), _rid(r)))
+                return r
+        raise RuntimeError("REPLICATION_NAME=%r not found." % (_want_name,))
+
+    # isAverage() is absent in this Aimsun build; the reliable "executable" test is
+    # MEMBERSHIP in the experiment's child-replication list (the average/result is
+    # NOT in it and raises "Action execute ... cannot be executed"). Also skip
+    # synthetic auto-named entries ("Replication <id>"). (2026-10-02)
+    def _child_ids(exp):
+        out = set()
+        for _getter in ('getReplications', 'getReplicationList'):
+            try:
+                _kids = getattr(exp, _getter)()
+                for k in (_kids.values() if hasattr(_kids, 'values') else (_kids or [])):
+                    out.add(_rid(k))
+                if out:
+                    return out
+            except Exception:
+                continue
+        return out
+
+    _exec = []
+    for r in _vals:
+        try:
+            e = r.getExperiment()
+            if e is None:
+                continue
+            _kids = _child_ids(e)
+            if _kids and _rid(r) not in _kids:
+                continue
+            _exec.append(r)
+        except Exception:
+            continue
+    if not _exec:
+        _exec = list(_vals)
+    _real = [r for r in _exec if _rname(r).strip() != ("Replication %d" % _rid(r))] or _exec
+    try:
+        _real = sorted(_real, key=_rid)
+    except Exception:
+        pass
+    if not _real:
+        raise RuntimeError(
+            "No runnable GKReplication found. Set _br.REPLICATION_NAME to the "
+            "replication you normally run, then re-run.")
+    rep = _real[0]
+    try:
+        log("get_first_replication -> id=%s name=%r (%d real, %d total; "
+            "set _br.REPLICATION_NAME to override)" % (
+                _rid(rep), _rname(rep), len(_real), len(_vals)))
+    except Exception:
+        pass
+    return rep
+
+
+REPLICATION_ID = None
+REPLICATION_NAME = None
 
 
 def set_seed(rep, seed):
@@ -3209,7 +3288,23 @@ def run_replication(rep):
         pass
 
     _t_exec = _time.time()   # [TIMING] executeAction issued
-    GKSystem.getSystem().executeAction("execute", rep, [], "")
+    # Fail fast if Aimsun refuses the replication ("Action execute for object type
+    # GKReplication cannot be executed") instead of waiting out the deadline. (2026-10-02)
+    _exec_res = GKSystem.getSystem().executeAction("execute", rep, [], "")
+    # async executes return a not-yet-"done" handle (NORMAL); only explicit False
+    # is a hard refusal. (2026-10-02)
+    try:
+        log("  executeAction('execute') returned %r" % (_exec_res,))
+    except Exception:
+        pass
+    if _exec_res is False:
+        raise RuntimeError(
+            "executeAction('execute') returned False for replication id=%s name=%r "
+            "('Action execute for object type GKReplication cannot be executed'). "
+            "Set _br.REPLICATION_NAME to the replication you run with Play in the "
+            "GUI and re-run." % (
+                getattr(rep, 'getId', lambda: '?')(),
+                getattr(rep, 'getName', lambda: '?')()))
     _time.sleep(2.0)
     if app:
         app.processEvents()

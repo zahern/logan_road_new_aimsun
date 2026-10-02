@@ -328,6 +328,7 @@ class SimulationStats:
             'n_exit_clears': 0, 'n_cap_clears': 0,
             'n_green_realloc': 0, 'n_early_red': 0, 'n_offset_corr': 0,
             'n_phase_skip': 0, 'n_phase_rot': 0,
+            'n_retiming': 0,
             'n_skipped_ge': 0, 'n_skipped_ins': 0,
             'n_detected_no_action': 0, 'n_natural_green': 0,
             'total_extension_s': 0.0, 'total_insertion_s': 0.0,
@@ -1150,6 +1151,9 @@ class SimulationStats:
             'offset_correction':  'n_offset_corr',
             'phase_skip':         'n_phase_skip',
             'phase_rotation':     'n_phase_rot',
+            # Plan rewrites outside committed actions (recovery trims,
+            # safety restores). Commits are counted by family above.
+            'retiming':           'n_retiming',
         }.get(event_type)
         if key:
             d[key] += 1
@@ -1491,6 +1495,38 @@ class SimulationStats:
             return round(float(acc.get(key, 0.0)) / acc['samples'], 4)
         return 0.0
 
+    def _akiest_typepos(self, sec, now=0.0):
+        """Vehicle-type position for the AKIEST flow calls (all types preferred).
+
+        ALL types (-1) would include bus/truck completions, but this Aimsun
+        build returns nothing usable for -1 (measured 2026-09-26: AKIEST share
+        collapsed 30-48% -> 0% network-wide with -1 unconditional; the engine's
+        own -1 partial tier also never fires -- its [FLOW SRC] falls back to
+        snapshot_alltypes). Resolve ONCE from the GLOBAL cumulative count (a
+        type that works shows count>0 once traffic has crossed) and cache it so
+        the windowed-count deltas never mix types. Returns 0 (known-good) until
+        resolvable.
+        """
+        tp = getattr(self, '_akiest_tp', None)
+        if tp is not None:
+            return tp
+        for _tp in (-1, 0):
+            try:
+                gst = AKIEstGetGlobalStatisticsSection(int(sec), _tp)
+                if (getattr(gst, 'report', -1) == 0
+                        and float(getattr(gst, 'count', 0) or 0) > 0):
+                    self._akiest_tp = _tp
+                    try:
+                        self._probe_log(
+                            f"[STATS] AKIEST vehTypePos resolved -> {_tp} "
+                            f"(sec={sec}, global_count>0)")
+                    except Exception:
+                        pass
+                    return _tp
+            except Exception:
+                continue
+        return 0
+
     def _section_windowed_flow(self, sec, now):
         """TRUE flow (veh/h) over the window since this section was last sampled,
         via DELTA of the MONOTONIC cumulative completion count -- the correct
@@ -1499,7 +1535,8 @@ class SimulationStats:
         Also stashes inputCount (arrivals) for the upflow twin below; old
         2-tuple store entries from a previous session are tolerated."""
         try:
-            st = AKIEstGetGlobalStatisticsSection(int(sec), 0)
+            st = AKIEstGetGlobalStatisticsSection(
+                int(sec), self._akiest_typepos(sec, now))
             if st is None or getattr(st, 'report', -1) != 0:
                 return None
             cum = float(getattr(st, 'count', 0.0) or 0.0)
@@ -1534,7 +1571,8 @@ class SimulationStats:
         its store. Returns None when unavailable (caller records 0.0 and the
         checker skips conservation on those rows)."""
         try:
-            st = AKIEstGetGlobalStatisticsSection(int(sec), 0)
+            st = AKIEstGetGlobalStatisticsSection(
+                int(sec), self._akiest_typepos(sec, now))
             if st is None or getattr(st, 'report', -1) != 0:
                 return None
             incum = float(getattr(st, 'inputCount', 0.0) or 0.0)
@@ -1583,9 +1621,10 @@ class SimulationStats:
                 if _sec not in _by_sec:
                     continue
                 _rec = _by_sec[_sec]
+                _tp_a = self._akiest_typepos(_sec, time)
                 try:
                     _pst = AKIEstGetParcialStatisticsSection(
-                        _sec, max(0.0, float(time) - float(interval_s)), 0)
+                        _sec, max(0.0, float(time) - float(interval_s)), _tp_a)
                     _prep = getattr(_pst, "report", -1)
                     _pcount = float(getattr(_pst, "count", 0) or 0)
                     _pflow = getattr(_pst, "Flow", None)
@@ -1595,13 +1634,13 @@ class SimulationStats:
                     _prep, _pcount, _pflow, _psa, _pden = \
                         f"ERR {_e!r}", 0.0, None, None, None
                 try:
-                    _gst = AKIEstGetGlobalStatisticsSection(int(_sec), 0)
+                    _gst = AKIEstGetGlobalStatisticsSection(int(_sec), _tp_a)
                     _gcum = float(getattr(_gst, "count", 0) or 0)
                 except Exception:
                     _gcum = None
                 _naive = (_pcount * 3600.0 / float(interval_s)) if _pcount else 0.0
                 self._probe_log(
-                    f"[FLOW-AUDIT] t={float(time):.0f}s sec={_sec} "
+                    f"[FLOW-AUDIT] t={float(time):.0f}s sec={_sec} tp={_tp_a} "
                     f"global_cum={_gcum} parcial_count={_pcount} "
                     f"naive={_naive:.0f} sampler_q={_rec.get('q_veh_h')} "
                     f"direct_Flow={_pflow} direct_Sa={_psa} "
@@ -1807,6 +1846,7 @@ class SimulationStats:
         total_offset_corr   = 0
         total_phase_skip    = 0
         total_phase_rot     = 0
+        total_retiming      = 0
         total_twoway_band_veto = 0
         total_extension_s  = 0.0
         total_insertion_s  = 0.0
@@ -1852,6 +1892,7 @@ class SimulationStats:
             total_offset_corr   += d.get('n_offset_corr', 0)
             total_phase_skip    += d.get('n_phase_skip', 0)
             total_phase_rot     += d.get('n_phase_rot', 0)
+            total_retiming      += d.get('n_retiming', 0)
             total_twoway_band_veto += d.get('n_twoway_band_veto', 0)
             total_extension_s   += k['total_extension_s']
             total_insertion_s   += k['total_insertion_s']
@@ -2197,6 +2238,7 @@ class SimulationStats:
             'n_tsp_offset_corr':         total_offset_corr,
             'n_tsp_phase_skip':          total_phase_skip,
             'n_tsp_phase_rot':           total_phase_rot,
+            'n_tsp_retiming':            total_retiming,
             'n_twoway_band_veto':        total_twoway_band_veto,
             'total_extension_s':         total_extension_s,
             'total_insertion_s':         total_insertion_s,
@@ -2309,9 +2351,12 @@ class SimulationStats:
                 sec_delay   = 0.0   # delay time in s/km (DTa / sec_len_km)
 
                 # ── Flow: use AKIEst 30s window count (completing vehicles) ──────
+                # vehTypePos resolved via _akiest_typepos (all types when the
+                # build supports it, else 0) (2026-09-26).
                 _incr_window_start = max(0.0, time - INCR_NET_INTERVAL_S)
                 try:
-                    st = AKIEstGetParcialStatisticsSection(sec, _incr_window_start, 0)
+                    st = AKIEstGetParcialStatisticsSection(
+                        sec, _incr_window_start, self._akiest_typepos(sec, time))
                     if st.report == 0:
                         _count = float(getattr(st, 'count', 0) or 0)
                         _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)
@@ -2488,7 +2533,12 @@ class SimulationStats:
                     queued_veh  = 0
                     _window_start = max(0.0, time - INTERVAL_S)
                     try:
-                        st = AKIEstGetParcialStatisticsSection(sec, _window_start, 0)
+                        # vehTypePos: ALL types when the build supports it
+                        # (bus/truck-only windows then count), else type 0 --
+                        # see _akiest_typepos (2026-09-26).
+                        st = AKIEstGetParcialStatisticsSection(
+                            sec, _window_start,
+                            self._akiest_typepos(sec, time))
                         if st.report == 0:
                             _count = float(getattr(st, 'count', 0) or 0)
                             _dta   = float(getattr(st, 'DTa',   0.0) or 0.0)
@@ -2580,6 +2630,27 @@ class SimulationStats:
                         sec_density = sec_density_snap
                         _k_is_avg = False
                     queued_veh_per_lane = float(queued_veh) / lane_count
+                    # ── Upflow-qualified measurement (red-window fix, 2026-09-26) ──
+                    # A window fully inside red has ZERO completions, so the
+                    # completion-delta flow is 0 and the row fell to the IMPOSED
+                    # q=k*v fallback -- the dominant reason only ~30-48% of
+                    # windows were src=AKIEST. Arrivals ARE independently
+                    # measured (inputCount delta, all types) so a red window
+                    # WITH arrivals is a measured row: record the arrival rate
+                    # as q (the upflow leg of the queue balance; discharge
+                    # resumes next green). Speed = live space-mean when
+                    # vehicles are moving, 0.0 when every present vehicle is
+                    # STOPPED (a fully stopped queue measures v=0 -- that is
+                    # data, not a gap; queue_veh/queue_m already capture it).
+                    # Windows with neither completions nor arrivals keep the
+                    # IMPOSED fallback.
+                    if (not _akiest_ok) and sec_upflow > 0.0 \
+                            and (n_veh > 0 or spd_n > 0):
+                        _snap_spd = (float(spd_n) / inv_spd_sum) \
+                            if inv_spd_sum > 0.0 else 0.0
+                        sec_flow = sec_upflow
+                        sec_speed = _snap_spd
+                        _akiest_ok = True
                     if not _akiest_ok:
                         sec_speed   = (float(spd_n) / inv_spd_sum) if inv_spd_sum > 0 else 0.0
                         if sec_density > 0 and sec_speed > 0:
@@ -3319,14 +3390,18 @@ class SimulationStats:
                         _slim_d    = _geom_d['speed_limit_kmh'] or 40.0
                         _st_d = None
                         try:
-                            _st_d = AKIEstGetParcialStatisticsSection(_sec_d, 0.0, 0)
+                            # vehTypePos via _akiest_typepos (all types when
+                            # supported, else 0) (2026-09-26).
+                            _st_d = AKIEstGetParcialStatisticsSection(
+                                _sec_d, 0.0, self._akiest_typepos(_sec_d))
                             if getattr(_st_d, 'report', -1) != 0:
                                 _st_d = None
                         except Exception:
                             _st_d = None
                         if _st_d is None:
                             try:
-                                _st_d = AKIEstGetCurrentStatisticsSection(_sec_d, 0)
+                                _st_d = AKIEstGetCurrentStatisticsSection(
+                                    _sec_d, self._akiest_typepos(_sec_d))
                                 if getattr(_st_d, 'report', -1) != 0:
                                     _st_d = None
                             except Exception:
@@ -4535,6 +4610,8 @@ class SimulationStats:
                 # Previously-uncounted timing actions (GR/ER/OC/VP/PT)
                 "TSP_GreenRealloc", "TSP_EarlyRed", "TSP_OffsetCorr",
                 "TSP_PhaseSkip", "TSP_PhaseRot",
+                # Plan rewrites outside committed actions
+                "TSP_Retiming",
                 "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction", "TSP_NaturalGreen",
                 "TSP_TwowayBandVeto",
                 "TSP_TotalExtension_s", "TSP_TotalInsertion_s",
@@ -4665,6 +4742,7 @@ class SimulationStats:
                 g.get('n_tsp_offset_corr', 0),
                 g.get('n_tsp_phase_skip', 0),
                 g.get('n_tsp_phase_rot', 0),
+                g.get('n_tsp_retiming', 0),
                 g.get('n_tsp_skipped_ge', 0),
                 g.get('n_tsp_skipped_ins', 0),
                 g.get('n_tsp_detected_no_action', 0),
@@ -5035,8 +5113,11 @@ class SimulationStats:
         # One row per section per 30 s sample window. src=AKIEST rows carry an
         # independently-measured (q, k, v) triplet -- check q_minus_kv ~= 0
         # before trusting them; src=IMPOSED rows had q=k*v enforced by a
-        # fallback and are wave-tracking only. Wave speed between an
-        # upstream/downstream section pair over a common window:
+        # fallback and are wave-tracking only. AKIEST now also covers RED
+        # windows with arrivals (q = measured upflow/arrival rate, v = live
+        # space-mean) -- see the upflow-qualified block in the sampler
+        # (2026-09-26). Wave speed between an upstream/downstream section pair
+        # over a common window:
         #   w = (q2-q1) / (k2-k1)   [km/h, lanes cancel if equal].
         _ts = getattr(self, "_section_ts", None) or []
         if _ts:

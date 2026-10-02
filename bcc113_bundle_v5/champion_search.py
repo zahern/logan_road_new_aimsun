@@ -180,9 +180,39 @@ except SystemExit:
 # on EVAL_SEEDS, so the comparison is apples-to-apples.
 EVAL_SEEDS = [300, 400, 500, 600, 700]     # the 5 champion seeds (all arms scored here)
 TRAIN_SEEDS = [800, 900, 1000, 1100]       # learners pre-train here (ignored in ranking)
-LEARNING_ARMS = {"CELLQLEARN", "CELLQLEARN_GATED", "CELLQLEARN_SAFE", "CELLQLEARN_FORCED",
-                 "DCTSP_MARL_RL"}
+LEARNING_ARMS = {
+    "CELLQLEARN", "CELLQLEARN_FORCED", "CELLQLEARN_GATED",
+    "CELLQLEARN_SAFE", "CELLQ_BUSSPLIT", "CELLQ_LEARN_UNCOORD",
+    "CELLQ_VDET_BUSSPLIT", "CELLQ_VDET_ON", "DCTSP_MARL_RL",
+}
 BXT_TRAIN_EPSILON = 0.30                    # exploration during the learners' train phase
+
+TOPUP_EVAL_SEEDS = [300, 1200, 1300, 1400, 1500, 1600]
+GATE_SEED = 300
+GATE_EXPECT_BUSES = 516
+GATE_EXPECT_INTERVENTIONS = 26
+GATE_EXPECT_S_PER_PAX = 15.84
+
+# Whether the learner Q-table is FROZEN during the scored seeds.
+#   True  -> legacy train-then-freeze: reproduces the September champion numbers
+#            and the seed-300 gate above. The engine default (False, "never
+#            freeze") is deliberately NOT used here because September's
+#            bit-identical repeat runs are the signature of a frozen policy.
+#   False -> the table keeps learning through the scored seeds (exploration at
+#            BXT_TRAIN_EPSILON). That is a DIFFERENT experiment: repeat runs of
+#            the same seed legitimately differ, so it cannot reproduce September
+#            and its numbers must not be pooled with frozen-policy results.
+LEARNERS_FREEZE_ON_EVAL = True
+
+# Set True to run the top-up seed set instead of EVAL_SEEDS.
+USE_TOPUP_SEEDS = True
+DEMAND_SCALARS = [1.0]                      # x1.0 demand
+BUS_FREQ_INJECT_SCALAR = 0.0                # runtime PT frequency scaling
+RESULTS_CSV = _os.path.join(_ROOT, f"champion_{CORRIDOR}.csv")
+
+# Effective scored-seed set. The top-up keeps GATE_SEED in the list so the
+# reproduction gate is produced by the same run as the new seeds.
+SCORED_SEEDS = list(TOPUP_EVAL_SEEDS) if USE_TOPUP_SEEDS else list(EVAL_SEEDS)
 DEMAND_SCALARS = [1.0]                      # x1.0 demand
 BUS_FREQ_INJECT_SCALAR = 0.0                # runtime PT frequency scaling
 # Multi-regime (domain-randomization) training (task a): when non-empty, each
@@ -230,12 +260,23 @@ EVAL_DIAGNOSTICS = (_os.environ.get("BXT_EVAL_DIAG", "0") == "1")
 RESULTS_CSV = _os.path.join(_ROOT, f"champion_{CORRIDOR}.csv")
 
 
-def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps):
+def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps,
+                              freeze_on_eval=None):
     """Patch BXT_TRAIN_SEEDS / BXT_EVAL_SEEDS / BXT_TRAIN_EPSILON in the corridor
     controller so the engine trains-then-freezes (learners) or runs per_seed
     (empty lists -> non-learners). Adds the lines if the controller lacks them
-    (Logan's controller does).  CPD_QL (per-junction Q-learning) consumes the
-    same train/eval seed lists, so they are patched identically."""
+    (Logan's controller does).
+
+    freeze_on_eval (2026-09-30): whether the Q-table keeps learning during the
+    SCORED seeds. None = leave the engine default alone (BXT_FREEZE_ON_EVAL =
+    False, "never freeze"). True = restore the legacy frozen-policy behaviour
+    that produced the September champion numbers, which the seed-300
+    reproduction gate (516 buses / 26 interventions / 15.84 s per pax) requires.
+    Note the distinction that the September twins expose: with train+eval lists
+    set, the table is trained then HELD across eval seeds (bit-identical
+    repeats); with BOTH lists cleared the phase is per_seed and the engine
+    calls reset_bxt_learning() every run, which cold-starts instead of freezing
+    -- that is the bug in run_kg_champion_and_phase2, not a freeze."""
     import re
     with open(controller_path, "r", encoding="utf-8", errors="replace") as f:
         txt = f.read()
@@ -243,10 +284,9 @@ def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps):
         "BXT_TRAIN_SEEDS": repr(list(train)),
         "BXT_EVAL_SEEDS": repr(list(eval_)),
         "BXT_TRAIN_EPSILON": repr(float(train_eps)),
-        "CPDQL_TRAIN_SEEDS": repr(list(train)),
-        "CPDQL_EVAL_SEEDS": repr(list(eval_)),
-        "CPDQL_TRAIN_EPSILON": repr(float(train_eps)),
     }
+    if freeze_on_eval is not None:
+        repl["BXT_FREEZE_ON_EVAL"] = repr(bool(freeze_on_eval))
     for var, val in repl.items():
         pat = re.compile(r"(?m)^(%s)\s*=.*$" % re.escape(var))
         if pat.search(txt):
@@ -257,8 +297,6 @@ def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps):
                 if "\nimport math\n" in txt else (var + " = " + val + "\n" + txt)
     with open(controller_path, "w", encoding="utf-8", newline="") as f:
         f.write(txt)
-
-
 def _set_controller_flag(controller_path, flag, value):
     """Force a top-level boolean flag in the controller (e.g. disable the heavy
     per-run plotting during a batch)."""
@@ -294,6 +332,55 @@ _SAFE_VETO = 3.0
 ARMS = [
     {"name": "NO_TSP", "strategy": "NORMAL", "method": "NO_TSP",
      "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {}},
+
+    # ── ABLATION WINNERS promoted into the champion matrix (2026-10-01) ──────
+    # Four arms run in run_all_test.py that each BEAT fixed-time on seed 300:
+    #   CELLQ_LEARN_UNCOORD   +12.0%
+    #   CELLQ_VDET_ON         +11.2%
+    #   CELLQ_BUSSPLIT        +17.4%   <-- best
+    #   CELLQ_VDET_BUSSPLIT   +11.2%
+    # Promoted so the full champion_search scores them against the paper's arms on
+    # the same seeds. Config copied verbatim from run_all_test._CELLQ_BASE, so both
+    # runners test the SAME thing; only the two flag deltas differ between arms.
+    {"name": "CELLQ_LEARN_UNCOORD", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+
+    {"name": "CELLQ_VDET_ON", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True,
+        "VIRTUAL_DET_FROM_PLAN": True}},
+
+    {"name": "CELLQ_BUSSPLIT", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True,
+        "EXCLUDE_BUS_FROM_CAR_QUEUE": True}},
+
+    {"name": "CELLQ_VDET_BUSSPLIT", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True,
+        "VIRTUAL_DET_FROM_PLAN": True,
+        "EXCLUDE_BUS_FROM_CAR_QUEUE": True}},
 
     {"name": "CELLQLEARN", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
      "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
@@ -647,6 +734,63 @@ SANITY_MIN_BUSES     = 5.0
 # on the RATIO avoids corridor-specific absolute thresholds. See the memory
 # note stats-cross-arm-carryover.
 SANITY_MAX_TRIPS_PER_BUS = 30.0
+
+
+def _check_september_gate(name, m, log):
+    """Reproduce the 14 Sep champion numbers on GATE_SEED, or declare the batch void.
+
+    The top-up seeds are only meaningful if the harness still reproduces the
+    September champion.  September's runs were frozen-policy (identical repeats),
+    so this gate also proves BXT_FREEZE_ON_EVAL actually took effect.  A FAIL
+    means the engine or the controller config has drifted since 14 Sep and every
+    new-seed number in this batch must be discarded.
+
+    Bus count is the strongest single check: it is what the broken .ang breaks
+    first (516 buses expected; a model whose bus type cannot be resolved injects
+    514 regardless of any demand scalar), so it catches the Phase-2 model defect
+    as well as a config regression.
+    """
+    def g(*keys):
+        for k in keys:
+            v = _fnum(m, k)
+            if v is not None:
+                return v
+        return None
+
+    trips = g('stats_N_BusTrips', 'N_BusTrips')
+    ext = g('stats_TSP_Extensions', 'TSP_Extensions')
+    er = g('stats_TSP_EarlyRed', 'TSP_EarlyRed')
+    busdelay = g('stats_AvgBusPassDelay_s', 'AvgBusPassDelay_s')
+
+    interven = None
+    if ext is not None and er is not None:
+        interven = ext + er
+
+    log(f"  [GATE] {name} seed={GATE_SEED}: buses={trips} interventions={interven} "
+        f"bus_delay={busdelay}")
+
+    fails = []
+    if trips is None:
+        fails.append("bus count missing (cannot verify the model/probe)")
+    elif abs(trips - GATE_EXPECT_BUSES) > 0.5 * GATE_EXPECT_BUSES:
+        fails.append(f"bus count {trips:.0f} != September {GATE_EXPECT_BUSES} "
+                     f"({trips / GATE_EXPECT_BUSES:.2f}x) -- check the .ang bus-type "
+                     f"object registration before trusting any seed")
+    if interven is not None and abs(interven - GATE_EXPECT_INTERVENTIONS) > 0.5 * GATE_EXPECT_INTERVENTIONS:
+        fails.append(f"interventions {interven:.0f} != September "
+                     f"{GATE_EXPECT_INTERVENTIONS} -- action path changed")
+    if busdelay is not None and abs(busdelay - GATE_EXPECT_S_PER_PAX) > 0.5 * GATE_EXPECT_S_PER_PAX:
+        fails.append(f"bus delay {busdelay:.2f} s/pax != September "
+                     f"{GATE_EXPECT_S_PER_PAX:.2f} -- reward/plumbing drifted")
+
+    if fails:
+        for f_ in fails:
+            log(f"  [GATE] FAIL -- {f_}")
+        log("  [GATE] BATCH VOID: do not report the top-up seeds until the "
+            "seed-300 run matches 14 Sep.")
+    else:
+        log("  [GATE] PASS -- reproduces 14 Sep; top-up seeds are valid.")
+    return not fails
 
 
 def _kpi_sanity(m):
@@ -1115,10 +1259,12 @@ def main(arms=None, results_csv=None, resume=False):
                 # ── FAIR TRAINING: learners train-then-freeze; others per_seed ──
                 is_learner = name in LEARNING_ARMS
                 if is_learner:
-                    seeds_to_run = list(TRAIN_SEEDS) + list(EVAL_SEEDS)
-                    _set_controller_bxt_seeds(CONTROLLER_PATH, TRAIN_SEEDS, EVAL_SEEDS, BXT_TRAIN_EPSILON)
+                    seeds_to_run = list(TRAIN_SEEDS) + list(SCORED_SEEDS)
+                    _set_controller_bxt_seeds(CONTROLLER_PATH, TRAIN_SEEDS, SCORED_SEEDS,
+                                              BXT_TRAIN_EPSILON,
+                                              freeze_on_eval=LEARNERS_FREEZE_ON_EVAL)
                 else:
-                    seeds_to_run = list(EVAL_SEEDS)
+                    seeds_to_run = list(SCORED_SEEDS)
                     _set_controller_bxt_seeds(CONTROLLER_PATH, [], [], BXT_TRAIN_EPSILON)
 
                 # Multi-regime training (task a): demand levels to cycle over the
@@ -1159,6 +1305,9 @@ def main(arms=None, results_csv=None, resume=False):
                                          active_intersections=arm.get("active_intersections"))
                     if m is not None:
                         _br.append_master_csv(RESULTS_CSV_, m)
+                        if (USE_TOPUP_SEEDS and is_learner
+                                and seed == GATE_SEED):
+                            _check_september_gate(name, m, log)
                         # ── [SANITY] live health gate ──────────────────────
                         _problems = _kpi_sanity(m)
                         # Mode-dispatch guard: did THIS arm's decider actually run?

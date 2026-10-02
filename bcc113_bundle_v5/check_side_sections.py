@@ -33,10 +33,28 @@ _say("starting check_side_sections.py")
 
 
 def _load_champion_search():
+    # exec(open(...).read()) in the Aimsun console never sets __file__, and
+    # the console cwd is the Aimsun install dir -- so probe candidate homes
+    # (same convention as run_probe.py) instead of trusting either one.
+    _cands = []
     try:
-        here = _os.path.dirname(_os.path.abspath(__file__))
+        if "__file__" in dir():
+            _cands.append(_os.path.dirname(_os.path.abspath(__file__)))
     except NameError:
-        here = _os.path.abspath(_os.getcwd())
+        pass
+    _cands.append(r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5")
+    try:
+        _cands.append(_os.path.abspath(_os.getcwd()))
+    except Exception:
+        pass
+    here = None
+    for _c in _cands:
+        if _os.path.isfile(_os.path.join(_c, "champion_search.py")):
+            here = _c
+            break
+    if here is None:
+        raise RuntimeError("champion_search.py not found (tried: "
+                           + ", ".join(_cands) + ")")
     if here not in _sys.path:
         _sys.path.insert(0, here)
     cs_path = _os.path.join(here, "champion_search.py")

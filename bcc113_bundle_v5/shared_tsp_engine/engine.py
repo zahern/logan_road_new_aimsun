@@ -35,7 +35,7 @@ import importlib.util as _importlib_util
 # can be verified from the [LOAD] line in the run log. If the log shows an older
 # stamp than this, Aimsun is running a CACHED copy of the module (re-running the
 # script alone does NOT reload it — the whole Aimsun process must be quit).
-ENGINE_BUILD = "2026-09-25T17:00-seeddecay-mongate"
+ENGINE_BUILD = "2026-10-02T12:00-accept-scope-fix"
 try:
     from AAPI import *
 except Exception:
@@ -99,6 +99,7 @@ MILP_MPC_ACTION_S = 10.0
 # crashed AAPIPostManage on its first str>int comparison (2026-08-24, KG).
 # bind_config coerces these to their proper types after binding.
 _TYPED_CONFIG_KEYS = {
+    'BXT_FREEZE_ON_EVAL': bool,
     'STATUS_DASHBOARD_INTERVAL_S': float,
     'MARK_DETECTION_POINTS': bool,
     'TRACK_BUS_POSITIONS': bool,
@@ -2289,6 +2290,23 @@ def _is_focus_blocked(veh_id: int, jct_id: int, time: float) -> bool:
     tr = _ETA_TRACK.get(int(veh_id)) if BUS_ETA_BIAS_LEARN else None
     if tr and float(tr.get("mult", 1.0)) >= 1.20:
         return False
+    # ── Spatial scope (2026-09-28) ────────────────────────────────────────
+    # Legacy focus was GLOBAL: any bus anywhere suppressed every other bus's
+    # TSP. With R10 (per-window arbitration) and R11 (convoy coupling) handling
+    # true conflicts, only buses SPATIALLY CO-LOCATED with the focus bus need
+    # serialising -- buses far apart act concurrently. The buses themselves
+    # stay in the network either way; focus only gates whose action fires.
+    try:
+        _r = float(globals().get('FOCUS_SCOPE_RADIUS_M', 800.0) or 800.0)
+        if _r > 0.0:
+            _xy = _bus_xy.get(int(veh_id))
+            _fxy = _bus_xy.get(int(_focus_bus_id))
+            if _xy and _fxy:
+                _d = ((_xy[0] - _fxy[0]) ** 2 + (_xy[1] - _fxy[1]) ** 2) ** 0.5
+                if _d > _r:
+                    return False
+    except Exception:
+        pass
     return True
 
 def GetPhaseDuration(IntersectionID, PhaseID, timeSta):
@@ -2399,14 +2417,128 @@ def golden_section_search(objective_function, lb, ub, time, tol=0.5, max_evals=1
     return 0.5 * (a + b)
 
 
+def differential_evolution_search(objective_function, lb, ub, time,
+                                  pop_size=10, max_generations=6,
+                                  F=0.7, CR=0.9, seed=12345):
+    """DE/rand/1/bin (Storn & Price 1997) on the INTEGER-second lattice.
+
+    Signal timings commit in whole seconds (ECIChangeTimingPhase takes integer
+    durations): optimising in continuous time and rounding afterwards can land
+    off-optimum, and harmony_search's global-`random` draws inject seed-noise
+    into committed timings (documented cross-seed inconsistency). This solver
+    searches whole seconds in [ceil(lb), floor(ub)] directly -- rand/1
+    mutation rounded to int + clamp, binomial crossover, greedy selection --
+    with its OWN random.Random(seed) instance, so identical traffic states
+    always commit identical timings regardless of whatever else consumed the
+    global stream. (In 1-D, crossover's forced dimension always fires, so the
+    trial IS the mutant; CR is kept for API shape.) Pure stdlib+numpy: scipy
+    is unloadable in-sim. Fail-safe: objective exceptions/NaN score +inf;
+    total failure returns float(lb) and callers clamp.
+    """
+    import random as _rnd_mod
+    try:
+        lo = int(math.ceil(float(lb)))
+        hi = int(math.floor(float(ub)))
+    except Exception:
+        return float(lb)
+    if hi <= lo:
+        return float(lo)
+    try:
+        _pop = max(4, int(pop_size))
+        _gens = max(0, int(max_generations))
+        _F = min(1.0, max(0.0, float(F)))
+        _CR = min(1.0, max(0.0, float(CR)))
+    except Exception:
+        return float(lo)
+    # Adaptive hyperparameters (2026-09-27): fixed pop/gens waste evals on
+    # tiny lattices and starve wide ones. Scale the population to the domain
+    # width (the init already covers the lattice exhaustively when it fits),
+    # so the eval budget follows the problem size on any corridor. Gens stay
+    # as configured (solution quality knob); pop is the efficiency knob.
+    try:
+        _pop = min(_pop, max(4, int(hi - lo + 1)))
+    except Exception:
+        pass
+    _rnd = _rnd_mod.Random(int(seed))
+
+    def _cost(_x):
+        try:
+            _v = float(objective_function(int(_x), time))
+        except Exception:
+            return float('inf')
+        if _v != _v:  # NaN
+            return float('inf')
+        return _v
+
+    try:
+        # Init: cover the lattice (exhaustive when the domain fits in the
+        # population), deterministically shuffled so identical landscapes
+        # replay identically.
+        _lattice = list(range(lo, hi + 1))
+        _rnd.shuffle(_lattice)
+        _pop_x = [_lattice[i % len(_lattice)] for i in range(_pop)]
+        _pop_f = [_cost(_x) for _x in _pop_x]
+        _best_i = int(np.argmin(_pop_f))
+        _best, _best_f = int(_pop_x[_best_i]), float(_pop_f[_best_i])
+        for _g in range(_gens):
+            for _i in range(_pop):
+                _pool = [j for j in range(_pop) if j != _i]
+                _r1, _r2, _r3 = _rnd.sample(_pool, 3)
+                _mut = _pop_x[_r1] + _F * (_pop_x[_r2] - _pop_x[_r3])
+                _mut = max(lo, min(hi, int(round(_mut))))
+                # 1-D binomial crossover: the single dimension is always the
+                # forced one, so the trial is the mutant (CR retained for shape).
+                _trial = _mut if _rnd.random() < _CR else _pop_x[_i]
+                _tf = _cost(_trial)
+                if _tf <= _pop_f[_i]:
+                    _pop_x[_i], _pop_f[_i] = int(_trial), float(_tf)
+                    if _tf < _best_f:
+                        _best, _best_f = int(_trial), float(_tf)
+        return float(_best)
+    except Exception:
+        return float(lo)
+
+
 def _solve_timing_min(self, objective_function, lb, ub, time):
-    """Pick the timing solver: 'harmony' (legacy stochastic, DEFAULT) or 'golden'
-    (deterministic golden-section).  NOTE: both optimise the shockwave objective,
-    which is DEGENERATE for stopped buses (~0 bus delay) -- golden's determinism
-    made that worse (KG CELLQLEARN 140->105). The real fix is BXT_SOLVER='deficit'
-    (closed-form bus deficit), handled directly in dctsp_bxt, which never calls
-    this."""
+    """Pick the timing solver: 'harmony' (legacy stochastic integer search),
+    'golden' (deterministic golden-section, CONTINUOUS output), 'de'
+    (deterministic differential evolution on the INTEGER lattice -- the only
+    solver that is both global and discrete-time; recommended for GE/ER and
+    all committed timing magnitudes), or 'exact' (exhaustive integer-lattice
+    argmin -- the true global optimum on tiny timing domains, deterministic
+    and cheaper than DE).  NOTE: all three optimise the shockwave
+    objective, which is DEGENERATE for stopped buses (~0 bus delay) -- the
+    real fix is BXT_SOLVER='deficit' (closed-form bus deficit), handled
+    directly in dctsp_bxt, which never calls this."""
     _solver = str(globals().get('BXT_SOLVER', 'harmony')).lower()
+    if _solver == 'exact':
+        # Exact on the integer lattice: timing domains are tiny (GE 3..15 =
+        # 13 integers), so exhaustive argmin IS the global optimum --
+        # deterministic, no metaheuristic noise, fewer evals than DE. NaN /
+        # raising points score +inf (same convention as DE).
+        try:
+            _lo = int(math.ceil(float(lb))); _hi = int(math.floor(float(ub)))
+        except Exception:
+            return float(lb)
+        if _hi <= _lo:
+            return float(_lo)
+        _best_x, _best_f = _lo, float('inf')
+        for _x in range(_lo, _hi + 1):
+            try:
+                _v = float(objective_function(int(_x), time))
+            except Exception:
+                continue
+            if _v == _v and _v < _best_f:
+                _best_x, _best_f = int(_x), float(_v)
+        return float(_best_x)
+    if _solver == 'de':
+        return differential_evolution_search(
+            objective_function, lb, ub, time,
+            pop_size=int(globals().get('TIMING_DE_POP', 10)),
+            max_generations=int(globals().get('TIMING_DE_GENS', 6)),
+            F=float(globals().get('TIMING_DE_F', 0.7)),
+            CR=float(globals().get('TIMING_DE_CR', 0.9)),
+            seed=int(globals().get('TIMING_DE_SEED', 12345)))
     if _solver == 'harmony':
         return harmony_search(
             objective_function, lb, ub,
@@ -3085,6 +3217,12 @@ class BusKalmanTracker:
     """
 
     DEFAULT_SPEED_MS = 11.0   # ≈ 40 km/h initial speed prior
+    # Realistic ETA ceiling (2026-09-28): a bus farther out than this is "too
+    # far to act on" -- anything beyond reads as effectively unactionable and
+    # only pollutes decision math (reachability vetoes fire anyway). Keeps the
+    # away-case 99999 and the dist/speed blow-up (crawling bus) from leaking
+    # into pred_bus / pre-arm leads / corridor projections.
+    ETA_MAX_S = 300.0
     # Plausible urban-bus speed band for the filter. The FLOOR must be low enough
     # to represent a queued/crawling bus -- a 4 m/s (14 km/h) floor forced every
     # congested bus to look free-flowing, making downstream ETAs too optimistic
@@ -3161,14 +3299,24 @@ class BusKalmanTracker:
         """
         dist  = target_pos_m - self.x[0]   # positive = target is ahead (north)
         speed = self.x[1]                   # positive = northbound
+        try:
+            _eta_max = float(getattr(self, 'ETA_MAX_S', 300.0) or 300.0)
+        except Exception:
+            _eta_max = 300.0
         if abs(dist) < 1.0:
             return current_time             # already at target
         if speed > 0 and dist > 0:          # northbound, target ahead
-            return current_time + dist / speed
-        if speed < 0 and dist < 0:          # southbound, target behind
-            return current_time + abs(dist) / abs(speed)
-        # Bus heading away from target — effectively unreachable
-        return current_time + 99999.0
+            _t = current_time + dist / speed
+        elif speed < 0 and dist < 0:        # southbound, target behind
+            _t = current_time + abs(dist) / abs(speed)
+        else:
+            # Bus heading away from target — effectively unreachable.
+            # Cap, don't emit 99999: an exploding value would leak into
+            # decision math, but the caller only needs "too far to act on".
+            _t = current_time + _eta_max
+        # Realistic ceiling: never read farther than ETA_MAX_S ahead.
+        _t = max(float(current_time), float(_t))
+        return min(float(_t), float(current_time) + _eta_max)
 
     def uncertainty_s(self, target_pos_m: float) -> float:
         """1-sigma arrival-time uncertainty (seconds)."""
@@ -3188,10 +3336,47 @@ class BusKalmanTracker:
         return math.sqrt(max(var_t, 0.0))
 
 
+def _eta_s_for(trackers, corridor_pos, veh_id, target_jct_id, time,
+               fallback_s=None):
+    """Systematic adaptive-Kalman bus ETA (2026-09-28).
+
+    ONE estimator for every decision path: seconds-from-now arrival of
+    veh_id at target_jct_id, backed by the 1-D constant-velocity Kalman
+    tracker when it exists (position+speed state, uncertainty propagated),
+    else a clamped distance/speed fallback. Always capped at
+    BUS_ETA_MAX_S (realistic ceiling -- a bus farther out is unactionable),
+    never negative, and always returns the 1-sigma so callers can act on
+    confidence (adaptive lead, reachability tolerance). Returns
+    (eta_s | None, sigma_s | None, source) where source in
+    {'kalman', 'fallback', 'none'}.
+    """
+    try:
+        _emx = float(globals().get('BUS_ETA_MAX_S', 300.0) or 300.0)
+    except Exception:
+        _emx = 300.0
+    try:
+        _trk = (trackers or {}).get(int(veh_id))
+    except Exception:
+        _trk = None
+    try:
+        _pos = (corridor_pos or {}).get(target_jct_id)
+    except Exception:
+        _pos = None
+    if _trk is not None and _pos is not None:
+        try:
+            _eta_t = float(_trk.eta(float(_pos), float(time)))
+            _sigma = float(_trk.uncertainty_s(float(_pos)))
+            _eta = max(0.0, _eta_t - float(time))
+            return min(_eta, _emx), min(max(_sigma, 0.0), _emx), "kalman"
+        except Exception:
+            pass
+    if fallback_s is not None and float(fallback_s) > 0.0:
+        return min(float(fallback_s), _emx), 12.0, "fallback"
+    return None, None, "none"
+
+
 # =============================================================================
 # CORRIDOR COORDINATOR
-# Groups of intersections on the same corridor run their GroupBasedControllers
-# in a coordinated way.
 #
 # When COORDINATED_TSP=False (default): pure state-sync logging only.
 # When COORDINATED_TSP=True: Kalman-filter prediction arms downstream
@@ -3245,6 +3430,14 @@ class CorridorCoordinator:
 
     def __init__(self, group_name: str, inter_ids: list, controllers_map: dict):
         self.name = group_name
+        # Pass-gate hold diagnostics (2026-09-28): per-target-junction counters
+        # so a junction persistently held by the 25 m source-clearance gate
+        # (starvation) is visible in the log vs. one that clears each bus.
+        self._pass_hold_n = {}       # target jid -> times held
+        self._pass_hold_t0 = {}      # (veh, target) -> first-hold sim time
+        self._pass_cleared = {}      # target jid -> held-then-fired
+        self._pass_starved = {}      # target jid -> held-then-expired/discarded
+        self._last_pass_summary = -1e9
         # GB controllers (GROUP_BASED_* modes) — full coordination support.
         self.inter_ids = [
             iid for iid in inter_ids
@@ -3317,6 +3510,10 @@ class CorridorCoordinator:
             "late_success": 0,
             "late_success_delay_s": 0.0,
             "eta_errors_s": [],
+            "too_far": 0,
+            "too_late_to_act": 0,
+            "revalidation_skip": 0,
+            "skipped_cooldown": 0,
         }
         # Revisable pre-arm plans: (veh_id, inter_id) -> plan dict.  A pre-arm
         # is a STATEMENT ABOUT THE FUTURE and must be revisable: the tick
@@ -3550,6 +3747,18 @@ class CorridorCoordinator:
             return eta, 0, 0.0, sw_diag
 
     # ------------------------------------------------------------------
+    def _pass_gate_starve(self, inter_id: int, veh_id: int, reason: str):
+        """A request that was held by the source-clearance gate and then died
+        (expired/discarded/too-far) never fired: record the starvation."""
+        if (veh_id, inter_id) in self._pass_hold_t0:
+            self._pass_hold_t0.pop((veh_id, inter_id), None)
+            self._pass_starved[inter_id] = int(self._pass_starved.get(inter_id, 0)) + 1
+            if LOG_CORRIDOR:
+                log_to_file(
+                    f"[PASSGATE] jct={inter_id} bus={veh_id} "
+                    f"STARVED ({reason}) -- held then died without firing"
+                )
+
     def _record_prearm_fired(self, inter_id: int, veh_id: int, eta_t: float,
                              fired_at_t: float, source_jct: int = -1,
                              algo: str = "", lead_reason: str = ""):
@@ -3560,6 +3769,16 @@ class CorridorCoordinator:
         # the coordinator re-populate the entry every management step, causing
         # prearm_success to fire on every subsequent notify_bus_granted call.
         key = (inter_id, veh_id)
+        # Pass-gate clear bookkeeping: a request that was held by the source-
+        # clearance gate and now fires is CLEARED (the starved-path inverse).
+        _t0 = self._pass_hold_t0.pop(key, None)
+        if _t0 is not None:
+            self._pass_cleared[inter_id] = int(self._pass_cleared.get(inter_id, 0)) + 1
+            if LOG_CORRIDOR:
+                log_to_file(
+                    f"[PASSGATE] jct={inter_id} bus={veh_id} "
+                    f"CLEARED after {float(time) - float(_t0):.1f}s hold"
+                )
         # ── Revisable plan registry: a repeated fire for the SAME pair with a
         # materially different ETA is a REVISION of the intention, not a new
         # event.  Track it so the paper can report plan churn honestly.
@@ -3693,7 +3912,7 @@ class CorridorCoordinator:
         for key, eta_t, _source_jct, _algo in stale:
             inter_id, veh_id = key
             self._fired_prearms.pop(key, None)
-            self._prearm_stats["missed"] += 1
+            self._prearm_stats["missed"] = int(self._prearm_stats.get("missed", 0)) + 1
             _record_wave_event(
                 time, self.name, "prearm_missed",
                 source_jct=_source_jct,
@@ -3727,6 +3946,35 @@ class CorridorCoordinator:
             f"[CORRIDOR] group={self.name} corridor positions set: "
             + ", ".join(f"{iid}:{pos:.0f}m" for iid, pos in sorted(pos_map.items()))
         )
+
+    def _compute_plan_offsets(self, bus_speed_ms=None):
+        """Green-wave OFFSETS (s) for the bus direction: the cumulative bus travel
+        time from the first route junction, so the bus/platoon rides progressive
+        greens (Eq.~offset in the plan-design MP). offset_j = sum of inter-junction
+        travel times up to j at the corridor bus speed. Cached in self._plan_offsets
+        {jid: offset_s}. One-directional (the bus band); the reverse band is the
+        classic offset tradeoff and is left to the online recourse."""
+        _v = float(bus_speed_ms or globals().get('PLAN_BUS_SPEED_MS', 11.0)) or 11.0
+        _off = {}
+        _cum = 0.0
+        _prev = None
+        for _iid in (self.route_inter_ids or []):
+            _p = self.corridor_pos.get(int(_iid))
+            if _p is None:
+                _off[int(_iid)] = _cum
+                continue
+            if _prev is not None:
+                _cum += max(0.0, abs(float(_p) - float(_prev))) / max(_v, 1.0)
+            _prev = _p
+            _off[int(_iid)] = _cum
+        self._plan_offsets = _off
+        try:
+            log_to_file("[PLAN_OFFSET] group=%s green-wave offsets(s): %s"
+                        % (self.name, {k: round(v, 1) for k, v in _off.items()}),
+                        force=True)
+        except Exception:
+            pass
+        return _off
 
     # ------------------------------------------------------------------
     def _iter_managed_targets(self, at_inter_id: int, is_northbound: bool,
@@ -3863,7 +4111,24 @@ class CorridorCoordinator:
         cycle_len_s) from the DOWNSTREAM controller rather than self."""
         try:
             cycle = float(getattr(ctrl, 'cycle_len_s', 135.0) or 135.0)
-            bpd = float(getattr(ctrl, 'BusPhaseDuration', 20.0) or 20.0)
+            # Live bus-green length first: _live_bus_phase_dur is refreshed
+            # from ECI on the tick after any plan rewrite (see deferred
+            # refresh); BusPhaseDuration is the nominal and goes stale after
+            # commits -- the old code coordinated against the pre-commit plan.
+            bpd = float(getattr(ctrl, '_live_bus_phase_dur', None)
+                        or getattr(ctrl, 'BusPhaseDuration', 20.0) or 20.0)
+            # Pushed post-change plan wins over both (downstream direction):
+            # same-tick commits are visible without waiting for ECI polling.
+            try:
+                _pp = (getattr(self, '_plan_push', None) or {}).get(
+                    int(getattr(ctrl, 'id', -1)))
+                if isinstance(_pp, dict) and float(
+                        _pp.get("bus_phase_dur", 0.0)) > 0.0:
+                    bpd = float(_pp["bus_phase_dur"])
+                    if float(_pp.get("cycle_s", 0.0)) > 0.0:
+                        cycle = float(_pp["cycle_s"])
+            except Exception:
+                pass
             bp = int(getattr(ctrl, 'BusPhase', 2))
             _max_delay = max(cycle - bpd, 0.0)
             cur = int(ECIGetCurrentPhase(node_id))
@@ -3885,7 +4150,7 @@ class CorridorCoordinator:
                 _steps = (_bi - _ci) % _n
                 for _k in range(1, _steps):
                     _ph = phs[(_ci + _k) % _n]
-                    _time_to_bp += float(GetPhaseDuration(node_id, _ph, timeSta))
+                    _time_to_bp += float(_dur_or_live(node_id, _ph, timeSta))
             except Exception:
                 _time_to_bp = cycle
             if dt <= _time_to_bp + bpd:
@@ -3940,7 +4205,8 @@ class CorridorCoordinator:
     def project_chain_delay_paxs(self, at_inter_id: int, veh_id: int,
                                  time: float, timeSta: float,
                                  bus_eta_s: float, bus_saved_s: float,
-                                 bus_occ: float, horizon=None) -> float:
+                                 bus_occ: float, horizon=None,
+                                 force_is_nb=None) -> float:
         """Project the pax·s bus-delay change over the bus's REMAINING corridor
         route caused by saving `bus_saved_s` seconds at THIS junction.
 
@@ -3964,7 +4230,14 @@ class CorridorCoordinator:
                   else int(globals().get('GLOBAL_REWARD_CHAIN_HORIZON', 3) or 0))
             _h = max(0, min(int(_h), 6))
             trk = self._trackers.get(int(veh_id))
-            is_nb = True if trk is None else (float(trk.x[1]) >= 0.0)
+            # force_is_nb overrides the tracker-derived heading -- used by the
+            # bus-free general-traffic coupling to project the through-platoon in a
+            # CHOSEN direction (so the same junction's downstream landing can be
+            # scored for BOTH arterial directions, not just the bus's heading).
+            if force_is_nb is not None:
+                is_nb = bool(force_is_nb)
+            else:
+                is_nb = True if trk is None else (float(trk.x[1]) >= 0.0)
             _slice = self._nash_forward_slice(int(at_inter_id), int(veh_id),
                                               is_nb, 1 + max(_h, 1))
             if len(_slice) < 2:
@@ -3980,6 +4253,7 @@ class CorridorCoordinator:
             _arr_act = _arr_no - max(0.0, float(bus_saved_s))
             _prev_pos = self.corridor_pos.get(int(at_inter_id))
             _total = 0.0
+            _meas_floor = 0.0        # measured-queue downstream re-delay floor
             for _iid in _slice[1:1 + max(_h, 1)]:
                 _down = self._ic_map.get(int(_iid)) or self._ctrl_map.get(int(_iid))
                 if _down is None:
@@ -4002,7 +4276,27 @@ class CorridorCoordinator:
                 _total += (_w_act - _w_no) * _occ
                 _arr_no += _w_no
                 _arr_act += _w_act
-            return float(_total)
+                # ── MEASURED-QUEUE grounding (2026-09-29) ────────────────────
+                # The signal-only wait above returns 0 whenever the bus lands in a
+                # downstream GREEN, so on a coordinated corridor it under-reports
+                # the re-delay and the local saving looks like it survives (KG:
+                # predicted bus saving 27x the realized). But a standing MEASURED
+                # main queue at the downstream junction blocks the bus behind it
+                # REGARDLESS of signal: arriving `bus_saved_s` earlier into an
+                # un-cleared queue costs up to that head-start back. Price the
+                # queue-discharge wait (Q / sat_flow) capped by the local saving,
+                # take the worst downstream junction, and floor the chain cost by
+                # it so a congested corridor cancels the local bus credit.
+                try:
+                    _qd = _down._measured_main_queue_veh()
+                    if _qd is not None and float(_qd) > 0.0:
+                        _sf = max(float(getattr(_down, 'SaturationFlow', 1800.0)
+                                        or 1800.0) / 3600.0, 0.1)
+                        _rd = min(max(0.0, float(bus_saved_s)), float(_qd) / _sf)
+                        _meas_floor = max(_meas_floor, _rd * _occ)
+                except Exception:
+                    pass
+            return max(float(_total), float(_meas_floor))
         except Exception:
             return 0.0
 
@@ -4215,6 +4509,64 @@ class CorridorCoordinator:
         return inter_id in self._pre_requests
 
     # ------------------------------------------------------------------
+    def notify_timing_changed(self, inter_id: int, action: str,
+                              magnitude_s: float, time: float, why: str = "",
+                              plan: dict = None):
+        """A junction rewrote its own plan (commit / restore / recovery).
+
+        Stores the published post-change plan (bus green length, cycle) so
+        BOTH directions -- downstream delay projections and upstream
+        green-window checks -- read the new values same-tick instead of
+        polling ECI or running on pre-commit snapshots. Drops pre-arms
+        targeting the junction (their windows were computed against the old
+        plan). Commits are rare, restores at most once per cycle: no flood.
+        """
+        try:
+            _vers = getattr(self, '_plan_version', None)
+            if not isinstance(_vers, dict):
+                _vers = {}
+                self._plan_version = _vers
+            _vers[int(inter_id)] = int(_vers.get(int(inter_id), 0)) + 1
+        except Exception:
+            pass
+        try:
+            if isinstance(plan, dict) and plan.get("bus_phase_dur"):
+                _store = getattr(self, '_plan_push', None)
+                if not isinstance(_store, dict):
+                    _store = {}
+                    self._plan_push = _store
+                _store[int(inter_id)] = {
+                    "version": int(getattr(self, '_plan_version', {}).get(
+                        int(inter_id), 0)),
+                    "bus_phase_dur": float(plan.get("bus_phase_dur")),
+                    "cycle_s": float(plan.get("cycle_s", 0.0) or 0.0),
+                    "phase": int(plan.get("phase", -1)),
+                    "t": float(time),
+                    "action": str(action),
+                }
+        except Exception:
+            pass
+        try:
+            if int(inter_id) in getattr(self, '_pre_requests', {}):
+                self._pre_requests.pop(int(inter_id), None)
+                log_to_file(
+                    f"[COORD_TIMING] jct={inter_id} {action} "
+                    f"{float(magnitude_s):.1f}s ({why}) t={float(time):.0f} "
+                    f"-> pre-arm dropped (stale green window)")
+        except Exception:
+            pass
+
+    def get_pushed_plan(self, inter_id: int):
+        """Latest published post-change plan for a junction (or None)."""
+        try:
+            _store = getattr(self, '_plan_push', None) or {}
+            _p = _store.get(int(inter_id))
+            if isinstance(_p, dict) and float(_p.get("bus_phase_dur", 0.0)) > 0.0:
+                return _p
+        except Exception:
+            pass
+        return None
+
     def notify_bus_granted(self, veh_id: int, at_inter_id: int,
                            time: float, bus_sg=None):
         """
@@ -4461,7 +4813,36 @@ class CorridorCoordinator:
         if COORDINATED_TSP:
             _wave_is_new = (veh_id != self._wave_veh_id) or _phys_discontinuity
             if _wave_is_new:
-                # New bus — fully reset wave state so served-set doesn't carry over
+                # R10 opposing-direction arbitration (2026-09-28): a junction
+                # serves one bus-phase window per cycle. If a different bus
+                # already owns an active wave, the MORE-LATE bus wins; the
+                # loser defers its corridor pre-arms to the next window (its
+                # local detection still works -- only corridor coordination
+                # is deferred, and R11's convoy coupling still covers a
+                # following bus within headway).
+                if (self._wave_active and self._wave_veh_id > 0
+                        and self._wave_veh_id != veh_id):
+                    try:
+                        _old_late = float(_bus_lateness.get(
+                            int(self._wave_veh_id), 0.0) or 0.0)
+                    except Exception:
+                        _old_late = 0.0
+                    try:
+                        _new_late = float(_bus_lateness.get(
+                            int(veh_id), 0.0) or 0.0)
+                    except Exception:
+                        _new_late = 0.0
+                    if _new_late < _old_late:
+                        if LOG_CORRIDOR:
+                            log_to_file(
+                                f"[ARBITRATE] jct={at_inter_id} t={time:.1f} "
+                                f"bus={veh_id} late={_new_late:.0f}s < "
+                                f"incumbent bus={self._wave_veh_id} "
+                                f"late={_old_late:.0f}s -- incumbent keeps "
+                                f"the wave (loser defers corridor pre-arm)")
+                        return
+                # New bus wins the wave -- fully reset wave state so served-set
+                # doesn't carry over
                 self._wave_served_ids     = {at_inter_id}
                 self._wave_uncertain_jcts = set()
             else:
@@ -4481,7 +4862,20 @@ class CorridorCoordinator:
                 )
 
         _allowed_targets = set(self._iter_managed_targets(at_inter_id, is_northbound, veh_id=veh_id)[:1])
-        
+
+        # ── COORD_PREARM_ENABLED gate (2026-10-01) ─────────────────────────────
+        # Coordinate WITHOUT pushing downstream pre-greens. When a run sets
+        # COORD_PREARM_ENABLED=False the coordinator stays fully alive (corridor
+        # positions, neighbour reward coupling, Nash Tier-2 best-response, POG /
+        # progression awareness all still feed each junction's DECISION) but it
+        # never queues a downstream pre-arm request. This isolates whether the
+        # corridor coupling helps on its own, with the pre-arm push -- the part
+        # the attribution blamed for the -26.9% gridlock -- removed. Clearing the
+        # allowed set here means the cleanup loop below also drops any stale
+        # pre-arm already queued for this bus, so nothing fires in _process_pre_requests.
+        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+            _allowed_targets = set()
+
         # ── Strict guard: ensure only the immediate next junction gets prearms ──
         # CRITICAL: Prearms should ONLY be queued for the immediate next managed junction.
         # If somehow more than one target is selected, this is a bug and must be logged.
@@ -4505,7 +4899,7 @@ class CorridorCoordinator:
                     continue
                 if _tid in _allowed_targets:
                     continue
-                del self._pre_requests[_tid]
+                self._pre_requests.pop(_tid, None)
                 _removed_targets.append(int(_tid))
 
             for _old_tid in _removed_targets:
@@ -4771,7 +5165,13 @@ class CorridorCoordinator:
             t_cursor = time
             for step in range(n_phases):
                 ph = ((current_phase - 1 + step) % n_phases) + 1
-                raw_dur = float(GetPhaseDuration(jct_id, ph, 0.0))
+                # Subsequent phases read the GLOBAL plan-state tracker first
+                # (committed plan, push-aware) and fall back to live ECI --
+                # so a just-taken action at this junction is priced into the
+                # forward delay projection immediately, not after ECI settles.
+                _tdur = _global_plan_dur(jct_id, ph)
+                raw_dur = float(_tdur) if _tdur is not None else float(
+                    GetPhaseDuration(jct_id, ph, 0.0))
                 dur = max(raw_dur, 1.0)   # guard against zero-duration phases
                 if step == 0:
                     # Current phase: already partially elapsed
@@ -4813,6 +5213,167 @@ class CorridorCoordinator:
             return self._estimate_unmanaged_delay_s(inter_id)
 
     # ------------------------------------------------------------------
+    def _bus_lateness_for(self, veh_id):
+        """Schedule-lateness-adjusted urgency for a bus (0 = on time)."""
+        try:
+            _l = float(_bus_lateness.get(int(veh_id), 0.0) or 0.0)
+        except Exception:
+            _l = 0.0
+        try:
+            _tr = _ETA_TRACK.get(int(veh_id)) or {}
+            _m = float(_tr.get("mult", 1.0) or 1.0)
+        except Exception:
+            _m = 1.0
+        return max(float(_l), (_m - 1.0) * 60.0)
+
+    def _bus_dir(self, veh_id):
+        """+1 northbound / -1 southbound from the Kalman tracker velocity sign."""
+        try:
+            _tr = self._trackers.get(int(veh_id))
+            if _tr is not None:
+                return 1 if float(_tr.x[1]) >= 0.0 else -1
+        except Exception:
+            pass
+        return 0
+
+    def _eta_at_j(self, veh_id, jct_id, time):
+        """Seconds from now for a bus to reach jct_id (tracker eta, capped)."""
+        try:
+            _p = self.corridor_pos.get(jct_id)
+            _tr = self._trackers.get(int(veh_id))
+            if _p is not None and _tr is not None:
+                return max(0.0, float(_tr.eta(float(_p), float(time))) - float(time))
+        except Exception:
+            pass
+        return None
+
+    def _runner_up(self, jct_id, time, exclude):
+        """Second-best oncoming bus at jct_id after `exclude` (or None)."""
+        try:
+            _cs = self.oncoming_buses(jct_id, time, max_eta_s=180.0)
+        except Exception:
+            _cs = []
+        _best = None
+        for (_v, _e, _o) in _cs:
+            if int(_v) == int(exclude):
+                continue
+            _s = max(float(_o or 40.0), 1.0) * (
+                1.0 + max(0.0, self._bus_lateness_for(_v)) / 60.0)
+            if _best is None or _s > _best[1]:
+                _best = (int(_v), _s)
+        return (_best[0] if _best else None)
+
+    def optimize_network(self, time):
+        """Corridor-wide joint bus assignment (MULTIBUS_NETWORK).
+
+        Assigns ONE bus per junction (R10 window exclusivity) from the
+        per-junction reward-optimal choice, then arbitrates OPPOSING-direction
+        buses at ADJACENT junctions whose ETA windows collide: the higher
+        combined-score configuration wins and the other junction is demoted to
+        its runner-up. This is the decision a per-junction selector cannot
+        make alone -- it stops the two-direction offset fight that diffusive
+        losses came from. Returns {jct: veh_id}.
+        """
+        _assign = {}
+        try:
+            for _j in self.inter_ids:
+                try:
+                    _b, _s, _n = self.best_bus_for(int(_j), time)
+                    if _b is not None:
+                        _assign[int(_j)] = (int(_b), float(_s))
+                except Exception:
+                    continue
+            # Adjacent opposing-bus arbitration along the corridor spine.
+            try:
+                _ids = [int(j) for j in self.inter_ids if j in self.corridor_pos]
+                _ids.sort(key=lambda j: float(self.corridor_pos.get(j, 0.0)))
+                _win_s = float(globals().get('MULTIBUS_CONFLICT_S', 60.0) or 60.0)
+                for _a, _bj in zip(_ids, _ids[1:]):
+                    _pa = _assign.get(_a)
+                    _pb = _assign.get(_bj)
+                    if not _pa or not _pb or _pa[0] == _pb[0]:
+                        continue
+                    _da = self._bus_dir(_pa[0])
+                    _db = self._bus_dir(_pb[0])
+                    if _da == 0 or _db == 0 or _da == _db:
+                        continue
+                    _ea = self._eta_at_j(_pa[0], _a, time)
+                    _eb = self._eta_at_j(_pb[0], _bj, time)
+                    if _ea is None or _eb is None or abs(_ea - _eb) >= _win_s:
+                        continue
+                    if _pa[1] >= _pb[1]:
+                        _rb = self._runner_up(_bj, time, _pb[0])
+                        if _rb is not None:
+                            _assign[_bj] = (_rb, 0.0)
+                    else:
+                        _rb = self._runner_up(_a, time, _pa[0])
+                        if _rb is not None:
+                            _assign[_a] = (_rb, 0.0)
+            except Exception:
+                pass
+            _out = {}
+            for _j, (_b, _s) in _assign.items():
+                _out[_j] = _b
+            return _out
+        except Exception:
+            return {}
+
+    def best_bus_for(self, jct_id, time):
+        """Reward-optimal bus to serve at jct_id right now (MULTIBUS_JOINT)."""
+        # MULTIBUS_NETWORK: consult the corridor-wide joint assignment (cached
+        # ~5 s) so per-junction selection follows the network-arbitrated plan.
+        try:
+            if bool(getattr(_spm, 'MULTIBUS_NETWORK', False)):
+                _na = getattr(self, '_net_assign', None)
+                _nt = getattr(self, '_net_assign_t', -1e9)
+                if _na is None or float(time) - float(_nt) > 5.0:
+                    _na = self.optimize_network(float(time))
+                    self._net_assign = _na
+                    self._net_assign_t = float(time)
+                _b = _na.get(int(jct_id))
+                if _b is not None:
+                    try:
+                        _s = 0.0
+                        for (_v, _e, _o) in self.oncoming_buses(
+                                int(jct_id), float(time)):
+                            if int(_v) == int(_b):
+                                _s = max(float(_o or 40.0), 1.0) * (
+                                    1.0 + max(0.0,
+                                              self._bus_lateness_for(_v)) / 60.0)
+                        return int(_b), _s, len(self.oncoming_buses(
+                            int(jct_id), float(time), 180.0))
+                    except Exception:
+                        return int(_b), 0.0, 1
+        except Exception:
+            pass
+        try:
+            _cands = self.oncoming_buses(jct_id, time, max_eta_s=180.0)
+        except Exception:
+            _cands = []
+        if not _cands:
+            return None, 0.0, 0
+        _best, _best_s = None, -1.0
+        for (_v, _e, _o) in _cands:
+            _occ = max(float(_o or 40.0), 1.0)
+            _l = self._bus_lateness_for(_v)
+            _s = _occ * (1.0 + max(0.0, _l) / 60.0)
+            if _s > _best_s:
+                _best, _best_s = _v, _s
+        # Focus/co-located stability: keep the incumbent unless dominated.
+        if (_best is not None and _focus_bus_id > 0 and _best != _focus_bus_id
+                and not _is_focus_blocked(_best, jct_id, time)):
+            try:
+                _foc_s = 0.0
+                for (_v, _e, _o) in _cands:
+                    if _v == _focus_bus_id:
+                        _foc_s = max(float(_o or 40.0), 1.0) * (
+                            1.0 + max(0.0, self._bus_lateness_for(_v)) / 60.0)
+                if _foc_s > _best_s * 0.9:
+                    _best = _focus_bus_id
+            except Exception:
+                pass
+        return _best, _best_s, len(_cands)
+
     def oncoming_buses(self, jct_id, time, max_eta_s=180.0):
         """Every bus APPROACHING jct_id, as [(veh_id, eta_s, occ)] sorted by eta.
 
@@ -4856,16 +5417,24 @@ class CorridorCoordinator:
         from_idx = self._route_index.get(from_id)
         to_idx   = self._route_index.get(to_id)
         to_pos   = self.corridor_pos.get(to_id)
+        try:
+            _eta_max = float(getattr(self, 'ETA_MAX_S', 300.0) or 300.0)
+        except Exception:
+            _eta_max = 300.0
+
+        def _cap(_t):
+            _t = max(float(time), float(_t))
+            return min(float(_t), float(time) + _eta_max)
 
         if from_idx is None or to_idx is None or to_pos is None:
-            return (tracker.eta(to_pos, time)
-                    if to_pos is not None else time + 99999.0)
+            return (_cap(tracker.eta(to_pos, time))
+                    if to_pos is not None else _cap(time + _eta_max))
 
         lo, hi = sorted((from_idx, to_idx))
         intermediates = self.route_inter_ids[lo + 1: hi]  # exclusive of endpoints
 
         if not intermediates:
-            return tracker.eta(to_pos, time)
+            return _cap(tracker.eta(to_pos, time))
 
         # Propagate at current tracker speed; fall back to default if stalled
         spd = abs(tracker.x[1])
@@ -4894,7 +5463,7 @@ class CorridorCoordinator:
         # Final kinematic leg from last intermediate to target junction
         dist_final = abs(to_pos - pos_cursor)
         t_cursor += dist_final / spd
-        return t_cursor
+        return _cap(t_cursor)
 
     # ------------------------------------------------------------------
     def _objective_lead_time(self, gb, bus_sg, eta_t: float, time: float,
@@ -5066,6 +5635,13 @@ class CorridorCoordinator:
 
     def _process_pre_requests(self, time: float, timeSta: float):
         """Fire pre-green requests when the bus is within the algorithm's lead time."""
+        # COORD_PREARM_ENABLED=False: coordinate the decision but never fire a
+        # downstream pre-green. notify_bus_granted already stops queuing, so this
+        # is defensive (and clears anything queued before the flag flipped).
+        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+            if self._pre_requests:
+                self._pre_requests.clear()
+            return
         for inter_id, req in list(self._pre_requests.items()):
             if len(req) >= 5:
                 veh_id, eta_t, bus_sg, issued_t, source_jct = req
@@ -5081,7 +5657,7 @@ class CorridorCoordinator:
                         f"[PREARM DROP] jct={inter_id} bus={veh_id} "
                         f"missing source_jct (legacy/invalid request)"
                     )
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
                 continue
 
             # If PT line is known, ensure source_jct belongs to that line route.
@@ -5093,7 +5669,7 @@ class CorridorCoordinator:
                         f"[PREARM DROP] jct={inter_id} bus={veh_id} src={source_jct} "
                         f"not on PT route line={_line_id}"
                     )
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
                 continue
 
             _tracker_live = self._trackers.get(veh_id)
@@ -5119,6 +5695,11 @@ class CorridorCoordinator:
             _pass_gate_m = float(globals().get('PREARM_SOURCE_PASS_M', 25.0) or 25.0)
             if source_jct > 0 and _tracker_live is not None:
                 if not self._has_passed_source_jct(veh_id, source_jct, _is_nb, _pass_gate_m):
+                    # Pass-gate hold bookkeeping: count + first-hold time so we
+                    # can tell a junction that clears each bus from one that
+                    # never clears (starvation).
+                    self._pass_hold_n[inter_id] = int(self._pass_hold_n.get(inter_id, 0)) + 1
+                    self._pass_hold_t0.setdefault((veh_id, inter_id), float(time))
                     if LOG_CORRIDOR:
                         log_to_file(
                             f"[PREARM HOLD] bus={veh_id} src={source_jct} tgt={inter_id} "
@@ -5148,7 +5729,7 @@ class CorridorCoordinator:
                     veh_id, eta_new, new_bus_sg, time,
                     source_jct if source_jct > 0 else inter_id,
                 )
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
                 _record_wave_event(
                     time, self.name, "prearm_retarget",
                     source_jct=self._wave_origin,
@@ -5165,7 +5746,7 @@ class CorridorCoordinator:
                 getattr(self, '_max_prearm_horizon_s', float(globals().get('MAX_PREARM_HORIZON_S', 135.0) or 135.0))
             )
             if (eta_t - time) > _max_prearm_horizon_s:
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
                 self._record_prearm_discarded(inter_id)
                 _record_wave_event(
                     time, self.name, "prearm_discarded",
@@ -5179,8 +5760,9 @@ class CorridorCoordinator:
 
             # Stale: bus never arrived or took a different route
             if time - issued_t > self.PRE_REQ_TIMEOUT_S or eta_t - time < -30.0:
-                del self._pre_requests[inter_id]
-                self._prearm_stats["expired"] += 1
+                self._pass_gate_starve(inter_id, veh_id, "expired")
+                self._pre_requests.pop(inter_id, None)
+                self._prearm_stats["expired"] = int(self._prearm_stats.get("expired", 0)) + 1
                 log_to_file(
                     f"[CORRIDOR PREARM] EXPIRED jct={inter_id} bus={veh_id} "
                     f"age={time - issued_t:.0f}s ETA_was={eta_t:.1f}s now={time:.1f}s"
@@ -5213,7 +5795,12 @@ class CorridorCoordinator:
                 else:
                     lead_s = self.PRE_GREEN_LEAD_S
                     lead_reason = "objective-fallback"
-            elif COORDINATION_ALGO == "ADAPTIVE":
+            else:
+                # Systematic adaptive lead (2026-09-28): uncertainty-scaled for
+                # EVERY coordination algo, not just ADAPTIVE -- a confident
+                # prediction (low sigma) pre-arms short, a noisy one long, so
+                # the green window tracks the Kalman confidence rather than a
+                # fixed lead. base 15 s + 3×sigma, clamped [20, 75].
                 lead_s = self.PRE_GREEN_LEAD_S
                 lead_reason = "adaptive-base"
                 _tracker = self._trackers.get(veh_id)
@@ -5224,16 +5811,9 @@ class CorridorCoordinator:
                     except Exception:
                         _sigma = 12.0
                     lead_sigma = _sigma
-                    # Adaptive lead: scale with uncertainty.  Low sigma (confident
-                    # prediction) → shorter lead; high sigma → longer lead.
-                    # Formula: base of 15s + 3×sigma, clamped to [20, 75].
-                    # At sigma=8 → 39s, sigma=12 → 51s, sigma=20 → 75s.
                     _adaptive_lead = max(20.0, min(75.0, 15.0 + 3.0 * _sigma))
                     lead_s = _adaptive_lead
                     lead_reason = "adaptive-sigma"
-            else:
-                lead_s = self.PRE_GREEN_LEAD_S   # KALMAN and SHOCKWAVE: base fixed lead
-                lead_reason = "fixed"
 
             # Add phase-transition overhead if the downstream junction exposes it
             if gb is not None:
@@ -5249,7 +5829,7 @@ class CorridorCoordinator:
                     f"base_lead={self.PRE_GREEN_LEAD_S:.1f} sigma={_sigma_txt} reason={lead_reason}"
                 )
 
-            if COORDINATION_ALGO == "ADAPTIVE":
+            if lead_reason in ("adaptive-sigma", "adaptive-base"):
                 self._algo_diag["adaptive_fire_count"] = int(self._algo_diag.get("adaptive_fire_count", 0) or 0) + 1
                 self._algo_diag["adaptive_lead_total_s"] = float(self._algo_diag.get("adaptive_lead_total_s", 0.0) or 0.0) + float(lead_s)
                 self._algo_diag["adaptive_lead_min_s"] = min(
@@ -5303,7 +5883,8 @@ class CorridorCoordinator:
                     _dist_m = None
                 if _dist_m is not None and _dist_m > float(
                         globals().get('PREARM_MAX_DIST_M', 2000.0)):
-                    del self._pre_requests[inter_id]
+                    self._pass_gate_starve(inter_id, veh_id, "too_far")
+                    self._pre_requests.pop(inter_id, None)
                     self._prearm_stats.setdefault('too_far', 0)
                     self._prearm_stats['too_far'] += 1
                     continue
@@ -5311,7 +5892,8 @@ class CorridorCoordinator:
             # Re-apply horizon gate after ETA refresh so requests that moved far
             # out in time do not fire too early with stale queue-time ETA.
             if (eta_t - time) > _max_prearm_horizon_s:
-                del self._pre_requests[inter_id]
+                self._pass_gate_starve(inter_id, veh_id, "over_horizon_refresh")
+                self._pre_requests.pop(inter_id, None)
                 self._record_prearm_discarded(inter_id)
                 _record_wave_event(
                     time, self.name, "prearm_discarded",
@@ -5331,7 +5913,7 @@ class CorridorCoordinator:
                         globals().get('MIN_EFFECTIVE_PREARM_LEAD_S', 10.0) or 10.0)
             )
             if eta_t - time < _min_prearm_lead_s:
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
                 self._prearm_stats.setdefault("too_late_to_act", 0)
                 self._prearm_stats["too_late_to_act"] += 1
                 _record_wave_event(
@@ -5367,7 +5949,7 @@ class CorridorCoordinator:
                                     f"live_eta={_live_eta:.1f}s vs queued_eta={eta_t:.1f}s "
                                     f"— bus delayed, skipping prearm fire"
                                 )
-                            del self._pre_requests[inter_id]
+                            self._pre_requests.pop(inter_id, None)
                             self._prearm_stats.setdefault("revalidation_skip", 0)
                             self._prearm_stats["revalidation_skip"] += 1
                             continue
@@ -5393,7 +5975,7 @@ class CorridorCoordinator:
                             eta_s=max(0.0, eta_t - time),
                             note="cooldown",
                         )
-                        del self._pre_requests[inter_id]
+                        self._pre_requests.pop(inter_id, None)
                         self._prearm_stats.setdefault("skipped_cooldown", 0)
                         self._prearm_stats["skipped_cooldown"] += 1
                         continue
@@ -5403,7 +5985,7 @@ class CorridorCoordinator:
                         if not _prearm_allow(veh_id):
                             stats._prearm_stats['skipped_early_bus'] = \
                                 stats._prearm_stats.get('skipped_early_bus', 0) + 1
-                            del self._pre_requests[inter_id]
+                            self._pre_requests.pop(inter_id, None)
                             continue
                         gb.bus_request = bus_sg
                         gb._active_bus_veh_id = veh_id
@@ -5461,9 +6043,22 @@ class CorridorCoordinator:
                         if not _prearm_allow(veh_id):
                             stats._prearm_stats['skipped_early_bus'] = \
                                 stats._prearm_stats.get('skipped_early_bus', 0) + 1
-                            del self._pre_requests[inter_id]
+                            self._pre_requests.pop(inter_id, None)
                             continue
-                        ic._harmony_prearm = (veh_id, eta_t, time)
+                        # Directional payload (2026-09-26): route direction of this
+                        # bus (+1/-1 along route_index) travels with the prearm
+                        # so the downstream junction knows which corridor
+                        # direction is arriving (the GB path already carries
+                        # this implicitly via bus_sg).
+                        try:
+                            _ri = self._route_index or {}
+                            _rs = int(_ri.get(source_jct, -1))
+                            _rt = int(_ri.get(inter_id, -1))
+                            _pdir = 1 if _rt > _rs else (-1 if _rt < _rs else 0)
+                        except Exception:
+                            _pdir = 0
+                        ic._harmony_prearm = (veh_id, eta_t, time, _pdir,
+                                              source_jct)
                         self._wave_served_ids.add(inter_id)
                         self._record_prearm_fired(
                             inter_id, veh_id, eta_t, time,
@@ -5500,7 +6095,7 @@ class CorridorCoordinator:
                                 f"jct={inter_id} bus={veh_id} "
                                 f"ETA_in={eta_t - time:.1f}s lead={lead_s:.0f}s"
                             )
-                del self._pre_requests[inter_id]
+                self._pre_requests.pop(inter_id, None)
 
     # ------------------------------------------------------------------
     def _check_wave_complete(self, time: float):
@@ -5659,7 +6254,8 @@ class CorridorCoordinator:
                                 f"delta={_new_eta - _re:+.1f}s")
 
         states    = {iid: c.state            for iid, c in self._ctrl_map.items()}
-        n_groups  = {iid: len(c.phase_groups) for iid, c in self._ctrl_map.items()}
+        n_groups  = {iid: len(getattr(c, 'phase_groups', None) or [])
+                     for iid, c in self._ctrl_map.items()}
         bus_reqs  = {iid: c.bus_request       for iid, c in self._ctrl_map.items()}
 
         n_idle       = sum(1 for s in states.values() if s == GroupBasedController.IDLE)
@@ -5670,8 +6266,14 @@ class CorridorCoordinator:
         # ── Periodic state dump ───────────────────────────────────────────────
         if LOG_CORRIDOR and time - self._last_log_t >= self.LOG_CORRIDOR_INTERVAL:
             self._last_log_t = time
+            # phase_groups is a GROUP_BASED-layer field that stays empty in
+            # DRL_DENSITY/coordination modes; showing it misled (and caused the
+            # KeyError crash). Show each member's real per-phase green count
+            # instead, from the live plan-state tracker.
             detail = " | ".join(
-                f"{iid}:{states[iid][:1]}pg{n_groups[iid]}"
+                f"{iid}:{(states.get(iid) or '?')[:1]}"
+                f"g{sum(1 for p in getattr(self._ctrl_map.get(iid), 'phase_list', [])
+                        if (_global_plan_dur(iid, p) or 0.0) > 0.0)}"
                 for iid in self.inter_ids
             )
             _vprint(
@@ -5691,6 +6293,29 @@ class CorridorCoordinator:
                     f"sync#{self._sync_count} — all {len(self._ctrl_map)} members IDLE "
                     f"(phase_groups={list(n_groups.values())})"
                 )
+
+        # ── Pass-gate hold diagnostics: periodic per-junction summary ─────────
+        # Starvation signature = a junction whose held requests never fire
+        # (starved >> cleared). Every 600 s, one line per junction with holds.
+        try:
+            if time - self._last_pass_summary >= 600.0:
+                self._last_pass_summary = time
+                if self._pass_hold_n:
+                    _bits = []
+                    for _jid in sorted(self._pass_hold_n, key=int):
+                        _bits.append(
+                            "%d(h%d c%d s%d held%d)" % (
+                                int(_jid),
+                                int(self._pass_hold_n.get(_jid, 0)),
+                                int(self._pass_cleared.get(_jid, 0)),
+                                int(self._pass_starved.get(_jid, 0)),
+                                sum(1 for (_v, _t) in self._pass_hold_t0
+                                    if _t == _jid)))
+                    log_to_file(
+                        f"[PASSGATE] t={time:.0f} group={self.name} summary: "
+                        + " ".join(_bits))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def summary(self) -> str:
@@ -6873,6 +7498,135 @@ class IntersectionController:
         except Exception:
             return set(), set()
 
+    def _phase_origin_sections(self):
+        """{phase: set(origin sections)} from the LIVE signal plan, cached.
+
+        Maps each phase's signal groups -> turning origin sections via the same
+        AAPI positional-sg primitives as _signal_plan_split / _classify_turnings.
+        Used to fill UpFlowList per phase/DIRECTION (2026-09-26): a bus-free
+        continuous monitor must price the direction being SERVED, not a
+        both-direction mean (Logan's two mains differ ~3x at some junctions).
+        {} when the plan cannot be read -- callers then keep the broadcast
+        mean. Cached on the controller (recreated per replication)."""
+        _c = getattr(self, '_phase_secs_cache', None)
+        if _c is not None:
+            return _c
+        _out = {}
+        try:
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            try:
+                _n_ph = int(ECIGetNumberofPhases(_jid))
+            except Exception:
+                _n_ph = int(ECIGetNumberPhases(_jid))
+            for _ph in range(1, max(_n_ph, 0) + 1):
+                _sgs = set()
+                try:
+                    _nsg = int(ECIGetNbSignalGroupsPhaseofJunction(_jid, _ph, 0.0))
+                    for _pos in range(1, _nsg + 1):
+                        try:
+                            _sg = int(ECIGetSignalGroupPhaseofJunction(
+                                _jid, _ph, _pos, 0.0))
+                            if _sg > 0:
+                                _sgs.add(_sg)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _secs = set()
+                for _sg in _sgs:
+                    try:
+                        _nt = int(ECIGetNumberTurningsofSignalGroup(_jid, int(_sg)))
+                        for _ti in range(max(_nt, 0)):
+                            try:
+                                _fp = intp(); _tp = intp()
+                                ECIGetFromToofTurningofSignalGroup(
+                                    _jid, int(_sg), _ti, _fp, _tp)
+                                _s = int(_fp.value())
+                                if _s > 0:
+                                    _secs.add(_s)
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if _secs:
+                    _out[_ph] = _secs
+        except Exception:
+            _out = {}
+        if _out:
+            self._phase_secs_cache = _out
+        return _out
+
+    def _log_plan_scan(self, time):
+        """One-time [PLAN_SCAN] dump: per phase, the signal-plan origin sections
+        (from _phase_origin_sections) with their REAL length + lane count, so the
+        scanned approaches can be checked against the actual intersection geometry
+        -- a short length flags a model connector rather than a full approach lane.
+        Read-only diagnostic; fires once per junction."""
+        if getattr(self, '_plan_scan_done', False):
+            return
+        self._plan_scan_done = True
+        try:
+            _po = self._phase_origin_sections() or {}
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            if not _po:
+                log_to_file(f"[PLAN_SCAN] inter={self.id} t={time:.0f} "
+                            f"(no signal-plan origins resolved)", force=True)
+                return
+            for _ph in sorted(_po.keys()):
+                _parts = []
+                for _s in sorted(_po[_ph]):
+                    try:
+                        _si = AKIInfNetGetSectionANGInf(int(_s))
+                        if getattr(_si, 'report', -1) >= 0:
+                            _L = float(getattr(_si, 'length', 0.0) or 0.0)
+                            _ln = max(int(getattr(_si, 'nbCentralLanes', 1))
+                                      + int(getattr(_si, 'nbSideLanes', 0)), 1)
+                            _parts.append(f"{_s}({_L:.0f}m,{_ln}L)")
+                        else:
+                            _parts.append(f"{_s}(?)")
+                    except Exception:
+                        _parts.append(f"{_s}(?)")
+                log_to_file(
+                    f"[PLAN_SCAN] inter={self.id} t={time:.0f} "
+                    f"ph{_ph}{'*BUS' if _ph == _bp else ''} origins={_parts}",
+                    force=True)
+        except Exception as _e:
+            log_to_file(f"[PLAN_SCAN] inter={self.id} error {_e!r}", force=True)
+
+    def _nonmain_phase_indices(self):
+        """0-based UpFlowList ROW indices of the SIDE-street phases (not the bus
+        phase, not a phase serving any main approach). (2026-09-26)
+
+        The analytic cross cost iterates per-phase rows: pricing a side phase's
+        row is right (its own approach flow -- both cross directions
+        distinguished), but pricing the OPPOSITE MAIN phase's row double-counts
+        once _measured_opposite_main_delay prices that direction from measured
+        queues. Returns None when the plan map is unresolved (callers keep the
+        legacy all-non-bus-rows behaviour), or the (possibly empty) row list
+        when resolved. Rows follow the fillers' swap: row 0 = bus phase, phase 1
+        takes row (BusPhase-1) when BusPhase != 1."""
+        try:
+            _ps = self._phase_origin_sections() or {}
+            if not _ps:
+                return None
+            _mains = set(int(s) for s in
+                         (getattr(self, 'incoming_sections', []) or []))
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            _rows = []
+            for _ph, _secs in _ps.items():
+                _ph = int(_ph)
+                if _ph == _bp:
+                    continue
+                if any(int(s) in _mains for s in _secs):
+                    continue        # main-direction phase -> measured term prices it
+                if _ph == 1 and _bp != 1:
+                    _rows.append(_bp - 1)
+                else:
+                    _rows.append(_ph - 1)
+            return _rows
+        except Exception:
+            return None
+
     def _turning_flow_vph(self, from_sec, to_sec, veh_type=-1, sim_hours=None):
         """Authoritative flow (veh/h) for the turn from_sec->to_sec, from Aimsun's
         own TURNING statistics (node flow = sum of turning flows). Prefers the
@@ -7360,6 +8114,40 @@ class IntersectionController:
                 resolved.append(real)
         return resolved
 
+    def _movement_map_side_origins(self):
+        """Side approach sections from the phase->turning map (2026-09-28).
+
+        Authoritative source: the movement map (_phase_movement_map) lists every
+        phase's turnings (from,to). SIDE approaches = origin sections of the
+        NON-bus phases' turnings that aren't already main. This catches
+        junctions whose signal-plan split / topology discovery return empty
+        (e.g. 17249, 18942) even though they carry real side streets -- so the
+        side-delay measurement actually has sections to price. Returns []
+        when genuinely sideless (e.g. 17308).
+        """
+        try:
+            _pm = self._phase_movement_map()
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            _main_ids = set(int(s) for s in
+                            (getattr(self, 'incoming_sections', None) or []))
+            _side = set()
+            for _ph, _e in (_pm or {}).items():
+                if int(_ph) == _bp:
+                    continue
+                for (_f, _t) in _e.get('turns', []):
+                    if int(_f) > 0 and int(_f) not in _main_ids:
+                        _side.add(int(_f))
+            if not _side:
+                return []
+            try:
+                _res = self._resolve_real_approach_sections(
+                    sorted(_side), _main_ids) or sorted(_side)
+            except Exception:
+                _res = sorted(_side)
+            return sorted(set(int(s) for s in _res))
+        except Exception:
+            return []
+
     def _get_side_sections(self):
         # First try config / stats stored IDs, but validate and resolve them
         candidate = self._normalize_side_sections(self.config.get('SideSections', []))
@@ -7388,6 +8176,35 @@ class IntersectionController:
                     return resolved
                 # Resolved to empty — fall through to auto-discovery
             # All stored IDs were invalid — fall through to auto-discovery
+
+        # ── Movement-map fallback (2026-09-28) ──────────────────────────────
+        # When config + signal-plan/topology discovery return nothing, the
+        # phase->turning map still knows the side approaches (17249/18942).
+        # Map them so the side-delay measurement has sections to price.
+        if not getattr(self, '_cached_side_sections', None):
+            _mm_side = self._movement_map_side_origins()
+            if _mm_side:
+                self.config['SideSections'] = _mm_side
+                self._cached_side_sections = _mm_side
+                # Sync into the stats per-junction dict so the QUEUE FEED
+                # (Simulation_Stats.accumulate_intersection_step scans
+                # main+side_sections) actually measures these sections --
+                # otherwise they'd be mapped here but never scanned, so the
+                # side queue/delay would still read blank.
+                try:
+                    _sd = getattr(self.stats, '_inter', None)
+                    _rec = (_sd or {}).get(int(self.id))
+                    if _rec is not None:
+                        _prev = set(int(s) for s in
+                                    (_rec.get('side_sections') or []))
+                        _rec['side_sections'] = list(
+                            _prev | set(int(s) for s in _mm_side))
+                except Exception:
+                    pass
+                log_to_file(
+                    f"[SIDE_DISC] inter={self.id} movement-map side: "
+                    f"{sorted(_mm_side)}", force=True)
+                return _mm_side
 
         return self._auto_discover_side_sections()
 
@@ -7492,12 +8309,226 @@ class IntersectionController:
             _q += max(0.0, float(_st.get('queue_veh', 0.0) or 0.0)) * _lanes
         return _q
 
-    def _measured_main_queue_veh(self):
+    def _measured_delay_per_veh_s(self, sections):
+        """MEASURED mean delay per vehicle (s) over `sections`, from Aimsun's own
+        section statistics (.DTa = delay-time-average, the microscopic delay the
+        car-following model actually produces). Prefers the current interval, falls
+        back to cumulative. None when unavailable. This is the realised delay the
+        KPIs are scored on -- used to CALIBRATE the analytic decision reward toward
+        the plant, closing the decide-analytic / score-measured gap."""
+        _tot = 0.0
+        _n = 0
+        for _s in (sections or []):
+            try:
+                _st = AKIEstGetCurrentStatisticsSection(int(_s), -1)
+                if getattr(_st, 'report', -1) != 0:
+                    _st = AKIEstGetGlobalStatisticsSection(int(_s), -1)
+                if getattr(_st, 'report', -1) == 0:
+                    _d = float(getattr(_st, 'DTa', 0.0) or 0.0)
+                    if _d >= 0.0:
+                        _tot += _d
+                        _n += 1
+            except Exception:
+                continue
+        return (_tot / _n) if _n > 0 else None
+
+    def _analytic_delay_per_veh_s(self, sections, phase, timeSta=0.0):
+        """The MODEL's PREDICTED delay/veh (s) for `phase` under the current plan --
+        Webster uniform delay d = 0.5*C*(1-g/C)^2 / (1-x), x = q*C/(mu*g). Matched to
+        _measured_delay_per_veh_s (same lanes, same operating point) so the
+        calibration factor kappa = realised(.DTa) / predicted is a TRUE ratio, not
+        just measured/REF. None when the plan/flow can't be read."""
+        try:
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            _C = float(self._signal_cycle_s(timeSta) or 0.0)
+            _g = float(GetPhaseDuration(_jid, int(phase), timeSta) or 0.0)
+            if _C <= 1.0 or _g <= 0.0:
+                return None
+            _mu = max(float(getattr(self, 'SaturationFlow', 1900.0) or 1900.0), 1.0)
+            _q = 0.0
+            for _s in (sections or []):
+                _q += max(0.0, float(self._measured_section_flow_vph(int(_s))))
+            if _q <= 0.0:
+                for _s in (sections or []):
+                    try:
+                        _q += max(0.0, float(self._demand_seed_flow_for_sec(int(_s))))
+                    except Exception:
+                        pass
+            if _q <= 0.0:
+                return None
+            _x = min(_q * _C / (_mu * _g), 0.98)          # degree of saturation
+            _lam = min(max(_g / _C, 0.01), 0.99)
+            return max(0.0, 0.5 * _C * (1.0 - _lam) ** 2 / max(1.0 - _x, 0.02))
+        except Exception:
+            return None
+
+    def _update_delay_calibration(self, timeSta=0.0):
+        """Maintain per-approach EWMA calibration factors kappa_main / kappa_side =
+        measured delay-per-veh (.DTa) / DELAY_CAL_REF_S, so the analytic reward can
+        be scaled toward the realised microscopic delay -- differentially per side,
+        so it changes the surplus (a uniform factor would not). Default inert."""
+        if not bool(globals().get('DELAY_CALIBRATION', False)):
+            return
+        _ref = max(float(globals().get('DELAY_CAL_REF_S', 15.0)), 1.0)
+        _a = float(globals().get('DELAY_CAL_ALPHA', 0.1) or 0.1)
+        _lo = float(globals().get('DELAY_CAL_MIN', 0.25))
+        _hi = float(globals().get('DELAY_CAL_MAX', 4.0))
+
+        def _ewma(_tag, _k):
+            _p = getattr(self, _tag, None)
+            setattr(self, _tag, _k if _p is None else (1.0 - _a) * _p + _a * _k)
+
+        try:
+            # PER-PHASE openness (2026-09-30): rather than a rigid geographic
+            # main/side split, read EVERY signal phase's realised delay from the
+            # lanes IT serves (_phase_origin_sections -> .DTa) -- a general
+            # per-movement 'how open is this phase' factor. Then map to the eval's
+            # served/conflicting interface: benefit scales by the SERVED phase's
+            # openness, cost by the WORST conflicting phase (act less when any
+            # conflicting movement is congested). Falls back to main/side sections.
+            # kappa is the TRUE realised/predicted ratio: measured .DTa divided by
+            # the model's Webster prediction for the SAME phase+plan. Falls back to
+            # measured/REF only when no analytic prediction is available.
+            def _kappa(_secs, _phase):
+                _m = self._measured_delay_per_veh_s(list(_secs))
+                if _m is None:
+                    return None
+                _pred = (self._analytic_delay_per_veh_s(list(_secs), _phase, timeSta)
+                         if _phase is not None else None)
+                _ratio = (_m / _pred) if (_pred and _pred > 1.0) else (_m / _ref)
+                return min(max(_ratio, _lo), _hi)
+
+            _po = self._phase_origin_sections() or {}
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            if _po:
+                _kphase = {}
+                for _ph, _secs in _po.items():
+                    _k = _kappa(_secs, int(_ph))
+                    if _k is not None:
+                        _kphase[int(_ph)] = _k
+                if _kphase:
+                    self._delay_cal_phase = _kphase   # per-phase realised/predicted
+                    if _bp in _kphase:
+                        _ewma('_delay_cal_main', _kphase[_bp])
+                    _others = [v for p, v in _kphase.items() if p != _bp]
+                    if _others:
+                        _ewma('_delay_cal_side', max(_others))
+                    return
+            # Fallback: geographic main vs side sections.
+            _main = (list(getattr(self, 'incoming_sections', []) or [])
+                     or list((getattr(self, 'config', {}) or {}).get('MainSections', []) or []))
+            _side = self._get_side_sections() or []
+            for _tag, _secs, _ph in (('_delay_cal_main', _main, _bp),
+                                     ('_delay_cal_side', _side, None)):
+                _k = _kappa(_secs, _ph)
+                if _k is not None:
+                    _ewma(_tag, _k)
+        except Exception:
+            pass
+
+    def _measured_section_flow_vph(self, sec):
+        """MEASURED flow (veh/h) on `sec` from the LIVE vehicle count and space-mean
+        speed -- q = density x speed = (n / len_km) * mean_speed_kmh (the fundamental
+        relation). This WORKS on the virtual/modeled sections where Aimsun's own
+        section statistics report Flow=0 (the roll_ctr=0 blind spot): the vehicle
+        count and per-vehicle speed are live queries, not gathered statistics. A
+        fully stopped queue returns ~0 (correct: a jam has ~0 throughput -- its cost
+        is priced from the standing count, not the flow). 0.0 when empty or the
+        geometry is unavailable."""
+        try:
+            _n = int(AKIVehStateGetNbVehiclesSection(int(sec), False))
+            if _n <= 0:
+                return 0.0
+            _si = AKIInfNetGetSectionANGInf(int(sec))
+            _ok = getattr(_si, 'report', -1) >= 0
+            _len = float(getattr(_si, 'length', 0.0) or 0.0) if _ok else 0.0
+            _lanes = (max(int(getattr(_si, 'nbCentralLanes', 1))
+                          + int(getattr(_si, 'nbSideLanes', 0)), 1) if _ok else 1)
+            # A section shorter than the min is a connector stub (e.g. a 10 m
+            # [dead+main+model] link): density = n/len_km explodes there (1 veh /
+            # 10 m = 100 veh/km), so count x speed gives a meaningless ~5000 vph.
+            # Treat it as unmeasurable and return 0 rather than a spike.
+            if _len < float(globals().get('MEAS_MIN_SECTION_M', 25.0)):
+                return 0.0
+            _sv = 0.0
+            _c = 0
+            for _vi in range(_n):
+                try:
+                    _inf = AKIVehStateGetVehicleInfSection(int(sec), _vi)
+                    _sv += max(0.0, float(getattr(_inf, 'CurrentSpeed', 0.0) or 0.0))
+                    _c += 1
+                except Exception:
+                    continue
+            if _c <= 0:
+                return 0.0
+            _vmean = _sv / _c                       # km/h, arithmetic space-mean
+            _q = (_n / (_len / 1000.0)) * _vmean    # veh/h = density x speed
+            # Physical ceiling: a lane cannot discharge faster than saturation.
+            # On a very short (e.g. 10 m connector) section density x speed can
+            # blow up (2 veh / 10 m => 200 veh/km); cap at saturation x lanes so
+            # the measured flow stays realistic instead of ~12000 vph.
+            _qmax = max(float(getattr(self, 'SaturationFlow', 1900.0) or 1900.0), 1.0) * _lanes
+            return max(0.0, min(_q, _qmax))
+        except Exception:
+            return 0.0
+
+    def _measured_main_queue_veh(self, phase=None):
         """MEASURED queue (veh) on this junction's MAIN approaches (for Nash
-        measured state). None when no fresh measurement."""
+        measured state). None when no fresh measurement.
+
+        phase=None -> self.BusPhase when the signal plan resolves: only the
+        sections THAT PHASE serves are summed, so the mainline benefit prices
+        the served DIRECTION, not both directions at once (2026-09-26)."""
         _main = (list(getattr(self, 'incoming_sections', []) or [])
                  or list((getattr(self, 'config', {}) or {}).get('MainSections', []) or []))
-        return self._measured_sections_queue_veh(_main)
+        try:
+            _ph = int(phase) if phase is not None \
+                else int(getattr(self, 'BusPhase', -1) or -1)
+            if _ph >= 1:
+                _ps = self._phase_origin_sections() or {}
+                _secs = _ps.get(_ph)
+                if _secs:
+                    _sel = [s for s in _main if int(s) in _secs]
+                    if _sel:
+                        _main = _sel
+        except Exception:
+            pass
+        _q = self._measured_sections_queue_veh(_main)
+        if _q is not None:
+            return _q
+        # Live fallback (2026-09-29): the detector feed (latest_section) can be
+        # empty on a corridor that isn't populating MEASURED_QUEUE_FEED, so the
+        # analytic mainline benefit (q_sat*g) over-credits an empty main phase and
+        # the demand-based controller extends green with no cars to serve. Count
+        # the LIVE standing vehicles zoned near the stop line on the served main
+        # sections, symmetric to the side live-cost floor, so the mainline BENEFIT
+        # is bounded by the ACTUAL cars present. None only when no main sections.
+        if not _main:
+            return None
+        try:
+            _n = 0.0
+            for _s in _main:
+                try:
+                    _c, _L, _why = self._zone_queue_count(int(_s))
+                    _n += max(0.0, float(_c))
+                except Exception:
+                    pass
+            return _n
+        except Exception:
+            return None
+
+    def _current_green_remaining_s(self, time, timeSta):
+        """Remaining seconds of the CURRENT phase (engine-side method, so the
+        engine's GetPhaseDuration wrapper resolves natively -- calling it bare from
+        specialized_modes raised NameError and disabled the bus ETA logic). Returns
+        None on failure so callers keep their legacy magnitude behaviour."""
+        try:
+            _cur = int(ECIGetCurrentPhase(self.node_id))
+            _ps = float(ECIGetStartingTimePhase(self.node_id))
+            _pd = float(GetPhaseDuration(self.node_id, _cur, timeSta))
+            return max(0.0, _pd - (float(time) - _ps))
+        except Exception:
+            return None
 
     def _actuated_coord_phase(self, timeSta):
         """Coordinated phase = the LONGEST fixed phase (the main-street green band).
@@ -7788,8 +8819,10 @@ class IntersectionController:
         # accessor used by the cascade term); fall back to self.stats.
         _stats = globals().get('stats', None) or getattr(self, 'stats', None)
         _ls = getattr(_stats, 'latest_section', None) if _stats is not None else None
-        if not _ls:
-            return 0.0, 0.0
+        # Empty latest_section feed no longer returns 0 wholesale (that priced a
+        # busy cross approach at 0 on KG -> corridor over-action): fall through so
+        # each side section is priced from the LIVE side flow instead. (2026-09-29)
+        _ls = _ls or {}
         try:
             _t_now = float(AKIGetCurrentSimulationTime())
         except Exception:
@@ -7799,23 +8832,56 @@ class IntersectionController:
         _car_occ = max(safe_float(getattr(self, 'CarOcc', 1.6)), 1.0)
         _kjam = max(safe_float(getattr(self, 'JamDensity', 150.0)), 1.0)  # veh/km/lane
         _side = self._get_side_sections()
+        # Live side flow/density, parallel to _get_side_sections() (same order the
+        # [SIDE_SCAN]/FLOW_DIAG logs confirm), for the no-fresh-measurement floor.
+        _upflow = list(getattr(self, 'SideUpFlowList', []) or [])
+        _upden = list(getattr(self, 'SideUpDenList', []) or [])
         _delay = 0.0
         _vehh = 0.0
         # ── diagnostic accounting (why the measured cost is / isn't engaging) ──
         _diag_on = bool(globals().get('MEASURED_SIDE_COST_DIAG', False))
         _n_total = 0; _n_present = 0; _n_fresh = 0
         _dbg = []
-        for _ss in (_side or []):
+
+        def _live_side_cost(_idx, _ss):
+            # Arrivals-over-red cost from the LIVE side flow when there is no fresh
+            # latest_section reading. On a cross approach that is uncongested AT
+            # DECISION TIME the standing queue is ~0, but the extra red still
+            # delays every vehicle that ARRIVES during it (triangular avg wait
+            # ~extra_red/2), scaled by a superlinear spillback severity from the
+            # live density. Prefers the live flow, then the demand seed, then 0.
+            _q = 0.0; _k = 0.0
+            if _idx is not None and _idx < len(_upflow):
+                _q = max(0.0, safe_float(_upflow[_idx]))
+                if _idx < len(_upden):
+                    _k = max(0.0, safe_float(_upden[_idx]))
+            if _q < 1.0:
+                _q = max(_q, safe_float(self._demand_seed_flow_for_sec(_ss)))
+            if _q <= 0.0:
+                return 0.0, 0.0
+            _veh = (_q / 3600.0) * extra_red
+            _sat = min(_k / _kjam, 0.95)
+            _sev = 1.0 + _spill * (_sat / max(1.0 - _sat, 0.05))
+            return (_veh * extra_red * 0.5 * _car_occ * _sev,
+                    _veh * extra_red / 3600.0)
+
+        for _idx_ss, _ss in enumerate(_side or []):
             _n_total += 1
             _st = _ls.get(int(_ss))
             if not _st:
                 if _diag_on:
-                    _dbg.append(f"{_ss}:NO_MEAS")
+                    _dbg.append(f"{_ss}:NO_MEAS->live")
+                _d, _v = _live_side_cost(_idx_ss, _ss)
+                _delay += _d
+                _vehh += _v
                 continue
             _n_present += 1
             if _t_now >= 0.0 and abs(_t_now - float(_st.get('t', -1e9))) > _fresh:
                 if _diag_on:
-                    _dbg.append(f"{_ss}:STALE(dt={_t_now - float(_st.get('t', -1e9)):.0f}s)")
+                    _dbg.append(f"{_ss}:STALE->live(dt={_t_now - float(_st.get('t', -1e9)):.0f}s)")
+                _d, _v = _live_side_cost(_idx_ss, _ss)
+                _delay += _d
+                _vehh += _v
                 continue
             _n_fresh += 1
             _lanes = max(int(_st.get('lanes', 1) or 1), 1)
@@ -7860,6 +8926,69 @@ class IntersectionController:
                 pass
         return _delay, _vehh
 
+    def _measured_opposite_main_delay(self, extra_red):
+        """MEASURED delay (pax·s) imposed on the OPPOSITE mainline DIRECTION
+        (the main approaches NOT served by the bus phase) when `extra_red`
+        seconds of green are shifted to the bus phase. (2026-09-26)
+
+        A green-shifting action (GE/GR/INS/ER/…) takes time from the OTHER
+        corridor direction as well as the cross street, but the analytic
+        mainline benefit (_mainline_pax_saved_for_green) credits only the
+        SERVED direction -- so a phase insertion looked beneficial even when
+        it queued the opposite direction. Mirror of
+        _measured_side_delay_penalty's veh = standing + arrivals structure
+        (both directions priced, same spirit as the two-way band check).
+        Returns 0.0 when the phase map or feed is unavailable (fail-open:
+        current behaviour preserved)."""
+        extra_red = max(safe_float(extra_red), 0.0)
+        if extra_red <= 0.0:
+            return 0.0
+        try:
+            _ps = self._phase_origin_sections() or {}
+        except Exception:
+            _ps = {}
+        _bp = int(getattr(self, 'BusPhase', -1) or -1)
+        _bus_secs = _ps.get(_bp) if _bp >= 1 else None
+        if not _bus_secs:
+            return 0.0
+        _opp = [int(s) for s in (getattr(self, 'incoming_sections', []) or [])
+                if int(s) not in _bus_secs]
+        if not _opp:
+            return 0.0
+        _stats = globals().get('stats', None) or getattr(self, 'stats', None)
+        _ls = getattr(_stats, 'latest_section', None) if _stats is not None else None
+        try:
+            _t_now = float(AKIGetCurrentSimulationTime())
+        except Exception:
+            _t_now = -1.0
+        _fresh = float(globals().get('MEASURED_SIDE_FRESH_S', 90.0))
+        _car_occ = max(safe_float(getattr(self, 'CarOcc', 1.6)), 1.0)
+        _delay = 0.0
+        for _s in _opp:
+            _nq = 0.0
+            _qarr = 0.0
+            _lanes = 1
+            _seen = False
+            if _ls:
+                _st = _ls.get(_s)
+                if _st is not None and (_t_now < 0.0 or abs(
+                        _t_now - float(_st.get('t', -1e9))) <= _fresh):
+                    _seen = True
+                    _lanes = max(int(_st.get('lanes', 1) or 1), 1)
+                    _nq = max(0.0, float(_st.get('queue_veh', 0.0) or 0.0)) * _lanes
+                    _qarr = max(0.0, float(_st.get('q', 0.0) or 0.0)) / 3600.0
+            if not _seen:
+                # no fresh measurement: fall back to the live standing count
+                try:
+                    _nq = float(max(int(AKIVehStateGetNbVehiclesSection(
+                        int(_s), False)), 0))
+                except Exception:
+                    _nq = 0.0
+            _veh = _nq + _qarr * extra_red
+            if _veh > 0.0:
+                _delay += _veh * extra_red * _car_occ
+        return _delay
+
     def _compute_side_delay_penalty(self, extra_red, _suppress_log=False):
         extra_red = max(safe_float(extra_red), 0.0)
         if extra_red <= 0.0:
@@ -7876,7 +9005,43 @@ class IntersectionController:
                 _meas_delay, _meas_vehh = 0.0, 0.0
 
         def _mx(_d, _v):
-            return (max(float(_d), _meas_delay), max(float(_v), _meas_vehh))
+            return (max(float(_d), _meas_delay, _turn_delay),
+                    max(float(_v), _meas_vehh))
+
+        # Movement-decomposed side cost (MEASURED_TURN_COST, 2026-09-28):
+        # dedicated turn lanes are distinct movements with their own queue and
+        # phase; the section-level cost lumps them into the approach average.
+        # Decompose over each non-bus phase's turnings (from the live
+        # _phase_movement_map), splitting a section's zone queue across the
+        # turnings that share it and charging each under its own extra red.
+        _turn_delay = 0.0
+        if bool(globals().get('MEASURED_TURN_COST', False)):
+            try:
+                _pm = self._phase_movement_map()
+                _bp = int(getattr(self, 'BusPhase', -1) or -1)
+                _side_turns = []
+                for _ph, _e in (_pm or {}).items():
+                    if int(_ph) == _bp:
+                        continue
+                    for (_f, _t) in _e.get("turns", []):
+                        _side_turns.append((_f, _t))
+                _from_count = {}
+                for (_f, _t) in _side_turns:
+                    _from_count[_f] = _from_count.get(_f, 0) + 1
+                _occ = max(safe_float(getattr(self, 'CarOcc', 1.6)), 1.0)
+                for (_f, _t) in _side_turns:
+                    _n, _L, _why = self._zone_queue_count(_f)
+                    if _n > 0:
+                        _k = max(int(_from_count.get(_f, 1)), 1)
+                        _turn_delay += (float(_n) / _k) * extra_red * _occ
+                if _turn_delay > 0.0 and not _suppress_log:
+                    log_to_file(
+                        f"[TURN_COST] inter={self.id} "
+                        f"extra_red={extra_red:.2f} "
+                        f"turns={len(_side_turns)} movement-decomposed "
+                        f"side_delay={_turn_delay:.1f} pax-s")
+            except Exception:
+                _turn_delay = 0.0
 
         # Fallback: when detector arrays are empty (minimal config like Logan Road),
         # estimate side delay from live section vehicle counts.  Without this,
@@ -7916,9 +9081,62 @@ class IntersectionController:
         jam_density = max(safe_float(self.JamDensity), 0.0)
         sat_density = max(safe_float(self.SaturationDensity), 0.0)
 
+        # Standing-queue floor basis (2026-09-26): section order + geometry,
+        # resolved at most once per sim-second (candidates within one decision
+        # share the sim time, so this costs one resolution per step, not per
+        # candidate). Profile cache is built once at startup; SideUpDenList is
+        # already populated by the tier scan above.
+        _floor_secs = ()
+        _floor_on = bool(globals().get('SIDE_QUEUE_FLOOR', True))
+        try:
+            _ft = float(AKIGetCurrentSimulationTime())
+        except Exception:
+            _ft = -1.0
+        if _floor_on:
+            try:
+                if (getattr(self, '_floor_secs_t', None) != _ft
+                        or not isinstance(getattr(self, '_floor_secs', None), tuple)):
+                    self._floor_secs = tuple(self._get_side_sections() or [])
+                    self._floor_secs_t = _ft
+                _floor_secs = self._floor_secs
+            except Exception:
+                _floor_secs = ()
+        try:
+            _zone_m = max(float(self._queue_zone_m(False)), 1.0)
+        except Exception:
+            _zone_m = 60.0
+        _prof = getattr(self, '_sec_profile', {}) or {}
+
         for idx in range(len(self.SideUpFlowList)):
             q_s = max(safe_float(self.SideUpFlowList[idx]), 0.0)
             if q_s < 1.0:
+                # Blind spot: stopped queues read ~0 flow, so a jammed cross
+                # street prices zero (22603: 1165 vph side flow, pred_side=0
+                # on all commits). Floor from LIVE standing vehicles -- NOT
+                # density: SideUpDenList is flow-derived (den = flow*k/q), so
+                # density is 0 whenever flow is ~0 and a density-based floor
+                # is unreachable (measured: 1 of 6860 [SIDE_OBJ] lines
+                # eligible). The live section count prices the stopped queue
+                # it actually holds, capped by the zone's jam storage.
+                # (veh-s here; the caller applies CarOcc.)
+                if _floor_on and idx < len(_floor_secs):
+                    try:
+                        _n_live = int(AKIVehStateGetNbVehiclesSection(
+                            int(_floor_secs[idx]), False))
+                    except Exception:
+                        _n_live = 0
+                    if _n_live > 0:
+                        try:
+                            _pr = _prof.get(int(_floor_secs[idx]), None) or {}
+                            _ln = max(int(_pr.get('n_lanes', 1) or 1), 1)
+                            _k_jam = max(safe_float(
+                                getattr(self, 'JamDensity', 150.0)), 1.0)
+                            _cap = max(1.0, _ln * (_zone_m / 1000.0) * _k_jam)
+                            _n_stand = min(float(_n_live), _cap)
+                            side_other_delay += _n_stand * extra_red
+                            side_total_veh += _n_stand * extra_red / 3600.0
+                        except Exception:
+                            pass
                 continue
 
             k_s = min(max(safe_float(self.SideUpDenList[idx]), 0.0), jam_density)
@@ -8002,6 +9220,121 @@ class IntersectionController:
         return max(total_other_pax_equiv / total_other_passages, 1e-6)
 
     
+    def _plan_det_reach(self, is_main, measured_q_vph=None):
+        """VIRTUAL detector reach (m) derived from THIS junction's signal plan.
+
+        Replaces the flat SIDE_QUEUE_ZONE_M / MAIN_QUEUE_ZONE_M = 60 m with a
+        per-junction, per-approach distance, because one constant cannot be right
+        for a 3-lane main with 50 s of green AND a side street with ~7 s: the
+        reach that captures the main queue under-counts the side one, and the
+        reach that captures the side queue counts free-flowing main traffic as if
+        it were queued.
+
+        Placement rule: put the virtual detector just UPSTREAM of the maximum
+        queue the approach can hold at the end of its own red, so that
+            vehicles between detector and stop line  ==  the queue
+            vehicles crossing the detector             ==  arrivals
+        Derivation (all quantities from the signal plan or the plant):
+            R    = C - g                     red time for this approach
+            q    = measured arrival flow     (fallback: capacity x v/c target)
+            Qmax = q * R                     vehicles queued at end of red
+            Lq   = Qmax / (k_jam * lanes)    km  -> *1000 = metres
+            D    = clamp(Lq * SAFETY + MARGIN, MIN, MAX)
+        The reach therefore SHRINKS where green is long and lanes are many, and
+        GROWS where red is long and the approach is thin -- which is the whole
+        point of deriving it rather than fixing it.
+
+        g (effective green) for the main approach is BusPhaseDuration; for a side
+        approach it is the SMALLEST non-bus phase green, which is the
+        conservative choice (shortest green -> longest red -> longest reach, so
+        the side queue is over- rather than under-counted).
+
+        Returns None when the plan fields are unavailable, so callers fall back to
+        the existing constant instead of guessing.
+        """
+        try:
+            cfg = getattr(self, 'config', {}) or {}
+            C = float(cfg.get('cycle_length') or 0.0)
+            lanes = max(float(cfg.get('NumberOfLanes') or 0.0), 1.0)
+            k_jam = float(getattr(self, 'JamDensity', None)
+                          or cfg.get('JamDensity') or 150.0)
+            sat = float(getattr(self, 'SaturationFlow', None)
+                        or cfg.get('SaturationFlow') or 1800.0)   # veh/h/lane
+            gb = cfg.get('GroupBasedConfig') or {}
+            ig = float(gb.get('intergreen_duration') or 4.0)
+            if C <= 0.0 or k_jam <= 0.0 or sat <= 0.0:
+                return None
+
+            if is_main:
+                g = float(cfg.get('BusPhaseDuration') or 0.0)
+            else:
+                # smallest non-bus phase green at this junction
+                _mg = [float(v) for v in (gb.get('min_green') or {}).values()]
+                _mg = [v for v in _mg if v > 0.0]
+                g = min(_mg) if _mg else max(C * 0.10, 5.0)
+            if g <= 0.0 or g >= C:
+                return None
+
+            R = C - g
+            # arrival rate: prefer the MEASURED flow (real plant state); fall
+            # back to the approach's own capacity at a design v/c so the reach is
+            # still plan-derived rather than arbitrary.
+            q_vph = float(measured_q_vph or 0.0)
+            if q_vph <= 0.0:
+                _vc = float(globals().get('VIRTUAL_DET_VC_TARGET', 0.90) or 0.90)
+                q_vph = sat * lanes * (g / C) * _vc
+            q_vps = q_vph / 3600.0
+
+            Qmax = q_vps * R                                   # vehicles
+            Lq_m = (Qmax / (k_jam * lanes)) * 1000.0           # metres
+            safety = float(globals().get('VIRTUAL_DET_SAFETY', 1.30) or 1.30)
+            margin = float(globals().get('VIRTUAL_DET_MARGIN_M', 15.0) or 15.0)
+            lo = float(globals().get('VIRTUAL_DET_MIN_M', 30.0) or 30.0)
+            hi = float(globals().get('VIRTUAL_DET_MAX_M', 200.0) or 200.0)
+            D = min(max(Lq_m * safety + margin, lo), hi)
+            return D
+        except Exception:
+            return None
+
+    def _queue_zone_m(self, is_main, measured_q_vph=None):
+        """Reach used for queue counting / virtual detection.
+
+        With VIRTUAL_DET_FROM_PLAN on, the per-junction signal-plan reach above;
+        otherwise the historical flat constant. Logged once per junction so the
+        derived distances can be AUDITED before they are trusted.
+        """
+        _fallback = (float(globals().get('MAIN_QUEUE_ZONE_M', 60.0) or 60.0)
+                     if is_main
+                     else float(globals().get('SIDE_QUEUE_ZONE_M', 60.0) or 60.0))
+        if not bool(globals().get('VIRTUAL_DET_FROM_PLAN', False)):
+            return _fallback
+        D = self._plan_det_reach(is_main, measured_q_vph)
+        if D is None:
+            return _fallback
+        try:
+            _seen = getattr(self, '_vdet_logged', None)
+            if _seen is None:
+                _seen = self._vdet_logged = set()
+            _tag = 'main' if is_main else 'side'
+            if _tag not in _seen:
+                _seen.add(_tag)
+                _cfg = getattr(self, 'config', {}) or {}
+                # Say WHICH input the reach came from, because the capacity fallback
+                # cannot distinguish a 2-lane from a 3-lane approach (lanes cancel
+                # when demand is assumed proportional to capacity), while a measured
+                # flow can. Without this flag on the line, a fallback-derived reach
+                # looks exactly as trustworthy as a measured one.
+                _src = 'measured' if float(measured_q_vph or 0.0) > 0.0 else 'fallback'
+                log_to_file(
+                    f"[VDET] inter={self.id} {_tag}: reach={D:.0f}m src={_src} "
+                    f"(C={_cfg.get('cycle_length')}s g={_cfg.get('BusPhaseDuration')}s "
+                    f"lanes={_cfg.get('NumberOfLanes')} kjam={_cfg.get('JamDensity')} "
+                    f"q={float(measured_q_vph or 0.0):.0f}vph "
+                    f"flat={_fallback:.0f}m)", force=True)
+        except Exception:
+            pass
+        return D
+
     def _upstream_chain(self, sec_id, max_len_m):
         """Upstream segments for queue counting: [(sec, dist_base, sec_len)].
 
@@ -8208,7 +9541,7 @@ class IntersectionController:
         (main approaches pass their own MAIN_QUEUE_ZONE_M)."""
         try:
             zone = float(zone_m if zone_m is not None
-                         else globals().get('SIDE_QUEUE_ZONE_M', 60.0))
+                         else self._queue_zone_m(False))
         except Exception:
             zone = 60.0
         try:
@@ -8216,6 +9549,7 @@ class IntersectionController:
         except Exception:
             return 0, None, 'error'
         cnt = 0
+        _bus_in_zone = 0
         _zone_lane_m = 0.0
         for (_cs, _dist_base, _L) in _segs:
             if _L <= 0.0:
@@ -8228,15 +9562,50 @@ class IntersectionController:
                 continue
             if _n == 0:
                 continue
+            # MICROSCOPIC QUEUE (align with Aimsun's own queue definition): Aimsun
+            # counts a vehicle as queuing only when its SPEED is below a threshold
+            # (stopped/slow), not merely present in a zone. Counting every in-zone
+            # vehicle over-states the queue (moving vehicles included) and mis-prices
+            # the reward vs the plant. When MICRO_QUEUE_MODE is on, count only
+            # vehicles with CurrentSpeed <= MICRO_QUEUE_SPEED_KMH.
+            #
+            # BUSES ARE NOT CARS (2026-10-01). This is a DETECTOR-style estimate and
+            # detectors are for general traffic: buses are PT vehicles with known
+            # IDs and routes, tracked individually through the PT APIs
+            # (AKIGetVehicleFollowingPTLine / AKIPTVehGetInf), so folding them into
+            # the car queue double-counts them -- once here at CarOcc and again in
+            # the bus-delay term at BusOcc (40 pax). AKIVehStateGetVehicleInfSection
+            # exposes both idVeh and type in one call, so the split is free.
+            # EXCLUDE_BUS_FROM_CAR_QUEUE (default off) turns the split on; the bus
+            # count is kept in self._last_zone_bus_cnt for diagnostics so the two
+            # populations can be compared rather than assumed.
+            _micro = bool(globals().get('MICRO_QUEUE_MODE', False))
+            _vq_kmh = float(globals().get('MICRO_QUEUE_SPEED_KMH', 5.0))
+            _excl_bus = bool(globals().get('EXCLUDE_BUS_FROM_CAR_QUEUE', False))
+            try:
+                _bus_pos = int(getattr(self, 'bus_type_pos', None)
+                               or getattr(self.stats, '_bus_pos', -1) or -1)
+            except Exception:
+                _bus_pos = -1
             for _i in range(_n):
                 try:
                     _inf = AKIVehStateGetVehicleInfSection(int(_cs), _i)
                     _pos = float(getattr(_inf, 'CurrentPos', 0.0) or 0.0)
                     _d = _dist_base + (_L - _pos)
                     if 0.0 <= _d <= zone:
+                        if _excl_bus and _bus_pos > 0 and \
+                                int(getattr(_inf, 'type', -1) or -1) == _bus_pos:
+                            _bus_in_zone += 1
+                            continue      # bus: tracked via the PT APIs, not here
+                        if _micro and float(getattr(_inf, 'CurrentSpeed', 0.0) or 0.0) > _vq_kmh:
+                            continue      # moving -> not in queue (Aimsun definition)
                         cnt += 1
                 except Exception:
                     continue
+        try:
+            self._last_zone_bus_cnt = _bus_in_zone
+        except Exception:
+            pass
         return cnt, (_zone_lane_m if _zone_lane_m > 0.0 else None), _why
 
     def _flow_stage_snapshot(self):
@@ -8259,6 +9628,23 @@ class IntersectionController:
                 _main_flow = float(_np.max(_upf)) if _upf.size else 0.0
             except Exception:
                 _main_flow = 0.0
+            # Busiest MEASURED approach floor (2026-09-26): UpFlowList rows can
+            # still be a broadcast mean when the phase map is unresolved; never
+            # under-read main congestion -- take the max with the per-section
+            # measured flow.
+            try:
+                _stats = globals().get('stats', None) or getattr(self, 'stats', None)
+                _ls = getattr(_stats, 'latest_section', None) if _stats is not None else None
+                if _ls:
+                    for _s in (getattr(self, 'incoming_sections', []) or []):
+                        _st = _ls.get(int(_s))
+                        if not _st:
+                            continue
+                        _q = float(_st.get('q', 0.0) or 0.0)
+                        if _q > _main_flow:
+                            _main_flow = _q
+            except Exception:
+                pass
             _main_x = _main_flow / _q_sat
             try:
                 _suf = _np.asarray(getattr(self, 'SideUpFlowList', [0.0]),
@@ -8288,6 +9674,445 @@ class IntersectionController:
             return {"stage": "UNK", "main_x": 0.0, "side_max_flow": 0.0,
                     "queue_veh": 0.0, "armed": True}
 
+    def _sec_lane_count(self, sec_id):
+        """Live lane count for a section (central + side, NumberLanes fallback)."""
+        try:
+            _g = AKIInfNetGetSectionANGInf(int(sec_id))
+            if getattr(_g, 'report', -1) < 0:
+                return 0
+            _n = (int(getattr(_g, 'nbCentralLanes', 0) or 0)
+                  + int(getattr(_g, 'nbSideLanes', 0) or 0))
+            if _n <= 0:
+                _n = int(getattr(_g, 'NumberLanes', 0) or 0)
+            return max(int(_n), 0)
+        except Exception:
+            return 0
+
+    def _phase_movement_map(self):
+        """Per-phase movement map: what each phase actually serves (2026-09-27).
+
+        Joins phase -> signal groups -> turning pairs -> origin lanes, with
+        each turning role-labelled against _classify_turnings (MAIN = bus-phase
+        turnings, SIDE = conflicting) and each origin section lane-counted, so
+        the controller knows e.g. "phase 3 serves 2 side-street turnings from
+        1-lane section 8257" instead of "phase 3 = 33 s". Cached per junction;
+        read-only API calls. Returns {} if the plan can't be read.
+        """
+        try:
+            if isinstance(getattr(self, '_phase_movement_cache', None), dict):
+                return self._phase_movement_cache
+        except Exception:
+            pass
+        _map = {}
+        try:
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            try:
+                _n_ph = int(ECIGetNumberofPhases(_jid))
+            except Exception:
+                try:
+                    _n_ph = int(ECIGetNumberPhases(_jid))
+                except Exception:
+                    _n_ph = 0
+            if _n_ph < 1:
+                return {}
+            _main_turns, _side_turns = self._classify_turnings()
+            for _ph in range(1, _n_ph + 1):
+                try:
+                    _dur = round(float(GetPhaseDuration(
+                        self.node_id, _ph, 0.0) or 0.0), 1)
+                except Exception:
+                    _dur = 0.0
+                _sgs = set()
+                try:
+                    _nsg = int(ECIGetNbSignalGroupsPhaseofJunction(
+                        _jid, _ph, 0.0))
+                    for _pos in range(1, _nsg + 1):
+                        try:
+                            _sg = int(ECIGetSignalGroupPhaseofJunction(
+                                _jid, _ph, _pos, 0.0))
+                            if _sg > 0:
+                                _sgs.add(_sg)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                _turns = set()
+                for _sg in _sgs:
+                    try:
+                        _nt = int(ECIGetNumberTurningsofSignalGroup(
+                            _jid, int(_sg)))
+                        for _ti in range(max(_nt, 0)):
+                            try:
+                                _fp = intp(); _tp = intp()
+                                ECIGetFromToofTurningofSignalGroup(
+                                    _jid, int(_sg), _ti, _fp, _tp)
+                                _fr = int(_fp.value()); _to = int(_tp.value())
+                                if _fr > 0 and _to > 0:
+                                    _turns.add((_fr, _to))
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                _origins = {}
+                _n_main = _n_side = 0
+                for (_fr, _to) in _turns:
+                    if (_fr, _to) in _main_turns:
+                        _n_main += 1
+                    else:
+                        _n_side += 1
+                    if _fr not in _origins:
+                        _origins[_fr] = self._sec_lane_count(_fr)
+                _map[_ph] = {"dur_s": _dur, "sgs": sorted(_sgs),
+                             "n_turns": len(_turns), "n_main": _n_main,
+                             "n_side": _n_side, "origins": _origins,
+                             "turns": sorted(_turns)}
+            try:
+                self._phase_movement_cache = _map
+            except Exception:
+                pass
+            # Seed the GLOBAL plan-state tracker with the as-built plan so
+            # downstream delay estimators read a full per-phase plan from t=0.
+            try:
+                _PLAN_STATE[int(self.id)] = {
+                    "durs": {int(_ph): float(_e["dur_s"])
+                             for _ph, _e in _map.items()},
+                    "cycle_s": sum(float(_e["dur_s"]) for _e in _map.values()),
+                    "bus_phase": int(getattr(self, 'BusPhase', -1) or -1),
+                    "version": 0,
+                    "t": -1.0,
+                }
+            except Exception:
+                pass
+            # ── Live plan capture for the SUMO converter (2026-09-28) ──
+            # The export dump's sg_states/signal_groups are empty, so the
+            # converter falls back to synthetic 2-phase programs. This dumps
+            # the LIVE plan instead: per-phase durations + signal groups +
+            # turning pairs, exactly what plan_to_tls.py needs. Accumulates
+            # across junctions, flushes once all managed junctions reported.
+            try:
+                global _PLAN_DUMP
+                try:
+                    _pd = _PLAN_DUMP
+                    if not isinstance(_pd, dict):
+                        _pd = {}
+                        _PLAN_DUMP = _pd
+                except Exception:
+                    _pd = {}
+                    _PLAN_DUMP = _pd
+                _pd[int(self.id)] = {
+                    "bus_phase": int(getattr(self, 'BusPhase', -1) or -1),
+                    "phases": {str(_ph): {
+                        "dur_s": _e["dur_s"], "sgs": _e["sgs"],
+                        "turns": [[int(a), int(b)] for (a, b) in
+                                  _e["turns"]]}
+                        for _ph, _e in _map.items()},
+                }
+                _need = int(globals().get('PLAN_DUMP_MIN_JUNCTIONS', 23) or 23)
+                if len(_pd) >= _need:
+                    try:
+                        _ld = os.path.dirname(LOG_FILE)
+                    except Exception:
+                        _ld = ""
+                    if _ld and os.path.isdir(_ld):
+                        import datetime as _dt_mod
+                        _fn = ("plan_dump_%s.json" % _dt_mod.datetime.now(
+                            ).strftime("%Y%m%d_%H%M%S"))
+                        _fp = os.path.join(_ld, _fn)
+                        if not os.path.isfile(_fp):
+                            import json as _js_mod
+                            with open(_fp, "w",
+                                      encoding="utf-8") as _fh:
+                                _js_mod.dump(
+                                    {"engine_build": str(globals().get(
+                                        'ENGINE_BUILD', '?')), "junctions": {
+                                            str(k): v for k, v in
+                                            _pd.items()}}, _fh)
+                            log_to_file(
+                                f"[PLANDUMP] wrote {_fp} "
+                                f"({len(_pd)} junctions)", force=True)
+            except Exception:
+                pass
+            # One observability line per junction: which phases serve side
+            # streets/turns, from how many lanes.
+            try:
+                _bits = []
+                for _ph in sorted(_map):
+                    _e = _map[_ph]
+                    _org = ",".join("%d:%dln" % (_s, _e["origins"][_s])
+                                    for _s in sorted(_e["origins"]))
+                    _bits.append("ph%d=%ds turns=%d(main%d/side%d) [%s]" % (
+                        _ph, _e["dur_s"], _e["n_turns"], _e["n_main"],
+                        _e["n_side"], _org))
+                log_to_file(f"[PHASEMAP] inter={self.id} " + " ".join(_bits),
+                            force=True)
+                # Main-movement openness: the signal settings read AT the main
+                # (paper eq:main_open / eq:main_green). The main movement is
+                # served by the bus phase; its openness = that phase's green
+                # share of the cycle, with how many main turnings it carries.
+                try:
+                    _mb = _map.get(int(getattr(self, 'BusPhase', -1) or -1))
+                    if _mb:
+                        _cyc_m = sum(float(e["dur_s"]) for e in _map.values())
+                        _g = float(_mb.get("dur_s", 0.0))
+                        log_to_file(
+                            f"[MAIN_OPEN] inter={self.id} "
+                            f"main_ph={int(getattr(self, 'BusPhase', -1) or -1)} "
+                            f"green={_g:.1f}s/{_cyc_m:.1f}s = "
+                            f"{100.0 * _g / _cyc_m if _cyc_m > 0 else 0.0:.0f}% cycle "
+                            f"main_turnings={int(_mb.get('n_main', 0))} "
+                            f"(x_main = bus-phase gate)", force=True)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception:
+            return {}
+        return _map
+
+    def _apply_headroom_reserve(self, timeSta=0.0):
+        """Carve repayable slack into the plan once at startup (2026-09-28).
+
+        HEADROOM_RESERVE_S>0 moves RESERVE seconds from the bus phase to EACH
+        non-bus phase (cycle conserved, bus floored at min green). Cross phases
+        then sit RESERVE above minimum, giving _reward_get_recoverable a real
+        budget so recovery trims can actually fire. Costs main capacity by
+        RESERVE x n_cross s/cycle. Returns (added_s, n_cross, bus_before,
+        bus_after) for the [HEADROOM] line; any failure leaves the plan as-is.
+        """
+        _added = _n_cross = 0.0
+        _bus0 = _bus1 = 0.0
+        try:
+            if float(globals().get('HEADROOM_RESERVE_S', 0.0) or 0.0) <= 0.0:
+                return (_added, _n_cross, _bus0, _bus1)
+            _r = float(globals().get('HEADROOM_RESERVE_S', 0.0) or 0.0)
+            try:
+                _n = int(ECIGetNumberofPhases(self.node_id))
+            except Exception:
+                try:
+                    _n = int(ECIGetNumberPhases(self.node_id))
+                except Exception:
+                    _n = 0
+            if _n < 2:
+                return (_added, _n_cross, _bus0, _bus1)
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            _durs = {}
+            for _ph in range(1, _n + 1):
+                try:
+                    _durs[_ph] = float(GetPhaseDuration(
+                        self.node_id, _ph, timeSta) or 0.0)
+                except Exception:
+                    _durs[_ph] = 0.0
+            _nonbus = [p for p in _durs if p != _bp and _durs[p] > 0.0]
+            if not _nonbus or _bp not in _durs:
+                return (_added, _n_cross, _bus0, _bus1)
+            _floor = float(globals().get('MIN_GREEN_FLOOR_S', 5.0) or 5.0)
+            _bus_cap = max(0.0, float(_durs[_bp]) - _floor)
+            _need = float(len(_nonbus)) * _r
+            _r_eff = min(_r, _bus_cap / max(len(_nonbus), 1.0)) if _need > 0 else 0.0
+            if _r_eff <= 0.0:
+                return (_added, _n_cross, _bus0, _bus1)
+            _bus0 = float(_durs[_bp])
+            for _ph in _nonbus:
+                _new = float(_durs[_ph]) + _r_eff
+                try:
+                    ECIChangeTimingPhase(self.node_id, int(_ph), _new, timeSta)
+                    _durs[_ph] = _new
+                    _added += _r_eff
+                    _n_cross += 1
+                except Exception:
+                    continue
+            _bus1 = float(_durs[_bp]) - _r_eff * len(_nonbus)
+            try:
+                ECIChangeTimingPhase(self.node_id, int(_bp), _bus1, timeSta)
+            except Exception:
+                _bus1 = float(_durs[_bp])
+            # invalidate caches so solvers/gates see the carved plan
+            self._signal_cycle_cache = 0.0
+            self._coord_phase_cache = None
+            self._coord_base_dur = None
+        except Exception:
+            pass
+        return (_added, _n_cross, _bus0, _bus1)
+
+    def _apply_retime_csv(self, timeSta=0.0):
+        """Apply offline-retimed splits once per junction (2026-09-28).
+
+        Reads RETIME_CSV (RETIME_CSV flag or <bundle>/retime/retime_v1.csv),
+        sets each listed stage-green duration via ECI when it differs by
+        >=0.5 s, then re-reads to verify. Splits only (v1): starts shift by
+        construction; the residual offset walk is stage 2. Any failure or
+        mismatch fails SAFE (log + continue on the base plan). Returns
+        (applied, verified, total) for the [RETIME] line.
+        """
+        _applied = _verified = _total = 0
+        try:
+            if not bool(globals().get('RETIME_APPLY', False)):
+                return (_applied, _verified, _total)
+            global _RETIME_ROWS
+            try:
+                _cache = _RETIME_ROWS
+            except Exception:
+                _cache = None
+            if not isinstance(_cache, dict):
+                _csv_path = str(globals().get('RETIME_CSV', '') or '')
+                if not _csv_path or not os.path.isfile(_csv_path):
+                    for _cand in (
+                            os.path.join(os.path.dirname(os.path.abspath(
+                                __file__)), "..", "retime", "retime_v1.csv"),
+                            r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
+                            r"\retime\retime_v1.csv"):
+                        if os.path.isfile(_cand):
+                            _csv_path = _cand
+                            break
+                _cache = {}
+                if _csv_path and os.path.isfile(_csv_path):
+                    import csv as _csv_mod
+                    with open(_csv_path, encoding="utf-8-sig") as _fh:
+                        for _r in _csv_mod.DictReader(_fh):
+                            try:
+                                _g = {}
+                                for _part in str(
+                                        _r.get("stage_greens_s", "")).split(";"):
+                                    if "=" in _part:
+                                        _k, _v = _part.split("=")
+                                        _g[int(_k)] = float(_v)
+                                _cache[str(_r.get("junction"))] = {
+                                    "greens": _g,
+                                    "offset": float(
+                                        _r.get("offset_bus_green_start_s",
+                                               0.0) or 0.0),
+                                }
+                            except Exception:
+                                continue
+                _RETIME_ROWS = _cache
+            _row = ( _cache or {}).get(str(int(self.id)))
+            if not _row:
+                return (_applied, _verified, _total)
+            for _ph, _tgt in sorted(_row["greens"].items()):
+                _total += 1
+                try:
+                    _cur = float(GetPhaseDuration(
+                        self.node_id, int(_ph), timeSta) or 0.0)
+                except Exception:
+                    continue
+                if abs(_cur - float(_tgt)) < 0.5:
+                    _verified += 1
+                    continue
+                try:
+                    ECIChangeTimingPhase(self.node_id, int(_ph),
+                                         float(_tgt), timeSta)
+                    _applied += 1
+                except Exception:
+                    continue
+                try:
+                    _chk = float(GetPhaseDuration(
+                        self.node_id, int(_ph), timeSta) or 0.0)
+                    if abs(_chk - float(_tgt)) < 0.5:
+                        _verified += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return (_applied, _verified, _total)
+
+    def _log_startup_plan(self, time):
+        """One-time as-designed fixed-time plan snapshot per junction.
+
+        The initial signal plans are set up for a reason (corridor
+        coordination): this dumps the programmed plan -- phase count and
+        durations, cycle sum, bus phase + duration, longest (coordinated)
+        phase, live phase + its start time -- so the [FLOW_STAGE] stream from
+        t=1 can be read against the plan it runs on (splits/offsets vs actual
+        FREE/SAT/OVER/JAM regime from startup). Runs once; read-only API
+        calls except the optional RETIME_APPLY splits load (verified,
+        fail-safe); never touches per-step control.
+        """
+        if bool(getattr(self, '_plan_logged', False)):
+            return
+        self._plan_logged = True
+        # Offline-retimed splits (v1) go FIRST so the [PLAN] snapshot below
+        # reads the running plan, and the whole run (including NO_TSP
+        # baselines) sits on it. Read-back verified; fails safe to base.
+        _rt_mode = ""
+        try:
+            if bool(globals().get('RETIME_APPLY', False)):
+                _ra, _rv, _rt = self._apply_retime_csv(0.0)
+                _rt_mode = ("RETIMED" if _rt > 0 and _rv == _rt
+                            else "BASE-PLAN")
+                log_to_file(
+                    f"[RETIME] inter={self.id} t={time:.0f} "
+                    f"applied={_ra} verified={_rv}/{_rt} {_rt_mode}",
+                    force=True)
+        except Exception:
+            pass
+        # Headroom reserve (2026-09-28): carve repayable slack into the plan
+        # so recovery trims can fire. Applies after any retime load so the
+        # [PLAN] snapshot reads the final running plan.
+        try:
+            if float(globals().get('HEADROOM_RESERVE_S', 0.0) or 0.0) > 0.0:
+                _ha, _hc, _hb0, _hb1 = self._apply_headroom_reserve(0.0)
+                if _hc > 0:
+                    log_to_file(
+                        f"[HEADROOM] inter={self.id} t={time:.0f} "
+                        f"reserve={_ha / max(_hc, 1):.1f}s x {_hc} cross "
+                        f"phases, bus {_hb0:.1f}s -> {_hb1:.1f}s "
+                        f"(repayable budget carved)", force=True)
+        except Exception:
+            pass
+        try:
+            try:
+                _n = int(ECIGetNumberofPhases(self.node_id))
+            except Exception:
+                try:
+                    _n = int(ECIGetNumberPhases(self.node_id))
+                except Exception:
+                    _n = 0
+            _durs = {}
+            for _ph in range(1, _n + 1):
+                try:
+                    _durs[_ph] = round(
+                        float(GetPhaseDuration(self.node_id, _ph, 0.0) or 0.0), 1)
+                except Exception:
+                    _durs[_ph] = 0.0
+            _cyc = round(sum(max(0.0, _v) for _v in _durs.values()), 1)
+            try:
+                _cur = int(ECIGetCurrentPhase(self.node_id))
+            except Exception:
+                _cur = -1
+            try:
+                _ps = round(float(ECIGetStartingTimePhase(self.node_id)), 1)
+            except Exception:
+                _ps = -1.0
+            try:
+                _bp = int(getattr(self, 'BusPhase', -1))
+            except Exception:
+                _bp = -1
+            _bpd = float(_durs.get(_bp, 0.0))
+            _coord = max(_durs, key=lambda _k: _durs[_k]) if _durs else -1
+            try:
+                _cfg = float((getattr(self, 'config', {}) or {}).get(
+                    'CycleTime', 0.0) or 0.0)
+            except Exception:
+                _cfg = 0.0
+            log_to_file(
+                f"[PLAN] inter={self.id} t={time:.0f} n_ph={_n} durs={_durs} "
+                f"cycle_sum={_cyc:.1f}s cfg_cyc={_cfg:.0f}s bus_ph={_bp} "
+                f"bus_dur={_bpd:.1f}s coord_ph={_coord} cur_ph={_cur} "
+                f"ph_start={_ps:.1f}s "
+                f"({'retimed' if _rt_mode == 'RETIMED' else 'as-designed fixed-time plan'})",
+                force=True)
+            # Phase->movement semantics (lanes, side streets, turns) for the
+            # same startup diagnosis: which phases serve what.
+            try:
+                self._phase_movement_map()
+            except Exception:
+                pass
+        except Exception as _e:
+            try:
+                log_to_file(f"[PLAN] inter={self.id} error {_e!r}")
+            except Exception:
+                pass
+
     def _sample_side_sections(self, time):
         """
         Virtual detector for side sections using instantaneous density.
@@ -8296,6 +10121,15 @@ class IntersectionController:
         via section length (AKIInfNetGetSectionANGInf), then derives flow
         from the LWR triangular model. No aggregation periods needed.
         """
+        # ── As-designed plan snapshot (2026-09-27): one [PLAN] line per
+        # junction on its first tick -- the initial fixed-time plan exists for
+        # a reason (coordination), so join it to the [FLOW_STAGE] stream to
+        # diagnose flow from startup (plan splits/offsets vs actual regime).
+        # Placed before the no-sides early return so sideless junctions log too.
+        try:
+            self._log_startup_plan(time)
+        except Exception:
+            pass
         side_secs = self._get_side_sections()
         if not side_secs:
             return
@@ -8358,7 +10192,7 @@ class IntersectionController:
                 # zone), NOT the single stop-line section (a 7 m virtual link
                 # would read ~1 car as gridlock).
                 _eff_len_m = min(float(_chain_len_m or sec_len_m or 0.0),
-                                 float(globals().get('SIDE_QUEUE_ZONE_M', 60.0)))
+                                 float(self._queue_zone_m(False)))
                 density_per_lane = n_veh / n_lanes_sec / max(_eff_len_m / 1000.0, 0.001)
                 k_sat  = max(float(self.SaturationDensity), 1.0)
                 k_jam  = max(float(self.JamDensity),        k_sat + 1.0)
@@ -8545,16 +10379,23 @@ class IntersectionController:
             _flow_vals = [round(float(v), 1) for v in self.SideUpFlowList]
             _meas_roll = []
             for _ss in side_secs:
+                # MEASURED flow (veh/h) from live count x space-mean speed -- works
+                # on virtual/modeled sections where AKIEstGetCurrentStatisticsSection
+                # reports Flow=0 (the roll_ctr=0 blind spot). Fall back to Aimsun's
+                # own section flow if the count-based one is 0 (e.g. moving free flow
+                # the count momentarily missed).
                 _mf = 0.0
                 try:
-                    # current-interval measured flow (veh/h); 0 for virtual sections.
-                    # (was AKIEstGetParcialStatisticsSection with a bad timeSta arg
-                    #  that returned 0 everywhere -- see Tier-2 bugfix above.)
-                    _sp = AKIEstGetCurrentStatisticsSection(int(_ss), -1)
-                    if getattr(_sp, 'report', -1) == 0:
-                        _mf = max(0.0, float(getattr(_sp, 'Flow', 0.0) or 0.0))
+                    _mf = float(self._measured_section_flow_vph(int(_ss)))
                 except Exception:
-                    pass
+                    _mf = 0.0
+                if _mf <= 0.0:
+                    try:
+                        _sp = AKIEstGetCurrentStatisticsSection(int(_ss), -1)
+                        if getattr(_sp, 'report', -1) == 0:
+                            _mf = max(0.0, float(getattr(_sp, 'Flow', 0.0) or 0.0))
+                    except Exception:
+                        pass
                 _meas_roll.append(round(_mf, 1))
             # len_m tags: [dead]=verified network entry (NORMAL, nothing
             # upstream to miss); [main]/[managed]=correctly stopped at the
@@ -8581,7 +10422,7 @@ class IntersectionController:
                 f"secs={side_secs} "
                 f"n_veh={_nveh_log} len_m={_len_log} "
                 f"flow={_flow_vals} "
-                f"roll_ctr={_meas_roll} "
+                f"flow_meas_vph={_meas_roll} "
                 f"den={[round(float(v),2) for v in self.SideUpDenList]}"
                 f"{' [noupdate stale=' + ','.join(_stale) + ']' if _stale else ''}",
                 force=(int(time) % 300 == 0) or bool(_stale))
@@ -8599,7 +10440,54 @@ class IntersectionController:
                         f"armed={int(_fs['armed'])}")
             except Exception:
                 pass
-    
+            # ── [MAIN_SCAN] (2026-09-29): symmetric to SIDE_SCAN. Because the
+            # corridor controller acts on DEMAND independent of buses, the BENEFIT
+            # of extending green must reflect the MAIN-approach counts it actually
+            # discharges -- not just the bus. Log live veh + measured flow on the
+            # main (incoming) sections so "is there main demand to serve?" is one
+            # grep away, and matches the live basis _measured_main_queue_veh uses.
+            try:
+                _main_secs = list(getattr(self, 'incoming_sections', []) or [])
+                _mn_veh = []
+                _mn_roll = []
+                for _msx in _main_secs:
+                    try:
+                        _mn_veh.append(int(AKIVehStateGetNbVehiclesSection(int(_msx), False)))
+                    except Exception:
+                        _mn_veh.append(-1)
+                    # MEASURED flow (veh/h) from live count x speed (works on virtual
+                    # sections; car flow travelling WITH the bus on the main approach).
+                    _mf = 0.0
+                    try:
+                        _mf = float(self._measured_section_flow_vph(int(_msx)))
+                    except Exception:
+                        _mf = 0.0
+                    if _mf <= 0.0:
+                        try:
+                            _sp = AKIEstGetCurrentStatisticsSection(int(_msx), -1)
+                            if getattr(_sp, 'report', -1) == 0:
+                                _mf = max(0.0, float(getattr(_sp, 'Flow', 0.0) or 0.0))
+                        except Exception:
+                            pass
+                    _mn_roll.append(round(_mf, 1))
+                try:
+                    _mq_meas = self._measured_main_queue_veh()
+                except Exception:
+                    _mq_meas = None
+                log_to_file(
+                    f"[MAIN_SCAN] inter={self.id} t={time:.0f} "
+                    f"secs={_main_secs} n_veh={_mn_veh} flow_meas_vph={_mn_roll} "
+                    f"served_q={'na' if _mq_meas is None else round(float(_mq_meas), 1)}",
+                    force=(int(time) % 300 == 0))
+            except Exception:
+                pass
+            # One-time signal-plan geometry dump (per-phase origin sections + real
+            # length/lanes) so the scanned approaches can be checked vs the network.
+            try:
+                self._log_plan_scan(time)
+            except Exception:
+                pass
+
     def build_state(self):
         state = []
         for sec in self.incoming_sections:
@@ -9092,7 +10980,28 @@ class IntersectionController:
                 _dist_m = ((float(hit_x) - jx) ** 2 + (float(hit_y) - jy) ** 2) ** 0.5
             else:
                 _dist_m = float(self.config.get("DetDistance", [[50.0]])[0][0])
-            _eta_s = _dist_m / speed_ms
+            _eta_s = _dist_m / max(float(speed_ms), 0.5)
+            try:
+                _emx = float(globals().get('BUS_ETA_MAX_S', 300.0) or 300.0)
+            except Exception:
+                _emx = 300.0
+            _eta_s = min(_eta_s, _emx)
+            # Systematic ETA: prefer the adaptive-Kalman corridor estimate
+            # (position+speed state, uncertainty-scaled) over raw dist/speed
+            # when the bus has a tracker; log the source for diagnostics.
+            _eta_src = "dist-speed"
+            try:
+                _cc_e = getattr(self, '_corridor_coord', None)
+                if _cc_e is not None:
+                    _ek, _es, _esrc = _eta_s_for(
+                        getattr(_cc_e, '_trackers', None) or {},
+                        getattr(_cc_e, 'corridor_pos', None) or {},
+                        int(veh_id), int(self.id), float(time),
+                        fallback_s=_eta_s)
+                    if _ek is not None:
+                        _eta_s, _eta_src = _ek, _esrc
+            except Exception:
+                pass
             self._bus_eta[0] = (veh_id, _eta_s, _dist_m, speed_ms)
             # Record the bus passage in stats (works for transit-link buses that
             # never appear on regular approach sections)
@@ -9537,26 +11446,68 @@ class IntersectionController:
         self._live_flow_t = time
 
         _main_samples = []
+        _sec_f = {}
         for _s in list(getattr(self, 'incoming_sections', [])):
             _f = self._section_window_flow(_s, time, window_s)
             if _f > 0.0:
                 _main_samples.append(_f)
+                _sec_f[int(_s)] = float(_f)
         _main_mean = (float(np.mean(_main_samples)) if _main_samples else 0.0)
         self._live_flow_main = _main_mean
+        # Side sections for the per-phase rows (2026-09-26): a side phase's row
+        # must carry ITS OWN approach flow, not the main mean. Reuse the
+        # per-section side flows already maintained by the sampler.
+        _sec_f_side = {}
+        try:
+            _suf_all = np.asarray(getattr(self, 'SideUpFlowList', []), dtype=float)
+            for _idx, _ss in enumerate(self._get_side_sections() or []):
+                if _idx < _suf_all.size and _suf_all[_idx] > 0.0:
+                    _sec_f_side[int(_ss)] = float(_suf_all[_idx])
+        except Exception:
+            _sec_f_side = {}
 
         # Overlay rolling counts onto UpFlowList red-phase slots (like
         # _populate_flow_from_sections but from the counter, not occupancy).
+        # Per-phase (per-DIRECTION) overlay since 2026-09-26: row 0 = bus phase
+        # (engine convention), other rows carry their own phase's sections;
+        # falls back to the broadcast mean when the plan map can't resolve.
         _upf = getattr(self, 'UpFlowList', None)
-        if _upf is not None and len(_upf) > 0 and _main_mean > 0.0:
+        if _upf is not None and len(_upf) > 0:
             k_sat = max(float(self.SaturationDensity), 1.0)
             q_sat = max(float(self.SaturationFlow), 1.0)
-            _den = _main_mean * k_sat / q_sat
+            _ps = {}
+            try:
+                _ps = self._phase_origin_sections() or {}
+            except Exception:
+                _ps = {}
+            _bp = int(getattr(self, 'BusPhase', 1) or 1)
             for _i in range(len(_upf)):
+                _ph = _i + 1
+                if _i == 0 and 1 <= _bp <= len(_upf):
+                    _ph = _bp
+                elif _i == _bp - 1 and _bp != 1:
+                    _ph = 1
+                _row = None
+                _secs = _ps.get(int(_ph))
+                if _secs:
+                    _vals = []
+                    for _s in _secs:
+                        _v = _sec_f.get(int(_s))
+                        if _v is None:
+                            _v = _sec_f_side.get(int(_s))
+                        if _v is not None and _v > 0.0:
+                            _vals.append(float(_v))
+                    if _vals:
+                        _row = float(np.mean(_vals))
+                if _row is None:
+                    _row = _main_mean
+                if _row <= 0.0:
+                    continue
+                _den = _row * k_sat / q_sat
                 for _j in range(len(_upf[_i])):
                     if self.RedDurationList[_i][_j] > 0:
-                        _existing = _upf[_i][_j]
-                        if _existing <= 0.0:
-                            _upf[_i][_j] = _main_mean
+                        if _upf[_i][_j] <= 0.0:
+                            _upf[_i][_j] = _row
                             try:
                                 self.UpDenList[_i][_j] = _den
                             except Exception:
@@ -9620,6 +11571,15 @@ class IntersectionController:
             _stats = globals().get('stats', None) or getattr(self, 'stats', None)
             _ls = getattr(_stats, 'latest_section', None) if _stats is not None else None
             _side = self._get_side_sections() or []
+            if not _side:
+                # No opposing approaches mapped (source=none junctions): a
+                # car-only tick cannot price any cost, so every evaluation
+                # looks profitable. Hold unless explicitly restored.
+                try:
+                    if bool(globals().get('SIDLESS_MONITOR_HOLD', True)):
+                        return False
+                except Exception:
+                    pass
             if _side:
                 for _ss in _side:
                     try:
@@ -9671,6 +11631,7 @@ class IntersectionController:
 
         flow_samples  = []
         n_lanes_total = 0
+        _sec_flow_map = {}   # sec -> (lwr flow, lanes) for the per-phase fill
 
         for sec_id in self.incoming_sections:
             try:
@@ -9698,9 +11659,33 @@ class IntersectionController:
             else:
                 _flow = q_sat * (k_jam - k) / max(k_jam - k_sat, 1.0)
             _flow = min(max(_flow, 0.0), _max_flow)
+            _sec_flow_map[int(sec_id)] = (float(_flow), int(n_lanes))
             # Weight by lane count so multi-lane sections dominate
             flow_samples.extend([_flow] * n_lanes)
             n_lanes_total += n_lanes
+
+        # Side approaches feed the per-phase map too (2026-09-26): the analytic
+        # cross cost iterates PER-PHASE rows, so a side phase's row must carry
+        # ITS OWN approach flow (both cross directions distinguished), not the
+        # main-mean fallback. SideUpFlowList is per side section (populated by
+        # _sample_side_sections / the rolling overlay).
+        try:
+            _suf_all = np.asarray(getattr(self, 'SideUpFlowList', []), dtype=float)
+            for _idx, _ss in enumerate(self._get_side_sections() or []):
+                if _idx >= _suf_all.size or _suf_all[_idx] <= 0.0:
+                    continue
+                if int(_ss) in _sec_flow_map:
+                    continue
+                _ln_s = 1
+                try:
+                    _si_s = AKIInfNetGetSectionANGInf(int(_ss))
+                    _ln_s = max(int(getattr(_si_s, 'nbCentralLanes', 0))
+                                + int(getattr(_si_s, 'nbSideLanes', 0)), 1)
+                except Exception:
+                    _ln_s = 1
+                _sec_flow_map[int(_ss)] = (float(_suf_all[_idx]), _ln_s)
+        except Exception:
+            pass
 
         if not flow_samples:
             return
@@ -9709,12 +11694,305 @@ class IntersectionController:
         mean_den  = mean_flow * k_sat / q_sat
         no_physical_detectors = not any(self.UpDetList)
 
-        # Broadcast to all phase/lane slots in UpFlowList
+        # ── Per-phase (per-DIRECTION) rows (2026-09-26) ──────────────────────
+        # UpFlowList rows are (phase, slot). Fill each row from the sections
+        # THAT PHASE serves (signal-plan origins), so a bus-free continuous
+        # monitor prices the direction being served -- not a both-direction
+        # mean (Logan's two mains differ ~3x at some junctions). Row 0 keeps
+        # the engine's documented "row 0 = bus phase" convention (bus code
+        # reads UpFlowList[0]); phase 1 takes the bus row's old slot when
+        # BusPhase != 1. Falls back to the broadcast mean per row whenever the
+        # plan map can't resolve.
+        _ps = {}
+        try:
+            _ps = self._phase_origin_sections() or {}
+        except Exception:
+            _ps = {}
+
+        def _row_flow_for(_ph):
+            _secs = _ps.get(int(_ph))
+            if not _secs:
+                return None
+            _vals = []
+            for _s in _secs:
+                _sf = _sec_flow_map.get(int(_s))
+                if _sf is not None:
+                    _vals.extend([_sf[0]] * _sf[1])
+            if not _vals:
+                return None
+            _rf = float(np.mean(_vals))
+            return _rf, _rf * k_sat / q_sat
+
+        _bp = int(getattr(self, 'BusPhase', 1) or 1)
         for i in range(len(self.UpFlowList)):
+            _ph = i + 1
+            if i == 0 and 1 <= _bp <= len(self.UpFlowList):
+                _ph = _bp                      # row 0 = bus phase (convention)
+            elif i == _bp - 1 and _bp != 1:
+                _ph = 1                        # phase 1 takes the old bus row
+            _rf = _row_flow_for(_ph)
+            _f_row, _d_row = _rf if _rf is not None else (mean_flow, mean_den)
             for j in range(len(self.UpFlowList[i])):
                 if (self.RedDurationList[i][j] > 0 or no_physical_detectors):
-                    self.UpFlowList[i][j] = mean_flow
-                    self.UpDenList[i][j]  = mean_den
+                    self.UpFlowList[i][j] = _f_row
+                    self.UpDenList[i][j]  = _d_row
+
+    def _timetable_intensity(self):
+        """Bus arrivals/hour proxy at this junction from the PT timetable, scaled
+        to ~[0,2] (1.0 ~ a busy ~30 bus/h corridor). Coarse v1: PT line count over
+        a nominal headway. 0 when no PT info -- then the transit weight is neutral."""
+        try:
+            _n = int(AKIPTGetNumberLines())
+            if _n <= 0:
+                return 0.0
+            _hw = max(float(globals().get('PLAN_NOMINAL_HEADWAY_S', 600.0)), 60.0)
+            _bph = _n * (3600.0 / _hw)          # buses/hour across lines
+            return min(_bph / 30.0, 2.0)
+        except Exception:
+            return 0.0
+
+    def _optimize_startup_plan(self, timeSta):
+        """OFFLINE WARM-START (PLAN_OPTIMIZE): at startup, from the OD demand +
+        bus timetable, solve each junction's CYCLE and PHASE SPLITS (Webster) to
+        minimise expected delay, transit-weighting the bus phase by the timetable
+        intensity, and apply as the base fixed-time plan. The online methods
+        (Nash / CellQ) then correct for the stochastic progression on top. Runs
+        ONCE per junction. v1: per-junction cycle + splits; corridor OFFSETS are
+        set by the coordinator's green-wave solve (see _optimize_corridor_offsets).
+
+        Webster: C = (1.5*L + 5) / (1 - Y), Y = sum of critical flow ratios
+        y_p = demand_p / saturation, L = lost time (n_phases * intergreen).
+        Green_p is proportional to y_p (transit-weighted for the bus phase), floored
+        at min-green, scaled to fill C - L. Applied via ECIChangeTimingPhase."""
+        if getattr(self, '_plan_opt_done', False):
+            return
+        self._plan_opt_done = True
+        try:
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            try:
+                _n = int(ECIGetNumberofPhases(_jid))
+            except Exception:
+                _n = int(ECIGetNumberPhases(_jid))
+            if _n < 2:
+                return
+            _sat = max(float(getattr(self, 'SaturationFlow', 1900.0) or 1900.0), 1.0)
+            _ig = float(globals().get('PLAN_INTERGREEN_S', 4.0))
+            _po = self._phase_origin_sections() or {}
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            # per-phase OD demand (veh/h) over each phase's origin sections
+            _y = {}
+            for _ph in range(1, _n + 1):
+                _d = 0.0
+                for _s in (_po.get(_ph, set()) or set()):
+                    try:
+                        _d += max(0.0, float(self._demand_seed_flow_for_sec(int(_s))))
+                    except Exception:
+                        pass
+                _y[_ph] = min(_d / _sat, 0.95)             # flow ratio y_p
+            # ── BUGFIX 2026-09-30: Webster's Y must be the CRITICAL flow ratio,
+            # i.e. the largest y among movements that CONFLICT with each other --
+            # not the sum over every phase at the junction. Summing all phases
+            # gave Y=3.8..6.3 on kg, so min(Y,0.90) pinned at 0.90, C = 10*(1.5L+5)
+            # and every junction clamped to PLAN_CYCLE_MAX_S=150 (vs the real
+            # ~80-135 s): car delay 19.9->64.8 s, bus 15.1->31.8 s, a -68%
+            # objective regression versus simply not running the optimiser.
+            # Phases are conflicting unless they share an origin section (same
+            # physical approach => may run together), so the critical ratio is
+            # the max y within each conflict set, and Y the sum of those maxima.
+            _adj = {}
+            for _ph in _y:
+                _s_ph = _po.get(_ph, set()) or set()
+                _adj[_ph] = {q for q in _y
+                             if q == _ph
+                             or not (_s_ph & (_po.get(q, set()) or set()))}
+            # Union-find over the conflict relation -> independent groups.
+            _par = {p: p for p in _y}
+
+            def _find(a):
+                while _par[a] != a:
+                    _par[a] = _par[_par[a]]
+                    a = _par[a]
+                return a
+
+            for _p in _y:
+                for _q in _adj[_p]:
+                    _ra, _rb = _find(_p), _find(_q)
+                    if _ra != _rb:
+                        _par[_rb] = _ra
+            _grp = {}
+            for _p in _y:
+                _grp.setdefault(_find(_p), []).append(_p)
+            _Y = sum(max(_y[p] for p in _g) for _g in _grp.values())
+            # Hard domain guard: Webster is only valid for Y < 1. Refuse to
+            # apply a plan rather than emit a degenerate one.
+            if _Y >= 0.98:
+                log_to_file(
+                    f"[PLAN_OPT] inter={self.id} Y={_Y:.2f} >= 0.98 (oversaturated) "
+                    f"-> KEEP network plan, skip optimisation", force=True)
+                return
+            if _Y <= 0.0:
+                log_to_file(f"[PLAN_OPT] inter={self.id} no OD demand -> skip",
+                            force=True)
+                return
+            _L = _n * _ig
+            _C = (1.5 * _L + 5.0) / (1.0 - _Y) if _Y < 1.0 else float('inf')
+            # Anchor the optimised cycle to the cycle the network ACTUALLY runs.
+            # A global 60-150 s band let Webster inflate an 80-135 s corridor to
+            # 150 s at every junction; a signal-timing change that far from the
+            # commissioned plan is never an improvement in practice.
+            _Cbase = self._signal_cycle_s(timeSta) or 0.0
+            _lo = float(globals().get('PLAN_CYCLE_MIN_S', 60.0))
+            _hi = float(globals().get('PLAN_CYCLE_MAX_S', 150.0))
+            _band_pct = 20.0
+            if _Cbase > 0.0:
+                _band = float(globals().get('PLAN_CYCLE_BAND', 0.20))
+                _band_pct = 100.0 * _band
+                _lo = max(_lo, _Cbase * (1.0 - _band))
+                _hi = min(_hi, _Cbase * (1.0 + _band))
+            _C = min(max(_C, _lo), _hi)
+            _mg = float(globals().get('PLAN_MIN_GREEN_S', 7.0))
+            # Min-green floors must FIT: n_phases x min-green + lost time is a
+            # hard lower bound on the cycle. If the floors do not fit inside the
+            # band, the plan is infeasible at this junction -- keep the network
+            # plan instead of emitting an over-long, all-floors cycle.
+            if _n * _mg + _L > _C + 1e-6:
+                log_to_file(
+                    f"[PLAN_OPT] inter={self.id} n_ph={_n} min-green {_n*_mg:.0f}s"
+                    f" + lost {_L:.0f}s > C={_C:.0f}s -> KEEP network plan",
+                    force=True)
+                return
+            # transit weight on the bus phase from the timetable intensity
+            _tw = 1.0
+            if _bp in _y:
+                _tw = 1.0 + float(globals().get('PLAN_TRANSIT_WEIGHT', 0.5)) \
+                    * float(self._timetable_intensity())
+            _w = {_ph: (_y[_ph] * (_tw if _ph == _bp else 1.0)) for _ph in _y}
+            _wsum = sum(_w.values()) or 1.0
+            _eff = _C - _L                            # effective green budget
+            # ── BUGFIX 2026-09-30: allocate with a floor-and-redistribute pass so
+            # sum(greens) == C - L EXACTLY. The old code floored at _mg, rescaled,
+            # then floored AGAIN; when the floors bound (common once C is large)
+            # the second floor silently broke the identity and the applied plan
+            # did not sum to its own cycle (kg inter=39590: 158.8 s applied for a
+            # nominal 150 s cycle). Water-filling: start from the floor, hand out
+            # the surplus in proportion to weight, respecting the floor.
+            _greens = {p: _mg for p in _w}
+            _slack = _eff - _n * _mg
+            if _slack > 0:
+                _rem_w = dict(_w)
+                for _ in range(24):                 # converges fast; bounded anyway
+                    _s = sum(_rem_w.values())
+                    if _s <= 1e-12:
+                        break
+                    _add = {}
+                    for _p in _w:
+                        _share = _slack * (_rem_w[_p] / _s)
+                        if _share > 1e-9:
+                            _add[_p] = _share
+                            _rem_w[_p] = 0.0
+                    if not _add:
+                        break
+                    for _p, _a in _add.items():
+                        _greens[_p] += _a
+                    _slack -= sum(_add.values())
+                    if _slack <= 1e-6:
+                        break
+            # Final exactness pass: put any residue on the largest-weight phase.
+            _resid = _eff - sum(_greens.values())
+            if abs(_resid) > 1e-6:
+                _best = max(_w, key=lambda p: _w[p]) if _w else None
+                if _best is not None and _greens[_best] + _resid >= _mg - 1e-6:
+                    _greens[_best] += _resid
+            # Round to the 0.1 s the network is driven at, then force
+            # sum(greens) + lost == C exactly by correcting the largest phase:
+            # rounding is the last thing that can break the identity.
+            _applied = {p: round(float(_greens.get(p, _mg)), 1) for p in range(1, _n + 1)}
+            _resid = round(_C - _L - sum(_applied.values()), 1)
+            if abs(_resid) >= 0.05 and _applied:
+                _best = max(_applied, key=lambda p: _applied[p])
+                if _applied[_best] + _resid >= _mg:
+                    _applied[_best] = round(_applied[_best] + _resid, 1)
+            _targets = {p: float(v) for p, v in _applied.items()}
+            for _ph, _dur in _applied.items():
+                try:
+                    ECIChangeTimingPhase(_jid, _ph, float(_dur), timeSta)
+                except Exception:
+                    pass
+            # Cache the optimized splits so _reassert_plan can re-impose them each
+            # cycle if the fixed control plan reverts them; make the optimized bus
+            # green the nominal one so RECOVERY restores to the optimized base too.
+            self._plan_target_greens = _targets
+            try:
+                if _bp in _targets:
+                    self.BusPhaseDuration = _targets[_bp]
+                self._coord_phase_cache = None   # re-cache coord base from new plan
+                self._signal_cycle_cache = float(_C)
+            except Exception:
+                pass
+            # Log the self-consistency check: sum(greens)+lost must equal C, else
+            # Aimsun is running a cycle we did not intend (this is how the 158.8 s
+            # / 150 s mismatch was found).
+            _sum_g = round(sum(_applied.values()), 1)
+            _ok = abs(_sum_g + _L - _C) < 0.15
+            log_to_file(
+                f"[PLAN_OPT] inter={self.id} C={_C:.0f}s Y={_Y:.2f} "
+                f"(Cbase={_Cbase:.0f}s band=+/-{_band_pct:.0f}%) L={_L:.0f}s "
+                f"busphase={_bp} tw={_tw:.2f} sumG={_sum_g:.1f} "
+                f"sumG+L={_sum_g + _L:.1f} {'OK' if _ok else 'MISMATCH'} "
+                f"greens={_applied}", force=True)
+            if not _ok:
+                log_to_file(
+                    f"[PLAN_OPT] inter={self.id} WARN cycle identity violated "
+                    f"({_sum_g + _L:.1f} != {_C:.1f})", force=True)
+            # ── Corridor GREEN-WAVE OFFSET (Eq. plan_offset) ────────────────────
+            # Seed this junction's offset relative to the corridor anchor by a
+            # one-time transient: extend the CURRENT phase by phi (mod C) so the
+            # cycle here starts phi seconds after the anchor, forming the bus-
+            # direction green wave. Same mechanism as an OC action; applied once.
+            if bool(globals().get('PLAN_OPTIMIZE_OFFSETS', True)):
+                _cc = getattr(self, '_corridor_coord', None)
+                if _cc is not None:
+                    try:
+                        _offs = getattr(_cc, '_plan_offsets', None)
+                        if not _offs:
+                            _offs = _cc._compute_plan_offsets()
+                        _phi = float(_offs.get(int(self.id), 0.0)) % _C
+                        if _phi > 0.5:
+                            _cur = int(ECIGetCurrentPhase(_jid))
+                            _pd = float(GetPhaseDuration(_jid, _cur, timeSta))
+                            _shift = min(_phi, _C - _mg)   # bounded startup transient
+                            ECIChangeTimingPhase(_jid, _cur, _pd + _shift, timeSta)
+                            log_to_file(f"[PLAN_OFFSET] inter={self.id} "
+                                        f"phi={_phi:.1f}s applied (green-wave)",
+                                        force=True)
+                    except Exception:
+                        pass
+        except Exception as _e:
+            log_to_file(f"[PLAN_OPT] inter={self.id} error {_e!r}", force=True)
+
+    def _reassert_plan(self, time, timeSta):
+        """Re-impose the optimized splits each cycle so a fixed control plan that
+        Aimsun re-asserts cannot silently revert PLAN_OPTIMIZE. Only acts when the
+        signal is AT REST (no active TSP grant) so it never fights an online GE/INS/
+        OC action -- during a grant it yields, and after recovery it nudges the phase
+        back to its optimized target. Cheap: only the current phase, only on drift."""
+        _tgt = getattr(self, '_plan_target_greens', None)
+        if not _tgt:
+            return
+        # Yield while a TSP action is active (respect the online recourse layer).
+        if float(time) < float(getattr(self, 'TSPActiveTime', 0.0) or 0.0):
+            return
+        try:
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            _cur = int(ECIGetCurrentPhase(_jid))
+            _want = float(_tgt.get(_cur, 0.0) or 0.0)
+            if _want <= 0.0:
+                return
+            _live = float(GetPhaseDuration(_jid, _cur, timeSta) or 0.0)
+            if abs(_live - _want) > 1.0:      # only when the plan drifted
+                ECIChangeTimingPhase(_jid, _cur, _want, timeSta)
+        except Exception:
+            pass
 
     def _signal_cycle_s(self, timeSta: float = 0.0) -> float:
         """True signal cycle length (s), discovered from the network itself.
@@ -9873,7 +12151,7 @@ class IntersectionController:
                         if sec_info is not None:
                             sec_id, sec_len_m = sec_info
                             try:
-                                _mzone = float(globals().get('MAIN_QUEUE_ZONE_M', 60.0))
+                                _mzone = float(self._queue_zone_m(True))
                             except Exception:
                                 _mzone = 60.0
                             try:
@@ -10088,6 +12366,112 @@ class IntersectionController:
     #   INS        — insert bus phase immediately (if bus phase is not active)
     # ──────────────────────────────────────────────────────────────────────────
 
+    def _next_bus_green_window(self, time, timeSta):
+        """(start_in_s, end_in_s) of the NEXT bus-phase green from NOW.
+
+        Walks the live plan forward (phase durations via GetPhaseDuration).
+        (0.0, remaining) when the bus phase is green now. (None, None) when
+        the plan cannot be read (callers fail open). Answers "will the signal
+        get the next green" for a pre-armed bus before any grant is spent.
+        Prefers this junction's pushed post-change plan (upstream direction):
+        same-tick commits are visible without waiting for ECI polling."""
+        try:
+            _push = self._pushed_plan()
+        except Exception:
+            _push = None
+        try:
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            _phs = list(getattr(self, 'phase_list', []) or [])
+            if _bp < 1 or not _phs:
+                return None, None
+            try:
+                _cur = int(ECIGetCurrentPhase(self.node_id))
+            except Exception:
+                return None, None
+            try:
+                _ps0 = float(ECIGetStartingTimePhase(self.node_id))
+            except Exception:
+                _ps0 = float(time)
+            _el = max(0.0, float(time) - _ps0)
+            if _cur == _bp:
+                try:
+                    _rem = max(0.0, float(GetPhaseDuration(
+                        self.node_id, _cur, timeSta) or 0.0) - _el)
+                except Exception:
+                    _rem = 0.0
+                # Pushed GE on the live phase lengthens it past ECI until the
+                # executor applies: overlay so the window is post-commit truth.
+                try:
+                    if isinstance(_push, dict) and int(
+                            _push.get("phase", -1)) == int(_cur):
+                        _rem = max(0.0, float(_push.get(
+                            "bus_phase_dur", 0.0)) - _el)
+                except Exception:
+                    pass
+                return 0.0, _rem
+            try:
+                _ci = _phs.index(_cur); _bi = _phs.index(_bp)
+            except Exception:
+                return None, None
+            _n = len(_phs)
+            try:
+                _t = max(0.0, float(GetPhaseDuration(
+                    self.node_id, _cur, timeSta) or 0.0) - _el)
+            except Exception:
+                _t = 0.0
+            for _k in range(1, (_bi - _ci) % _n):
+                try:
+                    _t += max(0.0, float(_dur_or_live(
+                        self.node_id, _phs[(_ci + _k) % _n], timeSta) or 0.0))
+                except Exception:
+                    pass
+            try:
+                _g = max(0.0, float(_dur_or_live(
+                    self.node_id, _bp, timeSta) or 0.0))
+            except Exception:
+                _g = 0.0
+            # Pushed bus-green length wins over the ECI read (same-tick
+            # commits visible to upstream checks with no polling gap).
+            try:
+                if isinstance(_push, dict) and float(
+                        _push.get("bus_phase_dur", 0.0)) > 0.0:
+                    _g = max(0.0, float(_push["bus_phase_dur"]))
+            except Exception:
+                pass
+            return _t, _t + _g
+        except Exception:
+            return None, None
+
+    def _prearm_feasible(self, eta_from_now, time, timeSta):
+        """Can the next bus-phase green serve a bus arriving in eta seconds?
+
+        (True, why); False ONLY when the ETA provably falls beyond green_end
+        + max bridgeable hold (BP_upper_bound / MAX_GE_EXTENSION_S) -- a grant
+        sized for such an arrival expires before the bus gets there (the
+        burst-grant failure: consecutive-junction grants in bursts timed
+        nothing like the arrival). Fail-open True on any unreadable plan state
+        so the gate can never wedge control."""
+        try:
+            _w = self._next_bus_green_window(time, timeSta)
+        except Exception:
+            return True, "unknown"
+        if not _w or _w[0] is None:
+            return True, "unknown"
+        try:
+            _bridge = max(float(getattr(self, 'BP_upper_bound', 0) or 0.0),
+                          float(globals().get('MAX_GE_EXTENSION_S', 10.0) or 10.0),
+                          5.0)
+        except Exception:
+            _bridge = 10.0
+        try:
+            _eta = float(eta_from_now)
+            if _eta <= float(_w[1]) + _bridge:
+                return True, ("natural" if _eta <= float(_w[1]) else "bridged")
+            return False, ("eta %.0fs beyond green_end %.0fs+bridge %.0fs"
+                           % (_eta, float(_w[1]), _bridge))
+        except Exception:
+            return True, "unknown"
+
     def _reward_estimate_no_action(self, time, timeSta, bus_eta_s):
         """Estimate bus delay if no TSP action is taken."""
         cycle = float(self.cycle_len_s)
@@ -10205,6 +12589,141 @@ class IntersectionController:
         except Exception:
             return 1.0
 
+    def _ctm_cross_cost_paxs(self, action_s: float, timeSta: float = 0.0) -> float:
+        """GENUINE MULTI-CELL Cell-Transmission-Model cross-approach cost (pax·s) of
+        holding the conflicting movements RED `action_s` seconds longer.
+
+        Each conflicting (cross/side) approach is discretised into a CHAIN of Daganzo
+        CTM cells (length L=v_f·dt, so a free-flow vehicle advances one cell per step),
+        oriented upstream(cell 0) -> stop line(cell K-1). Per step, per cell i:
+          • sending   S_i = min(n_i, Q)                       (demand out of i)
+          • receiving R_i = min(Q, (w/v_f)·(N_i - n_i))       (space in i; BACKWARD WAVE)
+          • inter-cell flow  y_i = min(S_i, R_{i+1})          (i -> i+1)
+          • stop line  y_{K-1} = S_{K-1} if GREEN else 0      (signal gates ONLY here)
+          • conservation  n_i(t+dt) = n_i + y_{i-1} - y_i ; cell 0 inflow = min(q_arr·dt, R_0)
+        A downstream cell that fills (red at the stop line) shrinks its receiving term,
+        which throttles the cell behind it -> the queue SPILLS BACK upstream cell by
+        cell (the physics a single stop-line cell cannot represent).
+
+        Parameterised from the Aimsun plant so the controller matches the simulator:
+        SaturationFlow -> Q, JamDensity -> per-cell storage N_i, section speed-limit ->
+        v_f (cell length), measured arrivals (`_measured_section_flow_vph`), and the
+        current micro-queue (`_zone_queue_count`, filled into the stop-line cells).
+        Cost = EXTRA vehicle-seconds (Σ over cells & steps) under `action_s` more red
+        vs none, × CarOcc, summed over conflicting approaches. Backward-wave speed and
+        free-flow are tunable (CELLQ_CTM_WAVE_KMH / CELLQ_CTM_FREEFLOW_KMH); cell count
+        is capped (CELLQ_CTM_MAX_CELLS). Returns pax·s (>=0); 0 on missing plant data.
+        """
+        try:
+            if action_s <= 0.0:
+                return 0.0
+            _dt = float(globals().get('CELLQ_CTM_DT_S', 1.0) or 1.0)
+            _car_occ = max(safe_float(getattr(self, 'CarOcc', 1.0)), 1.0)
+            _kj = max(float(getattr(self, 'JamDensity', 150.0) or 150.0), 1.0)   # veh/km/lane
+            _sat_h = float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)    # veh/h/lane
+            _vf_kmh = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
+            _w_kmh = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0) or 18.0)
+            _max_cells = max(1, int(globals().get('CELLQ_CTM_MAX_CELLS', 10) or 10))
+            _secs = list(self._get_side_sections() or [])
+            if not _secs:
+                return 0.0
+            _cyc = float(self._signal_cycle_s(timeSta)) if hasattr(self, '_signal_cycle_s') else 120.0
+            _horizon = min(float(action_s) + max(_cyc, 60.0), 300.0)
+            _n_steps = max(1, int(round(_horizon / _dt)))
+            _extra_red_steps = max(0, int(round(float(action_s) / _dt)))
+            _total = 0.0
+            for _sec in _secs:
+                try:
+                    _lanes = max(int(self._sec_lane_count(int(_sec))) if hasattr(self, '_sec_lane_count') else 1, 1)
+                    _q_arr = 0.0
+                    if hasattr(self, '_measured_section_flow_vph'):
+                        _q_arr = max(0.0, float(self._measured_section_flow_vph(int(_sec)) or 0.0)) / 3600.0
+                    if _q_arr <= 0.0:
+                        continue
+                    # section length + free-flow speed from the plant (per-section
+                    # speed limit when exposed, else the flag default).
+                    _len_m = 150.0
+                    _vf = max(_vf_kmh / 3.6, 1.0)
+                    try:
+                        _si = AKIInfNetGetSectionANGInf(int(_sec))
+                        if getattr(_si, 'report', -1) >= 0 and float(_si.length) > 0:
+                            _len_m = float(_si.length)
+                        _slim = float(getattr(_si, 'speedLimit', 0.0) or 0.0)      # km/h
+                        if _slim > 1.0:
+                            _vf = max(_slim / 3.6, 1.0)
+                    except Exception:
+                        pass
+                    _w = max(_w_kmh / 3.6, 0.1)
+                    _w_ratio = min(1.0, _w / _vf)
+                    _L = max(_vf * _dt, 5.0)                       # cell length (m)
+                    # CELLQ_CTM_SINGLE_CELL (2026-10-01): lump the whole approach into
+                    # ONE cell of length = section length. This is the fair single-cell
+                    # baseline the multi-cell chain is supposed to beat: same storage
+                    # (a full approach can fill), same signal gate at the stop line,
+                    # but NO inter-cell flow and therefore NO backward-wave spillback.
+                    # Note we must set the CELL LENGTH, not just the cell COUNT --
+                    # forcing _K=1 while keeping L=v_f*dt leaves a cell that can hold
+                    # barely one step of flow, which measures storage error rather
+                    # than the absence of spatial structure. With L=_len_m the
+                    # existing ceil(_len_m/_L) below yields K=1 on its own.
+                    _single_cell = bool(globals().get('CELLQ_CTM_SINGLE_CELL', False))
+                    if _single_cell:
+                        _L = max(_len_m, 5.0)
+                    _K = max(1, min(int(math.ceil(_len_m / _L)), _max_cells))
+                    _N = max(_kj * (_L / 1000.0) * _lanes, 1.0)    # veh storage / cell
+                    _Q = max(_sat_h / 3600.0 * _lanes * _dt, 1e-6) # max veh / step
+                    _inflow = _q_arr * _dt                         # arrivals / step
+                    # seed the standing micro-queue into the STOP-LINE cells (K-1 back).
+                    _n0 = 0.0
+                    try:
+                        if hasattr(self, '_zone_queue_count'):
+                            _n0 = max(0.0, float(self._zone_queue_count(int(_sec)) or 0.0))
+                    except Exception:
+                        _n0 = 0.0
+
+                    # ambient free-flow density already on the approach: rho = q/v_f
+                    # (veh/m) -> veh per cell, so the moving stream is present in EVERY
+                    # cell (a red bites the cells near the stop line immediately, not
+                    # only after arrivals travel the whole approach). The standing
+                    # micro-queue seeds the stop-line cells ON TOP of the ambient.
+                    _amb = min((_q_arr / _vf) * _L, _N)
+
+                    def _init_cells():
+                        _c = [_amb] * _K
+                        _rem = _n0; _i = _K - 1
+                        while _rem > 1e-9 and _i >= 0:
+                            _put = min(_rem, max(0.0, _N - _c[_i])); _c[_i] += _put
+                            _rem -= _put; _i -= 1
+                        return _c
+
+                    def _sim(extra_red_steps):
+                        n = _init_cells(); d = 0.0
+                        for _k in range(_n_steps):
+                            _green = (_k >= extra_red_steps)
+                            _S = [min(n[i], _Q) for i in range(_K)]
+                            _R = [min(_Q, _w_ratio * max(0.0, _N - n[i])) for i in range(_K)]
+                            _y = [0.0] * _K                     # y[i] = flow i -> i+1
+                            for i in range(_K - 1):
+                                _y[i] = min(_S[i], _R[i + 1])
+                            _out = _S[_K - 1] if _green else 0.0  # stop-line discharge
+                            _in0 = min(_inflow, _R[0])            # upstream arrivals
+                            _nn = n[:]
+                            for i in range(_K):
+                                _in_i = _in0 if i == 0 else _y[i - 1]
+                                _out_i = _out if i == _K - 1 else _y[i]
+                                _nn[i] = n[i] + _in_i - _out_i
+                            n = [x if x > 0.0 else 0.0 for x in _nn]
+                            d += sum(n) * _dt
+                        return d
+
+                    _total += max(0.0, _sim(_extra_red_steps) - _sim(0)) * _car_occ
+                except Exception:
+                    continue
+            _nf = float(getattr(_spm, 'NETWORK_FACTOR', 1.0) or 1.0)
+            return max(0.0, _total * _nf)
+        except Exception:
+            return 0.0
+
     def _dctsp_cross_traffic_delay_s(self, action_s: float,
                                        queue_elapsed_s: float = 0.0,
                                        phases=None) -> float:
@@ -10271,7 +12790,20 @@ class IntersectionController:
             ) / 3600.0
             upf = getattr(self, 'UpFlowList', np.zeros((1,1)))
             n_phases = upf.shape[0] if hasattr(upf, 'shape') else 0
-            _phase_iter = phases if phases is not None else range(1, n_phases)
+            if phases is not None:
+                _phase_iter = phases
+            else:
+                # Prefer SIDE-phase rows only when the plan map resolves: the
+                # opposite MAIN direction is priced separately by
+                # _measured_opposite_main_delay (both-directions discipline,
+                # 2026-09-26) -- charging its row here too would double count.
+                _phase_iter = None
+                try:
+                    _phase_iter = self._nonmain_phase_indices()
+                except Exception:
+                    _phase_iter = None
+                if _phase_iter is None:
+                    _phase_iter = range(1, n_phases)
             for p in _phase_iter:
                 if p < 0 or p >= n_phases:
                     continue
@@ -10532,7 +13064,15 @@ class IntersectionController:
             _cross_pax = self._dctsp_cross_traffic_delay_s(ge_s)
             other_inc = max(other_inc, _cross_pax * 0.5)
             _sd, _ = self._compute_side_delay_penalty(ge_s, _suppress_log=True)
-            side_inc = max(side_inc, _sd)
+            # Opposite-direction mainline cost (2026-09-26): the analytic
+            # fallback priced only the cross street; price the OTHER corridor
+            # direction too (measured-queue mirror), so a bus-free GE is
+            # quantified against BOTH directions.
+            try:
+                _opp = float(self._measured_opposite_main_delay(ge_s))
+            except Exception:
+                _opp = 0.0
+            side_inc = max(side_inc, _sd) + _opp
 
         return bus_saved, other_inc, side_inc
 
@@ -10564,7 +13104,14 @@ class IntersectionController:
             _cross_pax = self._dctsp_cross_traffic_delay_s(ins_dur)
             other_increase = max(other_increase, _cross_pax * 0.5)
             _sd, _ = self._compute_side_delay_penalty(ins_dur + 5.0, _suppress_log=True)
-            side_delay = max(side_delay, _sd)
+            # Opposite-direction mainline cost (2026-09-26): a phase insertion
+            # takes time from the OTHER corridor direction too -- price its
+            # measured queue (both-directions discipline, as above).
+            try:
+                _opp = float(self._measured_opposite_main_delay(ins_dur + 5.0))
+            except Exception:
+                _opp = 0.0
+            side_delay = max(side_delay, _sd) + _opp
 
         return bus_saved, other_increase, side_delay
 
@@ -10636,6 +13183,21 @@ class IntersectionController:
         green extensions of various durations, phase insertion) and picks the
         one with the highest reward R = -α·ΔD_bus - β·ΔD_other - γ·ΔD_side.
         """
+        # OFFLINE WARM-START: optimize the base cycle+splits from OD + timetable
+        # ONCE at startup (before any online correction), so the online methods
+        # correct a good plan rather than the given fixed one. Self-guards to run once.
+        if bool(globals().get('PLAN_OPTIMIZE', False)):
+            try:
+                self._optimize_startup_plan(timeSta)
+                self._reassert_plan(time, timeSta)   # hold the plan vs any revert
+            except Exception:
+                pass
+        # DELAY CALIBRATION: refresh per-approach kappa from Aimsun's measured .DTa
+        # so _dctsp_eval_action can scale the analytic reward toward realised delay.
+        try:
+            self._update_delay_calibration(timeSta)
+        except Exception:
+            pass
         # Phase restoration (same as HARMONY — reuse existing method)
         self.restore_phase_if_needed(time, timeSta, acycle)
 
@@ -10694,19 +13256,78 @@ class IntersectionController:
                 pass
 
         # ── Corridor pre-arm check (REWARD_TSP coordination) ─────────────────
+        # PREARM_CYCLE_END_ONLY (2026-09-30): a pre-arm commits green DOWNSTREAM of
+        # the decision that justified it. Mid-cycle it truncates whatever phase is
+        # live, and the loss lands on cross traffic that never got a vote -- which
+        # is the suspected mechanism behind the KG result where coordination is
+        # worse than taking no action at all (car delay +53.1%, and bus delay
+        # +10.3% vs NO_TSP, seed 400). The paper admits an offset shift only at a
+        # cycle boundary (eq:offset_repay), so honour that here: a pre-arm may only
+        # be honoured once the target phase has ended and the junction is back on a
+        # cycle boundary. Default OFF so existing behaviour is untouched until the
+        # A/B is run; ON is the candidate fix.
+        if bool(globals().get('PREARM_CYCLE_END_ONLY', False)):
+            try:
+                _ps_now = float(ECIGetStartingTimePhase(self.node_id))
+                _min_g = float(getattr(self, 'min_green_s', 0) or 0)
+                # seconds elapsed in the current phase
+                _phase_age = float(time) - _ps_now
+                _phase_known = _ps_now > 0.0
+            except Exception:
+                _phase_age, _min_g, _phase_known = 0.0, 0.0, False
+            if _phase_known and _phase_age < _min_g:
+                if not getattr(self, '_prearm_block_logged', False):
+                    self._prearm_block_logged = True
+                    try:
+                        log_to_file(
+                            f"[PREARM CYCLE-END] inter={self.id} t={time:.0f} "
+                            f"DEFER: phase age={_phase_age:.1f}s < min-green "
+                            f"{_min_g:.1f}s -- pre-arm must land on a cycle "
+                            f"boundary, not truncate a live phase",
+                            force=True)
+                    except Exception:
+                        pass
+                return
+            self._prearm_block_logged = False
+
         _prearm = getattr(self, '_harmony_prearm', None)
         if _prearm is not None and self.TSPStrategy == 0:
-            _pa_veh, _pa_eta_t, _pa_issued_t = _prearm
+            _pa_veh, _pa_eta_t, _pa_issued_t, _pa_dir, _pa_from = _unpack_prearm(_prearm)
+            if _pa_veh is None:
+                self._harmony_prearm = None
+                _pa_veh, _pa_eta_t, _pa_issued_t = -1, -1e9, -1e9
             _eta_from_now = _pa_eta_t - time
             if _eta_from_now < -20.0 or time - _pa_issued_t > 120.0:
                 self._harmony_prearm = None
             elif 0.0 <= _eta_from_now <= getattr(self, '_eta_max_s', 90.0):
-                self._harmony_prearm = None
-                # Use reward evaluation with the prearm ETA as the bus ETA
-                self._run_reward_tsp_evaluate(
-                    time, timeSta, acycle, current_phase,
-                    _eta_from_now, _pa_veh, prearm_sourced=True)
-                return
+                # Next-green feasibility (2026-09-26): evaluate only prearms
+                # the bus phase can serve around the ETA; unservable ones are
+                # cleared and deferred to local detection (fail-open: unknown
+                # plan state evaluates as before). The coordinator re-fires as
+                # the ETA shrinks, so the grant lands timed to the arrival
+                # instead of bursting far early.
+                _serv, _swhy = self._prearm_feasible(_eta_from_now, time, timeSta)
+                if not _serv:
+                    self._harmony_prearm = None
+                    try:
+                        log_to_file(
+                            f"[PREARM FEASIBILITY] inter={self.id} t={time:.0f} "
+                            f"bus={_pa_veh} eta={_eta_from_now:.0f}s dir={_pa_dir} "
+                            f"from={_pa_from} SKIP unservable ({_swhy}) -- defer local",
+                            force=True)
+                    except Exception:
+                        pass
+                    try:
+                        self.stats.record_tsp_skip(self.id, 'prearm_unservable')
+                    except Exception:
+                        pass
+                else:
+                    self._harmony_prearm = None
+                    # Use reward evaluation with the prearm ETA as the bus ETA
+                    self._run_reward_tsp_evaluate(
+                        time, timeSta, acycle, current_phase,
+                        _eta_from_now, _pa_veh, prearm_sourced=True)
+                    return
 
         # ── Bus detection check ───────────────────────────────────────────────
         _n_det_slots = max(len(self.BusDet), 1)
@@ -10797,7 +13418,12 @@ class IntersectionController:
                and det_idx < len(self.config['DetDistance'][0])
             else 200.0
         )
-        bus_eta_s = eta_info[1] if eta_info else (_det_dist_fb / bus_speed)
+        bus_eta_s = eta_info[1] if eta_info else (_det_dist_fb / max(float(bus_speed), 0.5))
+        try:
+            _emx2 = float(globals().get('BUS_ETA_MAX_S', 300.0) or 300.0)
+        except Exception:
+            _emx2 = 300.0
+        bus_eta_s = min(float(bus_eta_s), _emx2)
 
         # ── Stop-aware ETA padding (learned per-line lateness) ──────
         try:
@@ -10827,6 +13453,25 @@ class IntersectionController:
             self._reward_no_action_until = time + 3.0
             return
 
+        # ── MULTIBUS_JOINT: observe ALL oncoming buses and act on the
+        # reward-optimal one (occupancy x lateness-urgency), not just the
+        # first/late detected bus. R10 keeps one action per window; R11's
+        # green-keep covers a following convoy. Logs the choice so the
+        # selection is auditable.
+        if bool(getattr(_spm, 'MULTIBUS_JOINT', False)):
+            try:
+                _cc = getattr(self, '_corridor_coord', None)
+                if _cc is not None and hasattr(_cc, 'best_bus_for'):
+                    _bb, _bs, _n = _cc.best_bus_for(int(self.id), time)
+                    if _bb is not None and _n > 1 and int(_bb) != int(_det_vid or -1):
+                        log_to_file(
+                            f"[MULTIBUS] inter={self.id} t={time:.1f} "
+                            f"buses={_n} choose bus={_bb} "
+                            f"(score={_bs:.0f}) over detected={_det_vid}")
+                        _det_vid = int(_bb)
+            except Exception:
+                pass
+
         self._run_reward_tsp_evaluate(
             time, timeSta, acycle, current_phase, bus_eta_s, _det_vid,
             stats_ok=_reward_stats_ok)
@@ -10839,6 +13484,173 @@ class IntersectionController:
             if _hold > 0.0:
                 self._reward_no_action_until = max(
                     getattr(self, '_reward_no_action_until', -1.0), time + _hold)
+
+    def _junction_ge_ub(self, timeSta=0.0):
+        """Corridor-agnostic GE upper bound for THIS junction (2026-09-27).
+
+        min(global MAX_GE_EXTENSION_S, GE_MAX_FRAC_OF_CYCLE * live cycle).
+        A 15 s extension is a different intervention on a 60 s cycle than on
+        a 135 s one; scaling by the discovered cycle keeps the solver's
+        lattice (grid/de/exact) meaningful on any corridor. Falls back to the
+        global MAX when the cycle is undiscoverable.
+        """
+        try:
+            _gmax = float(globals().get('MAX_GE_EXTENSION_S', 10.0))
+        except Exception:
+            _gmax = 10.0
+        try:
+            _frac = float(globals().get('GE_MAX_FRAC_OF_CYCLE', 0.15) or 0.0)
+        except Exception:
+            _frac = 0.15
+        if _frac <= 0.0:
+            return max(1.0, _gmax)
+        try:
+            _cyc = float(self._signal_cycle_s(timeSta) or 0.0)
+        except Exception:
+            _cyc = 0.0
+        if _cyc <= 0.0:
+            return max(1.0, _gmax)
+        return max(1.0, min(_gmax, _frac * _cyc))
+
+    def _pushed_plan(self):
+        """Latest published post-change plan for THIS junction (or None).
+
+        Same-tick truth after any commit/restore/recovery: readers prefer it
+        over attributes/ECI, so both directions (downstream projections,
+        upstream window checks) see the new plan with no polling gap.
+        """
+        try:
+            _cc = getattr(self, '_corridor_coord', None)
+            if _cc is not None and hasattr(_cc, 'get_pushed_plan'):
+                return _cc.get_pushed_plan(int(self.id))
+        except Exception:
+            pass
+        return None
+
+    def _broadcast_timing_change(self, action, magnitude_s, time, why,
+                                   current_phase=None, timeSta=0.0,
+                                   live_read=False):
+        """Push this junction's new plan to the corridor (2026-09-27).
+
+        Invalidation is not enough: neighbours coordinate against snapshots,
+        and ECI does not carry a commit's values until its executor applies
+        them (the ledger fires pre-execution). So this publishes the
+        POST-change plan itself -- analytically for ledger commits (pre-commit
+        ECI truth + action delta), by live ECI re-read for recovery/restore/
+        pre-arm executors (already applied, live_read=True) -- into the
+        coordinator's push registry. Both directions read the same store:
+        downstream delay projections AND upstream green-window checks prefer
+        it over attributes/ECI, so same-tick commits are visible with no
+        polling gap and no execution-order dependence.
+        """
+        try:
+            self._signal_cycle_cache = 0.0
+        except Exception:
+            pass
+        try:
+            self._coord_phase_cache = None
+            self._coord_base_dur = None
+        except Exception:
+            pass
+        # Mark Python-side plan attributes stale: cross-junction projections
+        # read these (not ECI). The refresh itself is deferred to the next
+        # evaluation (see _run_reward_tsp_evaluate head): ECI does not carry
+        # the new values until the executors below apply them.
+        try:
+            self._plan_attrs_dirty = True
+        except Exception:
+            pass
+        # ── Publish post-change (bpd, cycle, full per-phase durs) ────────
+        try:
+            _bpd_new = _cyc_new = None
+            _ph_pub = -1
+            _durs_new = {}
+            try:
+                for _ph in (getattr(self, 'phase_list', None) or []):
+                    _durs_new[int(_ph)] = float(GetPhaseDuration(
+                        self.node_id, int(_ph), timeSta) or 0.0)
+            except Exception:
+                _durs_new = {}
+            if live_read:
+                try:
+                    _bpd_new = float(GetPhaseDuration(
+                        self.node_id, self.BusPhase, timeSta) or 0.0)
+                except Exception:
+                    _bpd_new = None
+                try:
+                    self._signal_cycle_cache = 0.0
+                    _cyc_new = float(self._signal_cycle_s(timeSta) or 0.0)
+                except Exception:
+                    _cyc_new = None
+                # live_read: ECI already applied -> durs_new is the truth.
+            else:
+                try:
+                    _bpd0 = float(GetPhaseDuration(
+                        self.node_id, self.BusPhase, timeSta) or 0.0)
+                except Exception:
+                    _bpd0 = 0.0
+                if _bpd0 <= 0.0:
+                    try:
+                        _bpd0 = float(getattr(self, 'BusPhaseDuration', 0.0)
+                                      or 0.0)
+                    except Exception:
+                        _bpd0 = 0.0
+                try:
+                    _cyc0 = 0.0
+                    for _ph in (getattr(self, 'phase_list', None) or []):
+                        _cyc0 += float(GetPhaseDuration(
+                            self.node_id, _ph, timeSta) or 0.0)
+                except Exception:
+                    _cyc0 = 0.0
+                try:
+                    _ak, _ = _spm.parse_action_token(str(action))
+                except Exception:
+                    _ak = ""
+                _mag = max(0.0, float(magnitude_s or 0.0))
+                _bpd_new, _cyc_new = _bpd0, _cyc0
+                if _ak == "GE":
+                    try:
+                        _cur = int(current_phase)
+                        _bp = int(getattr(self, 'BusPhase', -1))
+                    except Exception:
+                        _cur, _bp = -1, -2
+                    if _cur == _bp and _cur >= 0:
+                        _bpd_new = _bpd0 + _mag
+                        _ph_pub = _cur
+                        _durs_new[_bp] = float(_durs_new.get(_bp, _bpd0)) + _mag
+                    _cyc_new = _cyc0 + _mag
+                elif _ak == "INS":
+                    _cyc_new = _cyc0 + _mag
+                elif _ak == "ER":
+                    _cyc_new = max(1.0, _cyc0 - _mag)
+            # Update the GLOBAL plan-state tracker (the single store every
+            # causal-delay estimator reads).
+            if _durs_new:
+                try:
+                    _ps = _global_plan_state(self.id) or {}
+                    _ver = int(_ps.get("version", 0) or 0) + 1
+                    _PLAN_STATE[int(self.id)] = {
+                        "durs": dict(_durs_new),
+                        "cycle_s": (_cyc_new if _cyc_new and _cyc_new > 0.0
+                                    else sum(_durs_new.values())),
+                        "bus_phase": int(getattr(self, 'BusPhase', -1) or -1),
+                        "version": _ver,
+                        "t": float(time),
+                    }
+                except Exception:
+                    pass
+            _cc = getattr(self, '_corridor_coord', None)
+            if (_cc is not None and _bpd_new and _bpd_new > 0.0
+                    and _cyc_new and _cyc_new > 0.0
+                    and hasattr(_cc, 'notify_timing_changed')):
+                _cc.notify_timing_changed(
+                    int(self.id), str(action), float(magnitude_s or 0.0),
+                    float(time), str(why),
+                    plan={"bus_phase_dur": float(_bpd_new),
+                          "cycle_s": float(_cyc_new),
+                          "phase": int(_ph_pub)})
+        except Exception:
+            pass
 
     def _run_reward_tsp_evaluate(self, time, timeSta, acycle,
                                   current_phase, bus_eta_s, veh_id,
@@ -10855,6 +13667,41 @@ class IntersectionController:
         # ER/PT timing changes that cascade car delay (champion search 2026-08-24).
         # The executor uses this to hard-veto those action families for pre-arms.
         self._prearm_sourced_eval = bool(prearm_sourced)
+        # ETA display: the no-bus monitor tick passes the 1e9 sentinel (gates
+        # test bus_eta_s > 1e8), but printing it as eta=1000000000.0s is noise.
+        # Show "--" for monitor ticks and cap anything absurd at the realistic
+        # ceiling so the logs read like the street, not like an internal flag.
+        try:
+            _eta_disp_abs = float(bus_eta_s)
+        except Exception:
+            _eta_disp_abs = 1.0e9
+        if monitor or _eta_disp_abs >= 1.0e8:
+            _eta_disp = "--"
+        else:
+            try:
+                _edm = float(globals().get('BUS_ETA_MAX_S', 300.0) or 300.0)
+            except Exception:
+                _edm = 300.0
+            _eta_disp = ("%.1fs" % min(max(_eta_disp_abs, 0.0), _edm))
+        # ── Deferred plan-attribute refresh (2026-09-27) ──────────────────
+        # ECI writes from the previous tick's commits/restores are live NOW.
+        # Re-read own bus-green length into _live_bus_phase_dur: downstream
+        # projections read this attribute (not ECI), so without the refresh
+        # they coordinate against the pre-commit plan for a full cycle.
+        # BusPhaseDuration itself is NEVER touched here -- recovery maths
+        # treats it as the nominal; the live value lives separately.
+        if bool(getattr(self, '_plan_attrs_dirty', False)):
+            try:
+                self._plan_attrs_dirty = False
+                try:
+                    _nbpd = float(GetPhaseDuration(
+                        self.node_id, self.BusPhase, timeSta) or 0.0)
+                    if _nbpd > 0.0:
+                        self._live_bus_phase_dur = _nbpd
+                except Exception:
+                    pass
+            except Exception:
+                pass
         if veh_id and veh_id > 0 and _is_focus_blocked(veh_id, self.id, time):
             if LOG_REWARD:
                 _vprint(
@@ -10943,6 +13790,8 @@ class IntersectionController:
             (getattr(_spm, 'MP_ECTM_DP_MODE', False),
                                                    _spm.dctsp_mp_ectm_dp, 'MP_ECTM_DP'),
             (getattr(_spm, 'BXT_MODE', False),    _spm.dctsp_bxt,     'BXT'),
+            (getattr(_spm, 'BXT_CORRIDOR_MODE', False),
+                                                   getattr(_spm, 'dctsp_cellqlearn_corridor', None), 'CELLQ_CORRIDOR'),
             (getattr(_spm, 'CPDQL_MODE', False),  _spm.dctsp_cpdql,   'CPDQL'),
             (getattr(_spm, 'CELLQLEARN_DP_MODE', False),
                                                    _spm.dctsp_cellqlearn_dp, 'CELLQLEARN_DP'),
@@ -11009,7 +13858,16 @@ class IntersectionController:
                     # candidate could never win, collapsing CTMGS/CTMGS_DP/
                     # CELLQLEARN onto GR_BASE.
                     _sr = (REWARD_ALPHA * bps - REWARD_BETA * cpc)
-                    _reward_rows.append((lbl, _sr, bps, cpc, 0.0, par))
+                    _bps_row = bps
+                    if monitor and bool(getattr(_spm, 'MONITOR_BUS_ZERO', True)):
+                        # No bus on a car-only tick: its savings are phantom
+                        # (DE500: pred_bus mean 405 on bus=-1 commits). Seat
+                        # the row on cost alone so selection -- and the
+                        # [DECISION] ledger below, which reads these rows --
+                        # sees zero bus credit.
+                        _sr = -REWARD_BETA * cpc
+                        _bps_row = 0.0
+                    _reward_rows.append((lbl, _sr, _bps_row, cpc, 0.0, par))
                     if lbl == _spm.action_label(_mtype, _mparam) and _sr > best_reward:
                         best_reward = _sr
                         best_ge = par
@@ -11125,6 +13983,14 @@ class IntersectionController:
             best_action = _mode_label
             best_ge = _mode_param
             best_reward = _mode_reward
+            if monitor and bool(getattr(_spm, 'MONITOR_BUS_ZERO', True)):
+                # The mode's own delta (_mr) carries the same phantom bus
+                # credit; re-derive best from the zeroed seated row so the
+                # MONITOR_PROG price + min-gain test below see car economics.
+                for (_zl, _zr, _zb, _zc, _zs, _zp) in _reward_rows:
+                    if _zl == _mode_label:
+                        best_reward = float(_zr)
+                        break
 
         # ── Standard candidate evaluation ──────────────────────────────────
         # Runs for every strategy (NORMAL/HARMONY/REWARD_TSP/ZIG/ECTM),
@@ -11139,8 +14005,76 @@ class IntersectionController:
         if not _mode_committed and not _mode_is_decider and current_phase == self.BusPhase and REWARD_TSP_ENABLE_GE:
             # ── GE candidates ──────────────────────────────────────────
             if _zig_ge:
-                for ge_s in REWARD_GE_CANDIDATES:
-                    if ge_s > MAX_GE_EXTENSION_S:
+                # REWARD_GE_SOLVER (2026-09-27): 'grid' (legacy fixed
+                # REWARD_GE_CANDIDATES), 'de' (DE on the decision reward), or
+                # 'exact' (exhaustive integer-lattice argmax -- the true
+                # optimum on a ~13-value domain, deterministic, ~13 evals).
+                # Solved modes optimise the DECISION reward itself, not the
+                # degenerate shockwave curve. Any failure falls back to grid.
+                _ge_solver = str(globals().get('REWARD_GE_SOLVER', 'grid')).lower()
+                _ge_list = list(REWARD_GE_CANDIDATES)
+                _ge_tag = ""
+                if _ge_solver in ('de', 'exact'):
+                    try:
+                        _s_lb = max(1.0, float(globals().get(
+                            'MIN_GE_EXTENSION_S', 3.0)))
+                        # Cycle-scaled bound, then the junction's OWN
+                        # recoverable headroom: the solver may only pick a
+                        # magnitude the cycle can repay (recoverable budget +
+                        # slack, same currency the RECOVER_GATE enforces at
+                        # execution). Falls back to the scaled bound when the
+                        # headroom is unreadable.
+                        _s_ub = float(self._junction_ge_ub(timeSta))
+                        try:
+                            _rec = float(self._reward_get_recoverable(
+                                current_phase, timeSta))
+                            _slack = float(globals().get(
+                                'RECOVERABILITY_SLACK_S', 1.0))
+                            _s_ub = min(_s_ub, max(1.0, _rec + _slack))
+                        except Exception:
+                            pass
+
+                        def _neg_r(_g, _t, _tt=time, _ts=timeSta,
+                                   _eta=bus_eta_s):
+                            _bs, _oi, _si = self._reward_evaluate_ge(
+                                float(_g), _tt, _ts, _eta)
+                            return -(REWARD_ALPHA * _bs - REWARD_BETA * _oi
+                                     - REWARD_GAMMA * _si)
+
+                        if _ge_solver == 'exact':
+                            _sol, _sol_r = None, None
+                            _gi = int(math.ceil(_s_lb))
+                            while _gi <= int(math.floor(_s_ub)):
+                                try:
+                                    _rr = -_neg_r(_gi, time)
+                                except Exception:
+                                    _rr = None
+                                if _rr is not None and _rr == _rr and (
+                                        _sol_r is None or _rr > _sol_r):
+                                    _sol, _sol_r = float(_gi), float(_rr)
+                                _gi += 1
+                            if _sol is None:
+                                raise ValueError('exact lattice empty')
+                        else:
+                            _sol = differential_evolution_search(
+                                _neg_r, _s_lb, _s_ub, time,
+                                pop_size=int(globals().get('TIMING_DE_POP', 10)),
+                                max_generations=int(globals().get('TIMING_DE_GENS', 6)),
+                                F=float(globals().get('TIMING_DE_F', 0.7)),
+                                CR=float(globals().get('TIMING_DE_CR', 0.9)),
+                                seed=int(globals().get('TIMING_DE_SEED', 12345)))
+                        _sol = min(max(float(_sol), _s_lb), _s_ub)
+                        _ge_list = [_sol]
+                        _ge_tag = "(solved-%s)" % _ge_solver
+                    except Exception as _sge_err:
+                        if LOG_REWARD:
+                            log_to_file(
+                                f"[REWARD_TSP] inter={self.id} GE solver "
+                                f"fallback to grid ({_sge_err!r})")
+                        _ge_list = list(REWARD_GE_CANDIDATES)
+                        _ge_tag = ""
+                for ge_s in _ge_list:
+                    if ge_s > float(self._junction_ge_ub(timeSta)):
                         continue
                     bus_saved, other_inc, side_inc = self._reward_evaluate_ge(
                         ge_s, time, timeSta, bus_eta_s)
@@ -11149,7 +14083,7 @@ class IntersectionController:
                               - REWARD_GAMMA * side_inc)
                     _reward_rows.append((f"GE_{ge_s:.0f}", reward, bus_saved, other_inc, side_inc, ge_s))
                     if LOG_REWARD:
-                        log_to_file(f"[REWARD_TSP] inter={self.id} R(GE_{ge_s:.0f})={reward:.1f}")
+                        log_to_file(f"[REWARD_TSP] inter={self.id} R(GE_{ge_s:.0f})={reward:.1f}{_ge_tag}")
                     if reward > best_reward:
                         best_reward = reward; best_ge = ge_s
                         best_action = f"GE_{ge_s:.0f}"
@@ -11258,6 +14192,27 @@ class IntersectionController:
                     if r > best_reward:
                         best_reward = r; best_ge = abs(_oc_shift)
                         best_action = f"OC_{_oc_shift:+.0f}"
+
+            # ── OPP (Optimised Plan Push) -- corridor stagger realignment ─
+            # Moves the bus-green START toward the joint (sequence, offset)
+            # optimum from retime/optimize.py. Touches NO green duration, so the
+            # splits stay hand-tuned (the half the 2026-09-28 A/B refuted).
+            # Offered ALONGSIDE OC, not instead of it: OC chases one bus's
+            # arrival, OPP chases the platoon's. Priced like OC, so OPP only wins
+            # a tick when the advance genuinely helps the waiting bus.
+            if _zig_seq and bool(globals().get('BXT_OPT_OFFSET_PUSH', False)):
+                _opp_shift, _opp_tgt = self._solve_offset_plan_push(
+                    current_phase, timeSta)
+                if abs(_opp_shift) >= 3.0:
+                    r, so, tp, bps, cpc, nsd, std = _spm._dctsp_eval_action(
+                        self, 'OFFSET_PLAN_PUSH', _opp_shift, _sigma_in,
+                        no_action_bus_delay, bus_eta_s,
+                        wrong_phase=False, remaining_red_s=_remain)
+                    _reward_rows.append((f"OPP_{_opp_shift:+.0f}", r, bps, cpc, 0.0,
+                                         abs(_opp_shift)))
+                    if r > best_reward:
+                        best_reward = r; best_ge = _opp_shift
+                        best_action = f"OPP_{_opp_shift:+.0f}"
 
             # ── OC at phase end (adaptive alignment) ─────────────────────
             # When the current (non-bus) phase is about to end and the bus
@@ -11582,7 +14537,7 @@ class IntersectionController:
                 self.stats.record_tsp_skip(self.id, 'reward_no_action')
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                f"eta={bus_eta_s:.1f}s DECISION=NO_ACTION R={best_reward:.1f} "
+                f"eta={_eta_disp} DECISION=NO_ACTION R={best_reward:.1f} "
                 f"(cost to others outweighs bus benefit)")
             # Still propagate corridor coordination
             if self._corridor_coord is not None and COORDINATED_TSP:
@@ -11599,6 +14554,58 @@ class IntersectionController:
         # twitch the plan for a negligible car gain. The structural gates
         # (recoverability, progression) still apply at execution below.
         if monitor and best_action != "NO_ACTION":
+            # ── Zero phantom bus credit on car-only ticks (2026-09-27) ────
+            # Generic-pool evaluators credit hypothetical-bus savings even with
+            # veh_id=-1 (VP_5 pred_bus=160 at every junction; PT_7 1800). No
+            # bus present = no bus savings: strip alpha*bus from the matched
+            # row and re-seat it with bs=0 so the min-gain test below -- and
+            # the [DECISION] ledger -- see car economics alone. Single funnel:
+            # covers every pool (generic + mode rows; mode rows were already
+            # zeroed at seating, so their match is a no-op here).
+            if bool(getattr(_spm, 'MONITOR_BUS_ZERO', True)):
+                try:
+                    for (_zi, _zrow) in enumerate(list(_reward_rows)):
+                        (_za, _zr, _zb, _zo, _zs, _zp) = _zrow
+                        if _za == best_action and float(_zb) > 0.0:
+                            _zb_rm = float(REWARD_ALPHA) * float(_zb)
+                            best_reward = float(best_reward) - _zb_rm
+                            _reward_rows[_zi] = (_za, best_reward, 0.0,
+                                                 _zo, _zs, _zp)
+                            log_to_file(
+                                f"[MONITOR_BUSZERO] inter={self.id} "
+                                f"t={time:.1f} {best_action} "
+                                f"phantom_bus={_zb_rm:.0f} "
+                                f"car_net={float(best_reward):.0f}")
+                            break
+                except Exception:
+                    pass
+            # ── Progression priced INTO the monitor reward (2026-09-27) ────
+            # Car-only ticks previously saw pure car gain (pred_side=0, no bus
+            # term) while the 300 pax-s veto gate never fired on small shifts;
+            # DE500 committed 65 such greens and broke progression diffusely
+            # (+11.6s car). Subtract the POG-weighted Purdue-diagram platoon
+            # loss up front so the min-gain test below sees the NET benefit.
+            # Cycle-neutral actions (GR/OC) carry ~no shift and are unaffected.
+            try:
+                _mp_kind, _ = _spm.parse_action_token(best_action)
+            except Exception:
+                _mp_kind = ""
+            _mp_shift = float(best_ge or 0.0) if _mp_kind in (
+                "GE", "INS", "VP", "PT", "ER") else 0.0
+            _mp_w = float(globals().get('MONITOR_PROG_WEIGHT', 1.0) or 0.0)
+            if _mp_shift >= 1.0 and _mp_w > 0.0:
+                try:
+                    self._sample_progression(current_phase)
+                    _mp_cost = _mp_w * float(self._progression_cost(_mp_shift))
+                except Exception:
+                    _mp_cost = 0.0
+                if _mp_cost > 0.0:
+                    best_reward = float(best_reward) - _mp_cost
+                    log_to_file(
+                        f"[MONITOR_PROG] inter={self.id} t={time:.1f} "
+                        f"{best_action} car_gain={float(best_reward) + _mp_cost:.0f} "
+                        f"prog_loss={_mp_cost:.0f} net={float(best_reward):.0f} "
+                        f"POG={self._progression_pog():.2f}")
             _mon_min = float(globals().get('CONTINUOUS_MONITOR_MIN_GAIN_PAXS', 50.0))
             if float(best_reward) < _mon_min:
                 log_to_file(
@@ -11855,6 +14862,19 @@ class IntersectionController:
                         f"{_d_stage} monitor={int(bool(monitor))}")
             except Exception:
                 pass
+            # ── Timing-change broadcast (2026-09-27): every committed action
+            # rewrites this junction's plan, so tell the corridor before the
+            # executors below apply it -- neighbours' pre-arms, ETA
+            # projections and offset math must re-read, not run on snapshots.
+            # current_phase/timeSta let the push carry analytic post-commit
+            # values (ECI is still pre-commit here).
+            try:
+                self._broadcast_timing_change(best_action, best_ge, time,
+                                              "decision",
+                                              current_phase=current_phase,
+                                              timeSta=timeSta)
+            except Exception:
+                pass
 
         if _exec_kind == "GE":
             # Apply green extension — enforce minimum extension duration
@@ -11895,7 +14915,7 @@ class IntersectionController:
                     pass
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                f"eta={bus_eta_s:.1f}s DECISION={best_action} GE={best_ge:.1f}s "
+                f"eta={_eta_disp} DECISION={best_action} GE={best_ge:.1f}s "
                 f"R={best_reward:.1f}")
 
         elif _exec_kind == "INS":
@@ -11932,7 +14952,7 @@ class IntersectionController:
                     pass
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                f"eta={bus_eta_s:.1f}s DECISION=INS BP={best_ge:.1f}s "
+                f"eta={_eta_disp} DECISION=INS BP={best_ge:.1f}s "
                 f"R={best_reward:.1f}")
 
         elif _exec_kind == "GR":
@@ -11965,7 +14985,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} GR={best_ge:.1f}s "
+                    f"eta={_eta_disp} DECISION={best_action} GR={best_ge:.1f}s "
                     f"R={best_reward:.1f}")
             else:
                 # GR on active bus phase → equivalent to GE: extend the bus phase
@@ -11998,7 +15018,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} GR-as-GE={best_ge:.1f}s "
+                    f"eta={_eta_disp} DECISION={best_action} GR-as-GE={best_ge:.1f}s "
                     f"R={best_reward:.1f}")
 
         elif _exec_kind == "ER":
@@ -12029,7 +15049,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} ER={best_ge:.1f}s "
+                    f"eta={_eta_disp} DECISION={best_action} ER={best_ge:.1f}s "
                     f"R={best_reward:.1f}")
             else:
                 # ── Wrong-phase Early Red (mode-generated, e.g. ZIG/BXT):
@@ -12059,7 +15079,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} ER-wrong-phase "
+                    f"eta={_eta_disp} DECISION={best_action} ER-wrong-phase "
                     f"cut={best_ge:.1f}s R={best_reward:.1f}")
 
         elif _exec_kind == "OC":
@@ -12089,7 +15109,46 @@ class IntersectionController:
                     pass
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                f"eta={bus_eta_s:.1f}s DECISION={best_action} OC={best_ge:.1f}s "
+                f"eta={_eta_disp} DECISION={best_action} OC={best_ge:.1f}s "
+                f"R={best_reward:.1f}")
+
+        elif _exec_kind == "OPP":
+            # ── Optimised Plan Push: corridor stagger realignment ──────────
+            # Same write primitive as OC (shift the running phase's duration, so
+            # the bus-green START moves), but the shift comes from the joint
+            # (sequence, offset) optimum instead of one bus's arrival. No green
+            # duration is redistributed, so this is cycle-neutral by construction:
+            # the bus phase and every cross phase keep the seconds they had.
+            _opp_ps = ECIGetStartingTimePhase(self.node_id)
+            _opp_pd = GetPhaseDuration(self.node_id, current_phase, timeSta)
+            _opp_sign = +1.0 if str(best_action).startswith("OPP_+") else -1.0
+            _opp_delta = _opp_sign * abs(float(best_ge))
+            _opp_new = max(5.0, min(120.0, _opp_pd + _opp_delta))
+            if abs(_opp_new - _opp_pd) > 0.5:
+                ECIChangeTimingPhase(self.node_id, current_phase, _opp_new, timeSta)
+                # Publish the post-change plan so neighbours coordinate against
+                # the new stagger on this tick instead of polling ECI.
+                try:
+                    self._broadcast_timing_change(
+                        'offset_plan_push', abs(_opp_new - _opp_pd), time,
+                        f"opt_offset target={(self._opt_offset_targets() or {}).get(int(getattr(self, 'id', 0) or 0), 0.0):.1f}",
+                        current_phase, timeSta, live_read=False)
+                except Exception:
+                    pass
+                self.stats.record_tsp_event(self.id, 'offset_plan_push')
+            self.TSPStrategy  = 5   # same family as OC (phase-boundary shift)
+            self.flag         = 5
+            self.TSPActiveTime = time + abs(_opp_delta) + float(
+                globals().get('TSP_POST_GRANT_LOCK_S', 5.0))
+            self._tsp_cycle_grant_until = time + self.cycle_len_s
+            self.last_tsp_action_time   = time
+            self._ge_debt_s = 0.0  # cycle-neutral: start moves, lengths do not
+            self.highlight_bus(veh_id)
+            if veh_id and veh_id > 0:
+                _acquire_focus(veh_id, self.id, time)
+            log_to_file(
+                f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
+                f"DECISION={best_action} OPP={_opp_delta:+.1f}s "
                 f"R={best_reward:.1f}")
 
         elif _exec_kind == "VP":
@@ -12119,7 +15178,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} VP={best_ge:.1f}s "
+                    f"eta={_eta_disp} DECISION={best_action} VP={best_ge:.1f}s "
                     f"R={best_reward:.1f}")
 
         elif _exec_kind == "PT":
@@ -12164,7 +15223,7 @@ class IntersectionController:
                         pass
                 log_to_file(
                     f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"eta={bus_eta_s:.1f}s DECISION={best_action} PT={best_ge:.1f}s "
+                    f"eta={_eta_disp} DECISION={best_action} PT={best_ge:.1f}s "
                     f"skip={_pt_skip:.0f} target={_target_ph} reaches_bus={_reaches_bus} "
                     f"R={best_reward:.1f}")
 
@@ -12263,12 +15322,39 @@ class IntersectionController:
         _prev = getattr(self, '_pog_ewma', None)
         self._pog_ewma = _on if _prev is None else (1.0 - _w) * _prev + _w * _on
 
+    def _coord_degree(self):
+        """Corridor degree for THIS junction: number of coordinated neighbours
+        on its route (1 for an end, 2 for a middle). 0 when no corridor info.
+        Middle junctions are harder -- their offset must satisfy both bands --
+        so actions there should be priced against both directions."""
+        try:
+            _cc = getattr(self, '_corridor_coord', None)
+            if _cc is None:
+                return 0
+            _ids = [int(j) for j in _cc.inter_ids
+                    if j in getattr(_cc, 'corridor_pos', {})]
+            _me = int(self.id)
+            if _me not in _ids:
+                return 0
+            _ids.sort(key=lambda j: float(_cc.corridor_pos.get(j, 0.0)))
+            _i = _ids.index(_me)
+            _deg = 0
+            if _i > 0:
+                _deg += 1
+            if _i < len(_ids) - 1:
+                _deg += 1
+            return max(_deg, 1)
+        except Exception:
+            return 1
+
     def _progression_cost(self, shift_s):
         """Estimated pax*s of the MAIN coordinated platoon displaced from green by
         an offset shift of `shift_s`, WEIGHTED by the live POG so the penalty is
         large only where the green wave is actually working (high POG) and small
         where it is already broken. This is the controller's online reading of the
-        Purdue Coordination Diagram: keep the platoon on green."""
+        Purdue Coordination Diagram: keep the platoon on green.
+        With PROGRESSION_DEGREE_WEIGHT, the cost scales by the junction's
+        corridor degree (middle junctions displace BOTH directions, ends one)."""
         _s = abs(float(shift_s))
         if _s < 1.0:
             return 0.0
@@ -12283,8 +15369,41 @@ class IntersectionController:
         _occ = max(float(getattr(self, 'CarOcc', 1.6) if hasattr(self, 'CarOcc') else 1.6), 1.0)
         _cyc = float(self._signal_cycle_s()) if hasattr(self, '_signal_cycle_s') else 135.0
         _s = min(_s, _cyc)
-        # displaced platoon (veh) ~ q_main * shift; each faces ~shift more red.
-        return self._progression_pog() * _main_q * _s * _s * _occ
+        # ── BIDIRECTIONAL progression (2026-09-30) ─────────────────────────
+        # An offset shift displaces the coordinated platoon in BOTH main
+        # directions, not just the served one. The served band is UpFlowList row 0
+        # (_main_q). Price the OPPOSITE band by its OWN measured flow (main approach
+        # sections NOT served by the bus phase) rather than a x2 degree proxy, so an
+        # ASYMMETRIC corridor (Logan's two mains differ ~3x) is priced correctly.
+        # Falls back to the degree-weight proxy when the opposite flow can't be read.
+        _q_total = _main_q
+        _bidir = bool(getattr(_spm, 'PROGRESSION_BIDIRECTIONAL', True))
+        _opp_ok = False
+        if _bidir:
+            try:
+                _served = set(int(x) for x in (self._phase_origin_sections().get(
+                    int(getattr(self, 'BusPhase', -1)), set()) or []))
+                _opp_q = 0.0
+                for _sec in (getattr(self, 'incoming_sections', []) or []):
+                    if int(_sec) not in _served:
+                        _opp_q += max(0.0, float(
+                            self._measured_section_flow_vph(int(_sec)))) / 3600.0
+                if _opp_q > 0.0:
+                    _q_total = _main_q + _opp_q      # both bands, each by own flow
+                    _opp_ok = True
+            except Exception:
+                _opp_ok = False
+        # displaced platoon (veh) ~ q * shift; each faces ~shift more red.
+        _loss = self._progression_pog() * _q_total * _s * _s * _occ
+        # Degree-weight proxy: only when we could NOT price the opposite band
+        # explicitly (bidirectional off, or no opposite flow) -- middle junctions
+        # displace both bands, so scale by corridor degree (1/2).
+        if (not _opp_ok) and bool(getattr(_spm, 'PROGRESSION_DEGREE_WEIGHT', True)):
+            try:
+                _loss *= max(1.0, float(self._coord_degree() or 1.0))
+            except Exception:
+                pass
+        return _loss
 
     def run_normal(self, time, timeSta, acycle):
         """Passive baseline — data collection only, no signal changes.
@@ -12293,6 +15412,14 @@ class IntersectionController:
         NORMAL mode produces detection counts comparable to HARMONY, and the
         batch results show how many buses were 'seen' without TSP action.
         """
+        # OFFLINE WARM-START also applies under NORMAL (optimized base plan with NO
+        # online correction) so its standalone effect can be isolated. Runs once.
+        if bool(globals().get('PLAN_OPTIMIZE', False)):
+            try:
+                self._optimize_startup_plan(timeSta)
+                self._reassert_plan(time, timeSta)   # hold the plan vs any revert
+            except Exception:
+                pass
         busTypePos = self.bus_type_pos
 
         # Primary: physical detector crossing this cycle
@@ -12479,6 +15606,23 @@ class IntersectionController:
                 f"GE={self._ge_opt_GE:.1f}s trimmed={total_trimmed:.1f}s "
                 f"residual={self._ge_debt_s:.1f}s phases={upcoming}"
             )
+        # Recovery rewrote upcoming phases: broadcast so neighbours re-read.
+        # ECI already applied -> live_read publishes re-read post-change truth.
+        if total_trimmed > 0.5:
+            try:
+                try:
+                    _bt = float(AKIGetCurrentSimulationTime())
+                except Exception:
+                    _bt = -1.0
+                self._broadcast_timing_change("RECOVER_TRIM", total_trimmed,
+                                              _bt, "recovery",
+                                              timeSta=timeSta, live_read=True)
+            except Exception:
+                pass
+            try:
+                self.stats.record_tsp_event(self.id, 'retiming')
+            except Exception:
+                pass
 
     def restore_phase_if_needed(self, time, timeSta, acycle):
         global _focus_bus_id, _focus_jct_id, _focus_passed_jcts
@@ -12506,6 +15650,18 @@ class IntersectionController:
                     log_to_file(
                         f"[HARMONY] Nominal safety restore inter={self.id} restored {_n_safety} phase durations"
                     )
+                    # Restored durations rewrite the plan: broadcast it.
+                    # ECI already applied -> live_read publishes re-read truth.
+                    try:
+                        self._broadcast_timing_change(
+                            "RESTORE", float(_n_safety), float(time),
+                            "safety-restore", timeSta=timeSta, live_read=True)
+                    except Exception:
+                        pass
+                    try:
+                        self.stats.record_tsp_event(self.id, 'retiming')
+                    except Exception:
+                        pass
                 self._nominal_safety_restore_fired = True
         else:
             self._nominal_safety_restore_fired = False
@@ -12830,6 +15986,44 @@ class IntersectionController:
                         f"inter={self.id}")
 
     def collect_delay(self, time, timeSta=None):
+
+        # ── [DELAY] per-intersection CURRENT delay, throttled to 60 s ────────
+        # Reports the PREVIOUS step's accumulated pax-seconds/s per class, so one
+        # line lets you watch every junction's cost evolve live. total is
+        # car+bus+truck; queued is the main/side stopped-vehicle count that step.
+        try:
+            _wn = max(1, int(getattr(self, '_ix_n', 0)))
+            if time - float(getattr(self, '_ix_delay_log_t', -1e9)) >= 60.0:
+                self._ix_delay_log_t = time
+                _cs = float(getattr(self, '_ix_car', 0.0))
+                _bs = float(getattr(self, '_ix_bus', 0.0))
+                _ts = float(getattr(self, '_ix_truck', 0.0))
+                # WINDOW MEAN, not one step (fixed 2026-10-01). The reset used to
+                # run on EVERY call, so the emitted number was a SINGLE second's
+                # delay -- usually 0 at dt=1 s, which made the log look sparse and
+                # empty even at junctions accruing delay steadily. Now accumulate
+                # across the whole window and divide by the number of calls, so the
+                # line is a mean RATE comparable between junctions and over time;
+                # win_total shows the absolute magnitude.
+                log_to_file(
+                    f"[DELAY_RATE] inter={self.id} t={time:.0f} "
+                    f"car={_cs / _wn:.2f} bus={_bs / _wn:.2f} "
+                    f"truck={_ts / _wn:.2f} "
+                    f"total={(_cs + _bs + _ts) / _wn:.2f} paxs/s "
+                    f"win_total={_cs + _bs + _ts:.1f}paxs/{_wn}s "
+                    f"exits_main={int(getattr(self, '_ix_exits_main', 0))} "
+                    f"stopped_side={int(getattr(self, '_ix_q_side', 0))}",
+                    force=True)
+                # reset ONLY on emit, so the next window accumulates afresh
+                self._ix_car = 0.0
+                self._ix_bus = 0.0
+                self._ix_truck = 0.0
+                self._ix_exits_main = 0
+                self._ix_q_side = 0
+                self._ix_n = 0
+            self._ix_n = int(getattr(self, '_ix_n', 0)) + 1
+        except Exception:
+            pass
         self.step_delay = 0.0
         weighted_delay  = 0.0
         # Use timeSta (stats interval start) for partial stats if available;
@@ -12967,6 +16161,13 @@ class IntersectionController:
             truck_stat = AKIEstGetParcialStatisticsSection(
                 sec, stat_time, getattr(self.stats, '_truck_pos', -1))
 
+            # MAIN_MEAS source label (2026-10-01). Main had NO method label at
+            # all, so unlike the side path there was nothing to aggregate and no
+            # way to tell whether main delay was MEASURED or fell through to a
+            # warmup/failure path. Main is the dominant term -- the bus runs on it
+            # and main cars carry most of the passenger weight -- so it needs the
+            # same visibility side already had.
+            _main_src = 'none'
             if car_stat.report == 0 and is_main:
                 # ── Main section: AKIEst partial stats ─────────────────────
                 # AKIEstGetParcialStatisticsSection counts vehicles that have
@@ -12989,6 +16190,7 @@ class IntersectionController:
                 )
                 bus_cnt   = bus_stat.count
                 car_cnt   = car_stat.count
+                _main_src = 'akiest_partial'   # measured: real exited-vehicle stats
                 truck_cnt = (
                     truck_stat.count
                     if getattr(truck_stat, 'report', -1) == 0 and _truck_pos_m > 0
@@ -13056,6 +16258,24 @@ class IntersectionController:
                                 _inter_d.get('_seen_car_ids', set()).add(_mvid)
                             _ent_t = float(
                                 getattr(_mveh, 'SectionEntranceT', -1.0) or -1.0)
+                            # GAP_scan_no_delta fix (2026-10-02). When
+                            # SectionEntranceT is not populated the old code fell
+                            # back to CurrentStopTime, which ONLY advances while a
+                            # vehicle is fully stopped. A queued vehicle that is
+                            # creeping forward therefore had a frozen clock: the
+                            # bucket test above still counted it as queued, but
+                            # _delta_m came out 0 every step, so its delay was
+                            # booked as zero -- 75% of main delay on some junctions
+                            # (GAP_scan_no_delta=14120 vs GAP_supplement_skipped=4
+                            # proves the scan RAN and found nothing). Synthesise an
+                            # entrance clock from the first step the vehicle was
+                            # seen, so delay accrues 1 s/step for every vehicle on
+                            # the section regardless of whether it is moving.
+                            if not (0.0 < _ent_t < time):
+                                if not hasattr(self, '_main_first_seen'):
+                                    self._main_first_seen = {}
+                                _ent_t = self._main_first_seen.setdefault(
+                                    _mkey, time)
                             if 0.0 < _ent_t < time:
                                 _dly_now = max(0.0, (time - _ent_t) - _ff_s_m)
                             else:
@@ -13074,6 +16294,8 @@ class IntersectionController:
                                 car_d   += _delta_m * self.CarOcc
                         except Exception:
                             pass
+                    if car_d > 0.0 or bus_d > 0.0:
+                        _main_src = 'vehicle_scan'  # measured: queued at red
 
             elif not is_main:
                 # ── Side section delay: three-priority measurement ──────────
@@ -13184,6 +16406,78 @@ class IntersectionController:
                         del self._side_stoptime_prev[_k]
                     if car_d > 0.0 or bus_d > 0.0:
                         _priority_used = "vehicle_scan"
+
+                # ── Priority 2.5: the ACTUAL virtual queue (2026-10-01) ────────
+                # WHY THIS EXISTS: side sections are not in the dynamic vehicle
+                # simulation (AKIVehState returns -4002), so the previous chain
+                # measured nothing and fell through to the Priority-3 shockwave
+                # ESTIMATE -- an arrival_rate x red_elapsed model whose arrival
+                # rate, when the virtual detectors are also empty, is a hardcoded
+                # default. But Aimsun DOES track the side demand it refuses to
+                # place as physical vehicles: the VIRTUAL QUEUE, exposed per section
+                # by AKIEstGetParcialStatisticsSection(sec, 0.0, type):
+                #     numVehiclesInVQ          vehicles currently in the virtual queue
+                #     waitingTimeVirtualQueue  their waiting time (s)
+                #     virtualQueueAvg / Max    queue-length statistics
+                # (Simulation_Stats.py already reads these for the network roll-up,
+                # which is why Net_VQMax_Bus is non-zero in the run summary -- the
+                # data was always there, the side delay path just never asked.)
+                #
+                # This replaces an ESTIMATE with a MEASUREMENT: the queue count the
+                # plant itself maintains, priced as veh-seconds per step. Runs BEFORE
+                # Priority 3 so the shockwave model only fires when even the virtual
+                # queue is unavailable.
+                if car_d <= 0.0 and bus_d <= 0.0 and truck_d <= 0.0:
+                    try:
+                        _vq_car = AKIEstGetParcialStatisticsSection(
+                            sec, 0.0, self.car_type_pos)
+                        # USE virtualQueueAvg, NOT numVehiclesInVQ. The live probe
+                        # (results/*/api_probe.log) shows `numVehiclesInVQ` present in
+                        # the attrs list but ABSENT from the returned values dict, so
+                        # getattr(..., 0) yields 0 forever and the branch would never
+                        # fire. `virtualQueueAvg` IS populated (0.0045 on sec=21530).
+                        # `virtualQueueMax` is the fallback.
+                        # NOTE the -1.0 sentinel: waitingTimeVirtualQueue returns -1.0
+                        # when there is no queue, so any use of it must guard < 0.
+                        _vq_n = float(getattr(_vq_car, 'virtualQueueAvg', 0.0) or 0.0)
+                        if _vq_n <= 0.0:
+                            _vq_n = float(getattr(_vq_car, 'virtualQueueMax', 0.0) or 0.0)
+                        if getattr(_vq_car, 'report', -1) == 0 and _vq_n > 0.0:
+                            _dt_vq = float(globals().get('CELLQ_CTM_DT_S', 1.0) or 1.0)
+                            _vq_bus = 0.0
+                            try:
+                                _vq_b = AKIEstGetParcialStatisticsSection(
+                                    sec, 0.0, self.bus_type_pos)
+                                if getattr(_vq_b, 'report', -1) == 0:
+                                    _vq_bus = float(getattr(_vq_b,
+                                                            'virtualQueueAvg', 0.0) or 0.0)
+                            except Exception:
+                                _vq_bus = 0.0
+                            _vq_cars = max(0.0, _vq_n - _vq_bus)
+                            # veh-seconds accrued this step by vehicles sitting in
+                            # the virtual queue, in pax-seconds via occupancy
+                            car_d   += _vq_cars * _dt_vq * self.CarOcc
+                            bus_d   += _vq_bus * _dt_vq * self.BusOcc
+                            if car_d > 0.0 or bus_d > 0.0:
+                                _priority_used = (
+                                    f"vq_measured(n={_vq_n:.2f},bus={_vq_bus:.2f},"
+                                    f"dt={_dt_vq:.0f}s)")
+                            # Throttled raw-value log (once per 60 s per section).
+                            # The probe showed these fields EXIST but are empty on
+                            # some sections, so record the actual numbers rather
+                            # than inferring from the bucket counts.
+                            if not hasattr(self, '_vq_log_t'):
+                                self._vq_log_t = {}
+                            if time - self._vq_log_t.get(sec, -999.0) >= 60.0:
+                                self._vq_log_t[sec] = time
+                                log_to_file(
+                                    f"[VQ] inter={self.id} t={time:.0f} sec={sec} "
+                                    f"avg={_vq_n:.4f} bus={_vq_bus:.4f} "
+                                    f"max={float(getattr(_vq_car, 'virtualQueueMax', 0.0) or 0.0):.2f} "
+                                    f"wait={float(getattr(_vq_car, 'waitingTimeVirtualQueue', -1.0) or -1.0):.3f}",
+                                    force=True)
+                    except Exception:
+                        pass
 
                 # ── Priority 3: signal-timing shockwave estimate ──────────
                 # Always runs.  Provides non-zero side delay even for sections
@@ -13314,6 +16608,98 @@ class IntersectionController:
 
                 self._last_side_priority = _priority_used
 
+                # ── AGGREGATE the measurement path (2026-10-01) ────────────────
+                # The per-section [SIDE_DELAY] line says which method was used for
+                # ONE section at ONE instant, which cannot answer the question that
+                # actually matters: is side delay MEASURED from the plant, or
+                # ESTIMATED from signal timing? A single run can be mostly estimated
+                # and still look healthy line-by-line. This buckets every side
+                # measurement and periodically reports the split, so the estimated
+                # FRACTION is visible -- that fraction is the honesty bound on any
+                # result that depends on side cost.
+                try:
+                    _p = str(_priority_used)
+                    if _p.startswith('akiest_global'):
+                        _bucket = 'akiest_global'      # real per-section stats
+                    elif _p.startswith('vq_measured'):
+                        # the plant's own VIRTUAL QUEUE -- a measurement, not an
+                        # estimate, and the only real source on sections that are
+                        # not in the dynamic vehicle simulation
+                        _bucket = 'vq_measured'
+                    elif _p.startswith('vehicle_scan'):
+                        _bucket = 'vehicle_scan'       # real per-vehicle state
+                    elif _p.startswith('signal_timing'):
+                        _bucket = 'signal_timing'      # ESTIMATE (shockwave model)
+                    elif _p.startswith('none'):
+                        # 'none' is INTENDED to mean "genuinely empty": Priority 3
+                        # only fires when _side_flow > 0, and inventing demand for an
+                        # empty approach was the old phantom-queue bug. But the
+                        # counter alone cannot tell a correctly-empty section from a
+                        # measurement GAP, and those have opposite meanings.
+                        #
+                        # REFINED 2026-10-01: a real gap needs QUEUED vehicles, not
+                        # merely PRESENT ones. Priority 2 accrues the INCREMENT in
+                        # each vehicle's stop time, so a section full of MOVING
+                        # traffic yields _delta = 0 and stays 'none' -- correctly, as
+                        # moving vehicles accrue no delay. Counting mere presence as
+                        # a gap therefore raised a false alarm: on KG inter=39578 it
+                        # reported "15% priced at ZERO" when much of that was
+                        # free-flowing traffic. Only a STOPPED vehicle that produced
+                        # no delay is a genuine hole in the pricing.
+                        _queued = 0
+                        try:
+                            _nv = int(AKIVehStateGetNbVehiclesSection(
+                                int(sec), False) or 0)
+                            _qspd = float(globals().get(
+                                'MICRO_QUEUE_SPEED_KMH', 5.0) or 5.0)
+                            for _vi in range(_nv):
+                                try:
+                                    _vv = AKIVehStateGetVehicleInfSection(
+                                        int(sec), _vi)
+                                    if float(getattr(_vv, 'CurrentSpeed',
+                                                     0.0) or 0.0) <= _qspd:
+                                        _queued += 1
+                                except Exception:
+                                    continue
+                        except Exception:
+                            _nv = -1
+                        if _queued > 0:
+                            _bucket = 'GAP_queued_no_data'  # REAL hole
+                        elif _nv > 0:
+                            _bucket = 'moving_no_delay'     # correct zero
+                        elif _nv == 0:
+                            _bucket = 'empty'               # correct zero
+                        else:
+                            _bucket = 'gap_unknown'         # query failed
+                    else:
+                        _bucket = 'other'
+                    _pc = getattr(self, '_side_meas_counts', None)
+                    if _pc is None:
+                        _pc = self._side_meas_counts = {}
+                    _pc[_bucket] = int(_pc.get(_bucket, 0)) + 1
+                    _tot = sum(_pc.values())
+                    _est = int(_pc.get('signal_timing', 0))
+                    _gap = int(_pc.get('GAP_queued_no_data', 0)) + int(
+                        _pc.get('gap_unknown', 0))
+                    _meas = (int(_pc.get('akiest_global', 0))
+                             + int(_pc.get('vehicle_scan', 0))
+                             + int(_pc.get('vq_measured', 0)))
+                    _last_sum = float(getattr(self, '_side_meas_sum_t', -1e9))
+                    if _tot >= 50 and (time - _last_sum) >= 300.0:
+                        self._side_meas_sum_t = time
+                        # Headline the GAP fraction, not the estimated fraction:
+                        # an estimate is at least priced from the signal plan, while
+                        # a gap prices cross traffic at ZERO. The estimated share is
+                        # kept because it is still a weaker input than a measurement.
+                        log_to_file(
+                            f"[SIDE_MEAS] inter={self.id} t={time:.0f} n={_tot} "
+                            f"measured={_meas} estimated={_est} "
+                            f"({100.0 * _est / max(_tot, 1):.0f}% est) "
+                            f"GAP_queued={_gap} ({100.0 * _gap / max(_tot, 1):.0f}% priced "
+                            f"at ZERO) detail={_pc}", force=True)
+                except Exception:
+                    pass
+
             else:
                 # ── Main section fallback: partial stats unavailable (warmup) ──
                 # Use cumulative delta from AKIEstGetGlobalStatisticsSection.
@@ -13363,12 +16749,132 @@ class IntersectionController:
                         truck_total_now,
                         truck_cum.count if getattr(truck_cum, 'report', -1) == 0 else prev_truck[1])
 
+                    _main_src = 'akiest_cumulative'  # measured: cumulative delta
                 except Exception:
                     car_d = bus_d = truck_d = 0.0
                     car_cnt = bus_cnt = truck_cnt = 0
+                    _main_src = 'none'
 
             sec_delay = car_d + bus_d + truck_d
             weighted_delay += sec_delay
+
+            # ── PER-INTERSECTION CURRENT DELAY (2026-10-01) ───────────────────
+            # Accumulate this step's delay per intersection so a single [DELAY]
+            # line can report what every junction is costing RIGHT NOW, split by
+            # vehicle class. Existing logs are per-SECTION ([SIDE_DELAY]) or
+            # per-measurement-path ([SIDE_MEAS]/[MAIN_MEAS]); none answers "what
+            # is junction X costing at this moment", which is what you need to
+            # watch a run evolve. The emitter (top of collect_delay) reports the
+            # previous step's totals, a 1 s lag that is immaterial here.
+            try:
+                self._ix_car = float(getattr(self, '_ix_car', 0.0)) + float(car_d)
+                self._ix_bus = float(getattr(self, '_ix_bus', 0.0)) + float(bus_d)
+                self._ix_truck = float(getattr(self, '_ix_truck', 0.0)) + float(truck_d)
+                # HONEST LABELS (2026-10-01). car_cnt means different things per
+                # branch: on MAIN it is the AKIEst EXIT count (vehicles that left
+                # the section this step), and the per-vehicle supplement runs only
+                # when it is 0 -- so "queued_main" was always 0 exactly when the
+                # scan was doing the work, which read as a fault. On SIDE car_cnt
+                # IS the stopped-vehicle count. Name each for what it counts.
+                if is_main:
+                    self._ix_exits_main = int(getattr(self, '_ix_exits_main', 0)) + int(car_cnt)
+                else:
+                    self._ix_q_side = int(getattr(self, '_ix_q_side', 0)) + int(car_cnt)
+            except Exception:
+                pass
+
+            # ── MAIN_MEAS: same visibility for main that side already has ─────
+            # Buckets the source, and when NOTHING produced delay asks whether the
+            # section actually held QUEUED vehicles -- because only a stopped
+            # vehicle with no delay recorded is a real pricing hole. Vehicles
+            # merely present (moving) accrue no delay by definition, so counting
+            # them would be the same false alarm the side GAP bucket raised.
+            if is_main:
+                try:
+                    _ms = str(_main_src)
+                    if sec_delay > 0.0:
+                        _mb = _ms
+                    else:
+                        _q = 0
+                        try:
+                            _nvm = int(AKIVehStateGetNbVehiclesSection(sec, False) or 0)
+                            _qs = float(globals().get('MICRO_QUEUE_SPEED_KMH', 5.0) or 5.0)
+                            # A stopped vehicle only has DELAY once it has been on
+                            # the section longer than its FREE-FLOW traversal time --
+                            # the main path computes delay as
+                            #   max(0, (time - entranceT) - ff_time)
+                            # so a vehicle stopped but still inside its free-flow
+                            # budget legitimately accrues ZERO. Counting it as a gap
+                            # would repeat the false alarm the side bucket raised.
+                            _ffm = 10.0
+                            try:
+                                _pm = getattr(self, '_sec_profile', {}).get(sec)
+                                if _pm:
+                                    _ffm = float(_pm.get('ff_time_s', 10.0) or 10.0)
+                                else:
+                                    _ffm = float(getattr(self, '_side_ff_cache',
+                                                         {}).get(sec, 10.0) or 10.0)
+                            except Exception:
+                                pass
+                            for _mi in range(_nvm):
+                                try:
+                                    _mv = AKIVehStateGetVehicleInfSection(sec, _mi)
+                                    if float(getattr(_mv, 'CurrentSpeed', 0.0) or 0.0) > _qs:
+                                        continue
+                                    _ent = float(getattr(_mv, 'SectionEntranceT', -1.0) or -1.0)
+                                    if 0.0 < _ent < time:
+                                        if (time - _ent) - _ffm <= 0.0:
+                                            continue   # inside free-flow budget
+                                    else:
+                                        if float(getattr(_mv, 'CurrentStopTime', 0.0) or 0.0) <= 0.0:
+                                            continue
+                                    _q += 1
+                                except Exception:
+                                    continue
+                        except Exception:
+                            _nvm = -1
+                        if _q > 0:
+                            # SPLIT THE GAP BY CAUSE (2026-10-01). The main
+                            # supplement is gated on car_cnt == 0 and bus_cnt == 0
+                            # -- it only runs when NOTHING exited this step -- so a
+                            # green step (exits happening, queue still present behind
+                            # the stop line) skips it entirely and those vehicles
+                            # accrue nothing. If that is the cause, the fix is to
+                            # decouple the scan from the exit condition, not to
+                            # change any threshold. If instead the scan RAN and
+                            # still produced no delta, the cause is elsewhere
+                            # (_ff_time vs entrance clock), which needs a different
+                            # fix. Recording which is which is what makes the next
+                            # run decisive instead of another guess.
+                            if car_cnt > 0 or bus_cnt > 0:
+                                _mb = 'GAP_supplement_skipped'
+                            else:
+                                _mb = 'GAP_scan_no_delta'
+                        elif _nvm > 0:
+                            _mb = 'moving_no_delay'
+                        elif _nvm == 0:
+                            _mb = 'empty'
+                        else:
+                            _mb = 'gap_unknown'
+                    _mc = getattr(self, '_main_meas_counts', None)
+                    if _mc is None:
+                        _mc = self._main_meas_counts = {}
+                    _mc[_mb] = int(_mc.get(_mb, 0)) + 1
+                    _mt = sum(_mc.values())
+                    _mg = (int(_mc.get('GAP_supplement_skipped', 0))
+                           + int(_mc.get('GAP_scan_no_delta', 0))
+                           + int(_mc.get('GAP_queued_no_data', 0))
+                           + int(_mc.get('gap_unknown', 0)))
+                    _lastm = float(getattr(self, '_main_meas_sum_t', -1e9))
+                    if _mt >= 50 and (time - _lastm) >= 300.0:
+                        self._main_meas_sum_t = time
+                        log_to_file(
+                            f"[MAIN_MEAS] inter={self.id} t={time:.0f} n={_mt} "
+                            f"GAP_queued={_mg} "
+                            f"({100.0 * _mg / max(_mt, 1):.0f}% priced at ZERO) "
+                            f"detail={_mc}", force=True)
+                except Exception:
+                    pass
 
             # Throttled side-delay diagnostic (once per 60 s per section)
             if not is_main and sec_delay > 0.0:
@@ -13625,7 +17131,10 @@ class IntersectionController:
         # the bus is guaranteed to arrive during the granted phase.
         _prearm = getattr(self, '_harmony_prearm', None)
         if _prearm is not None and self.TSPStrategy == 0:
-            _pa_veh, _pa_eta_t, _pa_issued_t = _prearm
+            _pa_veh, _pa_eta_t, _pa_issued_t, _pa_dir, _pa_from = _unpack_prearm(_prearm)
+            if _pa_veh is None:
+                self._harmony_prearm = None
+                _pa_veh, _pa_eta_t, _pa_issued_t = -1, -1e9, -1e9
             _eta_from_now = _pa_eta_t - time
             def _notify_coord_prearm_consumed():
                 if self._corridor_coord is not None and COORDINATED_TSP:
@@ -13657,6 +17166,24 @@ class IntersectionController:
                 _prearm_dur = max(float(self.BP_lower_bound), _eta_from_now + 5.0)
                 _prearm_dur = min(_prearm_dur, float(self.BP_upper_bound))
                 self._harmony_prearm = None
+                # Next-green feasibility (2026-09-26): grant only what the bus
+                # phase can serve around the ETA (same gate as the reward-eval
+                # path). Unservable prearms fail _prearm_cost_ok below, so BOTH
+                # grant paths skip and the local gated decider takes over
+                # (prearm already consumed above; the coordinator re-fires as
+                # the ETA shrinks).
+                _prearm_unserv = False
+                try:
+                    _serv2, _swhy2 = self._prearm_feasible(_eta_from_now, time, timeSta)
+                    if not _serv2:
+                        _prearm_unserv = True
+                        log_to_file(
+                            f"[PREARM FEASIBILITY] inter={self.id} t={time:.0f} "
+                            f"bus={_pa_veh} eta={_eta_from_now:.0f}s dir={_pa_dir} "
+                            f"from={_pa_from} SKIP unservable ({_swhy2})",
+                            force=True)
+                except Exception:
+                    pass
                 # ── (a) Cross-cost gate on the coordinator pre-arm ────────────
                 # The GE/INS grant below holds green ~_prearm_dur s with NO
                 # cross-street cost check -- the root cause of the coordinator
@@ -13668,7 +17195,7 @@ class IntersectionController:
                 # decider, which applies its own cost check -- i.e. the un-gated
                 # coordinator defers to the gated decider.  Fail OPEN: a cost
                 # estimate error must never disable pre-arm.
-                _prearm_cost_ok = True
+                _prearm_cost_ok = (not _prearm_unserv)
                 try:
                     _grant_dur   = float(_prearm_dur)
                     _bus_occ     = max(float(getattr(self, 'BusOcc', 40.0)), 1.0)
@@ -13767,6 +17294,13 @@ class IntersectionController:
                                 self._record_detection(time)
                                 self.stats.record_tsp_event(self.id, 'extension')
                                 self.stats.record_tsp_extension_duration(self.id, float(_prearm_dur))
+                                try:
+                                    self._broadcast_timing_change(
+                                        "GE", float(_prearm_dur), float(time),
+                                        "prearm-exec", timeSta=timeSta,
+                                        live_read=True)
+                                except Exception:
+                                    pass
                                 _mark_detection_point(
                                     self.id, _pa_veh, 0.0, 0.0, time,
                                     "harmony-ge-prearm",
@@ -13854,6 +17388,13 @@ class IntersectionController:
                             self.stats.record_tsp_event(self.id, 'insertion')
                             self.stats.record_tsp_insertion_duration(self.id, float(_prearm_dur))
                             self.stats.record_tsp_insertion_wait(self.id, _ins_wait_s)
+                            try:
+                                self._broadcast_timing_change(
+                                    "INS", float(_prearm_dur), float(time),
+                                    "prearm-exec", timeSta=timeSta,
+                                    live_read=True)
+                            except Exception:
+                                pass
                             _mark_detection_point(
                                 self.id, _pa_veh, 0.0, 0.0, time,
                                 "harmony-ins-prearm",
@@ -13882,8 +17423,11 @@ class IntersectionController:
         _lingering = getattr(self, '_harmony_prearm', None)
         if _lingering is not None:
             if LOG_HARMONY:
-                _lpa_veh, _lpa_eta_t, _ = _lingering
-                _lp_eta_rem = _lpa_eta_t - time
+                _lpa_veh, _lpa_eta_t, _, _, _ = _unpack_prearm(_lingering)
+                try:
+                    _lp_eta_rem = float(_lpa_eta_t) - time
+                except Exception:
+                    _lp_eta_rem = float('nan')
                 _t60 = int(time) // 60
                 if _t60 != getattr(self, '_prearm_gate_warn_t', -1):
                     self._prearm_gate_warn_t = _t60
@@ -14144,10 +17688,8 @@ class IntersectionController:
                         if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
                             return False
 
-                    opt_GE = harmony_search(
-                        self.GE_Objective_Function, GE_lb, _ge_ub,
-                        self.max_iterations, self.harmony_memory_size,
-                        self.hmcr, self.par, 5, time)
+                    opt_GE = _solve_timing_min(
+                        self, self.GE_Objective_Function, GE_lb, _ge_ub, time)
                     if math.isnan(opt_GE) or opt_GE < 0:
                         opt_GE = min(10.0, _ge_ub)
 
@@ -14514,10 +18056,9 @@ class IntersectionController:
                     if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
                         return False
 
-                opt_BP = harmony_search(
-                    self.BP_Objective_Function, _bp_lb_effective,
-                    self.BP_upper_bound, self.max_iterations,
-                    self.harmony_memory_size, self.hmcr, self.par, 5, time)
+                opt_BP = _solve_timing_min(
+                    self, self.BP_Objective_Function, _bp_lb_effective,
+                    self.BP_upper_bound, time)
 
                 # Skip if harmony says insertion phase is trivially short.
                 # Special handling when BP_lower_bound=0 ("don't apply" option):
@@ -14794,6 +18335,143 @@ class IntersectionController:
         else:
             _shift = 0.0                                # bus already catches green
         return (float(_shift), float(_tbp))
+
+    def _opt_offset_targets(self):
+        """Target bus-green start offsets (s) per junction, from the joint
+        (sequence, offset) solution.
+
+        Primary source is the retime CSV written by retime/optimize.py -- an exact
+        Viterbi DP over stage order and offset that minimises two-directional
+        arrival-in-green miss. Columns used: `junction` and
+        `offset_bus_green_start_s` (cycle-relative position of the main/bus green
+        start). If the CSV is absent or unreadable we fall back to the corridor
+        coordinator's travel-time cumulant (_compute_plan_offsets), so the action
+        still degenerates to a plain green-wave stagger instead of no-opping.
+
+        Cached on the corridor coordinator when one is attached, else on self.
+        Returns {junction_id: offset_s}; empty dict when nothing is available.
+        """
+        _owner = getattr(self, '_corridor_coord', None) or self
+        try:
+            _cached = getattr(_owner, '_opt_offset_cache', None)
+            _path = str(globals().get('BXT_OPT_OFFSET_CSV', '') or '')
+            if isinstance(_cached, dict) and getattr(
+                    _owner, '_opt_offset_cache_path', None) == _path:
+                return _cached
+        except Exception:
+            _cached = None
+            _path = str(globals().get('BXT_OPT_OFFSET_CSV', '') or '')
+
+        _out = {}
+        if _path:
+            try:
+                import csv as _csv
+                with open(_path, 'r', newline='', encoding='utf-8',
+                          errors='replace') as _fh:
+                    for _row in _csv.DictReader(_fh):
+                        try:
+                            _j = int(str(_row.get('junction', '')).strip())
+                            _o = float(str(
+                                _row.get('offset_bus_green_start_s', '')).strip())
+                        except Exception:
+                            continue
+                        _out[_j] = _o
+            except Exception:
+                _out = {}
+        if not _out:
+            # No CSV (or it failed to parse): use the bus-speed travel-time
+            # cumulant. Same units, coarser, but keeps the action meaningful.
+            try:
+                _cc = getattr(self, '_corridor_coord', None)
+                _co = getattr(_cc, '_plan_offsets', None) if _cc is not None else None
+                if isinstance(_co, dict) and _co:
+                    _out = {int(k): float(v) for k, v in _co.items()}
+            except Exception:
+                _out = {}
+        try:
+            _owner._opt_offset_cache = _out
+            _owner._opt_offset_cache_path = _path
+        except Exception:
+            pass
+        return _out
+
+    def _solve_offset_plan_push(self, current_phase, timeSta):
+        """Signed stagger realignment toward the optimised corridor offset.
+
+        The bus-green START currently sits at
+            cur = (sum of durations of phases BEFORE BusPhase) mod C
+        and the joint optimum wants it at `tgt`. We move by the shortest signed
+        wrap, so the push is always the cheaper direction around the cycle:
+
+            delta = ((tgt - cur + C/2) mod C) - C/2      (negative = advance)
+
+        Guarded, because this rewrites the plan mid-run:
+          * |delta| < BXT_OPT_PUSH_MIN_S -> no-op (noise);
+          * |delta| clamped to BXT_OPT_PUSH_MAX_S, remainder re-aims next cycle;
+          * BXT_OPT_PUSH_REQUIRE_BEFORE_BUS: if the bus phase has already started
+            this cycle the shift would land AFTER the green we are trying to move,
+            so we defer rather than overshoot;
+          * BXT_OPT_PUSH_SAT_VETO: skip on a saturated main approach. That is the
+            2026-09-28 failure mode (rewriting timings on a starved corridor).
+
+        Returns (delta_s, tgt_off_s); delta is 0.0 when no feasible push exists.
+        Pure -- the caller evaluates/commits it.
+        """
+        _g = globals()
+        if not bool(_g.get('BXT_OPT_OFFSET_PUSH', False)):
+            return (0.0, 0.0)
+        try:
+            _pl = list(self.phase_list or [])
+            _bi = _pl.index(self.BusPhase)
+            _ci = _pl.index(current_phase)
+        except Exception:
+            return (0.0, 0.0)
+        _C = 0.0
+        try:
+            _C = float(self._signal_cycle_s(timeSta) or 0.0)
+        except Exception:
+            _C = 0.0
+        if _C <= 1.0:
+            return (0.0, 0.0)
+        try:
+            _cur = 0.0
+            for _ph in _pl[:_bi]:
+                _cur += float(GetPhaseDuration(
+                    self.node_id, _ph, timeSta) or 0.0)
+            _cur = _cur % _C
+        except Exception:
+            return (0.0, 0.0)
+
+        _tgt_map = self._opt_offset_targets() or {}
+        _tgt = _tgt_map.get(int(getattr(self, 'id', 0) or 0))
+        if _tgt is None:
+            return (0.0, 0.0)
+        try:
+            _tgt = float(_tgt) % _C
+        except Exception:
+            return (0.0, 0.0)
+
+        if bool(_g.get('BXT_OPT_PUSH_REQUIRE_BEFORE_BUS', True)) and _ci >= _bi:
+            return (0.0, _tgt)          # bus green already started; defer
+
+        _sat = 0.0
+        try:
+            _fs = self._flow_stage_snapshot() or {}
+            _cap = float(_fs.get('side_max_flow', 0.0) or 0.0)
+            _x = float(_fs.get('main_x', 0.0) or 0.0)
+            _sat = (_x / _cap) if _cap > 1e-6 else 0.0
+        except Exception:
+            _sat = 0.0
+        if _sat > float(_g.get('BXT_OPT_PUSH_SAT_VETO', 0.90)):
+            return (0.0, _tgt)
+
+        _delta = ((_tgt - _cur + _C / 2.0) % _C) - _C / 2.0
+        _mn = float(_g.get('BXT_OPT_PUSH_MIN_S', 3.0))
+        _mx = float(_g.get('BXT_OPT_PUSH_MAX_S', 12.0))
+        if abs(_delta) < _mn:
+            return (0.0, _tgt)
+        _delta = max(-_mx, min(_mx, _delta))
+        return (float(_delta), _tgt)
 
     def solve_green_extension(self, lb, ub, time):
         """Harmony-search the green extension (s) in [lb, ub] that MINIMISES
@@ -15515,16 +19193,45 @@ def AAPIInit():
             _spm.reset_mode_flags()
         except Exception as _rst_err:
             log_to_file(f"[INIT] reset_mode_flags failed: {_rst_err!r}", force=True)
+        # ── Reset ENGINE-namespace flag copies too (2026-09-25) ──────────
+        # reset_mode_flags() restores _spm's copies, but decision code reads
+        # ENGINE globals (globals().get(...)). The propagation loops below
+        # only write keys PRESENT in run_config, so an arm that omits a flag
+        # inherits the previous arm's engine copy -- e.g. base DCTSP_MARL
+        # inherited CONTINUOUS_MONITOR_MODE=True from CELLQLEARN_CONT_PURPOSE
+        # and produced a bit-identical action stream to MARL_CONT. Restore
+        # pristine defaults for every propagatable key missing from this run.
+        try:
+            _defs = getattr(_spm, '_MODE_FLAG_DEFAULTS', {}) or {}
+            _n_rst = 0
+            for _k, _v in _defs.items():
+                if _k not in _rc_ns2:
+                    if globals().get(_k, _v) != _v:
+                        _n_rst += 1
+                    globals()[_k] = _v
+            if _n_rst:
+                log_to_file(f"[INIT] engine-namespace flag reset: {_n_rst} "
+                            f"stale copies restored to defaults", force=True)
+        except Exception as _rste:
+            log_to_file(f"[INIT] engine flag reset failed: {_rste!r}", force=True)
         try:
             _twoway_shift.clear()   # per-replication clock-shift accumulators
         except Exception:
             pass
         # ── CellQLearn train/eval phase + Q-table reset policy ────────────
-        # BXT_TRAIN_SEEDS accumulate the Q-table (exploration on, learning on);
-        # BXT_EVAL_SEEDS run the FROZEN trained policy (eps=0, no learning) for a
-        # leakage-free measurement.  Requires train seeds to run BEFORE eval
-        # seeds in the batch SEEDS order.  When neither list is set, every seed
-        # is an independent episode (reset each run) -- the default.
+        # BXT_TRAIN_SEEDS and BXT_EVAL_SEEDS split the batch. With the default
+        # BXT_FREEZE_ON_EVAL=False the Q-table is NEVER frozen: BOTH lists keep
+        # crediting realized delay, and eval seeds additionally explore at
+        # BXT_TRAIN_EPSILON so they can still discover a better action. The
+        # train/eval split then only guarantees no seed is SCORED on a seed it
+        # trained on -- the table stays live, it is not pinned. Setting
+        # BXT_FREEZE_ON_EVAL=True restores the legacy behaviour (eval = frozen
+        # table, eps=0, no learning). When neither list is set, every seed is an
+        # independent episode (reset each run) -- the default.
+        try:
+            _bxt_freeze_on_eval = bool(globals().get('BXT_FREEZE_ON_EVAL', False))
+        except Exception:
+            _bxt_freeze_on_eval = False
         try:
             _cur_seed = int(_rc_ns2.get('CURRENT_SEED', -1))
         except Exception:
@@ -15555,10 +19262,16 @@ def AAPIInit():
             # there), so copy the shim/engine values across explicitly.
             _spm.BXT_LEARN = bool(globals().get('BXT_LEARN', True))
             _spm.BXT_TRAIN_EPSILON = float(globals().get('BXT_TRAIN_EPSILON', 0.1))
+            # Q-table freeze policy. Default False = the table is NEVER frozen:
+            # eval-phase seeds keep crediting realized delay like train seeds.
+            # Set BXT_FREEZE_ON_EVAL = True (engine or controller) only to
+            # reproduce a legacy frozen-policy run.
+            _spm.BXT_FREEZE_ON_EVAL = bool(globals().get('BXT_FREEZE_ON_EVAL', False))
         except Exception:
             pass
-        # ── CPD-QL train/eval phase (same policy: train explores & learns,
-        # eval freezes the learned policy).  Falls back to per_seed.
+        # ── CPD-QL train/eval seed split (same policy: with the default
+        # BXT_FREEZE_ON_EVAL=False the CPD-QL table also stays live on eval
+        # seeds).  Falls back to per_seed.
         if not (_cpd_train_seeds or _cpd_eval_seeds):
             _cpd_phase = 'per_seed'
         elif _cur_seed in _cpd_eval_seeds:
@@ -15580,8 +19293,16 @@ def AAPIInit():
             elif _bxt_phase == 'train' and _train_seeds and _cur_seed == _train_seeds[0]:
                 _spm.reset_bxt_learning()                 # fresh start of training
             # train (later seeds): accumulate; eval: keep trained Q-table
+            try:
+                _qt = getattr(_spm, '_dctsp_bxt_q_table', {}) or {}
+                _qsz = sum(len(v) for v in _qt.values()
+                           if isinstance(v, dict))
+            except Exception:
+                _qsz = -1
             log_to_file(f"[BXT_PHASE] seed={_cur_seed} phase={_bxt_phase} "
-                        f"train={_train_seeds} eval={_eval_seeds}", force=True)
+                        f"train={_train_seeds} eval={_eval_seeds} "
+                        f"freeze={_spm.BXT_FREEZE_ON_EVAL} "
+                        f"q_states={_qsz}", force=True)
         except Exception as _rl_err:
             log_to_file(f"[INIT] bxt phase/reset failed: {_rl_err!r}", force=True)
         try:
@@ -15667,9 +19388,23 @@ def AAPIInit():
                    'MP_ECTM_GE_BALANCE_FACTOR',
                    'MP_ECTM_DP_HORIZON_S', 'MP_ECTM_DP_STAGE_S',
                    'MP_ECTM_DP_COORD_WEIGHT',
-                   'BXT_DT_S', 'BXT_EPSILON', 'BXT_ALPHA', 'BXT_GAMMA',
-                   'BXT_CAR_OCC', 'BXT_BALANCE_FACTOR',
-                   'BXT_GE_BALANCE_FACTOR', 'BXT_MAX_INS_S',
+                    'BXT_DT_S', 'BXT_EPSILON', 'BXT_ALPHA', 'BXT_GAMMA',
+                    'BXT_CAR_OCC', 'BXT_BALANCE_FACTOR',
+                    'BXT_GE_BALANCE_FACTOR', 'BXT_MAX_INS_S',
+                    # 2026-09-30 ablation sweep: these MUST be on this whitelist
+                    # or an arm that sets them via run_config silently keeps the
+                    # controller-file default and every ablation row comes back
+                    # byte-identical (the same failure documented for CONTROL_MODE
+                    # on 2026-09-09: "95 rows byte-identical per seed").
+                    'BXT_BARGAIN_DECISION', 'BXT_BARGAIN_PT', 'BXT_BARGAIN_PC',
+                   # virtual-detector reach from the signal plan (per-run
+                   # switchable so it can be A/B'd without editing the controller)
+                   'VIRTUAL_DET_FROM_PLAN', 'VIRTUAL_DET_VC_TARGET',
+                   'EXCLUDE_BUS_FROM_CAR_QUEUE',
+                   'VIRTUAL_DET_SAFETY', 'VIRTUAL_DET_MARGIN_M',
+                   'VIRTUAL_DET_MIN_M', 'VIRTUAL_DET_MAX_M',
+                    'BXT_BARGAIN_MIN_N',
+                    'PREARM_CYCLE_END_ONLY', 'GE_UB_CAP_BY_JCT',
                    'HS_EXT_T_MIN', 'HS_EXT_T_MAX', 'HS_EXT_HMS', 'HS_EXT_HMCR',
                    'HS_EXT_PAR', 'HS_EXT_BW', 'HS_EXT_NITER',
                    'MDN_DDT_POWER', 'MDN_N_COMPONENTS', 'MDN_EPSILON',
@@ -15694,6 +19429,7 @@ def AAPIInit():
                    # block above). Values come from batch write_run_config,
                    # derived from the same strategy map as set_control_mode.
                    'CONTROL_MODE', 'COORDINATED_TSP', 'COORDINATION_ALGO',
+                   'COORD_PREARM_ENABLED',
                    'GROUP_BASED_BUS_PRIORITY', 'TSP_ACTIVE_INTERSECTIONS'):
             if _k in _rc_ns2:
                 globals()[_k] = _rc_ns2[_k]
@@ -15785,6 +19521,36 @@ def AAPIInit():
                     f"B+={globals().get('B_PLUS_MIN', 0.0)} "
                     f"B-={globals().get('B_MINUS_MIN', 0.0)} "
                     f"G={globals().get('TWOWAY_GREEN_S', 35.0)}", force=True)
+        # ── Arm audit: effective decision flags for THIS run (2026-09-25) ──
+        # One line proving what the decider will actually read (engine
+        # namespace, post-reset+propagation). Motivation: base DCTSP_MARL once
+        # inherited CONTINUOUS_MONITOR_MODE=True from the previous arm and ran
+        # a bit-identical action stream to MARL_CONT -- invisible without this.
+        try:
+            log_to_file(
+                f"[ARM] exp={_CURRENT_EXPERIMENT} "
+                f"CONT={bool(globals().get('CONTINUOUS_MONITOR_MODE', False))}/"
+                f"BXTc={bool(globals().get('BXT_CONTINUOUS_MODE', False))} "
+                f"MONGATE={bool(globals().get('MONITOR_STATE_GATE', True))}/"
+                f"{bool(globals().get('SIDLESS_MONITOR_HOLD', True))} "
+                f"QFLOOR={bool(globals().get('SIDE_QUEUE_FLOOR', True))} "
+                f"SEEDWARM={float(globals().get('DEMAND_SEED_WARM_S', 300.0)):.0f}s "
+                f"MEAS={bool(globals().get('MEASURED_STATE_FEED', False))}/"
+                f"{bool(globals().get('MEASURED_QUEUE_FEED', False))}/"
+                f"{bool(globals().get('MEASURED_SIDE_COST', False))} "
+                f"CASC={bool(globals().get('CASCADE_COST_MODE', False))} "
+                f"BXTgate={bool(globals().get('BXT_NET_BENEFIT_GATE', False))} "
+                f"MINBUSd={float(globals().get('SELFORG_MIN_BUS_DELAY_S', 0.0)):.0f}s "
+                f"MINCELLq={float(globals().get('CELLQLEARN_MIN_GAIN_S', 0.0)):.0f}s "
+                f"VETO={float(globals().get('DECIDER_COST_VETO_RATIO', 0.0)):.1f} "
+                f"CONG={bool(globals().get('DCTSP_CONGESTION_GATE', False))}/"
+                f"{float(globals().get('DCTSP_CONGESTION_GATE_FRACTION', 0.0)):.2f} "
+                f"GRMODE={bool(globals().get('GLOBAL_REWARD_MODE', False))} "
+                f"PRED={str(globals().get('BUS_PREDICTOR_TYPE', '?'))} "
+                f"COORD={str(globals().get('COORDINATION_ALGO', '?'))}",
+                force=True)
+        except Exception as _arme:
+            log_to_file(f"[ARM] audit failed: {_arme!r}", force=True)
         # ── Decision-gate flag audit (2026-09-10) ────────────────────────
         # One force-logged line recording the EXACT gate values the candidate
         # generators will read at decision time, from BOTH namespaces that
@@ -16024,6 +19790,17 @@ def AAPIInit():
     stats._car_pos = -1
     stats._bus_pos = -1
     stats._truck_pos = -1
+
+    # ── Reset cross-replication caches (2026-09-28) ─────────────────────────
+    # CRITICAL: _MANAGE_ORDER holds (iid, controller) references built on the
+    # FIRST replication. The batch runner builds NEW IntersectionController
+    # objects per replication; a stale _MANAGE_ORDER made replications 2+
+    # collect_delay/update on the OLD controllers -> car delay 0, served 1/8
+    # (healthy run 1, broken runs 2+). _PLAN_STATE similarly must not carry
+    # the previous replication's plans. Both rebuilt fresh here.
+    global _MANAGE_ORDER
+    _MANAGE_ORDER = None
+    _PLAN_STATE.clear()
 
     # ── Initialise DynaROPAC network-wide optimizer ───────────────────────────
     if CONTROL_MODE == "DYNAOPAC_HARMONY":
@@ -16577,6 +20354,14 @@ def AAPISimulationReady():
                     elif prev_xy is None:
                         prev_xy = (0.0, 0.0)  # anchor first junction at origin
                 coord.set_corridor_positions(pos_map)
+            _prearm_on = bool(globals().get('COORD_PREARM_ENABLED', True))
+            log_to_file(
+                f"[CORRIDOR] COORDINATED_TSP=True algo={COORDINATION_ALGO} "
+                f"COORD_PREARM_ENABLED={_prearm_on} — "
+                + ("full coordination (pre-arm + corridor coupling)" if _prearm_on
+                   else "corridor coupling ONLY, downstream pre-arm SUPPRESSED"),
+                force=True,
+            )
         else:
             log_to_file("[CORRIDOR] COORDINATED_TSP=False — Kalman pre-arming disabled")
 
@@ -17619,6 +21404,33 @@ def _prearm_allow(veh_id):
     return float(tr.get("mult", 1.0)) >= 1.0
 
 
+def _unpack_prearm(_prearm):
+    """(veh_id, eta_t, issued_t, route_dir, from_jct) from a corridor pre-arm.
+
+    Accepts the legacy 3-tuple (veh, eta, issued) and the enriched 5-tuple
+    (veh, eta, issued, route_dir, from_jct); missing extras default to
+    (0, -1). route_dir is +1/-1 along the coordinator's route_index
+    (0 = unknown). Never raises (returns Nones) so a malformed payload can
+    never wedge control -- callers clear-and-skip on None veh."""
+    try:
+        _p = tuple(_prearm)
+    except Exception:
+        return None, None, None, 0, -1
+    try:
+        _veh = int(_p[0]); _eta = float(_p[1]); _iss = float(_p[2])
+    except Exception:
+        return None, None, None, 0, -1
+    try:
+        _dir = int(_p[3]) if len(_p) > 3 else 0
+    except Exception:
+        _dir = 0
+    try:
+        _frm = int(_p[4]) if len(_p) > 4 else -1
+    except Exception:
+        _frm = -1
+    return _veh, _eta, _iss, _dir, _frm
+
+
 def _record_schedule_entry(veh_id, line_ids, now_s):
     """Record schedule deviation when PT follower enumeration is unavailable.
 
@@ -17969,7 +21781,70 @@ def _milp_mpc_tick(time, timeSta, acycle):
     )
 
 
+# Corridor-aware evaluation order cache (built lazily by _aapi_post_manage_impl):
+# junctions evaluated upstream->downstream per corridor so commits propagate to
+# downstream decisions within the same step.
+_MANAGE_ORDER = None
+
+# Global plan-state tracker (2026-09-28): ONE store of each junction's live
+# phase plan -- per-phase durations, cycle, bus phase, version -- updated on
+# every commit/broadcast and at startup. The causal-delay estimators
+# (_signal_delay_at_s, _bus_red_at, _next_bus_green_window) read SUBSEQUENT
+# phases from here (preferring the committed plan over live ECI), so an action
+# taken at one junction is visible to every downstream delay projection
+# immediately, not after ECI settles. Live ECI remains the source for the
+# CURRENT phase's remaining-time math.
+_PLAN_STATE = {}
+
+
+def _global_plan_state(jid):
+    try:
+        _s = _PLAN_STATE.get(int(jid))
+        return _s if isinstance(_s, dict) else None
+    except Exception:
+        return None
+
+
+def _global_plan_dur(jid, ph):
+    """Committed duration for phase ph at jid, or None (caller falls back to
+    live ECI)."""
+    _s = _global_plan_state(jid)
+    if _s is None:
+        return None
+    try:
+        _d = _s.get("durs", {}).get(int(ph))
+        return float(_d) if _d is not None else None
+    except Exception:
+        return None
+
+
+def _global_plan_cycle(jid):
+    _s = _global_plan_state(jid)
+    if _s is None:
+        return None
+    try:
+        _c = _s.get("cycle_s")
+        return float(_c) if _c is not None else None
+    except Exception:
+        return None
+
+
+def _dur_or_live(jid, ph, timeSta=0.0):
+    """Committed-then-live phase duration: prefer the global plan-state tracker
+    (push-aware) over live ECI, so a just-committed action is priced into any
+    forward delay/ETA walk immediately."""
+    _td = _global_plan_dur(jid, ph)
+    if _td is not None:
+        return _td
+    try:
+        return float(GetPhaseDuration(int(jid), int(ph), timeSta) or 0.0)
+    except Exception:
+        return 0.0
+
+
 def _aapi_post_manage_impl(time, timeSta, timeTrans, acycle):
+    # Corridor-aware evaluation order cache (2026-09-28), see the loop below.
+    global _MANAGE_ORDER
     # Lazy bus-type recheck: PT vehicles may not exist at AAPIInit time
     global _bus_type_needs_recheck
     global _bus_type_provisional
@@ -18103,7 +21978,38 @@ def _aapi_post_manage_impl(time, timeSta, timeTrans, acycle):
         if _PT_INJ_ERR[0] <= 3:
             log_to_file(f"[PREARM] tick error: {e!r}", force=True)
 
-    for inter_id, controller in controllers.items():
+    global _MANAGE_ORDER
+    # Corridor-aware evaluation order (2026-09-28): evaluate junctions
+    # UPSTREAM -> DOWNSTREAM along each corridor, so an action committed at
+    # junction i is APPLIED (live ECI) before downstream junction j evaluates
+    # in the same step -- every action propagates to every downstream decision
+    # immediately, instead of j guessing from pre-commit state (the sub-tick
+    # ordering gap). Cached once; unlisted junctions appended last.
+    if _MANAGE_ORDER is None:
+        _mo, _seen = [], set()
+        for _coord in corridor_coordinators:
+            try:
+                _grp = sorted(
+                    (int(j) for j in _coord.inter_ids),
+                    key=lambda j: float(_coord.corridor_pos.get(j, 0.0)))
+            except Exception:
+                _grp = list(_coord.inter_ids)
+            for _j in _grp:
+                if _j in controllers and _j not in _seen:
+                    _mo.append((_j, controllers[_j]))
+                    _seen.add(_j)
+        for _iid, _c in controllers.items():
+            if _iid not in _seen:
+                _mo.append((_iid, _c))
+        _MANAGE_ORDER = _mo
+        if _mo:
+            try:
+                log_to_file(
+                    f"[ORDER] corridor-aware eval order ({len(_mo)} jcts): "
+                    + ", ".join(str(i) for i, _ in _mo), force=True)
+            except Exception:
+                pass
+    for inter_id, controller in _MANAGE_ORDER:
         try:
             # collect_delay runs identically for all modes — GROUP_BASED no longer
             # calls it internally (gb.step is detection + TSP overlay only).
@@ -18119,10 +22025,35 @@ def _aapi_post_manage_impl(time, timeSta, timeTrans, acycle):
 
     # ── Step corridor coordinators (after all individual controllers) ─────────
     for coord in corridor_coordinators:
+        # Resilient corridor step (2026-09-28): a coordinator that crashes
+        # repeatedly must not spin forever corrupting state each step. After
+        # MAX consecutive failures it is DISABLED for the run -- the wave ban
+        # stays lifted and its junctions run independent TSP (graceful
+        # degradation, one clear log line) instead of a silent 30 s crash
+        # loop. The first crash still prints the full traceback so the root
+        # site is findable.
+        _cd = getattr(coord, '_crash_count', 0)
+        if _cd >= 3:
+            if _cd == 3:
+                try:
+                    log_to_file(
+                        f"[CORRIDOR] coordinator {coord.name} DISABLED after "
+                        f"{_cd} consecutive crashes -- junctions run "
+                        f"independent TSP (wave coordination off)", force=True)
+                except Exception:
+                    pass
+                coord._crash_count = _cd + 1
+            continue
         try:
             coord.step(time, timeSta)
+            if _cd > 0:
+                coord._crash_count = 0  # recovered
         except Exception as e:
-            log_to_file(f"[CORRIDOR] coordinator {coord.name} crashed t={time:.1f}: {e}")
+            import traceback as _tb
+            log_to_file(
+                f"[CORRIDOR] coordinator {coord.name} crashed "
+                f"t={time:.1f}: {e}\n{_tb.format_exc()}")
+            coord._crash_count = _cd + 1
 
     if CONTROL_MODE == "MILP_MPC":
         try:
@@ -20131,6 +24062,16 @@ def AAPIEnterVehicle(idveh, idsection):
         if not m.suppressing:
             _record_schedule_entry(idveh, cand, now)
             return 0                      # injection mode has no removal work
+        # ── Is this vehicle a bus? ────────────────────────────────────────────
+        # The type-position test is preferred because it is O(1), but it is NOT
+        # reliable: on a model whose bus-type object does not resolve,
+        # stats._bus_pos is the not-found sentinel (observed -4008) and the old
+        # `busp > 0 and vtype == busp` guard silently rejected EVERY bus, so
+        # BUSx0.5 removed nothing and reported the unsuppressed bus count with no
+        # error. When the position is unresolved we therefore fall back to the
+        # authoritative PT-line membership test -- the same test the calibration
+        # branch above already uses, precisely because name/type resolution fails
+        # on this corridor.
         n = int(AKIVehStateGetNbVehiclesSection(int(idsection), False) or 0)
         vtype = -1
         for i in range(n):
@@ -20142,9 +24083,32 @@ def AAPIEnterVehicle(idveh, idsection):
             except Exception:
                 continue
         busp = getattr(stats, '_bus_pos', -1)
-        if not (busp and busp > 0 and vtype == busp):
+        is_bus = bool(busp) and busp > 0 and vtype == busp
+        if not is_bus:
+            if not (busp and busp > 0):
+                if time_now := float(AKIGetCurrentSimulationTime()):
+                    if not getattr(m, '_warned_bad_type', False):
+                        m._warned_bad_type = True
+                        log_to_file(f"[PT-INJ] WARNING: bus type position unresolved "
+                                    f"(stats._bus_pos={busp!r}) -- falling back to "
+                                    f"PT-line membership for suppression. Demand "
+                                    f"SCALING <1.0 will still work, but confirm the "
+                                    f"bus count halves before trusting the sweep.",
+                                    force=True)
+            try:
+                _nv = int(AKIGetNbVehiclesFollowingPTLine(int(lid)))
+                for _vi in range(_nv):
+                    try:
+                        if int(AKIGetVehicleFollowingPTLine(int(lid), _vi)) == int(idveh):
+                            is_bus = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        if not is_bus:
             return 0
-        m.set_bus_pos(busp)
+        m.set_bus_pos(busp if (busp and busp > 0) else m.bus_pos)
 
         if m.suppressing:
             if m.should_remove(lid):

@@ -246,7 +246,9 @@ def _pick_champion():
                 seed = int(r.get("run_seed", -1))
             except Exception:
                 continue
-            if seed not in _cs.EVAL_SEEDS:
+            _scored_seeds = (getattr(_cs, "SCORED_SEEDS", None)
+                             or list(_cs.EVAL_SEEDS))
+            if seed not in _scored_seeds:
                 continue          # learners' train rows would skew the mean
             objective = _obj_goodness(r)
             if objective is None or objective == 0.0:
@@ -255,7 +257,7 @@ def _pick_champion():
         complete = {
             name: arm_rows for name, arm_rows in per.items()
             if len({int(r.get("run_seed", -1)) for r in arm_rows})
-            >= len(_cs.EVAL_SEEDS)
+            >= len(_scored_seeds)
         }
         # Clone guard (mirrors rank_champions.py): an arm totalling ZERO TSP
         # actions across its eval rows is a NO_TSP clone and can never be

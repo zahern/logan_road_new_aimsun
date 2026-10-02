@@ -16,9 +16,10 @@ import random
 import datetime
 import os
 import math
+BXT_FREEZE_ON_EVAL = True
 BXT_TRAIN_EPSILON = 0.3
-BXT_EVAL_SEEDS = []
-BXT_TRAIN_SEEDS = []
+BXT_EVAL_SEEDS = [300, 400, 500, 600, 700, 1200, 1300, 1400, 1500, 1600]
+BXT_TRAIN_SEEDS = [800, 900, 1000, 1100]
 CPDQL_MODE = False
 CPDQL_TRAIN_EPSILON = 0.3
 CPDQL_EVAL_SEEDS = []
@@ -87,7 +88,15 @@ LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to en
 #     The GeoJSON can be loaded via File → Import in Aimsun or opened in QGIS/ArcGIS
 #     to see coloured dots exactly where each bus was first detected.
 # Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
-MARK_DETECTION_POINTS: bool = True
+# BUGFIX 2026-09-30: default is now False, not True. Marking is a DEBUG /
+# VISUALISATION aid, and every mark call goes through the AAPI canvas path:
+# a batch run left this on logged 365,119 mark calls for a single 2.8 h run
+# (~5 min of pure overhead per run, and the whole point of a batch is the CSV).
+# Scripts that DO want the dots set this back to True per run; the batch
+# helpers champion_search._disable_batch_plotting / phase3_sensitivity also
+# force it off explicitly, so flipping the default only helps the scripts that
+# forgot to.
+MARK_DETECTION_POINTS: bool = False
 TRACK_BUS_POSITIONS: bool = False
 BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 
@@ -301,7 +310,7 @@ MILP_MPC_Z4_BASELINE     = 380.0   # fixed-time baseline corridor TT (veh·h)
 # CONTROL MODE
 # =============================================================================
 TSP_COOLDOWN_OVERRIDE_S = None
-CONTROL_MODE = "NORMAL"
+CONTROL_MODE = "DRL_DENSITY"
 GROUP_BASED_BUS_PRIORITY = False
 GROUP_BASED_BUS_PRIORITY = False
 
@@ -338,7 +347,7 @@ GROUP_BASED_BUS_PRIORITY = False
 #
 # COORD_OBJ_ALPHA / COORD_OBJ_BETA apply only with COORDINATION_ALGO="OBJECTIVE".
 # =============================================================================
-COORDINATED_TSP = False   # True = CC active (corridor coordination)
+COORDINATED_TSP = True   # True = CC active (corridor coordination)
 
 MAX_GE_EXTENSION_S   = 10.0   # Max green extension per bus request (s)
 MAX_BP_INSERTION_S   = 40.0   # Max bus-phase insertion per request (s)
@@ -356,6 +365,40 @@ SIDE_QUEUE_ZONE_M = 60.0     # Queue-count reach upstream of the stop line (m).
 MAIN_QUEUE_ZONE_M = 60.0     # Same reach for MAIN detector sections whose own
                              # link is a short stub (detector-independent zone
                              # count used when detector counts read empty).
+# ── VIRTUAL DETECTORS FROM THE SIGNAL PLAN (2026-10-01) ─────────────────────
+# The two constants above are FLAT, and one number cannot be right for both a
+# 3-lane main with 50-80 s of green and a side street with ~6 s: the reach that
+# captures the main queue under-counts the side one, and the reach that captures
+# the side queue counts free-flowing main traffic as queued. Measured on KG with
+# the plan-derived rule below, the flat 60 m is too LONG for side approaches
+# (derived 32-38 m) and too SHORT for main at high demand (derived 50-114 m).
+# That biases BOTH ways: over-priced side cost vetoes grants that were fine,
+# while under-priced main queue hides the delay a grant actually causes.
+#
+# When ON, engine._queue_zone_m() replaces the flat reach with a per-junction,
+# per-approach distance derived from that junction's OWN signal plan: place the
+# detector just upstream of the maximum queue the approach holds at the end of
+# its red, so vehicles downstream of it ARE the queue and vehicles crossing it
+# ARE arrivals. It emits one [VDET] line per junction with the computed reach so
+# the numbers can be audited before they are trusted. DEFAULT OFF: enable only
+# after reading those lines, because the reach scales with demand and the
+# no-measurement fallback assumes a design v/c.
+VIRTUAL_DET_FROM_PLAN  = False
+VIRTUAL_DET_VC_TARGET  = 0.90   # design v/c for the capacity fallback
+VIRTUAL_DET_SAFETY     = 1.30   # margin over the computed queue length
+VIRTUAL_DET_MARGIN_M   = 15.0   # absolute margin (m)
+VIRTUAL_DET_MIN_M      = 30.0   # never shorter than this
+VIRTUAL_DET_MAX_M      = 200.0  # never longer than this
+# ── BUSES ARE NOT CARS (2026-10-01) ─────────────────────────────────────────
+# The zone/flow estimates above are DETECTOR-style and detectors are for general
+# traffic. Buses are PT vehicles with known IDs and routes, tracked individually
+# through the PT APIs (AKIGetVehicleFollowingPTLine / AKIPTVehGetInf), so leaving
+# them in the car queue counts them TWICE: once here at CarOcc and again in the
+# bus-delay term at BusOcc (40 pax). AKIVehStateGetVehicleInfSection returns both
+# idVeh and type in the same call, so the split costs nothing. When ON, buses in
+# the zone are excluded from the car queue and counted separately into
+# self._last_zone_bus_cnt so the two populations can be compared, not assumed.
+EXCLUDE_BUS_FROM_CAR_QUEUE = False
 INS_CLEARANCE_BUFFER_S = 8.0  # Add clearance buffer to ETA when deciding if natural bus phase is truly catchable
 INS_MAX_WAIT_TRIGGER_S = 8.0  # If predicted wait for next natural bus phase exceeds this, evaluate INS
 # Adaptive bounds for INS trigger margin. A larger ETA should require a
@@ -384,7 +427,7 @@ WOBJ_BETA = 1.0    # Z2 downstream passenger-delay weight
 WOBJ_GAMMA = 0.1   # Z3 schedule-lateness weight (small, tie-break only)
 
 # ── CC ETA algorithm parameters ───────────────────────────────────────────────
-COORDINATION_ALGO = "KALMAN"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
+COORDINATION_ALGO = "SHOCKWAVE"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
 COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
 COORD_OBJ_BETA       = 0.5       # general-traffic weight      (OBJECTIVE mode)
 PREARM_MAX_SIGMA_S   = 90.0      # max ETA uncertainty (s) to allow a pre-arm;

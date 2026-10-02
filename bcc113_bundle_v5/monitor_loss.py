@@ -73,13 +73,40 @@ def parse(args):
     for _, iid, n, f0, fb, ff, es, eq, st, fl in scored[:args.top]:
         print(f"{int(iid):>7} {n:>4} {f0:>5.0%} {fb:>6.0%} {ff:>5.0%} {es:>9.0f} {eq:>6.1f} {st:>6}  {fl}")
 if __name__ == '__main__':
+    import glob as _glob
     ap = argparse.ArgumentParser()
-    ap.add_argument('--log', required=True)
+    ap.add_argument('--log', default=None,
+                    help='Aimsun_TSP log file (default: newest in '
+                         'logan_road_new/logs, so a bare exec() works '
+                         'from the Aimsun console)')
     ap.add_argument('--report', default=None)
     ap.add_argument('--top', type=int, default=10)
-    a = ap.parse_args()
+    try:
+        a = ap.parse_args()
+    except SystemExit:
+        # Aimsun console: argparse exits on missing/invalid args -- fall
+        # back to defaults instead of killing the paste.
+        a = argparse.Namespace(log=None, report=None, top=10)
     if a.report is None:
-        here = os.path.dirname(os.path.abspath(__file__))
-        cand = os.path.join(here, 'logan_road_new', 'side_sections_report.csv')
-        a.report = cand if os.path.isfile(cand) else None
+        here = os.path.dirname(os.path.abspath(__file__)) \
+            if '__file__' in dir() else os.getcwd()
+        for _cand in (os.path.join(here, 'logan_road_new',
+                                   'side_sections_report.csv'),
+                      r'C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5'
+                      r'\logan_road_new\side_sections_report.csv'):
+            if os.path.isfile(_cand):
+                a.report = _cand
+                break
+    if a.log is None:
+        _logs = []
+        for _d in (os.path.join(os.path.dirname(a.report or ''), 'logs')
+                   if a.report else None,
+                   r'C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5'
+                   r'\logan_road_new\logs'):
+            if _d and os.path.isdir(_d):
+                _logs += _glob.glob(os.path.join(_d, 'Aimsun_TSP_Log_*.txt'))
+        if not _logs:
+            raise SystemExit('no Aimsun_TSP_Log found -- pass --log <file>')
+        a.log = max(_logs, key=os.path.getmtime)
+        print('monitor_loss: using newest log ' + a.log)
     parse(a)
