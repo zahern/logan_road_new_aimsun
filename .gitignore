@@ -22,6 +22,7 @@
 *.geojson
 *.zip
 *.xml
+**/detector_output.xml
 
 
 # Python cache
