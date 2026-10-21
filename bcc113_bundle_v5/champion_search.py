@@ -2159,6 +2159,66 @@ ARMS = [
          "DS_FLOW_QUEUE_AWARE": True,
          "DS_SPLIT_COMMISSIONED_BAND": 0.08}},   # tightened 0.30->0.08 (protect main)
 
+    # CHAMP_PBIL_GAME (2026-10-21): CHAMP_PBIL is kept VERBATIM as the baseline
+    # (gradual SCATS split learner: DS-proportional re-solve every 30 s, PBIL
+    # gene vector over the phase weights) and a generalised-Nash bargaining game
+    # is layered ON TOP of it for the bus TSP decision -- "extend PBIL with a
+    # game-theory formulation".
+    #
+    #   1. Tier 1 (dctsp_nash_bargain): pick the GE/INS/hold action that
+    #      maximises the NASH PRODUCT of Transit vs Cross-street gains over
+    #      their disagreement points. p_T=0 / p_C=1 => net-surplus variant: the
+    #      action that cuts TOTAL passenger delay the most (bus pax-s saved minus
+    #      cross pax-s cost), while individual rationality (bps>cpc) is still
+    #      enforced inside the decider.
+    #   2. Tier 2 (NASH_CORRIDOR_MODE): junctions on the bus route are coupled
+    #      into a Gauss-Seidel best-response equilibrium, so each junction's
+    #      bargain accounts for its neighbours' response instead of acting alone.
+    #   3. CASCADE_COST_MODE prices the CTM downstream spillback into the cross
+    #      cost, so the game cannot buy bus green with a gridlock two junctions
+    #      down.
+    #   4. NASH_NET_GATE_RATIO=1.5 requires the transit benefit to clear the
+    #      detector-estimated cross cost by 1.5x before an action is eligible.
+    #
+    # This is the A/B partner of NASH_BARGAIN: same game, but the split baseline
+    # is the learned PBIL plan instead of the commissioned/MP plan. Set
+    # NASH_BARGAIN_MODE after the PURE_SCATS base (which spreads it as False) so
+    # the game decider actually dispatches.
+    {"name": "CHAMP_PBIL_GAME", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {
+        # ── baseline: CHAMP_PBIL, copied verbatim ──
+        **_PURE_SCATS_GRAD_BASE,
+        "PBIL_TS_MODE": True, "PBIL_GEN_S": 300.0, "PBIL_DELTA": 0.25,
+        "PBIL_ALPHA": 0.20, "PBIL_MIN_P": 0.05, "PBIL_WARM_S": 120.0,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+        "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+        "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+        "DS_FLOW_QUEUE_AWARE": True,
+        "DS_SPLIT_COMMISSIONED_BAND": 0.08,
+        # ── game-theory TSP override on top ──
+        # The GAME owns the TSP decision, so the PBIL base's discrete SCATS bus
+        # priority is switched OFF: leaving both on would double-grant (extend on
+        # presence AND bargain an action) and confound the A/B against PBIL.
+        "SCATS_BUS_PRIORITY": False,
+        "BUS_PRIO_JIT_ENABLE": False, "BUS_PRIO_RECALL_ENABLE": False,
+        "GLOBAL_REWARD_MODE": True,
+        "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+        "BARGAIN_SPM_MODE": False,
+        "NASH_CORRIDOR_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "NASH_NET_GATE_RATIO": 1.5,
+        "CASCADE_COST_MODE": True,
+        "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+        "NASH_CONVERGENCE_TOL": 0.01,
+        "NASH_INTEGER_DURATIONS": True,
+        "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+        "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+     }},
+
     # ══ WIN-ONLY ACTUATION VARIANTS (2026-10-20) ═════════════════════════════════
     # Goal: BEAT NO_TSP on the design hour by adding surgical actuation to the
     # commissioned backbone (gap-out + max-out + spillback gate), never re-deriving
@@ -3195,6 +3255,7 @@ _EXPECTED_ACTIVE_MODE = {
     "CHAMP_ST_DSGATE": "BXT", "CHAMP_ST_ZIG": "ZIG", "CHAMP_ST_ZIG_REL": "ZIG",
     "CHAMP_ST_MASTER_ZIG": "ZIG",
     "CHAMP_MP_NASH_SCATS": "NASH_BARGAIN", "CHAMP_MP_GAME_SCATS": "NASH_BARGAIN",
+    "CHAMP_PBIL_GAME": "NASH_BARGAIN",
     "CHAMP_SCATS_DSGATE": "BXT",
     "CHAMP_SCATS_DSGATE_TIGHT": "BXT",
     "CHAMP_SCATS_DSGATE_LOOSE": "BXT",

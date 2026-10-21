@@ -64,6 +64,7 @@ import champion_search as _cs
 ROSTER = [
     # ── references ──
     "CHAMP_PBIL",                # best PURE_SCATS split arm (748)
+    "CHAMP_PBIL_GAME",           # CHAMP_PBIL baseline + generalised-Nash bus TSP
     "NASH_BARGAIN",              # plan untouched + discrete bus TSP (837)
     "CHAMP_SCATS_DSGATE",        # proven DS-gate winner (CELLQLEARN, DS_MAX=1.70)
     "CHAMP_SCATS_DSGATE_REL",    # DS-gate, adaptive scale-free ceiling

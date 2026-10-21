@@ -458,14 +458,24 @@ SCATS_GAP_NEXT_MIN_Y   = 0.02   # next phase needs y above this to be worth serv
 SCATS_GAP_EVERY_S      = 1.0    # check cadence
 SCATS_GAP_BUS_PHASE    = False  # gap-out the bus phase too (default: no)
 # MAX-OUT pair: force-terminate at SCATS_MAX_OUT_S even if the phase is not clear.
-# 2026-10-21: the bound is now PLAN-AWARE -- effective max = max(SCATS_MAX_OUT_S,
-# this phase's commissioned green), so a global 55/70 s can no longer truncate an
-# 84 s bus phase. SCATS_MAX_OUT_DEMAND_GUARD additionally holds a still-busy
-# phase (standing queue or arrivals) past that bound, up to
-# SCATS_MAX_OUT_GRACE_S / ACT_EXTEND_ABS_CAP_S, before forcing the switch.
+# MEASURED REGRESSION (2026-10-21): two follow-on options are kept but DEFAULT
+# OFF, because together they cost more than they bought on this network:
+#   SCATS_MAX_OUT_PLAN_AWARE    -- bound = max(SCATS_MAX_OUT_S, this phase's
+#       commissioned green) instead of the flat cap.
+#   SCATS_MAX_OUT_DEMAND_GUARD  -- hold a still-busy phase past that bound.
+# Dropping the flat 55/70 s ceiling let the 81-84 s bus phases run full; cycles
+# inflated (ACT_EXTEND still adds green elsewhere) and the corridor fell into the
+# MP-arm failure basin. Same seed, same build otherwise:
+#   CHAMP_SCATS_DSGATE      111.0 -> 75.2
+#   CHAMP_SCATS_DSGATE_REL   95.8 -> 52.3
+#   NASH_BARGAIN            100.9 -> 51.7
+# while untouched arms stayed bit-identical (NO_TSP 127.0, CHAMP_PBIL 119.7),
+# which is what isolates the change. Only enable WITH a cycle-level cap
+# (extend + max-out <= commissioned cycle), not on its own.
 SCATS_MAX_OUT     = False
 SCATS_MAX_OUT_S   = 60.0
-SCATS_MAX_OUT_DEMAND_GUARD = True
+SCATS_MAX_OUT_PLAN_AWARE   = False
+SCATS_MAX_OUT_DEMAND_GUARD = False
 SCATS_MAX_OUT_GRACE_S      = 5.0
 # DS TRUTH CHECK (2026-10-21): log a per-junction/per-phase estimate snapshot
 # every DS_TRUTH_INTERVAL_S and, at AAPIFinish, join it to the results folder's
@@ -475,6 +485,31 @@ SCATS_MAX_OUT_GRACE_S      = 5.0
 # instead of trusted. Costs one cached snapshot read per junction per interval.
 DS_TRUTH_CHECK             = True
 DS_TRUTH_INTERVAL_S        = 30.0
+# ── CYCLE CAP (2026-10-21) ───────────────────────────────────────────────────
+# The precondition for enabling SCATS_MAX_OUT_PLAN_AWARE. Actuated extend (+ any
+# GE/INS debt the cycle recovery could not trim) may add at most
+# max(CYCLE_CAP_SLACK_S, CYCLE_CAP_SLACK_FRAC * commissioned_cycle) seconds per
+# cycle; once spent, extension stops until the next cycle. This is what stops the
+# plan-aware bound from inflating the cycle and breaking coordination -- the
+# failure measured when plan-aware max-out ran WITHOUT it (DSGATE 111 -> 75).
+# Off by default: enable together with SCATS_MAX_OUT_PLAN_AWARE as a pair.
+CYCLE_CAP_ENABLE      = False
+CYCLE_CAP_SLACK_S     = 4.0
+CYCLE_CAP_SLACK_FRAC  = 0.05
+# ── DS BIAS / RELIABILITY (2026-10-21) ───────────────────────────────────────
+# _finalize_ds_truth_check writes LOG_DIR/ds_bias_calibration.json every run.
+# With DS_BIAS_CORRECT the per-(junction,phase) measured queue bias is subtracted
+# from the standing-queue term before it feeds DS. With DS_GATE_REQUIRE_RELIABLE
+# the DS gate is bypassed at junctions whose estimate does not correlate with
+# Aimsun's measured queue (corr < DS_CALIB_MIN_CORR) or is too biased
+# (MAE > DS_CALIB_MAX_MAE_VEH). Both default OFF: calibrate on a known-good run
+# first, then enable, so a calibration measured under a broken controller is
+# never applied silently.
+DS_BIAS_CORRECT            = False
+DS_GATE_REQUIRE_RELIABLE   = False
+DS_CALIB_MIN_N             = 50
+DS_CALIB_MAX_MAE_VEH       = 6.0
+DS_CALIB_MIN_CORR          = 0.25
 # ── SPILLBACK GATE (2026-10-20) ───────────────────────────────────────────────
 # WIN-ONLY actuation that preserves the commissioned backbone: if the CURRENT
 # phase's downstream receiving link is >= SPILLBACK_GATE_FRAC full, continuing its
@@ -7797,8 +7832,12 @@ MODE_FLAGS = [
 'SCATS_GAP_MAX_FLOW_VPH', 'SCATS_GAP_NEXT_MIN_Y', 'SCATS_GAP_EVERY_S',
 'SCATS_GAP_BUS_PHASE',
 'SCATS_MAX_OUT', 'SCATS_MAX_OUT_S',
-'SCATS_MAX_OUT_DEMAND_GUARD', 'SCATS_MAX_OUT_GRACE_S',
+'SCATS_MAX_OUT_PLAN_AWARE', 'SCATS_MAX_OUT_DEMAND_GUARD',
+'SCATS_MAX_OUT_GRACE_S',
 'DS_TRUTH_CHECK', 'DS_TRUTH_INTERVAL_S',
+'CYCLE_CAP_ENABLE', 'CYCLE_CAP_SLACK_S', 'CYCLE_CAP_SLACK_FRAC',
+'DS_BIAS_CORRECT', 'DS_GATE_REQUIRE_RELIABLE', 'DS_CALIB_MIN_N',
+'DS_CALIB_MAX_MAE_VEH', 'DS_CALIB_MIN_CORR',
 'SPILLBACK_GATE', 'SPILLBACK_GATE_FRAC', 'JAM_VEH_SPACING_M',
 'SCATS_PHASE_ORIGIN_FALLBACK', 'RELIEF_NEEDS_DOWNSTREAM',
 'ACTUATED_EXTEND', 'ACT_EXTEND_STEP_S', 'ACT_EXTEND_MAX_GREEN_S',

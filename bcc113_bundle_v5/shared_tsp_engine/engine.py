@@ -35,7 +35,7 @@ import importlib.util as _importlib_util
 # can be verified from the [LOAD] line in the run log. If the log shows an older
 # stamp than this, Aimsun is running a CACHED copy of the module (re-running the
 # script alone does NOT reload it — the whole Aimsun process must be quit).
-ENGINE_BUILD = "2026-10-21T1905-ds-truth"
+ENGINE_BUILD = "2026-10-21T1650-cyclecap-dscalib"
 try:
     from AAPI import *
 except Exception:
@@ -2163,6 +2163,37 @@ def _write_run_summary():
     except Exception as e:
         log_to_file(f"[SUMMARY] run summary write failed: {e}", force=True)
 
+_DS_CALIB_CACHE = None
+
+
+def _ds_calibration():
+    """Load the DS bias calibration written by the last truth check.
+
+    File: LOG_DIR/ds_bias_calibration.json (or DS_CALIB_PATH), written by
+    _finalize_ds_truth_check. Per junction AND per (junction, phase):
+    {n, bias_veh, mae_veh, rmse_veh, corr, mean_est_veh, mean_true_veh}.
+    Cached for the session; {} when absent/unreadable (=> no correction).
+    """
+    global _DS_CALIB_CACHE
+    if _DS_CALIB_CACHE is not None:
+        return _DS_CALIB_CACHE
+    _p = (globals().get('DS_CALIB_PATH')
+          or os.path.join(globals().get('LOG_DIR', ''), 'ds_bias_calibration.json'))
+    try:
+        import json
+        with open(_p, encoding='utf-8') as f:
+            _DS_CALIB_CACHE = json.load(f) or {}
+        try:
+            log_to_file('[DS CALIB] loaded %s (junctions=%d phases=%d)'
+                        % (_p, len(_DS_CALIB_CACHE.get('junction') or {}),
+                           len(_DS_CALIB_CACHE.get('phase') or {})), force=True)
+        except Exception:
+            pass
+    except Exception:
+        _DS_CALIB_CACHE = {}
+    return _DS_CALIB_CACHE
+
+
 def _finalize_ds_truth_check():
     """Score the run's DS / queue estimates against Aimsun's own section truth.
 
@@ -2350,6 +2381,42 @@ def _finalize_ds_truth_check():
                         '%.2f' % _s[5], '%.2f' % _s[6]])
     except Exception as _e:
         log_to_file('[DS TRUTH] summary write failed: %r' % (_e,), force=True)
+
+    # ── Persist the calibration the NEXT run corrects with ────────────────────
+    # Same statistics, also keyed per (junction, phase), so _ds_bias_for can
+    # subtract the measured queue bias and mark low-correlation junctions
+    # unreliable. Written every run; nothing consumes it until the arm sets
+    # DS_BIAS_CORRECT / DS_GATE_REQUIRE_RELIABLE.
+    try:
+        import json
+        _per_ph = {}
+        for _r in _joined:
+            _per_ph.setdefault((int(_r[1]), int(_r[2])), []).append((_r[5], _r[6]))
+
+        def _rec(_pairs):
+            _s2 = _stats(_pairs)
+            return {'n': _s2[0], 'bias_veh': round(_s2[1], 3),
+                    'mae_veh': round(_s2[2], 3), 'rmse_veh': round(_s2[3], 3),
+                    'corr': (None if _s2[4] is None else round(_s2[4], 3)),
+                    'mean_est_veh': round(_s2[5], 2),
+                    'mean_true_veh': round(_s2[6], 2)}
+
+        _cal = {
+            'generated': datetime.datetime.now().isoformat(timespec='seconds'),
+            'experiment': globals().get('_CURRENT_EXPERIMENT', 'UNKNOWN'),
+            'build': globals().get('ENGINE_BUILD', ''),
+            'junction': {str(_j): _rec(_v) for _j, _v in _per_j.items()},
+            'phase': {'%d|%d' % _k: _rec(_v) for _k, _v in _per_ph.items()},
+        }
+        _cal_path = os.path.join(LOG_DIR, 'ds_bias_calibration.json')
+        with open(_cal_path, 'w', encoding='utf-8') as _cf:
+            json.dump(_cal, _cf, indent=1, sort_keys=True)
+        log_to_file(
+            '[DS CALIB] wrote %s (junctions=%d phases=%d) -- set '
+            'DS_BIAS_CORRECT=True and DS_GATE_REQUIRE_RELIABLE=True to use it'
+            % (_cal_path, len(_cal['junction']), len(_cal['phase'])), force=True)
+    except Exception as _e:
+        log_to_file('[DS CALIB] write failed: %r' % (_e,), force=True)
 
     _all = [p for _j in _per_j for p in _per_j[_j]]
     _s = _stats(_all)
@@ -7796,6 +7863,11 @@ class IntersectionController:
         # _ge_opt_GE  : the extension that was granted (for logging)
         self._ge_debt_s  = 0.0
         self._ge_opt_GE  = 0.0
+        # _cycle_extra_s: green added BEYOND the commissioned plan during THIS
+        # cycle (actuated extend + any GE/INS debt the recovery could not trim).
+        # Reset at every BusPhase start. Bounded by CYCLE_CAP_* so extend + the
+        # plan-aware max-out cannot inflate the cycle (2026-10-21).
+        self._cycle_extra_s = 0.0
         # Recovered-cycle-plan state (multi-cycle recovery; RECOVERY_MAX_CYCLES>1).
         self._recovery_cycles_used = 0
         self._recovery_continued_this_cycle = False
@@ -12111,6 +12183,37 @@ class IntersectionController:
             return _c
         return _c + (_ceil - _c) * (1.0 - math.exp(-(_x - _c) / (_ceil - _c)))
 
+    def _ds_bias_for(self, ph):
+        """(bias_veh, reliable) for this junction/phase from the truth-check
+        calibration; (0.0, True) when correction is off or nothing is calibrated.
+
+        Phase-level record wins when it has enough samples; otherwise the
+        junction-level record. `reliable` is False when the estimate correlates
+        poorly with Aimsun's own queue or is biased beyond the MAE ceiling --
+        DS-gated decisions then pass through instead of acting on noise.
+        """
+        if not bool(globals().get('DS_BIAS_CORRECT', False)):
+            return 0.0, True
+        cal = _ds_calibration()
+        if not cal:
+            return 0.0, True
+        jid = str(int(getattr(self, 'node_id', 0) or 0) or int(self.id))
+        _min_n = int(globals().get('DS_CALIB_MIN_N', 50) or 0)
+        _max_mae = float(globals().get('DS_CALIB_MAX_MAE_VEH', 6.0) or 6.0)
+        _min_corr = float(globals().get('DS_CALIB_MIN_CORR', 0.25) or 0.0)
+        rec = (cal.get('phase') or {}).get('%s|%s' % (jid, int(ph)))
+        if not rec or int(rec.get('n', 0) or 0) < _min_n:
+            rec = (cal.get('junction') or {}).get(jid)
+        if not rec:
+            return 0.0, True
+        _n = int(rec.get('n', 0) or 0)
+        _mae = float(rec.get('mae_veh', rec.get('mae', 0.0)) or 0.0)
+        _corr = rec.get('corr', None)
+        _corr = 1.0 if _corr is None else float(_corr)
+        _rel = (_n >= _min_n and _mae <= _max_mae and _corr >= _min_corr)
+        _bias = float(rec.get('bias_veh', rec.get('bias', 0.0)) or 0.0)
+        return _bias, _rel
+
     def _approach_ds_snapshot(self, timeSta=0.0):
         """SCATS-style MEASURED per-PHASE Degree of Saturation (DS) feed.
 
@@ -12169,6 +12272,7 @@ class IntersectionController:
             _rawclamp = float(globals().get('DS_RAW_CLAMP_MAX', 5.0) or 5.0)
             _ds = {}
             _info = {}
+            _rel_all = True
             for _ph, _secs in _po.items():
                 try:
                     _g = float(GetPhaseDuration(_jid, int(_ph), timeSta) or 0.0)
@@ -12422,6 +12526,16 @@ class IntersectionController:
                     except Exception:
                         _occ_veh = 0.0
                         _dis_vph = 0.0
+                # ── MEASURED BIAS CORRECTION (2026-10-21) ─────────────────────
+                # The truth check scores this junction's queue estimate against
+                # Aimsun's own section queue_veh. Where the estimator systematically
+                # under/over-reads (e.g. -3.7 veh at 39593, +3.8 at 39578), the
+                # standing-queue term is corrected before it feeds the DS queue
+                # floor / split weight. No calibration file => bias 0, unchanged.
+                _bias_veh, _rel = self._ds_bias_for(int(_ph))
+                if _bias_veh:
+                    _occ_veh = max(0.0, _occ_veh - _bias_veh)
+                _rel_all = _rel_all and _rel
                 _ds_flow = max((_q * _paxf) / max(_mu * _lanes, 1.0),
                                (_wf * _paxf) / max(_mu, 1.0))
                 # ── SCATS OCCUPANCY/QUEUE-AWARE split weight (2026-10-20) ───────
@@ -12600,7 +12714,8 @@ class IntersectionController:
                      'ds_spread': _mx - _mn,
                      'crit_phase': int(max(_ds, key=_ds.get)),
                      'chan_floor': dict(_chan_floor_used),
-                     'cycle_s': _C, 'sat_flow': _mu, 'n': len(_ds)}
+                     'cycle_s': _C, 'sat_flow': _mu, 'n': len(_ds),
+                     'reliable': _rel_all}
             self._ds_snap = _snap
             self._ds_snap_t = _t
             # Run diagnostic: record how saturated the corridor actually got, so
@@ -16294,15 +16409,24 @@ class IntersectionController:
             # served SCATS_MAX_OUT_S seconds it MUST end, even if it is not clear
             # (the pair rule: gap-out below the max, max-out at the max).
             #
-            # PLAN-AWARE BOUND (2026-10-21): the global MAX_OUT_S (55/60/70 s)
-            # is SHORTER than several commissioned greens on KG (bus phases are
-            # 74-84 s at 39606/36393/39578/1043762), so the old rule force-
-            # terminated the bus phase 4-29 s early EVERY cycle -- 141 of the
-            # 144 max-outs in the 2026-10-21 14:55 run were the bus phase (P2).
-            # An actuated stop may never precede the phase's own planned green:
-            # the bound is max(global, commissioned green for THIS phase).
+            # PLAN-AWARE BOUND (2026-10-21, now OPT-IN -- measured REGRESSION):
+            # the global MAX_OUT_S (55/60/70 s) is shorter than several
+            # commissioned greens on KG (bus phases 74-84 s at
+            # 39606/36393/39578/1043762), so the flat rule terminates the bus
+            # phase early every cycle. Raising the bound to the plan looks
+            # principled, but measured on this network it removed the only thing
+            # keeping the cycle near its commissioned length while ACT_EXTEND
+            # adds green elsewhere: cycles inflated, offsets drifted, and
+            # DSGATE 111.0 -> 75.2, DSGATE_REL 95.8 -> 52.3, NASH 100.9 -> 51.7
+            # (all three converged on the MP-arm failure basin, ~52). UNTOUCHED
+            # arms prove attribution: NO_TSP and CHAMP_PBIL (actuation off) are
+            # bit-identical across the two builds (127.0 / 119.7).
+            # Default OFF = previously tuned behaviour. Turn on only together
+            # with a cycle-level cap (extend + max-out <= commissioned cycle).
             _maxout = float(globals().get('SCATS_MAX_OUT_S', 0.0) or 0.0)
-            _plan_g = self._plan_phase_green(int(_cur), timeSta)
+            _plan_g = None
+            if bool(globals().get('SCATS_MAX_OUT_PLAN_AWARE', False)):
+                _plan_g = self._plan_phase_green(int(_cur), timeSta)
             _max_eff = max(_maxout, float(_plan_g or 0.0))
             _force_max = bool(_do_max and _max_eff > 0.0 and _el >= _max_eff)
             # SPILLBACK GATE: if the CURRENT phase's downstream receiving link is
@@ -16354,7 +16478,7 @@ class IntersectionController:
             # cap; the hard cap keeps a permanently-saturated phase from
             # starving the rest of the ring.
             if _force_max and not _force_spill and bool(
-                    globals().get('SCATS_MAX_OUT_DEMAND_GUARD', True)):
+                    globals().get('SCATS_MAX_OUT_DEMAND_GUARD', False)):
                 _occ_thr = float(globals().get('SCATS_GAP_MAX_OCC_VEH', 1.5) or 0.0)
                 _flow_thr = float(globals().get('SCATS_GAP_MAX_FLOW_VPH', 200.0) or 0.0)
                 if _occ_chk > _occ_thr or _q > _flow_thr:
@@ -16557,17 +16681,34 @@ class IntersectionController:
                         return
                 except Exception:
                     pass
-            _new = min(_dur + _step, _gmax)
+            # CYCLE CAP (2026-10-21): never add past the commissioned cycle. When
+            # the budget is exhausted the phase simply runs its plan duration and
+            # the plan-aware max-out bound becomes reachable without inflating C.
+            _budget = self._cycle_extra_budget_s()
+            if _budget <= 0.0:
+                return
+            _add = min(_step, _budget)
+            _new = min(_dur + _add, _gmax)
             if _new <= _dur + 0.1:
                 return
             try:
                 ECIChangeTimingPhase(_jid, int(_cur), _new, timeSta)
             except Exception:
                 return
+            self._cycle_extra_s = (float(getattr(self, '_cycle_extra_s', 0.0) or 0.0)
+                                   + max(0.0, _new - _dur))
+            try:
+                # Undo at the next cycle start (same ledger GE trimming uses), so
+                # extensions flex within a cycle but cannot accumulate run-wide.
+                self._phases_to_restore[int(_cur)] = (
+                    float(_comm_g) if _comm_g > 0.0 else float(_dur))
+            except Exception:
+                pass
             self._act_ext_last_t = float(time)
             log_to_file('[ACT EXT] inter=%s t=%.0f ph=%d dur %.1f -> %.1fs '
-                        '(occ=%.1f q=%.0f still busy)' % (
-                            self.id, float(time), _cur, _dur, _new, _occ, _q),
+                        '(occ=%.1f q=%.0f busy; cycle_extra=%.1fs)'
+                        % (self.id, float(time), _cur, _dur, _new, _occ, _q,
+                           float(getattr(self, '_cycle_extra_s', 0.0))),
                         force=True)
         except Exception:
             pass
@@ -17714,6 +17855,34 @@ class IntersectionController:
                 self._reassert_plan(time, timeSta)
         except Exception:
             pass
+
+    def _cycle_extra_budget_s(self):
+        """Extra green (s) this cycle may still add before the commissioned cycle
+        is exceeded.
+
+        CYCLE-CAP (2026-10-21): actuated extend + plan-aware max-out + GE must
+        not inflate the cycle past the commissioned one, because the corridor is
+        coordinated on fixed offsets -- a longer local cycle silently walks the
+        junction out of progression. `_cycle_extra_s` accumulates what has
+        already been added this cycle; the allowance is max(CYCLE_CAP_SLACK_S,
+        CYCLE_CAP_SLACK_FRAC * commissioned_cycle).
+
+        Returns a large number when the cap is disabled or the commissioned
+        cycle is unknown, so callers need no special case.
+        """
+        if not bool(globals().get('CYCLE_CAP_ENABLE', False)):
+            return 1e9
+        try:
+            _init = getattr(self, '_init_cycle_greens', None)
+            _C0 = float((_init or (0, {}))[0] or 0.0)
+        except Exception:
+            _C0 = 0.0
+        if _C0 <= 1.0:
+            return 1e9
+        _abs = float(globals().get('CYCLE_CAP_SLACK_S', 4.0) or 0.0)
+        _frac = float(globals().get('CYCLE_CAP_SLACK_FRAC', 0.05) or 0.0)
+        _allow = max(_abs, _frac * _C0)
+        return _allow - float(getattr(self, '_cycle_extra_s', 0.0) or 0.0)
 
     def _cycle_greens_snapshot(self, timeSta=0.0):
         """(cycle_s, {phase: green_s}) from the LIVE plan over ALL phases, so the
@@ -20032,7 +20201,13 @@ class IntersectionController:
                     except Exception:
                         _steals = True
                     _snap = self._approach_ds_snapshot(timeSta) if _steals else None
-                    if _snap and _snap.get('ds'):
+                    # RELIABILITY BYPASS (2026-10-21): where the truth check found
+                    # the DS estimate uncorrelated with the measured queue
+                    # (corr < DS_CALIB_MIN_CORR) the gate would be vetoing on
+                    # noise. Pass the action through instead of acting on it.
+                    if (_snap and _snap.get('ds')
+                            and (not bool(globals().get('DS_GATE_REQUIRE_RELIABLE', False))
+                                 or _snap.get('reliable', True))):
                         _jid_g = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
                         try:
                             _served_ph = int(ECIGetCurrentPhase(_jid_g))
@@ -22048,6 +22223,10 @@ class IntersectionController:
             self._phases_to_restore[ph] = nominals[ph]
 
         self._ge_debt_s = max(0.0, debt)   # residual (if minimums bound)
+        # Anything the recovery could not trim is real cycle inflation: charge it
+        # to this cycle so the actuated extend stops adding more green (2026-10-21).
+        self._cycle_extra_s = (float(getattr(self, '_cycle_extra_s', 0.0) or 0.0)
+                               + self._ge_debt_s)
 
         # Back-fill recovery amount into the most recent _ge_events entry
         # for this intersection so the schedule-recovery plot can show it.
@@ -22098,6 +22277,10 @@ class IntersectionController:
         # It prevents permanent drift of phase durations across cycles.
         if current_phase == self.BusPhase:
             if not getattr(self, '_nominal_safety_restore_fired', False):
+                # New cycle: the allowance for extra green starts fresh. Any
+                # extension added last cycle was flushed by the safety restore
+                # below, so it must not keep consuming this cycle's budget.
+                self._cycle_extra_s = 0.0
                 _n_safety = 0
                 for _ph, _nom in (self._nominal_phase_durations or {}).items():
                     try:
