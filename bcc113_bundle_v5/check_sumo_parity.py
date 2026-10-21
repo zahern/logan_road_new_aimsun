@@ -91,6 +91,8 @@ FEATURES = [
     ("FLAGS audit", ["shared_tsp_engine/engine.py"], ["shared_tsp_engine/engine.py"], "[FLAGS] exp="),
     ("SIM_END marker", ["shared_tsp_engine/engine.py"], ["shared_tsp_engine/engine.py"], "[SIM_END]"),
     ("MP binary core", ["shared_tsp_engine/specialized_modes.py"], ["shared_tsp_engine/specialized_modes.py"], "_mp_binary_decision"),
+    ("Xt method projections", ["shared_tsp_engine/specialized_modes.py"], ["shared_tsp_engine/specialized_modes.py"], "_XT_PROJECTION_V1"),
+    ("CPDQL guard-set bootstrap mask", ["shared_tsp_engine/specialized_modes.py"], ["shared_tsp_engine/specialized_modes.py"], "_valid_cpdql_actions"),
     # Champion CELLQLEARN_GATED cost model (ported to SUMO 2026-09-19)
     ("net-benefit gate", ["shared_tsp_engine/specialized_modes.py"], ["shared_tsp_engine/specialized_modes.py"], "_bus_benefit_total_paxs"),
     ("downstream CTM cascade", ["shared_tsp_engine/engine.py"], ["shared_tsp_engine/engine.py"], "_cascade_spillback_paxs"),

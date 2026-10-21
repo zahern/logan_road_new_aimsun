@@ -99,6 +99,20 @@ class BusState:
     sigma_detect: float                 # schedule deviation at detection (s, + = late)
 
 
+MILP_MPC_DIAG = True          # log each solve: status/objective/gates/actions
+
+
+def _mpc_log(msg):
+    """Diagnostic sink: route to the engine run log when available."""
+    try:
+        from shared_tsp_engine import engine as _eng
+        _lf = getattr(_eng, 'log_to_file', None)
+        if callable(_lf):
+            _lf(msg)
+    except Exception:
+        pass
+
+
 @dataclass
 class MPCPrediction:
     """Predicted profiles over the horizon."""
@@ -899,6 +913,34 @@ class MILPMPCController:
                 or sim_step - self.last_solve_step >= self.replan_every):
             self.last_solution = self.solve(pred, sim_step)
             self.last_solve_step = sim_step
+            if MILP_MPC_DIAG:
+                try:
+                    _sol = self.last_solution
+                    _gates = sum(1 for _v in (_sol.gate_open or {}).values()
+                                 if _v)
+                    _acts = []
+                    for (_i, _k, _t), _v in list(
+                            (_sol.interv_start or {}).items()):
+                        if _v:
+                            _acts.append("%s:%s@%s" % (_i, _k, _t))
+                        if len(_acts) >= 8:
+                            break
+                    _sts = {0: 'OPTIMAL', 1: 'FEASIBLE', 2: 'INFEASIBLE',
+                            3: 'MODEL_INVALID', 4: 'UNKNOWN'}.get(
+                                int(_sol.status), str(_sol.status))
+                    _mpc_log(
+                        "[MILP_MPC] step=%s status=%s obj=%.1f solve_ms=%.0f "
+                        "gates_open=%d interventions=%d n_bus=%d %s"
+                        % (sim_step, _sts,
+                           float(_sol.objective_value or 0.0),
+                           float(_sol.solve_time_s or 0.0) * 1000.0,
+                           _gates,
+                           sum(1 for _v in (_sol.interv_start or {}).values()
+                               if _v),
+                           len(getattr(self, 'bus_list', []) or []),
+                           " ".join(_acts)))
+                except Exception:
+                    pass
         return self.last_solution
     
     def get_current_actions(self, sim_step: int) -> Dict[Tuple[int, str], float]:

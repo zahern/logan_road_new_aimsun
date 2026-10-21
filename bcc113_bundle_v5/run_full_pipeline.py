@@ -6,7 +6,8 @@ Runs every arm in champion_search.ARMS (all families):
   NO_TSP, CELLQ_LEARN_UNCOORD, CELLQ_VDET_ON, CELLQ_BUSSPLIT, CELLQ_VDET_BUSSPLIT,
   CELLQLEARN, CELLQLEARN_GATED, CELLQLEARN_FORCED, DCTSP_ZIG, DCTSP_MP_ECTM,
   DCTSP_BARGAIN_SPM, DCTSP_MARL, DCTSP_MARL_RL, CENTRALISED, CELLQLEARN_SAFE,
-  NASH_BARGAIN, MAXPRESSURE_FIX, MAXPRESSURE_FLEX, MAXPRESSURE_LB, MILP_MPC
+  NASH_BARGAIN, MAXPRESSURE_FIX, MAXPRESSURE_FLEX, MAXPRESSURE_LB, MILP_MPC,
+  ZIGDOG, ZIGDOG_Q, ZIGCTM   (per-cycle AOG / phase-state CTM family)
 (arms with no solver backend / parked are skipped by champion_search automatically).
 
 HOW TO RUN (inside Aimsun, corridor model open):
@@ -76,8 +77,12 @@ _spec_cs.loader.exec_module(_cs)
 # _cs._br.REPLICATION_ID = 11129240
 
 # ── Test design ───────────────────────────────────────────────────────────────
-# Keep seeds small for a full-algorithm smoke; widen once execution is confirmed.
-SEEDS = [300, 400]
+# 2026-10-02: aligned with the SUMO HPC sweep (sweep_arms.py EVAL_SEEDS and the
+# champion matrix). Was [300, 400] -- only two seeds, so Aimsun and SUMO were
+# not comparable. NOTE: this now runs every arm x 5 seeds (+ learner training),
+# roughly 120 runs at ~6 min each (~12 h); set SUBSET below to trim the arm list
+# if you only want the SUMO campaign's ablation arms.
+SEEDS = [300, 400, 500, 600, 700]
 _cs.EVAL_SEEDS = list(SEEDS)
 _cs.SCORED_SEEDS = list(SEEDS)
 _cs.USE_TOPUP_SEEDS = False

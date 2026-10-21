@@ -1,4 +1,4 @@
-﻿from AAPI import *
+from AAPI import *
 import sys
 import csv
 import collections
@@ -57,6 +57,11 @@ LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hi
 LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
 LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
 LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
+# Fix 3 (2026-10-18): price the engine-side cross cost on conflicting-SG origins
+# only. Note the caveat at engine._auto_discover_side_sections: the single side
+# set prices ALL action families, so conflicting-only can under-price INS-family
+# cost (an older Logan re-run regressed). Set False to revert to the full set.
+SIDE_CONFLICTING_SG_ONLY = True
 
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
@@ -119,6 +124,23 @@ BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 # Set False to skip (e.g. if you only want the CSV / PNG outputs).
 # =============================================================================
 OVERLAY_DETECTIONS_ON_MAP: bool = False
+
+# =============================================================================
+# PER-INTERSECTION LAYOUT DIAGRAMS (2026-10-21)
+# PLOT_INTERSECTION_LAYOUT = True:
+#   At AAPIFinish the shared engine writes, once per Aimsun session, one PNG per
+#   managed junction into kg/logs/:
+#     intersection_layout_<experiment>_<timestamp>_<jid>.png
+#   Each PNG shows the real approach legs, every detector on them placed at its
+#   true distance from the stop line (coloured/shaped by the role the TSP config
+#   gives it: main call / bus presence / bus call / bus exit / NOT-in-config),
+#   plus a phase->approach grid read from the live ECI signal plan.
+#   A matching intersection_layout_<experiment>_<timestamp>.csv lists every
+#   approach gap it found (no call detector, no phase serving it, detectors the
+#   engine ignores). This is the "where is the network not being monitored" view.
+# Set False to disable (the module no-ops silently, costs ~1 s).
+# =============================================================================
+PLOT_INTERSECTION_LAYOUT: bool = True
 
 # Safety switch: block all script-driven model catalog mutations
 # (newObject/deleteObject/addObjectToFolder) unless explicitly enabled.
@@ -221,9 +243,12 @@ _marked_detections: dict = {}
 _MARK_DET_REARM_S: float = 120.0  # allow re-detect after bus leaves and returns
 
 # ── Bus position tracking (continuous) ────────────────────────────────────
-# Use 1 s updates so zone presence, bus_positions CSV, and transit-link based
-# detections are fine-grained enough for per-second TSP decisions.
-_BUS_TRACK_INTERVAL_S = 1.0
+# 3 s updates (2026-10-06): the per-step bus tracking (rescan all PT lines +
+# correct every tracker) was the dominant Python cost. 3s keeps zone presence /
+# transit-link detection fresh (a 30 km/h bus moves ~24m in 3s; the Kalman estimate
+# barely differs vs 1s) while cutting that per-step cost ~3x. Kept in sync with
+# logan_road_new.
+_BUS_TRACK_INTERVAL_S = 3.0
 _bus_track_last_t: float = -1e9
 _bus_track_header_written: bool = False
 _presence_snapshot_header_written: bool = False
@@ -405,6 +430,27 @@ INS_MAX_WAIT_TRIGGER_S = 8.0  # If predicted wait for next natural bus phase exc
 # slightly larger miss of the natural window before forcing insertion.
 INS_TRIGGER_MARGIN_MIN_S = 3.0
 INS_TRIGGER_MARGIN_MAX_S = 12.0
+# Just-in-time insertion lead cap (2026-10-07): never GRANT an insertion
+# while the bus ETA exceeds this (bus ETA carries no dwell term, so far-out
+# grants burn green the bus never uses -- measured AvgInsertionWait 13-56 s).
+# Deferred, not denied: the decider re-evaluates every step and fires once
+# the bus is within lead (duration then covers eta+2 via BP bounds).
+INS_MAX_LEAD_S = 20.0  # Max bus ETA (s) at which an insertion may be granted
+# ── SCATS queue estimator diagnostic (2026-10-07) ───────────────────────────
+# Off by default. When True every junction logs [Q_EST] every 60 s: the queue
+# implied from SCATS call-loop crossings (arrivals) integrated against the
+# signal plan (saturation discharge while BusPhase green), alongside the
+# scanned ground truth (stopped vehicles on the call sections) so the
+# estimator can be calibrated. Diagnostic only -- nothing consumes q_est.
+QUEUE_EST_DIAG = True
+
+# ── Shockwave data loggers (2026-10-07) ──────────────────────────────────────
+# DETECTOR_LOG_1S: per-detector per-second pulse deltas -> detector_counts_1s_<exp>_<ts>.csv
+# PHASE_LOG: phase change events -> phase_events_<exp>_<ts>.csv
+# QUEUE_TAIL_LOG: per-second queue tail position + length per lane -> queue_tail_1s_<exp>_<ts>.csv
+DETECTOR_LOG_1S = False
+PHASE_LOG = False
+QUEUE_TAIL_LOG = False
 
 # ── Reward-TSP weights  (REWARD_TSP mode only) ────────────────────────────────
 # Score = -ALPHA*bus_delay_saved - BETA*other_delay_cost - GAMMA*side_delay_cost
@@ -437,82 +483,97 @@ MAX_PREARM_HORIZON_S = 135.0      # pre-arm look-ahead window (s) — at least o
 import os as _os
 import sys as _sys
 
-# ── Bundle-first import guard ──────────────────────────────────────────
-# A stale `shared_tsp_engine/` package elsewhere on sys.path (e.g. an old
-# working folder) SHADOWS this bundle's engine: same import name, older code,
-# silent wrong-version execution (proven 2026-09-06 -- a pre-September engine
-# ran while the bundle had newer code, making the MARL/MEAS A/B byte-identical
-# and hiding every engine-side fix). This block drops any FOREIGN copy BEFORE
-# the real import below and pins the bundle root first. A bundle copy already
-# loaded is left alone (learner Q-tables live in module state and must persist
-# across replications in one session).
+# ── Bundle-first import guard (HARDENED 2026-10-13) ────────────────────
+# A stale `shared_tsp_engine/` copy elsewhere on sys.path SHADOWS this bundle's
+# engine: same import name, older code, silent wrong-version execution (proven
+# 2026-09-06). Worse, the engine is imported ONCE per Aimsun session, so a
+# shadowed/built-before-restart load stays invisible until the session restarts.
+#
+# This guard now makes the bundle folder (the bcc folder) AUTHORITATIVE:
+#   1. pins the authoritative bundle root and validates it (engine.py + this
+#      corridor's controller both present),
+#   2. strips EVERY competing shared_tsp_engine root from sys.path,
+#   3. purges any foreign shared_tsp_engine* module already in sys.modules,
+#   4. exposes _BUNDLE_ROOT for the post-import hard assertion below.
+# A bundle copy already loaded is KEPT (learner Q-tables live in module state
+# and must persist across replications in one Aimsun session).
+_BUNDLE_AUTHORITY = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
+
+
 def _bundle_guard():
-    _roots = []
+    _cf = globals().get('__file__')
+    _self_dir = _os.path.dirname(_os.path.abspath(_cf)) if _cf else ""
+    _corridor = _os.path.basename(_self_dir) or "kg"
+    _cands = [_BUNDLE_AUTHORITY]
+    if _self_dir:
+        _cands.append(_os.path.dirname(_self_dir))   # folder this file lives in
     try:
-        # NOTE: inside a function dir() lists LOCAL names, so `"__file__" in
-        # dir()` was ALWAYS False -- the bundle root from __file__ was never
-        # added and the guard fell back to sys.path order, loading a FOREIGN
-        # shared_tsp_engine copy (repo-root / C:\AimsunPackages). That is why
-        # engine edits never took effect while logs still landed in the bundle
-        # (LOG_DIR reads the module global __file__ correctly). Read it from
-        # module globals so the bundle root goes FIRST. (fixed 2026-09-07)
-        _cf = globals().get('__file__')
-        if _cf:
-            _roots.append(_os.path.dirname(_os.path.dirname(
-                _os.path.abspath(_cf))))
+        _cands.append(_os.path.abspath(_os.getcwd()))
     except Exception:
         pass
-    _roots.extend(list(_sys.path))
-    try:
-        _roots.append(_os.getcwd())
-    except Exception:
-        pass
-    # Filesystem fallback: walk UP from cwd to the drive root. Covers the
-    # case where neither __file__ nor sys.path reveals the bundle (proven
-    # 2026-09-06: Aimsun console cwd = install dir, shadow resolved instead).
-    try:
-        _d = _os.path.abspath(_os.getcwd())
-        while True:
-            if _d not in _roots:
-                _roots.append(_d)
-            _parent = _os.path.dirname(_d)
-            if _parent == _d:
-                break
-            _d = _parent
-    except Exception:
-        pass
-    _roots.append(r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5")
-    _root = None
-    for _r in _roots:
+
+    def _valid(_r):
         try:
-            if (_os.path.isfile(_os.path.join(_r, "shared_tsp_engine", "engine.py"))
-                    and _os.path.isfile(_os.path.join(_r, "kg", "intersection_controller.py"))):
+            return (_os.path.isfile(_os.path.join(_r, "shared_tsp_engine", "engine.py"))
+                    and _os.path.isfile(_os.path.join(
+                        _r, _corridor, "intersection_controller.py")))
+        except Exception:
+            return False
+
+    _root = None
+    for _r in _cands:
+        try:
+            if _valid(_r):
                 _root = _os.path.abspath(_r)
                 break
         except Exception:
             continue
     if _root is None:
-        return
-    if _root not in _sys.path:
-        _sys.path.insert(0, _root)
-    _rl = _root.lower()
+        print("[BUNDLE-GUARD] FATAL: no valid bundle root found among %r -- "
+              "refusing to import a foreign engine." % (_cands,))
+        raise RuntimeError("bundle root unresolved; refusing foreign engine import")
+
+    _rl = _root.lower().rstrip("\\/") + _os.sep
+    # 1. Strip EVERY competing shared_tsp_engine root from sys.path.
+    _new_path = []
+    for _p in list(_sys.path):
+        try:
+            _ap = _os.path.abspath(_p) if _p else ""
+        except Exception:
+            _ap = ""
+        try:
+            _eng = _os.path.join(_ap, "shared_tsp_engine", "engine.py") if _ap else ""
+            if (_eng and _os.path.isfile(_eng)
+                    and not _os.path.abspath(_eng).lower().startswith(_rl)):
+                print("[BUNDLE-GUARD] removed foreign engine root from "
+                      "sys.path: %s" % _ap)
+                continue
+        except Exception:
+            pass
+        if _ap and _ap.lower().rstrip("\\/") == _root.lower().rstrip("\\/"):
+            continue  # re-inserted at position 0 below
+        _new_path.append(_p)
+    _sys.path[:] = _new_path
+    _sys.path.insert(0, _root)
+    # 2. Purge foreign shared_tsp_engine* modules (keep the bundle's own).
     for _mn in [m for m in list(_sys.modules)
                 if m == "shared_tsp_engine" or m.startswith("shared_tsp_engine.")]:
         try:
-            _mf = getattr(_sys.modules[_mn], "__file__", "") or ""
-            if _mf and _os.path.abspath(_mf).lower().startswith(_rl):
+            _mf = _os.path.abspath(getattr(_sys.modules[_mn], "__file__", "") or "")
+            if _mf and _mf.lower().startswith(_rl):
                 continue  # ours: keep (learner state lives here)
             del _sys.modules[_mn]
-            print(f"[BUNDLE-GUARD] dropped foreign module {_mn} "
-                  f"({_mf or 'no file'}) -- using bundle {_root}")
+            print("[BUNDLE-GUARD] dropped foreign module %s (%s) -- using bundle %s"
+                  % (_mn, _mf or "no file", _root))
         except Exception:
             pass
+    globals()['_BUNDLE_ROOT'] = _root
 
 
 try:
     _bundle_guard()
-except Exception:
-    pass
+except Exception as _bge:
+    print("[BUNDLE-GUARD] resolution error: %r" % (_bge,))
 try:
     del _bundle_guard
 except Exception:
@@ -640,11 +701,24 @@ _focus_passed_jcts: set  = set()
 # patches those lines directly in this file before each run.
 # =============================================================================
 _CORRIDOR_DIR = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_CORRIDOR_DIR)
+_repo_root = globals().get('_BUNDLE_ROOT') or os.path.dirname(_CORRIDOR_DIR)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 import shared_tsp_engine.engine as _engine
+
+# Post-import HARD assertion: the engine MUST have resolved inside the bundle.
+# If a foreign shared_tsp_engine copy still won, fail loudly rather than run a
+# silently-wrong engine (stale code, ignored run_config flags, poisoned stats).
+_eng_file = os.path.abspath(getattr(_engine, "__file__", "") or "")
+_bundle_norm = os.path.abspath(_repo_root).lower().rstrip("\\/") + os.sep
+if not _eng_file.lower().startswith(_bundle_norm):
+    raise RuntimeError(
+        "[BUNDLE-GUARD] FATAL: engine resolved OUTSIDE the bundle: %r "
+        "(bundle=%r). A foreign shared_tsp_engine copy is shadowing the bundle. "
+        "Remove it (or fix sys.path) and restart Aimsun." % (_eng_file, _repo_root))
+print("[BUNDLE-GUARD] engine pinned: %s" % _eng_file)
+
 _engine.bind_config(globals())
 
 from shared_tsp_engine.engine import (

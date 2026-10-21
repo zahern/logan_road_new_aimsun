@@ -131,6 +131,46 @@ def _obj_id(o):
     return _safe(lambda: o.getId())
 
 
+def _gkt_seconds(obj):
+    """GKTimeDuration (or plain number) -> float seconds, or None.
+    Mirrors shared_tsp_engine.engine._gkt_seconds: the SWIG surface varies by
+    Aimsun version, so every known accessor is tried; total-seconds accessors
+    come first (a bare 'seconds' component would read 0-59, not the total)."""
+    if obj is None:
+        return None
+    if isinstance(obj, (int, float)):
+        return float(obj) if float(obj) > 0 else None
+    for _meth in ("getTimeInSeconds", "toSeconds", "totalSeconds",
+                  "getTotalSeconds"):
+        try:
+            _fn = getattr(obj, _meth, None)
+            _v = _fn() if callable(_fn) else _fn
+            if isinstance(_v, (int, float)) and float(_v) > 0:
+                return float(_v)
+        except Exception:
+            continue
+    for _hn, _mn, _sn in (("getHours", "getMinutes", "getSeconds"),
+                          ("hour", "minute", "second"),
+                          ("hours", "minutes", "seconds")):
+        try:
+            _fh = getattr(obj, _hn, None)
+            _fm = getattr(obj, _mn, None)
+            _fs = getattr(obj, _sn, None)
+            _h = _fh() if callable(_fh) else _fh
+            if _h is None:
+                continue
+            _m = _fm() if callable(_fm) else _fm
+            _s = _fs() if callable(_fs) else _fs
+            return float(_h or 0) * 3600.0 + float(_m or 0) * 60.0 + float(_s or 0)
+        except Exception:
+            continue
+    try:
+        _v = float(obj)
+        return _v if _v > 0 else None
+    except Exception:
+        return None
+
+
 def export(out_path, model=None):
     model = resolve_model(model)
 
@@ -353,6 +393,31 @@ def export(out_path, model=None):
                 _log("detector %s skipped: %r" % (did, e))
     _log("detectors exported: %d" % len(dump["detectors"]))
 
+    # ---------------------------------------------------------- vehicle types
+    # Aimsun vehicle types (Car, Bus, ...) with their INTERNAL type positions.
+    # The engine's bus_type_pos / car_type_pos must match these to split bus vs
+    # car queues (EXCLUDE_BUS_FROM_CAR_QUEUE) and to resolve PT vehicles.  The
+    # SUMO bridge previously hardcoded car/bus, so the shim's type mapping could
+    # not be checked against the model.
+    dump["vehicle_types"] = []
+    for vt in iter_objects(model, "GKVehicle"):
+        rec = {"id": _obj_id(vt), "name": str(_safe(vt.getName, "") or "")}
+        for meth in ("getMaxSpeed", "getLength", "getWidth"):
+            fn = getattr(vt, meth, None)
+            if callable(fn):
+                rec[meth[3:].lower()] = _safe(lambda: float(fn()), None)
+        for meth in ("getInternalPosition", "getInternalPositionValue",
+                     "getTypePos", "getVehicleTypePosition"):
+            fn = getattr(vt, meth, None)
+            if callable(fn):
+                try:
+                    rec["type_pos"] = int(fn())
+                    break
+                except Exception:
+                    pass
+        dump["vehicle_types"].append(rec)
+    _log("vehicle types exported: %d" % len(dump["vehicle_types"]))
+
     # -------------------------------------------------------- control plans
     def _phase_states(ph, groups):
         st = {}
@@ -408,6 +473,21 @@ def export(out_path, model=None):
                                 "sg_states": _phase_states(ph, groups)})
         except Exception:
             pass
+        if not out:
+            # Diagnostics for the next Aimsun run: getPhases()/getRing() gave
+            # nothing, so dump the accessors that might carry the signal plan.
+            try:
+                _meths = [a for a in dir(jc)
+                          if any(k in a.lower() for k in
+                                 ("phase", "cycle", "ring", "signal", "state",
+                                  "plan", "green", "amber", "offset"))
+                          and not a.startswith("_")]
+                _log("CJ phases diag: id=%s control_type=%s accessors=%s"
+                     % (_safe(lambda: int(jc.getId()), "?"),
+                        _safe(lambda: int(jc.getControlType()), "?"),
+                        sorted(_meths)[:30]))
+            except Exception:
+                pass
         return out
 
     total_junc = 0
@@ -536,12 +616,70 @@ def export(out_path, model=None):
                                   "dwell_s": 20.0})
         except Exception:
             pass
+        # ── Timetables (line.getTimeTables) ────────────────────────────────
+        # Mirror shared_tsp_engine's _sched_spacing_load_timetable: the real
+        # model schedules live on the LINE (getTimeTables -> getSchedules ->
+        # getDepartureType/getDepartureTimes), NOT in the GKPTPlan folder
+        # (empty on these models).  Interval schedules carry the mean headway
+        # per departure; fixed schedules carry absolute departure times.
+        timetables = []
+        try:
+            for _tt in list(_safe(line.getTimeTables, []) or []):
+                _trec = {"id": _obj_id(_tt),
+                         "name": str(_safe(getattr(_tt, "getName",
+                                                   lambda: "") or "")),
+                         "schedules": []}
+                for _sched in list(_safe(getattr(_tt, "getSchedules",
+                                                 lambda: []) , []) or []):
+                    _srec = {
+                        "start_s": _safe(lambda: _gkt_seconds(_sched.getTime()),
+                                         None),
+                        "departure_type": str(_safe(_sched.getDepartureType, "")
+                                              or ""),
+                        "headway_s": None,
+                        "departures_s": [],
+                    }
+                    _deps = list(_safe(_sched.getDepartureTimes, []) or [])
+                    if "interval" in _srec["departure_type"].lower():
+                        _hs = []
+                        for _dep in _deps:
+                            _h = _safe(lambda: _gkt_seconds(_dep.getMeanTime()),
+                                       None)
+                            if _h:
+                                _hs.append(float(_h))
+                        if _hs:
+                            _srec["headway_s"] = sum(_hs) / len(_hs)
+                    else:
+                        for _dep in _deps:
+                            _t = _safe(lambda: _gkt_seconds(_dep.getMeanTime()),
+                                       None)
+                            if _t is None:
+                                _t = _safe(lambda: _gkt_seconds(
+                                    getattr(_dep, "getTime", lambda: None)()),
+                                    None)
+                            if _t is not None:
+                                _srec["departures_s"].append(round(float(_t), 1))
+                    _trec["schedules"].append(_srec)
+                if _trec["schedules"]:
+                    timetables.append(_trec)
+        except Exception:
+            pass
+        _hw_s = None
+        for _t in timetables:
+            for _s in _t.get("schedules", []):
+                if _s.get("headway_s"):
+                    _hw_s = float(_s["headway_s"])
+                    break
+            if _hw_s:
+                break
         rec = {"id": lid,
                "name": str(_safe(line.getName, "")),
                "type": source_type,
                "route_sections": route_sections,
                "stops": stops,
-               "headway_min": _safe(lambda: float(line.getHeadway()), None)}
+               "headway_min": (round(_hw_s / 60.0, 3) if _hw_s else
+                               _safe(lambda: float(line.getHeadway()), None)),
+               "timetables": timetables}
         if route_sections or stops:
             dump["pt_lines"].append(rec)
         elif lid == sorted(seen_pt_ids)[0]:
@@ -577,18 +715,29 @@ def export(out_path, model=None):
         p = _safe(st.getPosition)
         if p is not None:
             xy = _pt(p)
+        _pos_along = None
+        for _meth in ("getPosAlongSection", "getDistance", "getOffset",
+                      "getPositionAlongSection", "getLinearPosition"):
+            _fn = getattr(st, _meth, None)
+            if callable(_fn):
+                try:
+                    _pos_along = float(_fn())
+                    break
+                except Exception:
+                    pass
         dump["bus_stops"].append({
             "id": sid,
             "name": str(_safe(st.getName, "")),
             "xy": xy,
             "section": _obj_id(_safe(getattr(st, "getSection", lambda: None))),
-            "pos": _safe(lambda: float(getattr(st, "getPosition", lambda: 0)()),
-                         None),
+            "pos": _pos_along,
         })
     _log("bus stops exported: %d" % len(dump["bus_stops"]))
 
     # ------------------------------------------------------------ Transit Plans
-    for plan in iter_objects(model, "GKPTPlan"):
+    _ptplan_objs = iter_objects(model, "GKPTPlan")
+    _log("PT plan objects found: %d" % len(_ptplan_objs))
+    for plan in _ptplan_objs:
         pid = _obj_id(plan)
         if pid is None:
             continue
@@ -607,7 +756,9 @@ def export(out_path, model=None):
                     continue
         # Departures: probe common accessors, store raw if found
         deps = []
-        for getter in ("getDepartures", "getLineDepartures"):
+        for getter in ("getDepartures", "getLineDepartures",
+                       "getDeparturesByLine", "getSchedule", "getTimetable",
+                       "getLineSchedules", "getPTLineDepartures"):
             fn = getattr(plan, getter, None)
             if callable(fn):
                 try:
@@ -620,6 +771,12 @@ def export(out_path, model=None):
             sample = deps[0]
             prec["_departure_sample_dir"] = [
                 a for a in dir(sample) if not a.startswith("_")][:20]
+        else:
+            prec["_plan_accessors"] = [
+                a for a in dir(plan)
+                if any(k in a.lower() for k in
+                       ("depart", "sched", "head", "time", "line", "stop"))
+                and not a.startswith("_")][:30]
         dump["pt_plans"].append(prec)
     _log("transit plans exported: %d" % len(dump["pt_plans"]))
 
@@ -751,9 +908,6 @@ def export(out_path, model=None):
         _log("OD %s | '%s' | cells=%d trips=%d"
              % (mid, mname[:40], n_cells,
                 round(sum(rec["trips"].values()), 0)))
-    _log("OD matrices exported: %d (non-empty: %d)"
-         % (len(dump["od_matrices"]),
-            sum(1 for m in dump["od_matrices"] if m.get("trips"))))
     _log("OD matrices exported: %d (non-empty: %d)"
          % (len(dump["od_matrices"]),
             sum(1 for m in dump["od_matrices"] if m.get("trips"))))

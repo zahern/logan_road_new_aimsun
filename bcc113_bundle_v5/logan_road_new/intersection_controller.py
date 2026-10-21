@@ -1,4 +1,4 @@
-﻿from AAPI import *
+from AAPI import *
 import sys
 import csv
 import collections
@@ -16,9 +16,10 @@ import random
 import datetime
 import os
 import math
+BXT_FREEZE_ON_EVAL = True
 BXT_TRAIN_EPSILON = 0.3
-BXT_EVAL_SEEDS = []
-BXT_TRAIN_SEEDS = []
+BXT_EVAL_SEEDS = [200, 300, 400, 500, 600]
+BXT_TRAIN_SEEDS = [700, 800]
 CPDQL_MODE = False
 CPDQL_TRAIN_EPSILON = 0.3
 CPDQL_EVAL_SEEDS = []
@@ -46,33 +47,38 @@ del _venv_candidates, _venv_sp, _script_dir
 # =============================================================================
 
 # ── Core control modes ────────────────────────────────────────────────────────
-LOG_HARMONY   = True  # [HARMONY]    GE/insertion decisions in HARMONY mode
-LOG_URTSP     = True   # [URTSP]      detection/extension/insertion in URTSP mode
-LOG_REWARD    = True   # [REWARD]     action-reward evaluation in REWARD_TSP mode
-LOG_TSP_EVT   = True   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
-LOG_COST_VETO = True  # [COST VETO]  per-event decider cost-veto lines (the
+LOG_HARMONY   = False  # [HARMONY]    GE/insertion decisions in HARMONY mode
+LOG_URTSP     = False   # [URTSP]      detection/extension/insertion in URTSP mode
+LOG_REWARD    = False   # [REWARD]     action-reward evaluation in REWARD_TSP mode
+LOG_TSP_EVT   = False   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
+LOG_COST_VETO = False  # [COST VETO]  per-event decider cost-veto lines (the
                        #   veto still applies + is counted in TSP_Skipped_*;
                        #   _set_logging(False) silences this during batches)
 
 # ── Initialisation ────────────────────────────────────────────────────────────
-LOG_INIT      = True   # [INIT]       controller creation, phase list, veh types
-LOG_NODE_ID   = True   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
-LOG_SECTION   = True  # [SECTION]    incoming-section & topology init detail
-LOG_JUNC_XY   = True  # [JUNC_XY]   junction centroid coordinate resolution
-LOG_SIDE_DISC = True  # [SIDE_DISC]  side-street section discovery
+LOG_INIT      = False   # [INIT]       controller creation, phase list, veh types
+LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
+LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
+LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
+LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
+# Fix 3 (2026-10-18): price the engine-side cross cost on conflicting-SG origins
+# only. Note the caveat at engine._auto_discover_side_sections: the single side
+# set prices ALL action families, so conflicting-only can under-price INS-family
+# cost (an older Logan re-run regressed). Set False to revert to the full set.
+SIDE_CONFLICTING_SG_ONLY = True
 
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
-LOG_PT_SCAN   = True  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
-LOG_DEMAND    = True  # [DEMAND]     vehicle-type position detection at startup
+LOG_PT_SCAN   = False  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
+LOG_DEMAND    = False  # [DEMAND]     vehicle-type position detection at startup
 
 # ── Delay & statistics ────────────────────────────────────────────────────────
-LOG_STATS     = True   # [STATS]      end-of-simulation results summary
-LOG_DELAY     = True  # [DELAY]      IntersectionController collect_delay detail
+LOG_STATS     = False   # [STATS]      end-of-simulation results summary
+LOG_DELAY     = False  # [DELAY]      IntersectionController collect_delay detail
 
 # ── Diagnostic heartbeat ──────────────────────────────────────────────────────
-LOG_HEARTBEAT = True  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
-LOG_CORRIDOR  = True   # [CORRIDOR]   corridor-group coordination events and state
+LOG_HEARTBEAT = False  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
+LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and state
 
 # ── Per-intersection detection-level logging ──────────────────────────────────
 # List junction IDs to enable verbose per-step detection scans for those junctions.
@@ -91,7 +97,7 @@ LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to en
 #     The GeoJSON can be loaded via File → Import in Aimsun or opened in QGIS/ArcGIS
 #     to see coloured dots exactly where each bus was first detected.
 # Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
-MARK_DETECTION_POINTS: bool = True
+MARK_DETECTION_POINTS: bool = False
 TRACK_BUS_POSITIONS: bool = False
 BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 
@@ -113,7 +119,13 @@ BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 #
 # Set False to skip (e.g. if you only want the CSV / PNG outputs).
 # =============================================================================
-OVERLAY_DETECTIONS_ON_MAP: bool = True
+OVERLAY_DETECTIONS_ON_MAP: bool = False
+
+# PLOT_INTERSECTION_LAYOUT = True:
+#   AAPIFinish writes one per-junction phase/detector layout PNG per Aimsun
+#   session into logs/ (approach legs, detectors by config role, phase->approach
+#   grid, plus a gap CSV). Set False to disable.
+PLOT_INTERSECTION_LAYOUT: bool = True
 
 # Safety switch: block all script-driven model catalog mutations
 # (newObject/deleteObject/addObjectToFolder) unless explicitly enabled.
@@ -143,7 +155,7 @@ BUS_FREQ_INJECT_SCALAR = 0.0
 #
 #   Set to 0 to disable the dashboard.
 # =============================================================================
-STATUS_DASHBOARD_INTERVAL_S: float = 60.0
+STATUS_DASHBOARD_INTERVAL_S: float = 0.0
 
 # =============================================================================
 # MASTER CONSOLE SWITCH
@@ -152,7 +164,7 @@ STATUS_DASHBOARD_INTERVAL_S: float = 60.0
 #                   goes to the log file so you can review it after the run.
 #                   Critical errors (simulation halted) are always shown.
 # =============================================================================
-VERBOSE = True
+VERBOSE = False
 
 try:
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -212,8 +224,9 @@ _marked_detections: dict = {}
 _MARK_DET_REARM_S: float = 120.0  # allow re-detect after bus leaves and returns
 
 # ── Bus position tracking (continuous) ────────────────────────────────────
-# Use 1 s updates so zone presence, bus_positions CSV, and transit-link based
-# detections are fine-grained enough for per-second TSP decisions.
+# 1 s updates (2026-10-08, was 3 s): detection-to-action lag matters more than
+# the Python cost now that cooldown/focus suppression is off — every junction
+# must see fresh XY/zone presence each step to act globally without delay.
 _BUS_TRACK_INTERVAL_S = 1.0
 _bus_track_last_t: float = -1e9
 _bus_track_header_written: bool = False
@@ -300,8 +313,12 @@ MILP_MPC_Z4_BASELINE     = 380.0   # fixed-time baseline corridor TT (veh·h)
 # =============================================================================
 # CONTROL MODE
 # =============================================================================
-TSP_COOLDOWN_OVERRIDE_S = None
-CONTROL_MODE = "NORMAL"
+# 2026-10-08: cooldowns OFF globally — every junction acts on every bus
+# independently (0.0 = no action/prearm cooldown suppression anywhere).
+TSP_COOLDOWN_OVERRIDE_S = 0.0
+# 2026-10-08: focus gate OFF globally — no cross-junction bus suppression.
+FOCUS_GATE_ENABLED = False
+CONTROL_MODE = "DRL_DENSITY"
 GROUP_BASED_BUS_PRIORITY = False
 GROUP_BASED_BUS_PRIORITY = False
 
@@ -338,7 +355,7 @@ GROUP_BASED_BUS_PRIORITY = False
 #
 # COORD_OBJ_ALPHA / COORD_OBJ_BETA apply only with COORDINATION_ALGO="OBJECTIVE".
 # =============================================================================
-COORDINATED_TSP = False   # True = CC active (corridor coordination)
+COORDINATED_TSP = True   # True = CC active (corridor coordination)
 
 MAX_GE_EXTENSION_S   = 10.0   # Max green extension per bus request (s)
 MAX_BP_INSERTION_S   = 40.0   # Max bus-phase insertion per request (s)
@@ -362,6 +379,55 @@ INS_MAX_WAIT_TRIGGER_S = 8.0  # If predicted wait for next natural bus phase exc
 # slightly larger miss of the natural window before forcing insertion.
 INS_TRIGGER_MARGIN_MIN_S = 3.0
 INS_TRIGGER_MARGIN_MAX_S = 12.0
+# Just-in-time insertion lead cap (2026-10-07): never GRANT an insertion
+# while the bus ETA exceeds this (bus ETA carries no dwell term, so far-out
+# grants burn green the bus never uses -- measured AvgInsertionWait 13-56 s).
+# Deferred, not denied: the decider re-evaluates every step and fires once
+# the bus is within lead (duration then covers eta+2 via BP bounds).
+INS_MAX_LEAD_S = 12.0  # Max bus ETA (s) at which an insertion may be granted (2026-10-08: tightened 20->12 to cut ~13 s green-burn wait)
+# ── Pre-arm neighbour scope (2026-10-08) ────────────────────────────────────
+# Pre-arms are for the ONCOMING (immediately next) junction only. Even the
+# route-order "next" junction can be kilometres away (7.4 km seen) — beyond
+# this cap the pre-arm is skipped and the target runs independent detection.
+MAX_PREARM_DIST_M = 2000.0
+# ── SCATS queue estimator diagnostic (2026-10-07) ───────────────────────────
+# Off by default. When True every junction logs [Q_EST] every 60 s: the queue
+# implied from SCATS call-loop crossings (arrivals) integrated against the
+# signal plan (saturation discharge while BusPhase green), alongside the
+# scanned ground truth (stopped vehicles on the call sections) so the
+# estimator can be calibrated. Diagnostic only -- nothing consumes q_est.
+QUEUE_EST_DIAG = True
+# ── Q_EST auto-correction (2026-10-08) ──────────────────────────────────────
+# Pull the queue estimate toward ground truth scan: ALPHA fraction of the
+# error, every CORRECT_EVERY_S seconds (log stays 60 s).
+Q_EST_CORRECTION_ALPHA = 0.3
+Q_EST_CORRECT_EVERY_S = 10.0
+# ── Detector direction audit (2026-10-08) ───────────────────────────────────
+# Runtime soundness check: loop ticks timestamped per (junction, group); bus
+# zone entries verify the ticking group matches travel direction. Emits
+# [DET_AUDIT] verdicts (SOUND / SWAPPED? / DEAD / NO_DATA). Log-only.
+DET_AUDIT_ENABLED = True
+DET_AUDIT_WINDOW_S = 30.0
+DET_AUDIT_LOG_EVERY_S = 300.0
+DET_AUDIT_MIN_ARRIVALS = 5
+# ── Detector auto-embed (2026-10-08) ────────────────────────────────────────
+# Junctions with gap groups (bare 19363, dead 22232-SB loops) get working
+# model loops auto-assigned at launch — arterial sections only, direction by
+# geometry. Valid configured loops are never touched. [DET_AUDIT] verifies.
+AUTO_EMBED_DETECTORS = True
+# ── Queued-bus ETA (2026-10-08) ───────────────────────────────────────────
+# Detection speed at/below this = bus already waiting in queue → ETA := 0
+# (else remaining/0.5 fakes 100-300 s, hiding the bus from detection and
+# zeroing its delay credit in the reward math).
+BUS_QUEUED_SPEED_MS = 2.0
+
+# ── Shockwave data loggers (2026-10-07) ──────────────────────────────────────
+# DETECTOR_LOG_1S: per-detector per-second pulse deltas -> detector_counts_1s_<exp>_<ts>.csv
+# PHASE_LOG: phase change events -> phase_events_<exp>_<ts>.csv
+# QUEUE_TAIL_LOG: per-second queue tail position + length per lane -> queue_tail_1s_<exp>_<ts>.csv
+DETECTOR_LOG_1S = False
+PHASE_LOG = False
+QUEUE_TAIL_LOG = False
 
 # ── Reward-TSP weights  (REWARD_TSP mode only) ────────────────────────────────
 # Score = -ALPHA*bus_delay_saved - BETA*other_delay_cost - GAMMA*side_delay_cost
@@ -384,7 +450,7 @@ WOBJ_BETA = 1.0    # Z2 downstream passenger-delay weight
 WOBJ_GAMMA = 0.1   # Z3 schedule-lateness weight (small, tie-break only)
 
 # ── CC ETA algorithm parameters ───────────────────────────────────────────────
-COORDINATION_ALGO = "KALMAN"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
+COORDINATION_ALGO = "SHOCKWAVE"  # "KALMAN" | "SHOCKWAVE" | "OBJECTIVE" | "ADAPTIVE"
 COORD_OBJ_ALPHA      = 1.0       # bus passenger-delay weight  (OBJECTIVE mode)
 COORD_OBJ_BETA       = 0.5       # general-traffic weight      (OBJECTIVE mode)
 PREARM_MAX_SIGMA_S   = 90.0      # max ETA uncertainty (s) to allow a pre-arm;
@@ -394,80 +460,93 @@ MAX_PREARM_HORIZON_S = 135.0      # pre-arm look-ahead window (s) — at least o
 import os as _os
 import sys as _sys
 
-# ── Bundle-first import guard ──────────────────────────────────────────
-# A stale `shared_tsp_engine/` package elsewhere on sys.path (e.g. an old
-# working folder) SHADOWS this bundle's engine: same import name, older code,
-# silent wrong-version execution (proven 2026-09-06 on KG -- a pre-September
-# engine ran while the bundle had newer code, making an A/B byte-identical
-# and hiding every engine-side fix). This block drops any FOREIGN copy BEFORE
-# the real import below and pins the bundle root first. A bundle copy already
-# loaded is left alone (learner Q-tables live in module state and must persist
-# across replications in one session).
+# ── Bundle-first import guard (HARDENED 2026-10-13) ────────────────────
+# A stale `shared_tsp_engine/` copy elsewhere on sys.path SHADOWS this bundle's
+# engine: same import name, older code, silent wrong-version execution (proven
+# 2026-09-06). Worse, the engine is imported ONCE per Aimsun session, so a
+# shadowed/built-before-restart load stays invisible until the session restarts.
+#
+# This guard now makes the bundle folder (the bcc folder) AUTHORITATIVE:
+#   1. pins the authoritative bundle root and validates it,
+#   2. strips EVERY competing shared_tsp_engine root from sys.path,
+#   3. purges any foreign shared_tsp_engine* module already in sys.modules,
+#   4. exposes _BUNDLE_ROOT for the post-import hard assertion below.
+# A bundle copy already loaded is KEPT (learner Q-tables live in module state).
+_BUNDLE_AUTHORITY = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
+
+
 def _bundle_guard():
-    _roots = []
+    _cf = globals().get('__file__')
+    _self_dir = _os.path.dirname(_os.path.abspath(_cf)) if _cf else ""
+    _corridor = _os.path.basename(_self_dir) or "logan_road_new"
+    _cands = [_BUNDLE_AUTHORITY]
+    if _self_dir:
+        _cands.append(_os.path.dirname(_self_dir))   # folder this file lives in
     try:
-        # NOTE: inside a function dir() lists LOCAL names, so `"__file__" in
-        # dir()` was ALWAYS False -- the bundle root from __file__ was never
-        # added and the guard fell back to sys.path order, loading a FOREIGN
-        # shared_tsp_engine copy. Read __file__ from module globals so the
-        # bundle root goes FIRST. (fixed 2026-09-07; see kg controller)
-        _cf = globals().get('__file__')
-        if _cf:
-            _roots.append(_os.path.dirname(_os.path.dirname(
-                _os.path.abspath(_cf))))
+        _cands.append(_os.path.abspath(_os.getcwd()))
     except Exception:
         pass
-    _roots.extend(list(_sys.path))
-    try:
-        _roots.append(_os.getcwd())
-    except Exception:
-        pass
-    # Filesystem fallback: walk UP from cwd to the drive root. Covers the
-    # case where neither __file__ nor sys.path reveals the bundle (proven
-    # 2026-09-06: Aimsun console cwd = install dir, shadow resolved instead).
-    try:
-        _d = _os.path.abspath(_os.getcwd())
-        while True:
-            if _d not in _roots:
-                _roots.append(_d)
-            _parent = _os.path.dirname(_d)
-            if _parent == _d:
-                break
-            _d = _parent
-    except Exception:
-        pass
-    _roots.append(r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5")
-    _root = None
-    for _r in _roots:
+
+    def _valid(_r):
         try:
-            if (_os.path.isfile(_os.path.join(_r, "shared_tsp_engine", "engine.py"))
-                    and _os.path.isfile(_os.path.join(_r, "logan_road_new", "intersection_controller.py"))):
+            return (_os.path.isfile(_os.path.join(_r, "shared_tsp_engine", "engine.py"))
+                    and _os.path.isfile(_os.path.join(
+                        _r, _corridor, "intersection_controller.py")))
+        except Exception:
+            return False
+
+    _root = None
+    for _r in _cands:
+        try:
+            if _valid(_r):
                 _root = _os.path.abspath(_r)
                 break
         except Exception:
             continue
     if _root is None:
-        return
-    if _root not in _sys.path:
-        _sys.path.insert(0, _root)
-    _rl = _root.lower()
+        print("[BUNDLE-GUARD] FATAL: no valid bundle root found among %r -- "
+              "refusing to import a foreign engine." % (_cands,))
+        raise RuntimeError("bundle root unresolved; refusing foreign engine import")
+
+    _rl = _root.lower().rstrip("\\/") + _os.sep
+    _new_path = []
+    for _p in list(_sys.path):
+        try:
+            _ap = _os.path.abspath(_p) if _p else ""
+        except Exception:
+            _ap = ""
+        try:
+            _eng = _os.path.join(_ap, "shared_tsp_engine", "engine.py") if _ap else ""
+            if (_eng and _os.path.isfile(_eng)
+                    and not _os.path.abspath(_eng).lower().startswith(_rl)):
+                print("[BUNDLE-GUARD] removed foreign engine root from "
+                      "sys.path: %s" % _ap)
+                continue
+        except Exception:
+            pass
+        if _ap and _ap.lower().rstrip("\\/") == _root.lower().rstrip("\\/"):
+            continue
+        _new_path.append(_p)
+    _sys.path[:] = _new_path
+    _sys.path.insert(0, _root)
     for _mn in [m for m in list(_sys.modules)
                 if m == "shared_tsp_engine" or m.startswith("shared_tsp_engine.")]:
         try:
-            _mf = getattr(_sys.modules[_mn], "__file__", "") or ""
-            if _mf and _os.path.abspath(_mf).lower().startswith(_rl):
+            _mf = _os.path.abspath(getattr(_sys.modules[_mn], "__file__", "") or "")
+            if _mf and _mf.lower().startswith(_rl):
                 continue  # ours: keep (learner state lives here)
             del _sys.modules[_mn]
-            print(f"[BUNDLE-GUARD] dropped foreign module {_mn} "
-                  f"({_mf or 'no file'}) -- using bundle {_root}")
+            print("[BUNDLE-GUARD] dropped foreign module %s (%s) -- using bundle %s"
+                  % (_mn, _mf or "no file", _root))
         except Exception:
             pass
+    globals()['_BUNDLE_ROOT'] = _root
 
 
 try:
     _bundle_guard()
-except Exception:
-    pass
+except Exception as _bge:
+    print("[BUNDLE-GUARD] resolution error: %r" % (_bge,))
 try:
     del _bundle_guard
 except Exception:
@@ -595,11 +674,22 @@ _focus_passed_jcts: set  = set()
 # patches those lines directly in this file before each run.
 # =============================================================================
 _CORRIDOR_DIR = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_CORRIDOR_DIR)
+_repo_root = globals().get('_BUNDLE_ROOT') or os.path.dirname(_CORRIDOR_DIR)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 import shared_tsp_engine.engine as _engine
+
+# Post-import HARD assertion: the engine MUST have resolved inside the bundle.
+_eng_file = os.path.abspath(getattr(_engine, "__file__", "") or "")
+_bundle_norm = os.path.abspath(_repo_root).lower().rstrip("\\/") + os.sep
+if not _eng_file.lower().startswith(_bundle_norm):
+    raise RuntimeError(
+        "[BUNDLE-GUARD] FATAL: engine resolved OUTSIDE the bundle: %r "
+        "(bundle=%r). A foreign shared_tsp_engine copy is shadowing the bundle. "
+        "Remove it (or fix sys.path) and restart Aimsun." % (_eng_file, _repo_root))
+print("[BUNDLE-GUARD] engine pinned: %s" % _eng_file)
+
 _engine.bind_config(globals())
 
 from shared_tsp_engine.engine import (

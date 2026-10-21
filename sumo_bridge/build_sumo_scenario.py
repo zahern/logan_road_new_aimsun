@@ -73,6 +73,126 @@ def run_netconvert(indir, out_net, tll=None):
     return out_net
 
 
+def _parse_clock(v):
+    """'HH:MM[:SS]' or seconds -> float seconds; None when unparseable."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if ":" in s:
+        try:
+            parts = [float(x) for x in s.split(":")]
+            while len(parts) < 3:
+                parts.append(0.0)
+            return parts[0] * 3600.0 + parts[1] * 60.0 + parts[2]
+        except ValueError:
+            return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def timetable_bus_flows(dump, edge_ids, snet, end_s, sched_start_s=None):
+    """Per-line bus flows from the exported Aimsun timetables.
+
+    Times in the dump are absolute (midnight-based); ``sched_start_s`` maps to
+    sim t=0.  One schedule per line is used -- the one with the most service
+    inside the sim window, the same choice rule as the engine's
+    _sched_spacing_load_timetable.  Interval schedules emit one flow at
+    3600/headway_s; fixed schedules emit one flow per departure (1 vehicle,
+    begin..begin+1) so exact times survive.  Returns [] when the dump has no
+    usable timetables (caller falls back to uniform headway)."""
+    lines = [ln for ln in dump.get("pt_lines", []) if ln.get("timetables")]
+    if not lines:
+        return []
+    if sched_start_s is None:
+        # 0.0 is a MEANINGFUL start (service from midnight) -- including it
+        # makes a mixed 0/nonzero dump map t=0 to midnight.  Filtering zeros
+        # out (the old bug) picked the smallest NONZERO start and shifted
+        # every midnight-based departure into negative time -> 0 bus flows.
+        starts = [float(sc.get("start_s") or 0.0)
+                  for ln in lines for tt in ln.get("timetables", [])
+                  for sc in tt.get("schedules", [])]
+        sched_start_s = min(starts) if starts else 0.0
+    w0, w1 = 0.0, float(end_s)
+    out = []
+    for ln in lines:
+        secs = [int(s) for s in (ln.get("route_sections") or [])
+                if ("s%d" % int(s)) in edge_ids]
+        if len(secs) < 3:
+            continue
+        frm, to = "s%d" % secs[0], "s%d" % secs[-1]
+        if frm == to:
+            continue
+        ef, et = snet.getEdge(frm), snet.getEdge(to)
+        if ef is None or et is None:
+            continue
+        path, _ = snet.getShortestPath(ef, et)
+        if not path or len(path) < 2:
+            continue
+        def _interval_headway(sc):
+            """Headway (s) when the schedule is frequency-based, else None.
+            Aimsun's getDepartureType() can come back as an int-as-string
+            ('1') and the departure list may hold the MEAN HEADWAY repeated
+            once per service, so classify by the DATA too: an all-equal
+            departure list is an interval schedule, not fixed times."""
+            _hw = sc.get("headway_s")
+            if _hw and float(_hw) > 0.0:
+                return float(_hw)
+            _t = str(sc.get("departure_type") or "").lower()
+            _deps = [float(x) for x in (sc.get("departures_s") or [])
+                     if float(x) > 0.0]
+            if not _deps:
+                return None
+            if "interval" in _t:
+                return _deps[0]
+            if len(_deps) >= 2 and (max(_deps) - min(_deps)) <= 1.0:
+                return _deps[0]
+            # Frequency lines can export a SINGLE entry holding the headway
+            # (Logan: [450.0], type ''); the run KPIs confirm it is a headway
+            # (N_BusTrips=409 over 0.46 h).  Only trust small values.
+            if len(_deps) == 1 and _deps[0] <= 3600.0 and not _t:
+                return _deps[0]
+            return None
+        cands = []          # (service_in_window, schedule)
+        for tt in ln.get("timetables", []):
+            for sc in tt.get("schedules", []):
+                hw = _interval_headway(sc)
+                if hw:
+                    b = max(w0, float(sc.get("start_s") or sched_start_s)
+                            - sched_start_s)
+                    n = (w1 - b) / hw if b < w1 else 0.0
+                else:
+                    n = sum(1.0 for t in (sc.get("departures_s") or [])
+                            if w0 <= float(t) - sched_start_s < w1)
+                if n > 0.0:
+                    cands.append((n, sc))
+        if not cands:
+            continue
+        _, sc = max(cands, key=lambda kv: kv[0])
+        hw = _interval_headway(sc)
+        if hw:
+            b = max(w0, float(sc.get("start_s") or sched_start_s)
+                    - sched_start_s)
+            if b < w1:
+                out.append({"from": frm, "to": to, "vtype": "bus",
+                            "vehs_per_hour": round(3600.0 / hw, 2),
+                            "begin": b, "end": w1,
+                            "pt_line": ln.get("id"),
+                            "source": "timetable-interval"})
+        else:
+            for t in (sc.get("departures_s") or []):
+                sh = float(t) - sched_start_s
+                if w0 <= sh < w1:
+                    b = max(w0, min(sh, w1 - 1.0))
+                    out.append({"from": frm, "to": to, "vtype": "bus",
+                                "vehs_per_hour": 3600.0,
+                                "begin": b, "end": b + 1.0,
+                                "pt_line": ln.get("id"),
+                                "source": "timetable-fixed"})
+    return out
+
+
 def build(args):
     here = os.path.dirname(os.path.abspath(__file__))
     corridor_dir = os.path.abspath(os.path.join(here, "..", args.corridor))
@@ -241,24 +361,93 @@ def build(args):
           % (len(edge_lines), len(synth_nodes), skipped_edges))
 
     # ------------------------------------------------------- connections
+    # Aimsun models junction interiors as self-loop sections (from_node ==
+    # to_node, e.g. KG n36385/n39593 interior stubs). Those emit no SUMO
+    # edge, so a direct-only turning mapping drops every chain of the form
+    # real_entry -> interior -> real_exit and strands high-capacity
+    # approaches as dead ends (the KG Newmarket gridlock: 3-5 lane entries
+    # with no outgoing connections, all traffic squeezed through 1-lane
+    # slips). Bridge them transitively: DFS from each real entry through
+    # turnings, traversing skipped sections that stay inside the same
+    # junction, and emit direct connections to each reachable real exit
+    # with the path-minimum lane count.
+    import collections as _coll
+    _turn_adj = _coll.defaultdict(list)
+    for _tid, _t in turnings.items():
+        try:
+            _fs, _ts = int(_t["from_section"]), int(_t["to_section"])
+        except (TypeError, ValueError):
+            continue
+        _turn_adj[_fs].append((_ts, max(1, int(_t.get("n_lanes", 1)))))
     con_lines = []
-    for tid, t in sorted(turnings.items()):
-        fs, ts = int(t["from_section"]), int(t["to_section"])
-        fe, te = "s%d" % fs, "s%d" % ts
-        if fe not in edge_ids or te not in edge_ids:
+    _seen_con = set()
+    for _fs, _fs_sec in sorted(sections.items()):
+        _fe = "s%d" % int(_fs)
+        if _fe not in edge_ids:
             continue
-        fe_s, te_s = sections.get(fs, {}), sections.get(ts, {})
-        nid = fe_s.get("to_node")
-        if nid is None or nid != te_s.get("from_node"):
+        _junc = _fs_sec.get("to_node")
+        if _junc is None:
             continue
-        nfl = edge_lanes_map.get(fe, 1)
-        ntl = edge_lanes_map.get(te, 1)
-        tn = max(1, min(int(t.get("n_lanes", 1)), nfl, ntl))
-        for k in range(tn):
-            fl = min(k, nfl - 1)
-            tl = min(k, ntl - 1)
-            con_lines.append('    <connection from="%s" to="%s" fromLane="%d" '
-                             'toLane="%d"/>' % (fe, te, fl, tl))
+        # stack entries: (current_section, path_min_lanes, visited_tuple)
+        _stack = [(_fs, 10 ** 9, (_fs,))]
+        _best = {}  # to_section -> max path-min lanes found
+        while _stack:
+            _cur, _mn, _vis = _stack.pop()
+            for (_nxt, _tn) in _turn_adj.get(int(_cur), []):
+                if int(_nxt) in _vis:
+                    continue
+                _ns = sections.get(int(_nxt), {})
+                # node continuity: current.to_node == next.from_node
+                _cs = sections.get(int(_cur), {})
+                if _cs.get("to_node") is None or _ns.get("from_node") is None:
+                    continue
+                try:
+                    if int(_cs["to_node"]) != int(_ns["from_node"]):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                # stay inside the entry junction while traversing interiors
+                try:
+                    if int(_ns.get("from_node", _junc)) != int(_junc) and \
+                            ("s%d" % int(_nxt)) not in edge_ids:
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                _mn2 = min(_mn, int(_tn))
+                _te = "s%d" % int(_nxt)
+                if _te in edge_ids:
+                    # reached a real exit; record best lanes (cap later)
+                    if _mn2 > _best.get(int(_nxt), 0):
+                        _best[int(_nxt)] = _mn2
+                else:
+                    # interior stub: keep walking if still at same junction
+                    try:
+                        _at_j = _ns.get("to_node") is not None and \
+                            int(_ns["to_node"]) == int(_junc)
+                    except (TypeError, ValueError):
+                        _at_j = False
+                    if _at_j and len(_vis) < 7:
+                        _stack.append((int(_nxt), _mn2, _vis + (int(_nxt),)))
+        for _ts, _mn2 in sorted(_best.items()):
+            _te = "s%d" % int(_ts)
+            _te_s = sections.get(int(_ts), {})
+            try:
+                if int(_te_s.get("from_node", _junc)) != int(_junc):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            nfl = edge_lanes_map.get(_fe, 1)
+            ntl = edge_lanes_map.get(_te, 1)
+            tn = max(1, min(int(_mn2), nfl, ntl))
+            for k in range(tn):
+                fl = min(k, nfl - 1)
+                tl = min(k, ntl - 1)
+                _key = (_fe, _te, fl, tl)
+                if _key in _seen_con:
+                    continue
+                _seen_con.add(_key)
+                con_lines.append('    <connection from="%s" to="%s" fromLane="%d" '
+                                 'toLane="%d"/>' % (_fe, _te, fl, tl))
     w(os.path.join(outdir, "connections.con.xml"),
       '<connections>\n%s\n</connections>\n' % "\n".join(con_lines))
 
@@ -399,6 +588,53 @@ def build(args):
     dump_det = {int(d["id"]): d for d in dump.get("detectors", [])
                 if d.get("section") is not None}
     all_det_cfg += list(dump_det.keys())
+
+    # Aimsun junction interiors are self-loop sections (from_node == to_node)
+    # and emit no SUMO edge.  Map detectors hosted on them onto the real edge
+    # that enters (approach/queue detectors) or leaves (bus-exit detectors)
+    # the junction through that interior, via the turning topology, so all
+    # Aimsun detector IDs survive into SUMO.
+    _exit_ids = set()
+    for _iid, _c in icfg.INTERSECTIONS_CONFIG.items():
+        if isinstance(_c, dict):
+            for _d in (_c.get("BusExitDetectors") or []):
+                _exit_ids.add(int(_d))
+    _turn_fwd, _turn_rev = {}, {}
+    for _t in turnings.values():
+        try:
+            _fs, _ts = int(_t["from_section"]), int(_t["to_section"])
+        except (TypeError, ValueError):
+            continue
+        _turn_fwd.setdefault(_fs, []).append(_ts)
+        _turn_rev.setdefault(_ts, []).append(_fs)
+
+    def _interior_map(sid, prefer_out):
+        """Map an interior self-loop section to a real edge.  prefer_out=True
+        picks an edge the interior feeds (bus exit); False picks an edge
+        feeding the interior (approach / queue detector).  Returns
+        (edge_id, at_start) or (None, False)."""
+        neigh = _turn_fwd.get(sid, []) if prefer_out else _turn_rev.get(sid, [])
+        best = None
+        for _nb in neigh:
+            _e = "s%d" % _nb
+            if _e in edge_ids:
+                if best is None or (edge_lanes_map.get(_e, 1)
+                                    > edge_lanes_map.get(best, 1)):
+                    best = _e
+        if best is not None:
+            return best, prefer_out
+        _s = sections.get(str(sid)) or {}
+        for _nk in ("from_node", "to_node"):
+            _node = _s.get(_nk)
+            if _node is None:
+                continue
+            for _sid2, _s2 in sections.items():
+                if _s2.get("from_node") == _node or _s2.get("to_node") == _node:
+                    _e = "s%d" % _sid2
+                    if _e in edge_ids and _e != "s%d" % sid:
+                        return _e, prefer_out
+        return None, False
+
     for did in sorted(set(all_det_cfg)):
         d = dump_det.get(did)
         if d:
@@ -423,7 +659,23 @@ def build(args):
                 continue
             eid = "s%d" % int(cand[0])
             pos, ln, lane, src = 40.0, 2.0, 0, "fallback"
-        if eid not in edge_ids:
+        if eid not in edge_ids and d is not None:
+            mapped, at_start = _interior_map(int(d["section"]),
+                                             did in _exit_ids)
+            if mapped is None:
+                print("WARN: detector %d interior section %s unmapped - "
+                      "skipped" % (did, d["section"]))
+                continue
+            eid = mapped
+            elen = float(edge_len_map.get(eid, 100.0))
+            if at_start:            # bus-exit: just downstream of the junction
+                pos = min(20.0, max(2.0, elen * 0.2))
+            else:                   # approach/queue: near the stop line
+                pos = max(elen - 20.0, elen * 0.7)
+            lane = max(0, min(int(d.get("lane") or 0),
+                              edge_lanes_map.get(eid, 1) - 1))
+            src = "interior-map"
+        elif eid not in edge_ids:
             print("WARN: detector %d references unknown edge %s - skipped"
                   % (did, eid))
             continue
@@ -591,41 +843,102 @@ def build(args):
         for fl in base_flows:
             if fl["vtype"] == "bus":
                 od_flows.append(dict(fl))
-        # Buses: keep original corridor bus flow (12/h) on the mainline
+        # Buses: generate one flow per exported PT line that traverses the
+        # corridor (route_sections + stops exist in the dump). headway_min is null
+        # (the Aimsun export didn't capture the timetable / pt_plans is empty), so
+        # calibrate a uniform per-line frequency to hit the Aimsun bus TOTAL
+        # (~SUMO_TARGET_BUSES over the sim window). This REPLACES the old single
+        # 12/h synthetic flow that left SUMO with ~12 buses (bus delay ~0) vs
+        # Aimsun's ~291 -> buses now actually get delayed so bus-TSP has a target.
         _has_bus = any(f.get("vtype") == "bus" for f in od_flows)
-        if not _has_bus:
-            # No Bus-class OD matrix — inject corridor mainline bus flow
-            # at the observed Aimsun frequency (12/h = every 300 s).
-            # Route: first → last managed junction via their entry/exit edges.
-            _managed_jcts = list(icfg.INTERSECTIONS_CONFIG.keys())
-            if _managed_jcts:
-                _first_cfg = icfg.INTERSECTIONS_CONFIG[_managed_jcts[0]]
-                _last_cfg = icfg.INTERSECTIONS_CONFIG[_managed_jcts[-1]]
-                _bus_entry = None
-                _bus_exit = None
-                for ms in (_first_cfg.get("MainSections") or []):
-                    eid = "s%d" % int(ms)
-                    if eid in edge_ids:
-                        _bus_entry = eid
-                        break
-                for ms in reversed(_last_cfg.get("MainSections") or []):
-                    eid = "s%d" % int(ms)
-                    if eid in edge_ids:
-                        _bus_exit = eid
-                        break
-                if _bus_entry and _bus_exit and _snet is not None:
-                    _be = _snet.getEdge(_bus_entry)
-                    _bx = _snet.getEdge(_bus_exit)
-                    if _be is not None and _bx is not None:
-                        _path, _ = _snet.getShortestPath(_be, _bx)
-                        if _path:
-                            od_flows.append({"from": _bus_entry,
-                                             "to": _bus_exit,
-                                             "vehs_per_hour": 12,
-                                             "vtype": "bus"})
-                            print("bus corridor flow injected: %s -> %s "
-                                  "(%d edges)"
-                                  % (_bus_entry, _bus_exit, len(_path)))
+        # The route-validation block below loads sumolib only later; load it
+        # here too so PT-line bus flow generation can check routability.
+        try:
+            import sumolib as _sumolib
+            _snet = _sumolib.net.readNet(net_file)
+        except Exception:
+            _snet = None
+        # ── Real timetables first (2026-10-02) ────────────────────────────
+        # The Aimsun export now carries per-line timetables (the same source
+        # as the engine's _sched_spacing_load_timetable).  Emit the ACTUAL
+        # schedule: interval -> 3600/headway; fixed -> one flow per departure.
+        # Only when no line yields usable service does the uniform-headway
+        # calibration below run.
+        _tt_flows = []
+        if not _has_bus and _snet is not None:
+            try:
+                _tt_flows = timetable_bus_flows(
+                    dump, edge_ids, _snet, float(getattr(args, "end", 4500.0)),
+                    _parse_clock(getattr(args, "sched_start", None)))
+            except Exception as _tte:
+                print("WARN: timetable bus flows failed: %r" % (_tte,))
+                _tt_flows = []
+            if _tt_flows:
+                od_flows.extend(_tt_flows)
+                print("timetable bus flows: %d flows over %d lines "
+                      "(interval=%d fixed=%d)"
+                      % (len(_tt_flows),
+                         len({f.get("pt_line") for f in _tt_flows}),
+                         sum(1 for f in _tt_flows
+                             if f.get("source") == "timetable-interval"),
+                         sum(1 for f in _tt_flows
+                             if f.get("source") == "timetable-fixed")))
+        if not _has_bus and not _tt_flows and _snet is not None:
+            _TARGET_BUSES = int(os.environ.get("SUMO_TARGET_BUSES", "291"))
+            _SIM_H = float(os.environ.get("SUMO_BUS_SIM_HOURS", "1.5"))
+            _MIN_EDGES = int(os.environ.get("SUMO_BUS_MIN_EDGES", "3"))
+            _pt_bus = []
+            _seen_od = set()
+            for _ln in dump.get("pt_lines", []):
+                _secs = _ln.get("route_sections") or []
+                _edges = [("s%d" % int(s)) for s in _secs
+                          if ("s%d" % int(s)) in edge_ids]
+                if len(_edges) < _MIN_EDGES:
+                    continue
+                _frm, _to = _edges[0], _edges[-1]
+                if (_frm, _to) in _seen_od or _frm == _to:
+                    continue
+                _ef = _snet.getEdge(_frm); _et = _snet.getEdge(_to)
+                if _ef is None or _et is None:
+                    continue
+                _p, _ = _snet.getShortestPath(_ef, _et)
+                if not _p or len(_p) < 2:
+                    continue
+                _seen_od.add((_frm, _to))
+                _pt_bus.append({"from": _frm, "to": _to, "vtype": "bus",
+                                "pt_line": _ln.get("id")})
+            if _pt_bus:
+                _vph = max(1, round(_TARGET_BUSES / (len(_pt_bus) * _SIM_H)))
+                for _b in _pt_bus:
+                    _b["vehs_per_hour"] = _vph
+                    od_flows.append(_b)
+                print("PT bus flows: %d corridor lines x %d/h = ~%d buses "
+                      "(target %d)" % (len(_pt_bus), _vph,
+                                       int(len(_pt_bus) * _vph * _SIM_H),
+                                       _TARGET_BUSES))
+            else:
+                # Fallback: original single corridor bus flow (12/h) if no PT line
+                # mapped onto the surviving corridor edges.
+                _managed_jcts = list(icfg.INTERSECTIONS_CONFIG.keys())
+                if _managed_jcts:
+                    _first_cfg = icfg.INTERSECTIONS_CONFIG[_managed_jcts[0]]
+                    _last_cfg = icfg.INTERSECTIONS_CONFIG[_managed_jcts[-1]]
+                    _bus_entry = _bus_exit = None
+                    for ms in (_first_cfg.get("MainSections") or []):
+                        if "s%d" % int(ms) in edge_ids:
+                            _bus_entry = "s%d" % int(ms); break
+                    for ms in reversed(_last_cfg.get("MainSections") or []):
+                        if "s%d" % int(ms) in edge_ids:
+                            _bus_exit = "s%d" % int(ms); break
+                    if _bus_entry and _bus_exit:
+                        _be = _snet.getEdge(_bus_entry); _bx = _snet.getEdge(_bus_exit)
+                        if _be is not None and _bx is not None:
+                            _path, _ = _snet.getShortestPath(_be, _bx)
+                            if _path:
+                                od_flows.append({"from": _bus_entry, "to": _bus_exit,
+                                                 "vehs_per_hour": 12, "vtype": "bus"})
+                                print("bus corridor flow injected (fallback): "
+                                      "%s -> %s" % (_bus_entry, _bus_exit))
         demand = {"vtypes": [
             {"id": "car", "length": 4.5, "maxSpeed": 16.7},
             {"id": "bus", "length": 12.0, "maxSpeed": 13.9}],
@@ -878,11 +1191,11 @@ def build(args):
         <net-file value="{net}"/>
         <additional-files value="detectors.add.xml,demand.add.xml"/>
     </input>
-    <time><begin value="0"/><end value="4500"/><step-length value="1.0"/></time>
+    <time><begin value="0"/><end value="{end}"/><step-length value="1.0"/></time>
     <processing><time-to-teleport value="-1"/></processing>
     <output><summary-output value="summary.xml"/><tripinfo-output value="tripinfo.xml"/></output>
 </configuration>
-""".format(net="%s.net.xml" % args.corridor))
+""".format(net="%s.net.xml" % args.corridor, end="%g" % args.end))
 
 
 if __name__ == "__main__":
@@ -900,6 +1213,13 @@ if __name__ == "__main__":
                          "(e.g. 'AM' or '07.30-08.30') and emit its trips as flows")
     ap.add_argument("--od-class", default="Car",
                     help="vehicle-class filter for the OD matrix (default Car)")
+    ap.add_argument("--sched-start", default=None,
+                    help="wall-clock time mapped to sim t=0 when emitting "
+                         "timetable bus flows ('HH:MM' or seconds; default: "
+                         "the earliest schedule start in the dump)")
+    ap.add_argument("--end", type=float, default=4500.0,
+                    help="simulation end time (s); written to the sumocfg "
+                         "and used as the timetable service window")
     a = ap.parse_args()
     if not a.out:
         a.out = "%s_scenario" % a.corridor

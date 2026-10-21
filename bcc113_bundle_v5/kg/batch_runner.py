@@ -59,6 +59,9 @@ _SCRIPT_DIR = _os.path.dirname(_os.path.abspath(__file__))
 PROJECT_DIR     = _SCRIPT_DIR
 CONTROLLER_PATH = _os.path.join(_SCRIPT_DIR, "intersection_controller.py")
 RUN_CONFIG_PATH = _os.path.join(_SCRIPT_DIR, "run_config.py")
+LOGS_DIR        = _os.path.join(_SCRIPT_DIR, "logs")
+ENGINE_PATH     = _os.path.normpath(
+    _os.path.join(_SCRIPT_DIR, "..", "shared_tsp_engine", "engine.py"))
 
 # ── Execute liveness / re-issue tuning ────────────────────────────────────────
 # SET TO 3 s ON REQUEST (2026-10-01): re-issue almost immediately when no new sim
@@ -83,7 +86,15 @@ RUN_CONFIG_PATH = _os.path.join(_SCRIPT_DIR, "run_config.py")
 # -> PICKED. Two or more candidates means this window IS double-firing, and for a
 # LEARNING arm the twins differ, so which one feeds the CSV starts to matter.
 EXEC_REISSUE_SILENCE_S = 3.0
-EXEC_MAX_RETRIES      = 1
+# 2026-10-16: SET TO 0 ON REQUEST -- re-issue DISABLED. Rationale: the re-issue
+# window (min(2x init, EXEC_REISSUE_MAX_S=300)) is capped BELOW the real ~7-min
+# (420 s) Aimsun init, so it fired INTO the live init and queued a SECOND full
+# replication -- the observed "stalls for ages" + duplicate result folders. With
+# 0 the runner never re-fires: a healthy (even slow) init is allowed to finish,
+# and a GENUINELY swallowed execute is not auto-recovered -- the arm instead fails
+# at the EXEC_ABSOLUTE_START_DEADLINE_S (900 s) with the clear "sim NEVER STARTED"
+# error. That is the accepted trade (no duplicates vs. no auto-recovery).
+EXEC_MAX_RETRIES      = 0
 # ── ADAPTIVE RE-ISSUE WINDOW (2026-10-01) ─────────────────────────────────────
 # The 90 s above is only a FIRST-RUN FALLBACK. There is no defensible fixed value:
 # a healthy init on this machine has been observed to exceed 180 s, and the engine
@@ -93,7 +104,16 @@ EXEC_MAX_RETRIES      = 1
 # init (`[TIMING] init took Ns`); so use it. After the first replication the window
 # becomes INIT_MULTIPLE x the longest init seen this session, floored at
 # EXEC_REISSUE_SILENCE_MIN_S. Set _LAST_INIT_S[0] manually to prime it.
-EXEC_REISSUE_SILENCE_MIN_S = 30.0
+EXEC_REISSUE_SILENCE_MIN_S = 20.0   # 2026-10-10: 30->20 (longest re-issue window 20s)
+# 2026-10-15 CAP RAISED 20 -> 300. The 20s cap re-fired the execute INTO a live
+# init: the engine writes its [LOAD] marker only AFTER init (network load + OD
+# trip-gen + the per-junction profiling / detector-distance derivation added this
+# session), and that init now exceeds 20s on KG too -- so during init there was no
+# started-signal / no new log, the runner declared the execute "swallowed" at 20s
+# and Aimsun QUEUED the second execute -> EVERY arm/seed ran twice (sequential,
+# ~sim-duration apart, same replication ids). 300s clears the init while still
+# recovering a genuinely dropped execute before the 900s dead-man. Mirrors Logan.
+EXEC_REISSUE_MAX_S         = 300.0  # hard cap on the idle re-issue window
 EXEC_INIT_MULTIPLE         = 2.0     # re-issue only well past a known-good init
 _LAST_INIT_S = [0.0]                 # longest observed executeAction->[LOAD] (s)
 # Aimsun is BUSY (trip generation / SRC / teardown) if its own CPU advanced by at
@@ -124,13 +144,13 @@ EXEC_CPU_WINDOW_S     = 10.0
 # whatever the CPU says, so re-issue regardless of liveness. Without this a busy
 # reading can stall the batch indefinitely, which is worse than the double-fire
 # this whole guard exists to prevent.
-EXEC_ABSOLUTE_START_DEADLINE_S = 300.0
+EXEC_ABSOLUTE_START_DEADLINE_S = 900.0
 # How long to wait before re-issuing WHEN AIMSUN IS DEMONSTRABLY BUSY (CPU above
 # EXEC_CPU_BUSY_DELTA_S). Set to 3 s on request (2026-10-01), same as the idle
 # window, so busy and idle behave alike. NOTE this INVERTS the earlier reasoning:
 # a busy start is usually a HEALTHY init, so waiting longer was the safe choice,
 # and 3 s will fire into a live init. Bounded by EXEC_MAX_RETRIES = 1.
-EXEC_BUSY_START_WINDOW_S = 3.0
+EXEC_BUSY_START_WINDOW_S = 30.0
 
 # Weighted-objective (Z1/Z2 composite) metric collection lives in
 # collect_run_metrics() section 7 below: it reads the per-run
@@ -1774,7 +1794,26 @@ PATCH_SETTLE_S = 0.5
 # =============================================================================
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 # =============================================================================
+_RUNNER_TRACE_INIT = [False]
+
+
+def _runner_trace(msg):
+    """Tee runner output to logs/runner_console.txt so the between-run [TIMING]
+    breakdown is readable off-console (truncated once per session)."""
+    try:
+        _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           'logs', 'runner_console.txt')
+        _os.makedirs(_os.path.dirname(_p), exist_ok=True)
+        _mode = 'w' if not _RUNNER_TRACE_INIT[0] else 'a'
+        _RUNNER_TRACE_INIT[0] = True
+        with open(_p, _mode, encoding='utf-8') as _f:
+            _f.write(_time.strftime('%H:%M:%S') + ' | ' + str(msg) + '\n')
+    except Exception:
+        pass
+
+
 def log(msg):
+    _runner_trace(msg)          # always traced, even when console output is muted
     if _QUIET:
         return
     print("[RUNNER] " + str(msg))
@@ -2583,15 +2622,160 @@ def _set_od_demand_scalar_legacy(scalar, base_od_demands=None, rep=None):
 # =============================================================================
 
 def _read_controller(path):
-    with open(path, 'r', encoding='utf-8') as f:
-        return f.read()
+    # utf-8-sig strips a BOM if one is present. Reading with plain 'utf-8'
+    # would keep the '\ufeff' as the first character, and every rewrite would
+    # re-emit it as EF BB BF -- which is how kg/intersection_controller.py
+    # ended up carrying a BOM that its Logan counterpart does not have.
+    #
+    # Retry on a transient OSError: Aimsun can hold this path open (or the OS
+    # can momentarily deny it) right after the script is loaded/exec'd.
+    _last = None
+    for _attempt in range(5):
+        try:
+            with open(path, 'r', encoding='utf-8-sig') as f:
+                return f.read()
+        except OSError as _e:
+            _last = _e
+            _time.sleep(0.2)
+    raise _last
+
+
+# ── STALE-MODULE GUARD helpers (2026-10-13) ────────────────────────────────
+# Aimsun caches imported modules for the life of the process. Editing
+# engine.py / specialized_modes.py / Simulation_Stats.py has no effect until a
+# full relaunch, and the silent symptom is "my fix did nothing" -- which is
+# exactly how the loop-metric columns came back missing. The engine writes its
+# own ENGINE_BUILD tag into the log at [LOAD] (force=True), so that tag is the
+# only reliable evidence of what actually executed.
+_ENGINE_BUILD_RE = None
+
+
+def _read_disk_engine_build():
+    """ENGINE_BUILD tag from the engine.py the runner is about to pass to Aimsun."""
+    global _ENGINE_BUILD_RE
+    try:
+        import re as _re
+        if _ENGINE_BUILD_RE is None:
+            _ENGINE_BUILD_RE = _re.compile(
+                r'^\s*ENGINE_BUILD\s*=\s*["\']([^"\']+)["\']', _re.M)
+        for _p in (ENGINE_PATH, CONTROLLER_PATH):
+            if not _p or not _os.path.isfile(_p):
+                continue
+            _src = open(_p, 'r', encoding='utf-8-sig', errors='replace').read()
+            _m = _ENGINE_BUILD_RE.search(_src)
+            if _m:
+                return _m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _read_loaded_build(logs_dir, newest_first=True):
+    """ENGINE_BUILD from the engine's own [LOAD] line, newest log wins.
+
+    The [LOAD] line is emitted at AAPILoad, i.e. near the TOP of a run log, while
+    the tail holds [FINISH] traffic. Reading only the tail finds nothing on a
+    900 KB log -- which is why this helper returned None the first time and the
+    guard would have silently passed. So scan the whole file, but bail out of the
+    read on the first hit so the cost stays bounded.
+
+    Returns None when nothing parseable is found (no log yet, or the engine
+    version predates the [LOAD] tag). None means UNKNOWN, never "ok" -- the caller
+    must tolerate it rather than treating it as a pass.
+    """
+    try:
+        import os as _os
+        import re as _re
+        if not logs_dir or not _os.path.isdir(logs_dir):
+            return None
+        _logs = sorted(
+            (_os.path.join(logs_dir, f) for f in _os.listdir(logs_dir)
+             if 'TSP_Log' in f and f.endswith('.txt')),
+            key=_os.path.getmtime, reverse=True)
+        if not _logs:
+            return None
+        # A log is only useful once its run has finished; the newest file may
+        # still be mid-write, so walk newest-first until one parses.
+        _pat = _re.compile(r'ENGINE_BUILD=([A-Za-z0-9_.\-]+)')
+        for _lp in _logs[:4]:
+            try:
+                with open(_lp, 'r', encoding='utf-8', errors='replace') as fh:
+                    _hits = _pat.findall(fh.read())
+            except OSError:
+                continue
+            if _hits:
+                return _hits[-1]
+        return None
+    except Exception:
+        return None
 
 
 def _write_controller(path, text):
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(text)
-    # Flush OS buffer so Aimsun reads the updated file
-    _time.sleep(PATCH_SETTLE_S)
+    """Atomically rewrite the controller file.
+
+    The old version opened the target in 'w' mode, which TRUNCATES it in place.
+    Aimsun can (and does) open that path during the truncation window: the run log
+    for 2026-10-13 closed with
+        OSError: [Errno 22] Invalid argument: '...\\kg\\intersection_controller.py'
+    one second after the file's mtime, exactly matching that window.
+
+    Writing to a sibling temp file and os.replace()-ing it onto the target makes
+    the swap atomic on Windows, so the target is never observed half-written. The
+    BOM is also stripped: a UTF-8 BOM is invisible in most editors but Aimsun's
+    script loader kept a copy of it in the file, and kg/intersection_controller.py
+    accumulated one that logan's counterpart does not have.
+
+    NOTE: this module imports os as _os -- every name below must be spelled
+    _os.*, or the patcher dies with "name 'os' is not defined" before it writes
+    anything, which is precisely what happened on the first attempt.
+    """
+    path = _os.path.abspath(path)
+    if text.startswith('\ufeff'):
+        text = text[1:]
+    folder = _os.path.dirname(path) or '.'
+    tmp = _os.path.join(folder, '._controller_patch_%d.tmp' % _os.getpid())
+
+    # Primary strategy: atomic swap (temp file + os.replace). Even this can lose
+    # a race with Aimsun's script loader, which may hold the target open for a
+    # moment; MoveFileEx then fails with EINVAL (Errno 22) / EACCES. So retry
+    # with a short backoff before falling back.
+    _last = None
+    for _attempt in range(10):
+        try:
+            with open(tmp, 'w', encoding='utf-8', newline='') as f:
+                f.write(text)
+                f.flush()
+                _os.fsync(f.fileno())
+            _os.replace(tmp, path)
+            # Flush OS buffer so Aimsun reads the updated file
+            _time.sleep(PATCH_SETTLE_S)
+            return
+        except OSError as _e:
+            _last = _e
+            _time.sleep(0.5)
+
+    # Fallback: rewrite in place. This reintroduces the truncation window the
+    # atomic swap removed, but a loud warning beats aborting the whole batch.
+    try:
+        for _attempt in range(3):
+            try:
+                with open(path, 'w', encoding='utf-8', newline='') as f:
+                    f.write(text)
+                    f.flush()
+                    _os.fsync(f.fileno())
+                break
+            except OSError as _e:
+                _last = _e
+                _time.sleep(0.5)
+        _time.sleep(PATCH_SETTLE_S)
+        log("WARNING: _write_controller atomic swap failed (%r); rewrote %s in "
+            "place -- a run may observe a half-written controller." % (_last, path))
+    finally:
+        try:
+            if _os.path.exists(tmp):
+                _os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _purge_pyc(controller_path):
@@ -2692,9 +2876,24 @@ def _set_logging(controller_path, enabled):
         r'\g<1>' + dash_val,
         text, flags=re.MULTILINE)
 
+    # Opt-in diagnostic (2026-10-18): a normal batch run silences EVERY LOG_*
+    # including LOG_COST_VETO, so the per-event gate prints ([COST VETO],
+    # [NET DELAY VETO], [MAIN FLOOR], [DS GATE], [MAIN STARVE]) vanish and the
+    # gates look inert even when they fire. Setting env TSP_LOG_COST_VETO=1
+    # forces just that one flag back ON for the run. Default is unchanged.
+    n5 = 0
+    if not enabled and str(_os.environ.get("TSP_LOG_COST_VETO", "")).strip().lower() \
+            not in ("", "0", "false", "no", "off"):
+        text, n5 = re.subn(
+            r'^(LOG_COST_VETO\s*=\s*)(True|False)',
+            r'\g<1>True',
+            text, flags=re.MULTILINE)
+        if n5:
+            log("TSP_LOG_COST_VETO set -> forcing LOG_COST_VETO=True for this batch.")
+
     _write_controller(controller_path, text)
 
-    total = n0 + n1 + n2 + n3 + n4
+    total = n0 + n1 + n2 + n3 + n4 + n5
     if total > 0:
         log(f"Logging {'enabled' if enabled else 'disabled'} in controller "
             f"(VERBOSE + {n1} LOG_* + MARK_DETECT=True(always) "
@@ -2966,6 +3165,15 @@ def set_coordination_algo(controller_path, algo: str):
     Supported values: KALMAN | SHOCKWAVE | OBJECTIVE | ADAPTIVE.
     """
     algo_u = str(algo or "KALMAN").strip().upper()
+    # 'NASH' is not an ETA predictor: the Nash arms coordinate via
+    # NASH_CORRIDOR_MODE (Gauss-Seidel best response), so the coordinator's
+    # predictor should be the module default (SHOCKWAVE), NOT a silent downgrade
+    # to KALMAN. Map the alias rather than warning + KALMAN.
+    _COORD_ALIASES = {"NASH": "SHOCKWAVE"}
+    if algo_u in _COORD_ALIASES:
+        _mapped = _COORD_ALIASES[algo_u]
+        log(f"COORDINATION_ALGO '{algo_u}' is not a predictor -> mapping to {_mapped}")
+        algo_u = _mapped
     if algo_u not in {"KALMAN", "SHOCKWAVE", "OBJECTIVE", "ADAPTIVE"}:
         log(f"WARNING: unsupported COORDINATION_ALGO '{algo_u}', defaulting to KALMAN")
         algo_u = "KALMAN"
@@ -2990,6 +3198,27 @@ def set_coordination_algo(controller_path, algo: str):
         log(f"WARNING: COORDINATION_ALGO patch verification failed for {algo_u}")
 
 
+def _expected_tsp_mode(reward_cfg):
+    """The decider ACTIVE_TSP_MODE this arm's mode flags should resolve to, in the
+    engine's own priority order. Pinned into run_config as TSP_STRATEGY so AAPIInit
+    can assert declared-vs-resolved in the log and catch a silent GENERIC fallback
+    (mode flag never propagated). GENERIC = no specialised decider flag (e.g. the
+    @DRL_DENSITY / GLOBAL_REWARD-only arms, which is legitimate). (2026-10-15)"""
+    cfg = reward_cfg or {}
+    for _fl, _nm in (
+            ('BXT_MODE', 'BXT'), ('CPDQL_MODE', 'CPDQL'), ('DCTSP_ZIG_MODE', 'ZIG'),
+            ('MP_ECTM_MODE', 'MP_ECTM'), ('MP_ECTM_DP_MODE', 'MP_ECTM_DP'),
+            ('BARGAIN_SPM_MODE', 'BARGAIN'), ('NASH_GATE_MODE', 'NASH_GATE'),
+            ('NASH_BARGAIN_MODE', 'NASH_BARGAIN'), ('MILP_TSP_MODE', 'MILP_TSP'),
+            ('CELLQLEARN_DP_MODE', 'CELLQLEARN_DP'),
+            ('MAXPRESSURE_FIX_MODE', 'MAXPRESSURE_FIX'),
+            ('MAXPRESSURE_FLEX_MODE', 'MAXPRESSURE_FLEX'),
+            ('CENTRALIZED_MODE', 'CENTRALIZED')):
+        if bool(cfg.get(_fl, False)):
+            return _nm
+    return 'GENERIC'
+
+
 def write_run_config(experiment_name, strategy, seed, scalar,
                      coordinated, coordination_algo, run_config_path,
                      global_reward_mode=False, reward_cfg=None,
@@ -3005,6 +3234,9 @@ def write_run_config(experiment_name, strategy, seed, scalar,
     content = (
         "CURRENT_STRATEGY = "        + repr(strategy)           + "\n"
         "CURRENT_EXPERIMENT = "      + repr(experiment_name)    + "\n"
+        # Pinned expected decider (2026-10-15): AAPIInit asserts the resolved
+        # ACTIVE_TSP_MODE against this and shouts on a silent GENERIC fallback.
+        "TSP_STRATEGY = "            + repr(_expected_tsp_mode(reward_cfg)) + "\n"
         "CURRENT_SEED = "            + repr(seed)               + "\n"
         "CURRENT_DEMAND_SCALAR = "   + repr(scalar)             + "\n"
         "CURRENT_COORDINATED = "     + repr(coordinated)        + "\n"
@@ -3299,11 +3531,351 @@ def set_seed(rep, seed):
 # self-probing: it logs the real trip API on the first run and degrades to
 # normal (regenerate) on any build/method it can't drive. Set
 # TRIP_CACHE_ENABLED=False to disable.
-TRIP_CACHE_ENABLED = False   # disabled 2026-09-09 while restoring roll-over; re-enable after the API dump confirms the store/read toggle
+TRIP_CACHE_ENABLED = True    # 2026-10-16: ON at operator request.
+                             # CAVEAT: on this build the replication exposes only
+                             # getDefaultTripsFilePath (a GETTER -- no setter) and
+                             # the experiment has no trip API, so _setup_trip_cache
+                             # probes will still log set_path=False toggle=none-found
+                             # and reuse nothing. The real reuse levers this build
+                             # exposes are the "Traffic Arrivals" / path-assignment /
+                             # saved-initial-state family (see _setup_path_reuse and
+                             # the [SIM-API] probe dump in logs/sim_api_probe.txt).
 _TRIP_CACHE_DIR = _os.path.join(
     _os.path.dirname(_os.path.abspath(__file__)), 'trip_cache')
 _TRIP_CACHE_STATE = {'seed': None, 'scalar': 1.0}   # set by write_run_config
+
+# One-shot API probe (2026-10-16): the earlier trip-cache investigation only
+# searched the replication/experiment for 'trip' methods and concluded reuse is
+# GUI-only. But a STORED-PATHS / route-reuse setter (which would skip the ~100s
+# SRC recompute across arms at the same seed) would be named 'path'/'route'/
+# 'stored'/'assign', not 'trip' -- never checked. This dumps those methods on the
+# replication, experiment AND scenario once so we can see whether an API lever
+# exists. Pure logging; set False once the answer is recorded.
+PROBE_SIM_API = True
+_SIM_API_PROBED = [False]
+
+
+def _probe_sim_api(rep):
+    """Dump (once) the rep/experiment/scenario methods that could drive trip +
+    stored-path reuse, so a controller-only re-run can skip trip-gen/SRC."""
+    if _SIM_API_PROBED[0] or not PROBE_SIM_API:
+        return
+    _SIM_API_PROBED[0] = True
+    _kw = ('trip', 'path', 'route', 'stored', 'generat', 'arrival', 'warm',
+           'cache', 'skip', 'recalc', 'recompute', 'assign', 'initial', 'reuse')
+
+    # Tee the dump to a FILE as well as the console, so the exact available API is
+    # readable after the run (the console print scrolls away). (2026-10-16)
+    _probe_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), 'logs', 'sim_api_probe.txt')
+    try:
+        _os.makedirs(_os.path.dirname(_probe_path), exist_ok=True)
+        _pf = open(_probe_path, 'w', encoding='utf-8')
+    except Exception:
+        _pf = None
+
+    def _dump(_obj, _name):
+        try:
+            _ms = sorted(m for m in dir(_obj)
+                         if (not m.startswith('__'))
+                         and any(k in m.lower() for k in _kw))
+            _line = f"  [SIM-API] {_name}: {_ms}"
+            log(_line)
+            if _pf:
+                _pf.write(_line + "\n")
+        except Exception as _e:
+            log(f"  [SIM-API] {_name} dump failed: {_e!r}")
+    _dump(rep, 'replication')
+    try:
+        _exp = rep.getExperiment()
+        _dump(_exp, 'experiment')
+        try:
+            _dump(_exp.getScenario(), 'scenario')
+        except Exception:
+            pass
+    except Exception:
+        _exp = None
+    # ── SIM-TIMING diagnostic: the VALUES that drive how long init takes, so we
+    # can see whether WARMUP is a reducible chunk of the ~120s per-run setup.
+    # getWarmupTime is an AAPI-settable number; a long warmup runs real sim time
+    # before the measured period and is part of the "waiting for setup" cost.
+    try:
+        if _exp is not None:
+            def _secs(_obj, _m):
+                """Call getter; coerce a GKTimeDuration to seconds if returned."""
+                try:
+                    _f = getattr(_obj, _m, None)
+                    if not callable(_f):
+                        return "n/a"
+                    _v = _f()
+                    if _v is None:
+                        return None
+                    for _acc in ('toSeconds', 'seconds', 'getSeconds'):
+                        _a = getattr(_v, _acc, None)
+                        if callable(_a):
+                            try:
+                                return round(float(_a()), 1)
+                            except Exception:
+                                pass
+                    # GKTimeDuration often splits h/m/s components
+                    try:
+                        _h = getattr(_v, 'hour', None); _mn = getattr(_v, 'minute', None)
+                        _s = getattr(_v, 'second', None)
+                        if callable(_h) and callable(_mn) and callable(_s):
+                            return round(_h() * 3600 + _mn() * 60 + _s(), 1)
+                    except Exception:
+                        pass
+                    return str(_v)
+                except Exception as _e:
+                    return f"err:{_e!r}"
+            def _val(_obj, _m):
+                try:
+                    _f = getattr(_obj, _m, None)
+                    return _f() if callable(_f) else "n/a"
+                except Exception as _e:
+                    return f"err:{_e!r}"
+            _line = ("  [SIM-TIMING] warmup_time_s=%s warmup_with_scenario_s=%s "
+                     "warmup_demand=%s initial_state_type=%s path_calc_disabled=%s "
+                     "initial_SP_trees=%s" % (
+                         _secs(_exp, 'getWarmupTime'),
+                         _secs(_exp, 'getWarmupTimeWithScenario'),
+                         _val(_exp, 'getWarmupDemand'),
+                         _val(_exp, 'getInitialStateType'),
+                         _val(_exp, 'disablePathCalculation'),
+                         _val(_exp, 'initialSPTrees')))
+            log(_line)
+            if _pf:
+                _pf.write(_line + "\n")
+    except Exception as _te:
+        log(f"  [SIM-TIMING] probe failed: {_te!r}")
+    try:
+        if _pf:
+            _pf.close()
+            log(f"  [SIM-API] written to {_probe_path}")
+    except Exception:
+        pass
 _TRIP_API_DUMPED = [False]
+
+
+# ── Path/route reuse across arms at the SAME seed (2026-10-16) ────────────────
+# The [SIM-API] probe showed this build DOES expose reuse: replication.setStorePaths
+# / restorePathsForest + experiment.setDisablePathCalculation. Trips+routes depend
+# only on (seed,demand), NOT the controller -- so recomputing SRC on every
+# controller-only re-run is the ~100s waste the operator flagged. With this on,
+# the FIRST run of a seed computes + STORES the route forest; later same-seed runs
+# RESTORE it and DISABLE path recalculation -> skip the SRC recompute. Bonus: it
+# FIXES routes across arms, so the A/B isolates the controller (more rigorous).
+#
+# EXPERIMENTAL -- KEEP OFF. Tried ON 2026-10-16: the first execute of the session
+# called experiment.setDisablePathCalculation(True) and Aimsun CANCELLED the
+# microsimulation immediately ("Microsimulation cancelled..."), before the engine
+# even reached AAPILoad (no log, no result folder). Reproduces the validate_path_
+# reuse crash. There is no AAPI path-reuse on this build that does not abort the
+# sim; route/trip reuse must be configured in the Aimsun GUI (stored Path
+# Assignment output + scenario Input Path Assignment Plan), not here.
+REUSE_PATHS_PER_SEED = False
+_PATH_FOREST_CACHE = {}   # seed -> in-memory GKPathsForest captured after run 1
+
+# Dev-only WARMUP override (2026-10-16). The scenario warms up 900s (15 min of
+# traffic) before the measured hour so the network starts realistically loaded.
+# That warmup runs as simulated time EVERY replication and is the biggest
+# reducible slice of per-run wall-clock (unlike paths/trips, setWarmupTime is a
+# safe scalar setter). Set WARMUP_OVERRIDE_S = 300 (or 0) to speed up iteration.
+# None = keep the scenario's value. CHANGES RESULTS (less network fill at the
+# measured-period start) -> DEV ONLY, never for final NO_TSP-vs-TSP scoring.
+WARMUP_OVERRIDE_S = None  # None = keep the scenario's real 900s warmup (correct
+                          # physics). Set to 3/300 ONLY for throwaway dev iteration.
+_WARMUP_LOGGED = [False]
+
+
+def _apply_warmup_override(rep):
+    """Shorten the experiment warmup to WARMUP_OVERRIDE_S for faster dev runs.
+    Guarded no-op if unset or the API rejects it. See flag comment (DEV ONLY)."""
+    if WARMUP_OVERRIDE_S is None:
+        return
+    try:
+        _exp = rep.getExperiment()
+        _old = None
+        try:
+            _wt = _exp.getWarmupTime()
+            for _acc in ('toSeconds', 'seconds'):
+                _a = getattr(_wt, _acc, None)
+                if callable(_a):
+                    _old = round(float(_a()), 1)
+                    break
+        except Exception:
+            _old = None
+        _secs = max(int(WARMUP_OVERRIDE_S), 0)
+        from PyANGKernel import GKTimeDuration
+        _dur = GKTimeDuration(_secs // 3600, (_secs % 3600) // 60, _secs % 60)
+        _exp.setWarmupTime(_dur)
+        # Read it BACK to confirm it stuck (the setter may be ignored, or warmup
+        # may live elsewhere). Write both to a file so it is verifiable off-console.
+        _now = None
+        try:
+            _wt2 = _exp.getWarmupTime()
+            for _acc in ('toSeconds', 'seconds'):
+                _a = getattr(_wt2, _acc, None)
+                if callable(_a):
+                    _now = round(float(_a()), 1)
+                    break
+        except Exception:
+            _now = None
+        _msg = (f"[WARMUP] requested={_secs}s old={_old}s readback={_now}s "
+                + ("APPLIED" if (_now is not None and abs(_now - _secs) < 1.0)
+                   else "NOT-APPLIED (setter ignored / warmup lives elsewhere)"))
+        try:
+            _wp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                'logs', 'warmup_status.txt')
+            _os.makedirs(_os.path.dirname(_wp), exist_ok=True)
+            with open(_wp, 'w', encoding='utf-8') as _wf:
+                _wf.write(_msg + "\n")
+        except Exception:
+            pass
+        if not _WARMUP_LOGGED[0]:
+            _WARMUP_LOGGED[0] = True
+            log("  " + _msg + " (DEV ONLY -- changes network fill; not for scoring)")
+    except Exception as _e:
+        log(f"  [WARMUP] override failed ({_e!r}) -- keeping scenario warmup")
+
+
+# Dev-only MEASURED-DURATION override (2026-10-16). The scenario simulates the
+# full 3600s measured hour every run; that fixed hour is the bulk of sim
+# wall-clock (warmup is now cut to ~0). For controller-logic iteration a shorter
+# slice is enough -- just enough to confirm the controller fires and doesn't
+# crash. Like warmup, duration is a scalar setter on the scenario/experiment.
+# None = keep the full hour. CHANGES RESULTS (shorter measurement window) ->
+# DEV ONLY, never for final NO_TSP-vs-TSP scoring.
+SIM_DURATION_OVERRIDE_S = None   # None = keep the full 3600s measured hour (correct
+                                 # physics). Set to 600 ONLY for throwaway dev iteration.
+_SIMDUR_LOGGED = [False]
+
+
+def _apply_sim_duration_override(rep):
+    """Shorten the simulated (measured) duration to SIM_DURATION_OVERRIDE_S for
+    fast dev iteration. The probe filtered duration methods out, so this is
+    self-probing: it tries the known setter names, reads back, and dumps the real
+    duration-related members to logs/sim_duration_status.txt so the API name is
+    verifiable (and correctable) after one run. Guarded no-op. DEV ONLY."""
+    if SIM_DURATION_OVERRIDE_S is None:
+        return
+    try:
+        _exp = rep.getExperiment()
+        try:
+            _scn = _exp.getScenario()
+        except Exception:
+            _scn = None
+        from PyANGKernel import GKTimeDuration
+        _secs = max(int(SIM_DURATION_OVERRIDE_S), 1)
+        _dur = GKTimeDuration(_secs // 3600, (_secs % 3600) // 60, _secs % 60)
+
+        def _read_secs(_obj, _getters):
+            for _g in _getters:
+                _f = getattr(_obj, _g, None)
+                if not callable(_f):
+                    continue
+                try:
+                    _v = _f()
+                except Exception:
+                    continue
+                if _v is None:
+                    continue
+                for _acc in ('toSeconds', 'seconds', 'getSeconds'):
+                    _a = getattr(_v, _acc, None)
+                    if callable(_a):
+                        try:
+                            return _g, round(float(_a()), 1)
+                        except Exception:
+                            pass
+                try:
+                    return _g, round(float(_v), 1)
+                except Exception:
+                    return _g, str(_v)
+            return None, None
+
+        _getters = ('getSimulationLength', 'getDuration', 'getSimDuration',
+                    'getToTime', 'getLength')
+        _setters = ('setSimulationLength', 'setDuration', 'setSimDuration',
+                    'setToTime', 'setLength')
+        # Dump duration-ish members so the real name is visible if our guesses miss.
+        _members = []
+        for _o, _tag in ((_scn, 'scenario'), (_exp, 'experiment')):
+            if _o is None:
+                continue
+            try:
+                _members += [f"{_tag}.{m}" for m in dir(_o)
+                             if any(k in m.lower() for k in
+                                    ('duration', 'length', 'totime', 'simtime'))]
+            except Exception:
+                pass
+
+        _applied = False
+        _old = _now = _which = None
+        for _obj in (_scn, _exp):
+            if _obj is None:
+                continue
+            _, _old = _read_secs(_obj, _getters)
+            for _s in _setters:
+                _f = getattr(_obj, _s, None)
+                if not callable(_f):
+                    continue
+                try:
+                    _f(_dur)
+                    _which = _s
+                except Exception:
+                    continue
+                _, _now = _read_secs(_obj, _getters)
+                if _now is not None:
+                    try:
+                        if abs(float(_now) - _secs) < 1.5:
+                            _applied = True
+                            break
+                    except Exception:
+                        pass
+            if _applied:
+                break
+
+        _msg = (f"[SIMDUR] requested={_secs}s old={_old}s readback={_now}s "
+                f"setter={_which} "
+                + ("APPLIED" if _applied else "NOT-APPLIED") +
+                f" | duration_members={_members}")
+        try:
+            _wp = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                'logs', 'sim_duration_status.txt')
+            _os.makedirs(_os.path.dirname(_wp), exist_ok=True)
+            with open(_wp, 'w', encoding='utf-8') as _wf:
+                _wf.write(_msg + "\n")
+        except Exception:
+            pass
+        if not _SIMDUR_LOGGED[0]:
+            _SIMDUR_LOGGED[0] = True
+            log("  " + _msg + " (DEV ONLY -- shorter measurement; not for scoring)")
+    except Exception as _e:
+        log(f"  [SIMDUR] override failed ({_e!r}) -- keeping full duration")
+
+
+def _setup_path_reuse(rep):
+    """DISABLED -- turning this on CANCELS the microsimulation on this build.
+
+    Tried 2026-10-16: rep.setStorePaths(True) + experiment.setDisablePathCalculation
+    (True) made Aimsun abort the run immediately ("Microsimulation cancelled...")
+    with no engine log and no result folder -- reproduced both the earlier
+    validate_path_reuse crash and the 12:15 abort. The path-forest calls
+    (getPathsForest/setPathsForest/restorePathsForest) crash Aimsun Next 26.0.0 too.
+    Neutered to a no-op so REUSE_PATHS_PER_SEED can never cancel a run. Route/trip
+    reuse must be set up in the Aimsun GUI (stored Path Assignment output file +
+    Input Path Assignment Plan on the scenario), not via AAPI."""
+    if not REUSE_PATHS_PER_SEED:
+        return
+    if not globals().get('_PATH_REUSE_WARNED'):
+        globals()['_PATH_REUSE_WARNED'] = True
+        log("  [PATH-REUSE] DISABLED -- AAPI path reuse cancels the sim on this "
+            "build (setDisablePathCalculation); no-op. Use the GUI instead.")
+
+
+def _capture_path_forest(rep):
+    """DISABLED -- see _setup_path_reuse (getPathsForest crashed Aimsun 26.0.0)."""
+    return
 
 
 def _setup_trip_cache(rep):
@@ -3586,6 +4158,27 @@ def run_replication(rep):
         _setup_trip_cache(rep)
     except Exception as _tce:
         log(f"  [TRIP-CACHE] setup skipped: {_tce!r}")
+    # One-shot: reveal any stored-path / route-reuse API (see _probe_sim_api).
+    try:
+        _probe_sim_api(rep)
+    except Exception as _pae:
+        log(f"  [SIM-API] probe skipped: {_pae!r}")
+    # Reuse SRC paths across arms at the same seed (skips the ~100s recompute).
+    # Opt-in (REUSE_PATHS_PER_SEED); no-op by default.
+    try:
+        _setup_path_reuse(rep)
+    except Exception as _pre:
+        log(f"  [PATH-REUSE] setup skipped: {_pre!r}")
+    # Dev-only warmup shortening (WARMUP_OVERRIDE_S); no-op by default.
+    try:
+        _apply_warmup_override(rep)
+    except Exception as _we:
+        log(f"  [WARMUP] override skipped: {_we!r}")
+    # Dev-only measured-duration shortening (SIM_DURATION_OVERRIDE_S); no-op when None.
+    try:
+        _apply_sim_duration_override(rep)
+    except Exception as _se:
+        log(f"  [SIMDUR] override skipped: {_se!r}")
     app, _qw = _qt_app()
 
     # Snapshot open dialogs BEFORE execute: anything dialog-class appearing
@@ -3614,21 +4207,69 @@ def run_replication(rep):
     # SRC experiment). The old code discarded the return and then sat in the wait
     # loop for 1800 s re-issuing the same doomed execute -- the "stuck waiting for
     # start, log never updates" symptom. Detect refusal and fail fast. (2026-10-02)
-    # Pre-execute diagnostics: the replication's current status + identity. A
-    # status of 1 here BEFORE we execute means Aimsun still thinks it is running
-    # (stuck from a prior sim) -- which is exactly when it answers execute with
-    # "cannot be executed". (2026-10-02)
+    # Pre-execute diagnostics: the replication's current status + identity.
+    # NOTE (2026-10-13): on this build getSimulationStatus() returns a
+    # GKGenericExperimentStatus enum where 1 == eDone (FINISHED), NOT "running".
+    # A normal between-run replication reads eDone/1 here and executes fine.
+    # (The earlier "(status==1 => already running)" assumption was wrong for this
+    # build and mislabelled every healthy pre-execute line.)
     try:
         _pre_status = rep.getSimulationStatus()
     except Exception:
         _pre_status = '?'
     try:
         log("  pre-execute: replication id=%s name=%r status=%r "
-            "(status==1 => Aimsun thinks it is already running)" % (
+            "(this build: 1=eDone/FINISHED -- normal before an execute)" % (
                 getattr(rep, 'getId', lambda: '?')(),
                 getattr(rep, 'getName', lambda: '?')(), _pre_status))
     except Exception:
         pass
+    # ── PRE-EXECUTE BASELINE SNAPSHOT (2026-10-16 FIX) ─────────────────────────
+    # executeAction("execute") is SYNCHRONOUS on this build: it runs the WHOLE
+    # replication and returns only AFTER AAPIFinish (proven -- the per-sim engine
+    # log is fully written, [LOAD]+[FINISH], one second before executeAction
+    # returns). The completion baselines MUST therefore be captured HERE, before
+    # the sim runs. Capturing them AFTER executeAction returned (as the code did
+    # until now) snapshots a state that ALREADY includes the just-finished sim, so
+    # `new = current - baseline` is always empty, NO completion detector can fire,
+    # and the runner waits out the full 1800s dead-man -- exactly the "stall at the
+    # end of every run". Taken here, the first post-execute poll sees the new
+    # markers and completes within seconds. (Also correct for an async execute:
+    # the markers simply appear as the sim runs.)
+    _logdir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'logs')
+    _res_bases0 = []
+    for _cand0 in ((_os.path.join(PROJECT_DIR, 'results') if PROJECT_DIR else None),
+                   _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                 'results')):
+        if _cand0 and _os.path.isdir(_cand0) and _cand0 not in _res_bases0:
+            _res_bases0.append(_cand0)
+    _pre_folders = set()
+    for _b0 in _res_bases0:
+        try:
+            for _d0 in _os.scandir(_b0):
+                if _d0.is_dir() and _os.path.isfile(
+                        _os.path.join(_d0.path, 'simulation_results.csv')):
+                    _pre_folders.add(_d0.path)
+        except Exception:
+            pass
+    try:
+        _pre_logs = set(glob.glob(_os.path.join(_logdir, 'Aimsun_TSP_Log_*.txt')))
+    except Exception:
+        _pre_logs = set()
+    try:
+        _n0 = max(_pre_logs, key=_os.path.getmtime) if _pre_logs else None
+        if _n0:
+            with open(_n0, 'r', encoding='utf-8', errors='replace') as _fh0:
+                _txt0 = _fh0.read()
+            _pre_starts, _pre_finishes, _pre_sim_ends = (
+                _txt0.count('AAPILoad complete'),
+                _txt0.count('stats saved OK'),
+                _txt0.count('[SIM_END]'))
+        else:
+            _pre_starts, _pre_finishes, _pre_sim_ends = (0, 0, 0)
+    except Exception:
+        _pre_starts, _pre_finishes, _pre_sim_ends = (0, 0, 0)
+
     _exec_res = GKSystem.getSystem().executeAction("execute", rep, [], "")
     # Log the raw return so we can see what Aimsun hands back (async executes
     # return a not-yet-"done" handle, which is NORMAL -- do NOT treat that as a
@@ -3684,7 +4325,10 @@ def run_replication(rep):
                 pass
         return _seen
 
-    _pre_folders = _folders_with_results()
+    # NOTE: _pre_folders was already captured BEFORE executeAction (see the
+    # PRE-EXECUTE BASELINE SNAPSHOT above). Re-capturing here would include the
+    # just-finished sim's folder (executeAction is synchronous) and break
+    # completion detection, so it is intentionally NOT re-captured.
 
     # Per-sim START/FINISH signal via the engine LOG MARKERS. The result
     # FOLDER is NOT per-sim -- SimulationStats caches _run_folder_ts and REUSES
@@ -3773,15 +4417,12 @@ def run_replication(rep):
                     "SESSION, so an engine edit is NOT live until you RESTART "
                     "AIMSUN (reopen the model). Restart Aimsun, then re-run.")
 
-    _pre_starts, _pre_finishes, _pre_sim_ends = _log_marker_counts()
-    # Snapshot the set of engine log FILES before this run. A NEW file appearing
-    # (with [LOAD]/[FINISH]) is the per-sim start/finish signal that the count
-    # baseline above misses (each per-sim log resets the count to 1). See the
-    # robust detection block in the wait loop.
-    try:
-        _pre_logs = set(glob.glob(_os.path.join(_logdir, 'Aimsun_TSP_Log_*.txt')))
-    except Exception:
-        _pre_logs = set()
+    # NOTE: _pre_starts/_pre_finishes/_pre_sim_ends and _pre_logs were already
+    # captured BEFORE executeAction (PRE-EXECUTE BASELINE SNAPSHOT above). On this
+    # build executeAction is synchronous, so re-capturing them here would baseline
+    # a state that already includes the finished sim -> no completion detector
+    # could ever fire and the run would hang on the 1800s dead-man. They are
+    # intentionally NOT re-captured here.
 
     waited  = 0.0
     started = False
@@ -3812,55 +4453,10 @@ def run_replication(rep):
     while waited < 1800.0:
         if app:
             app.processEvents()
-        try:
-            _pt = _os.times()
-            _cpu_samples.append((waited, float(_pt[0]) + float(_pt[1])))
-            while _cpu_samples and waited - _cpu_samples[0][0] > 15.0:
-                _cpu_samples.pop(0)
-        except Exception:
-            pass
-        # CPU-delta (2026-10-01): Aimsun burning CPU in the trailing window means it
-        # is BUSY -- trip generation, SRC path calc, teardown -- not idle with a
-        # dropped execute. It WIDENS the re-issue window (below) and does NOT latch
-        # liveness. It must not touch _last_life: doing so made _alive permanently
-        # true, so the advertised window never applied and only the absolute deadline
-        # fired -- producing the self-contradictory log
-        #   "quiet 210s of 90s ... will re-issue at 90s (attempt 0/12, 210s elapsed)"
-        # i.e. a 90 s window it could never reach.
-        _cpu_busy = False
-        try:
-            _win = [c for _t, c in _cpu_samples if waited - _t <= EXEC_CPU_WINDOW_S]
-            if len(_win) >= 2 and (_win[-1] - _win[0]) >= EXEC_CPU_BUSY_DELTA_S:
-                _cpu_busy = True
-        except Exception:
-            pass
-        # A dialog since the execute is a sign of life (busy init / finishing teardown).
-        # Only a DISCRETE, unambiguous event latches: a dialog closes for good, so
-        # this window genuinely expires. CPU cannot be used this way.
-        _alive = (waited - _last_life) < EXEC_REISSUE_SILENCE_S
-        # Effective window: once a real init has been measured this session, sit
-        # well clear of it; before that, fall back to the constant. When Aimsun is
-        # demonstrably busy we wait the BUSY window instead of the idle one.
-        try:
-            _known = float(_LAST_INIT_S[0])
-        except Exception:
-            _known = 0.0
-        _reissue_window = (max(EXEC_REISSUE_SILENCE_MIN_S,
-                               EXEC_INIT_MULTIPLE * _known)
-                           if _known > 0.0 else EXEC_REISSUE_SILENCE_S)
-        if _cpu_busy:
-            _reissue_window = max(_reissue_window, EXEC_BUSY_START_WINDOW_S)
-        if _reissue_window > EXEC_ABSOLUTE_START_DEADLINE_S:
-            _reissue_window = EXEC_ABSOLUTE_START_DEADLINE_S
-        # EFFECTIVE window: the re-issue predicate ALSO demands the absolute
-        # deadline when _alive (a dialog closed recently). Reporting
-        # _reissue_window alone made the log disagree with the code whenever a
-        # dialog was present -- it announced "will re-issue at 180s" while the
-        # predicate actually required 300 s. Same class of message/predicate drift
-        # as the CPU-latch bug; fixed by deriving the number from the SAME
-        # condition the predicate uses.
-        _eff_window = (_reissue_window if not _alive
-                       else max(_reissue_window, EXEC_ABSOLUTE_START_DEADLINE_S))
+        # Re-issue is DISABLED (EXEC_MAX_RETRIES = 0): there is nothing to measure
+        # and no adaptive window to size. We just wait for the engine's [LOAD]
+        # marker; the only deadline is the absolute no-start backstop below.
+        _eff_window = EXEC_ABSOLUTE_START_DEADLINE_S
         # Fast path: if status polling DOES work, use it.
         try:
             status = rep.getSimulationStatus()
@@ -3985,117 +4581,33 @@ def run_replication(rep):
                 _ndlg = 0
             if _ndlg:
                 _last_life = waited
-            # (Removed 2026-09-13) The CPU-busy "liveness" hold measured
-            # _os.times() = THIS process, but the runner's own 2 Hz
-            # app.processEvents() + file-scan loop keeps the process above the 3%
-            # threshold forever, so it ALWAYS read "busy" -> _last_life reset every
-            # tick -> a SWALLOWED execute was NEVER re-issued (Aimsun genuinely
-            # idle but reported "busy" for 450s+). Liveness now comes only from
-            # real Aimsun DIALOGS (above) and the new-log-FILE signal (below).
-            # Re-issue execute ONLY as a LAST RESORT, and only while NO sim has
-            # started. EVIDENCE (2026-09-09 session log 134240): a HEALTHY execute produces its [LOAD] marker in
-            # ~5 s; the slow gaps were a SWALLOWED execute recovered ONLY by the
-            # old one-shot 300 s re-issue -- LOAD landed at ~335 s = 300 (threshold)
-            # + ~35 s init, EXACTLY, proving the original was LOST (not queued) and
-            # Aimsun was free long before 300 s. So a swallowed execute is a no-op
-            # we can safely re-fire early: at 20 s we clear the ~5 s healthy start
-            # with margin (never double-firing a healthy init) yet recover a
-            # swallow ~15x faster than before. Re-issue every 20 s (not one shot),
-            # up to EXEC_MAX_RETRIES times so it keeps trying until Aimsun accepts one; the
-            # _sim_started gate stops the instant any [LOAD] appears. If a DOUBLE
-            # [LOAD] is ever seen (starts jumps by 2), Aimsun is queuing not
-            # dropping -- raise this back and prefer the idle-handshake instead.
-            # LIVENESS (2026-09-12, retuned 2026-10-01): fire ONLY after
-            # _reissue_window of silence (measured init x2, else the constant).
-            # Slow inits are busy, not lost -- firing into them is what stacked
-            # every arm-seed into near-identical folder pairs.
-            # Reliable swallow signal: has a NEW engine log FILE appeared since
-            # this run's execute? The sim writes its own timestamped
-            # Aimsun_TSP_Log_*.txt when it starts -- none present => Aimsun dropped
-            # the execute => re-fire. >=2 => Aimsun QUEUED them => halt (no stack).
-            try:
-                _new_log_files = set(glob.glob(_os.path.join(
-                    _logdir, 'Aimsun_TSP_Log_*.txt'))) - _pre_logs
-            except Exception:
-                _new_log_files = set()
-            if len(_new_log_files) >= 2 and not started:
-                log(f"  {len(_new_log_files)} new sim logs since execute -- Aimsun "
-                    f"queues executes; re-issue halted (no stacking)")
-                _exec_retries = EXEC_MAX_RETRIES
-            elif (not started and not _new_log_files
-                    and (waited - _last_exec) >= _reissue_window
-                    and _exec_retries < EXEC_MAX_RETRIES
-                    and (not _alive
-                         or (waited - _last_exec) >= EXEC_ABSOLUTE_START_DEADLINE_S)):
-                try:
-                    GKSystem.getSystem().executeAction("execute", rep, [], "")
-                    _exec_retries += 1
-                    _last_exec = waited
-                    log(f"  execute swallowed (no new sim log after {waited:.0f}s"
-                        f"{', CPU busy but past the %.0fs deadline' % EXEC_ABSOLUTE_START_DEADLINE_S if _cpu_busy else ''}"
-                        f") -- re-issued (attempt {_exec_retries}/{EXEC_MAX_RETRIES})")
-                except Exception as _ee:
-                    log(f"  execute retry failed: {_ee!r}")
-        # Early no-start abort: retries exhausted and still no [LOAD]/new sim log
-        # after a grace window => Aimsun is REFUSING this replication, not just
-        # slow. Fail fast with a pointer instead of sitting out the 1800s deadline
-        # ("stuck waiting for start, log never updates"). (2026-10-02)
-        if (not started and _exec_retries >= EXEC_MAX_RETRIES
-                and (waited - _last_exec) >= max(_eff_window, EXEC_ABSOLUTE_START_DEADLINE_S)):
+            # Re-issue is DISABLED (EXEC_MAX_RETRIES = 0): the execute is fired once
+            # and we simply wait for it. No swallow-recovery, no stacking risk.
+            # (A genuinely dropped execute now fails at the deadline below.)
+        # No-start abort: we fire the execute ONCE (EXEC_MAX_RETRIES = 0) and wait.
+        # If no [LOAD] / new sim log appears by the absolute deadline, Aimsun is
+        # REFUSING this replication (not merely slow). Fail with a pointer.
+        if (not started
+                and (waited - _last_exec) >= EXEC_ABSOLUTE_START_DEADLINE_S):
             raise RuntimeError(
-                "run_replication: sim NEVER STARTED after %d execute attempts "
-                "(%.0fs; no [LOAD] marker, no new sim log). Aimsun is refusing "
-                "replication id=%s name=%r ('Action execute for object type "
-                "GKReplication cannot be executed'). It is not individually "
-                "runnable -- set  _cs._br.REPLICATION_NAME = \"<name>\"  (the "
-                "replication you run with Play in the GUI) and re-run." % (
-                    _exec_retries, waited,
+                "run_replication: sim NEVER STARTED within %.0fs (no [LOAD] "
+                "marker, no new sim log). Aimsun is refusing replication id=%s "
+                "name=%r ('Action execute for object type GKReplication cannot be "
+                "executed'). It is not individually runnable -- set  "
+                "_cs._br.REPLICATION_NAME = \"<name>\"  (the replication you run "
+                "with Play in the GUI) and re-run." % (
+                    EXEC_ABSOLUTE_START_DEADLINE_S,
                     getattr(rep, 'getId', lambda: '?')(),
                     getattr(rep, 'getName', lambda: '?')()))
-        if waited - _last_heartbeat >= 30.0:
+        if waited - _last_heartbeat >= 60.0:
             _last_heartbeat = waited
             if started:
                 log(f"  waiting for completion (engine [FINISH] marker)... "
                     f"({waited:.0f}s, running)")
             else:
-                try:
-                    _nlf = len(set(glob.glob(_os.path.join(
-                        _logdir, 'Aimsun_TSP_Log_*.txt'))) - _pre_logs)
-                except Exception:
-                    _nlf = 0
-                # Say WHY it is not re-issuing. "attempt 0/12" with no reason was
-                # undiagnosable: a continuously-busy CPU reading and a mere quiet
-                # wait produce the same line.
-                try:
-                    _wd = [c for _t, c in _cpu_samples
-                           if waited - _t <= EXEC_CPU_WINDOW_S]
-                    _cd = (_wd[-1] - _wd[0]) if len(_wd) >= 2 else 0.0
-                except Exception:
-                    _cd = 0.0
-                # Say WHY the window is what it is. CPU widens it, a live dialog
-                # forces the absolute deadline, and neither ever suppresses the
-                # re-issue entirely -- name whichever applied.
-                if _cpu_busy:
-                    _cpunote = (' [cpu %.2fs/%.0fs -> BUSY, window widened to '
-                                '%.0fs]' % (_cd, EXEC_CPU_WINDOW_S,
-                                            EXEC_BUSY_START_WINDOW_S))
-                elif _cd > 0:
-                    _cpunote = ' [cpu %.2fs/%.0fs -> idle]' % (_cd, EXEC_CPU_WINDOW_S)
-                else:
-                    _cpunote = ''
-                if _alive:
-                    _cpunote += (' [dialog seen %.0fs ago -> waiting the %.0fs '
-                                 'deadline]' % (waited - _last_life,
-                                                EXEC_ABSOLUTE_START_DEADLINE_S))
-                _why = ("quiet %.0fs of %.0fs%s, will re-issue at %.0fs"
-                          % (waited - _last_exec, _eff_window,
-                             (' (measured init %.0fs)' % _known)
-                             if _known > 0.0 else
-                             ' (no measured init yet, using fallback)',
-                             _eff_window)) + _cpunote
-                log(f"  waiting for sim to START -- no new sim log yet "
-                    f"(new_logs={_nlf}); {_why} "
-                    f"(attempt {_exec_retries}/{EXEC_MAX_RETRIES}, {waited:.0f}s elapsed)")
+                log("  [SETUP] waiting for Aimsun's per-run setup "
+                    "(trip-gen + SRC + network init) -- NORMAL, not an error "
+                    f"({waited:.0f}s elapsed).")
         _time.sleep(0.5)
         waited += 0.5
 
@@ -4131,11 +4643,23 @@ def run_replication(rep):
         log(f"  [TIMING] run_replication total {_tot:.0f}s "
             f"(init UNKNOWN -- no [LOAD] marker seen; sim+teardown {waited:.0f}s)")
     _RUN_REPL_LAST_DONE[0] = _time.time()
+    # Cache this seed's computed route forest (first time) for same-seed reuse.
+    try:
+        _capture_path_forest(rep)
+    except Exception as _cpe:
+        log(f"  [PATH-REUSE] capture skipped: {_cpe!r}")
 
 
 # =============================================================================
 # ── METRICS COLLECTION ────────────────────────────────────────────────────────
 # =============================================================================
+
+# Result folders already handed to a CSV row this session. A re-fired / duplicate
+# folder can never be collected twice: _find_results_folder prefers a folder NOT
+# in this set. (A live-learner re-run writes a DIFFERENT twin; the earlier one is
+# orphaned rather than silently re-fed as a second row.)
+_CONSUMED_RESULT_FOLDERS = set()
+
 
 def _find_results_folder(project_dir, strategy, seed, scalar, exp_name=None):
     """
@@ -4196,7 +4720,16 @@ def _find_results_folder(project_dir, strategy, seed, scalar, exp_name=None):
         except Exception as _e:
             print("[RESULT-DIR] WARN could not log candidates: %r" % (_e,))
 
-    return max(candidates, key=lambda d: d.stat().st_mtime).path
+    # DEDUP guard: prefer a folder NOT already consumed by a CSV row. Only when
+    # every candidate is consumed (the intra-run re-collect loop re-reads the same
+    # run) fall back to the newest -- so within a run the re-collect still works,
+    # but a NEW run never re-feeds an already-collected folder.
+    _fresh = [d for d in candidates if d.path not in _CONSUMED_RESULT_FOLDERS]
+    _pool = _fresh if _fresh else candidates
+    if not _fresh and len(candidates) > 1:
+        print("[RESULT-DIR] all %d candidates already consumed; reusing newest "
+              "(intra-run re-collect)" % (len(candidates),))
+    return max(_pool, key=lambda d: d.stat().st_mtime).path
 
 
 def _read_csv_first_row(csv_path):
@@ -4322,7 +4855,28 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
     }
 
     if not success:
-        return meta
+        # Runner-side failure (dead-man timeout / dialog stall / queued-execute
+        # interference): the sim may still have written a COMPLETE results
+        # folder (proven 2026-10-07: DCTSP seed300 wrote full KPIs but
+        # run_replication raised). Recover from files instead of a blank row.
+        _rec_folder = _find_results_folder(project_dir, strategy, seed, scalar,
+                                           exp_name)
+        if _rec_folder is not None:
+            _rec_row = _read_csv_first_row(
+                _os.path.join(_rec_folder, "simulation_results.csv"))
+            try:
+                _rec_dur = float(_rec_row.get("SimDuration_hrs", 0.0) or 0.0)
+            except Exception:
+                _rec_dur = 0.0
+            if _rec_dur >= 0.9 * EXPECTED_SIM_DURATION_HRS:
+                log(f"  [RECOVERED] run_replication failed but a complete results "
+                    f"folder exists (SimDuration={_rec_dur:.2f} h) -- "
+                    f"collecting from files")
+                success = True
+                meta["run_success"] = True
+                meta["run_recovered_from_files"] = True
+        if not success:
+            return meta
 
     folder = _find_results_folder(project_dir, strategy, seed, scalar, exp_name)
     if folder is None:
@@ -4804,6 +5358,11 @@ def _collect_aimsun_network_stats():
                 out["aimsun_avg_density_vkm"]  = 0.0
                 out["aimsun_avg_speed_kmh"]    = 0.0
                 out["aimsun_avg_delay_s_km"]   = 0.0
+            # aimsun_total_delay_s was declared in the master CSV header (priority
+            # keys) but had NO producer, so it was empty in every row. wt_delay is
+            # sum(delay_s_per_km × length_km) = total vehicle-seconds of delay, which
+            # is exactly this column. Populated on BOTH branches so it is never empty.
+            out["aimsun_total_delay_s"] = round(wt_delay, 2)
             # Per-type averages (car, bus, truck) — always populate even if 0
             for _pfx, _wf, _wd, _ws, _wdly in [
                 ("car", wt_flow_car, wt_dens_car, wt_spd_car, wt_dly_car),
@@ -5563,6 +6122,37 @@ def main():
 
                 # Purge .pyc so Aimsun re-reads the patched controller
                 _purge_pyc(CONTROLLER_PATH)
+
+                # ── STALE-MODULE GUARD (2026-10-13) ───────────────────────
+                # Aimsun caches loaded Python modules for the lifetime of the
+                # process, so editing engine.py / specialized_modes.py /
+                # Simulation_Stats.py / intersection_controller.py has NO effect
+                # until Aimsun is fully quit and relaunched. That happened once
+                # already: the whole 2026-10-13 18:19 batch ran with
+                # ENGINE_BUILD=2026-10-12T1700-netbenefit-gate while both
+                # engine.py copies on disk already said ...T1620-mainx-lanes-...,
+                # so every fix in that batch was silently absent -- the
+                # N_LoopCompletions / MeanLoopTT_s / LoopsPerBus columns were
+                # missing from the CSV header and no metric moved.
+                #
+                # The engine logs its own build tag at [LOAD], so compare that to
+                # the tag on disk and abort before spending the rest of the batch.
+                # Nothing else to do but relaunch Aimsun; .pyc purging is not
+                # enough.
+                _loaded_build = _read_loaded_build(LOGS_DIR)
+                _disk_build = _read_disk_engine_build()
+                if _loaded_build and _disk_build and _loaded_build != _disk_build:
+                    log("=" * 78)
+                    log("ABORT: Aimsun is running a STALE cached module.")
+                    log(f"  [LOAD] logged ENGINE_BUILD = {_loaded_build}")
+                    log(f"  engine.py on disk        = {_disk_build}")
+                    log("  Your latest source edits are NOT in effect.")
+                    log("  ACTION: fully quit Aimsun (not just re-run the script),")
+                    log("          relaunch it, then start this batch again.")
+                    log("=" * 78)
+                    raise RuntimeError(
+                        "STALE_MODULE: Aimsun loaded %s but engine.py on disk is %s "
+                        "-- restart Aimsun" % (_loaded_build, _disk_build))
 
                 t0      = _time.time()
                 success = True

@@ -184,6 +184,26 @@ LEARNING_ARMS = {
     "CELLQLEARN", "CELLQLEARN_FORCED", "CELLQLEARN_GATED",
     "CELLQLEARN_SAFE", "CELLQ_BUSSPLIT", "CELLQ_LEARN_UNCOORD",
     "CELLQ_VDET_BUSSPLIT", "CELLQ_VDET_ON", "DCTSP_MARL_RL",
+    # CHAMP CellQLearn arms (2026-10-13): without these they were treated as
+    # non-learners -> no train seed -> cold Q-table -> byte-identical results
+    # across every gate/relief variant. Registering them trains-then-evals.
+    "CHAMP_CELLQ_NOGATE", "CHAMP_CELLQ_STARVE_GATE",
+    "CHAMP_CELLQ_STARVE_COST_OFF", "CHAMP_CELLQ_MP_RELIEF",
+    "CHAMP_CTM_MULTI_RELIEF", "CHAMP_CELLQ_PROACTIVE",
+    "CHAMP_CELLQ_PURE_STATE", "CHAMP_CELLQ_LIVECOST",
+    "CHAMP_CELLQ_REQBUS", "CHAMP_CELLQ_LIVECOST_REQBUS",
+    "CHAMP_CELLQ_CLEAN", "CHAMP_CELLQ_NOPREARM",
+    # SCATS DS arms (2026-10-14): CELLQ learners -> need a train seed (MP_TRANSIT
+    # is analytic MaxPressure, so it is deliberately NOT registered here).
+    "CHAMP_SCATS_DSGATE", "CHAMP_SCATS_DSGATE_TIGHT", "CHAMP_SCATS_DSGATE_LOOSE",
+    "CHAMP_SCATS_DSGATE_THRU",
+    "CHAMP_SCATS_DSPLAN", "CHAMP_SCATS_FULL",
+    "CHAMP_SCATS_DSSTATE", "CHAMP_SCATS_SELFGATE",
+    # 2026-10-16: one-click "test everything" arms (whole-signal restructure).
+    "CHAMP_SCATS_RESTRUCTURE", "CHAMP_SCATS_RESTRUCTURE_EXT",
+    # 2026-10-17: objective-aligned global-delay + main-corridor guards, A/B.
+    "CHAMP_NETGATE", "CHAMP_NETGATE_LOOSE",
+    "CHAMP_THRU", "CHAMP_THRU_BLEND", "CHAMP_MULTIHEAD",
 }
 BXT_TRAIN_EPSILON = 0.30                    # exploration during the learners' train phase
 
@@ -205,7 +225,11 @@ GATE_EXPECT_S_PER_PAX = 15.84
 LEARNERS_FREEZE_ON_EVAL = True
 
 # Set True to run the top-up seed set instead of EVAL_SEEDS.
-USE_TOPUP_SEEDS = True
+# 2026-10-02: set False so the Aimsun pipeline scores the SAME seeds as the
+# SUMO HPC sweep (sweep_arms.py EVAL_SEEDS = [300, 400, 500, 600, 700]).
+# With True, Aimsun ran [300, 1200..1600] and the platforms were not
+# comparable. Flip back to True only when SUMO changes its EVAL_SEEDS too.
+USE_TOPUP_SEEDS = False
 DEMAND_SCALARS = [1.0]                      # x1.0 demand
 BUS_FREQ_INJECT_SCALAR = 0.0                # runtime PT frequency scaling
 RESULTS_CSV = _os.path.join(_ROOT, f"champion_{CORRIDOR}.csv")
@@ -229,6 +253,12 @@ BXT_TRAIN_DEMAND_SCALARS = []               # e.g. [0.5, 0.75, 1.0, 1.5, 2.0]
 # arm can still opt out explicitly. Engine reads MEASURED_STATE_FEED /
 # MEASURED_QUEUE_FEED from run_config (already in the propagation list).
 GLOBAL_MEASURED_FEED = True
+# 2026-10-03: every STATE-BASED strategy keys its state on the signal phase
+# (elapsed green / clearance) AND the measured flow+queue, so identical flow
+# states in different signal situations cannot collide, and the reward's
+# no-action future baseline can be computed from the same state. Injected as
+# setdefaults below so an arm can still opt out explicitly.
+GLOBAL_STATE_FULL = True
 # SMOKE_HEURISTIC_PRIOR: in the SMOKE run learners are eval-only with train=[], so
 # their Q-table is empty and a frozen BXT learner argmaxes NO_ACTION for every bus
 # -> byte-identical to NO_TSP (looks "broken"). When this is on, _run_and_collect
@@ -258,6 +288,45 @@ GLOBAL_CASCADE_COST = True
 # BXT_EVAL_DIAG=1 without editing the file. Parse with analyze_bxt_predictions.py.
 EVAL_DIAGNOSTICS = (_os.environ.get("BXT_EVAL_DIAG", "0") == "1")
 RESULTS_CSV = _os.path.join(_ROOT, f"champion_{CORRIDOR}.csv")
+
+
+def _write_controller_atomic(controller_path, text):
+    """Rewrite the controller through the corridor batch-runner's atomic writer.
+
+    The raw `open(path, 'w')` this file used originally TRUNCATES the target in
+    place. Aimsun's script loader can open the same path during that window, and
+    its read fails with
+        OSError: [Errno 22] Invalid argument: '...\\intersection_controller.py'
+    -- which aborted an entire kg sweep on 2026-10-19 (arm 1, immediately after
+    set_reward_weights, i.e. the first _set_controller_bxt_seeds call). Route
+    every controller rewrite through _br._write_controller (temp file +
+    os.replace, BOM stripped, settle sleep); fall back to a local atomic swap if
+    that helper is unavailable.
+    """
+    _w = getattr(_br, "_write_controller", None)
+    if _w is not None:
+        _w(controller_path, text)
+        return
+    import os as _o
+    import time as _t
+    _path = _o.path.abspath(controller_path)
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    _folder = _o.path.dirname(_path) or "."
+    _tmp = _o.path.join(_folder, "._cs_controller_patch_%d.tmp" % _o.getpid())
+    try:
+        with open(_tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            _o.fsync(f.fileno())
+        _o.replace(_tmp, _path)
+    finally:
+        try:
+            if _o.path.exists(_tmp):
+                _o.remove(_tmp)
+        except OSError:
+            pass
+    _t.sleep(0.5)
 
 
 def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps,
@@ -295,8 +364,7 @@ def _set_controller_bxt_seeds(controller_path, train, eval_, train_eps,
             # insert after the imports block (first blank line past 'import')
             txt = txt.replace("\nimport math\n", "\nimport math\n%s = %s\n" % (var, val), 1) \
                 if "\nimport math\n" in txt else (var + " = " + val + "\n" + txt)
-    with open(controller_path, "w", encoding="utf-8", newline="") as f:
-        f.write(txt)
+    _write_controller_atomic(controller_path, txt)
 def _set_controller_flag(controller_path, flag, value):
     """Force a top-level boolean flag in the controller (e.g. disable the heavy
     per-run plotting during a batch)."""
@@ -306,8 +374,7 @@ def _set_controller_flag(controller_path, flag, value):
     pat = re.compile(r"(?m)^(%s)(\s*:\s*bool)?\s*=.*$" % re.escape(flag))
     if pat.search(txt):
         txt = pat.sub(lambda m: "%s%s = %s" % (m.group(1), m.group(2) or "", value), txt)
-        with open(controller_path, "w", encoding="utf-8", newline="") as f:
-            f.write(txt)
+        _write_controller_atomic(controller_path, txt)
 
 
 def _disable_batch_plotting(controller_path):
@@ -328,6 +395,425 @@ def _disable_batch_plotting(controller_path):
 # corridor (v4): a strict cost veto proxies the downstream cascade the per-
 # decision models cannot see.  CellQLearn keeps ratio 1.0 (its Q learns cascade).
 _SAFE_VETO = 3.0
+
+# ── GENTLE ACTUATED JITTER (2026-10-21, operator) ─────────────────────────────
+# Universal small extend/end-early on the CURRENT phase, applied to every CANDIDATE
+# arm (not NO_TSP -- it never sets these, so the baseline stays fixed): EXTEND a
+# little while the queue is still discharging OR vehicles are still oncoming; END
+# EARLY only when the queue is fully cleared AND nothing is oncoming; on a switch,
+# serve the MOST-STARVED phase next. Robust to the Aimsun 'queued-but-cleared' bug
+# (direct standing-count cross-check in the engine). Extend BOUNDED to commissioned
+# +30%/+8s so a side phase can't balloon and starve the main.
+_GENTLE_JITTER = {
+    "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 70.0,
+    "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+    "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
+    "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 2.0,
+    "ACT_EXTEND_BAND": 0.30, "ACT_EXTEND_ABS_CAP_S": 8.0,
+    "ACT_EXTEND_MIN_OCC_VEH": 2.0, "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+}
+
+# Tuned baseline for the learned-Q (CellQLearn) arms, copied from CELLQLEARN_GATED
+# so every new CHAMP_CELLQ_* arm is a clean DELTA off ONE tuned config (difference
+# = the gate/relief/proactive/pure-state flags only). Without this base the new
+# arms carried only {GLOBAL_REWARD_MODE, BXT_MODE} and fell back to generic
+# learner defaults (BXT_SOLVER='harmony', no cascade cost, etc.), so training on a
+# seed would not have reproduced the tuned CellQLearn behaviour.
+_CELLQ_GATED_BASE = {
+    "GLOBAL_REWARD_MODE": True, "BXT_MODE": True,
+    "MP_ECTM_MODE": False, "DCTSP_ZIG_MODE": False, "BARGAIN_SPM_MODE": False,
+    "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+    "BXT_DT_S": 1.0, "BXT_EPSILON": 0.02, "BXT_ALPHA": 0.2, "BXT_GAMMA": 0.01,
+    "BXT_CAR_OCC": 1.2, "BXT_BALANCE_FACTOR": 1.1,
+    "CELLQLEARN_MIN_GAIN_S": 15.0,
+    "DECIDER_COST_VETO_RATIO": 1.5, "BXT_WARMSTART_FROM_SHARED": True,
+    "BXT_SOLVER": "deficit",
+    "BXT_NET_BENEFIT_GATE": True,
+    "CASCADE_COST_MODE": True,
+    "BUS_PAX_WEIGHT": 1.3, "GREEN_KEEP_CREDIT_S": 3.0,
+    "MULTIBUS_MAX_FACTOR": 1.0,
+    "CORRIDOR_REWARD_NEIGHBOR_W": 0.5,
+    "TSP_CYCLE_LENGTH_OVERRIDE_S": 135.0, "PHASE_SEQ_MAX_PER_CYCLE": 1,
+    **_GENTLE_JITTER,                       # universal extend/gap jitter (operator)
+}
+# 135 s was tuned on Logan (whose config cycle IS 120 s, so the override is a
+# deliberate +15 s cadence). KG's junctions are commissioned at 55/110/120/135,
+# so forcing 135 there makes the TSP cadence and cycle-window sums disagree
+# with the commissioned plan on 6 of 12 junctions. Off Logan, let the controller
+# read each junction's own cycle_length (engine.cfg_cycle_length_s). This
+# INVALIDATES direct comparison with earlier KG rows: re-run KG arms AND
+# NO_TSP together if you want a clean paired comparison.
+if CORRIDOR != "logan_road_new":
+    _CELLQ_GATED_BASE.pop("TSP_CYCLE_LENGTH_OVERRIDE_S", None)
+
+# Shared base for the GRADUAL SCATS arms: load the COMMISSIONED fixed-time plan
+# as-is, then change it in SMALL increments (SCATS reviews/modifies the plan
+# "in small increments, almost cycle-by-cycle"), so one jump can never destroy
+# the network's own green wave. Every TSP action family is off: these arms are
+# pure signal retiming.
+_PURE_SCATS_GRAD_BASE = {
+    # Commissioned plan loaded as-is; no OD/Webster prior, no offset jump.
+    "PLAN_OPTIMIZE": True, "PLAN_MEASURED": True, "PLAN_OPTIMIZE_OFFSETS": False,
+    # SCATS HISTORICAL SEED (2026-10-20): start every SCATS arm from the
+    # junction's REAL commissioned SCATS plan (iMove share RAM export, loader
+    # scats_hist_plan.py; all 12 KG junctions mapped). Falls back to the
+    # network's commissioned plan (PLAN_MEASURED) when a site has no data.
+    "PLAN_SCATS_HIST": True,
+    "SCATS_HIST_DAYTYPE": 8, "SCATS_HIST_TOD_MIN": 480.0,
+    # GREEN-INDEPENDENT DS (flow ratio, not green-referenced): ranks phases by true
+    # demand (main highest), so the split stops robbing the main and ds_max reflects
+    # real saturation instead of pinning at the clamp on short greens.
+    "DS_GREEN_INDEPENDENT": True,
+    # PER-MOVEMENT DS: a shared approach section feeds several phases; measure each
+    # phase from ITS turn-lane flow (SCATS strategic approach), not the whole
+    # section -- stops a minor turn phase reading the main road's demand.
+    "DS_PER_TURN_FLOW": True,
+    # ORDER-PRESERVING DS compression (2026-10-20): a hard 2.0 clamp flattens
+    # every oversaturated/queued phase to the same value so the splitters lose
+    # all relative-pressure discrimination. Compress instead (linear to 2.0,
+    # asymptotic to 8.0) -- ordering survives, magnitudes stay sane. CEIL=8
+    # because the KG corridor's raw DS reaches 7-10+ at the jams (per_raw was
+    # pinning at the old raw clamp 5.0); 8 keeps heavy-jam phases separated
+    # (DS 5 -> 4.1, 10 -> 5.9, 20 -> 7.4) instead of the near-ties at CEIL=5.
+    "DS_ORDER_PRESERVE": True, "DS_ORDER_CEIL": 8.0,
+    # Measured-detector SCATS DS (green-utilization / discharge) + per-lane + side.
+    "SCATS_DS_DISCHARGE": True, "DS_LANE_WORST": True,
+    "SIDE_FLOW_MEASURED_ONLY": True, "PHASE_STARVE_GUARD": True,
+    "SCATS_SIDE_MONITOR": True,
+    # Keep the commissioned phase set intact (no skip / restructure).
+    "SCATS_PHASE_SKIP": False, "PLAN_RESTRUCTURE": False,
+    # PURE VEHICLE saturation -- NO passenger weighting. Pax-weighting spikes a
+    # phase's DS 2-3x the instant a bus appears, lurching the split/cycle; SCATS
+    # keeps the DS vehicle-based and handles buses as a SEPARATE discrete request.
+    "SCATS_TRANSIT_PRIORITY": False, "DS_PAX_WEIGHTED": False,
+    "DS_CAP_FLOOR_GREEN_S": 7.0, "DS_MIN_GREEN_S": 7.0,
+    # SCATS-style BUS PRIORITY: on bus detection, a BOUNDED green extension / early
+    # recall for the bus phase -- discrete, capped, respects min-greens + the
+    # commissioned band. Does NOT distort the underlying DS balance.
+    "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+    "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0,
+    # JIT BUS GATE (2026-10-20): grant ONLY when the bus would just miss the
+    # natural green (eta > remaining bus-phase green, eta <= 30s strike window);
+    # pass-anyway / too-far buses get NOTHING -> no wasted donor green.
+    "BUS_PRIO_JIT_ENABLE": True, "BUS_PRIO_QUEUE_DELAY_S": 2.0,
+    "BUS_PRIO_JIT_MARGIN_S": 2.0, "BUS_PRIO_JIT_STRIKE_S": 30.0,
+    # Kill EVERY TSP action family: pure signal retiming.
+    "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+    "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+    "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+    "PHASE_ROTATION_MODE": False, "DCTSP_GREEN_REALLOC_MODE": False,
+    "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+    "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+    "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+    "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+    "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+    "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+    "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False, "ZIGDOG_MODE": False,
+}
+
+# ── INITPLAN (2026-10-21, operator request) ──────────────────────────────────
+# AIMSUN'S INITIAL (COMMISSIONED) SIGNAL PLAN, untouchable reference arm: the
+# TSP machinery is loaded and measuring, but NOTHING writes to the signal
+# plan (no SCATS-hist seed, no DS splits, no cycle law, no master sync, no bus
+# priority). If this scores like NO_TSP, the machinery itself is harmless and
+# every BROKEN arm can be attributed to its writing heuristics; if it does
+# NOT score like NO_TSP, something in the machinery perturbs the plan even
+# with all writes off -- that alone would be a disqualifying bug.
+_SCATS_INITPLAN_BASE = {
+    **_PURE_SCATS_GRAD_BASE,
+    # NO seed / warm-start / adaptive writes of ANY kind:
+    "PLAN_SCATS_HIST": False,      # do not re-write the plan from SCATS data
+    "PLAN_OPTIMIZE": False,        # no warm-start retime at t=0
+    "PLAN_MEASURED": False,
+    "DS_PLAN_ADAPT": False,        # no adaptive splits
+    "DS_SOLVE_PER_CYCLE": False,
+    "DS_CYCLE_ADAPT": False,       # no real-time cycle law
+    "DS_MASTER_CYCLE": False, "DS_MASTER_SPLITS": False,
+    "DS_MASTER_OFFSETS": False,
+    "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+    "SCATS_SIDE_MONITOR": False,   # read-only anyway; off for purity
+    "QUEUE_SERVE_FLOOR": False,
+}
+
+# Shared baseline for the SINGLE-HEURISTIC ABLATION arms. Every ABL_* arm spreads
+# this and turns on exactly ONE new real-time heuristic, so a one-seed test can
+# attribute the effect to that heuristic rather than to the compound SOLVER.
+_ABL_BASE = {
+    **_PURE_SCATS_GRAD_BASE,
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 15.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": True,
+    "DS_SPLIT_MAX_MOVE_S": 10.0,
+    "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_LAW": "ds_curve", "DS_CYCLE_STEP_S": 5.0,
+    "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+    "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+    "DS_MASTER_INTERVAL_S": 30.0,
+    "DS_MASTER_MIN_RATIO": 0.85, "DS_MASTER_MAX_RATIO": 1.15,
+    "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+    "DS_MASTER_DS_STEP_S": 3.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+    "DS_MASTER_SPLITS": True,
+    "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+    "DS_OFFSET_MAX_STEP_S": 6.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+    "DS_MARRY_DIVORCE": False,
+    # all NEW heuristics explicitly OFF in the baseline
+    "SCATS_SEQUENCE_BY_Y": False, "SCATS_LEADLAG": False,
+    "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False,
+    "SCATS_PLAN_LIBRARY": False, "SCATS_POG_OFFSETS": False,
+    "SCATS_CRITICAL_INTERSECTION": False,   # isolated below too
+}
+
+# ── FAITHFUL SCATS (2026-10-20) ───────────────────────────────────────────────
+# The SOLVER/ABL arms GRIDLOCK (913-1664 delay-hrs vs NO_TSP 645) because they
+# break the commissioned coordination: re-solved offsets destroy the green wave,
+# DS-equalising splits steal green from the saturated MAIN, and 10s/5s/6s moves
+# every 15-30s oscillate the plant. Real SCATS is a GENTLE, COORDINATED smoother
+# that starts from the working commissioned plan and nudges it. This base does
+# that: keep commissioned OFFSETS (do NOT re-solve -- preserve progression),
+# FLOW-PROPORTIONAL splits (protect the main, NOT DS-equalise), and ~1-2s moves
+# reviewed roughly once per CYCLE, driven by the subsystem (whole-system) common
+# cycle from the critical intersection.
+_PURE_SCATS_FAITHFUL_BASE = {
+    **_PURE_SCATS_GRAD_BASE,
+    # SPLITS: QUEUE-AWARE flow-proportional (serves the backlog, protects the
+    # main). Responsive enough to clear a queue within ~2 cycles now that the
+    # weight points the RIGHT way (queue-aware); the robbing was the problem, not
+    # the speed. Review ~every half-cycle, move up to 5s toward the target.
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 5.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_FLOW_QUEUE_AWARE": True,
+    # Real-SCATS cadence + convergent step (2026-10-20 fix): re-solve the split
+    # EVERY CYCLE (SCATS: "reviewed and modified in small increments, almost on a
+    # cycle-by-cycle basis") and scale the move cap with the cycle (10% of the
+    # live green budget per cycle) so a 4-40 s split gap can close -- the old
+    # absolute 5 s cap tie-bounced forever against 30 s reviews.
+    "DS_SOLVE_PER_CYCLE": True, "DS_SPLIT_MAX_MOVE_FRAC": 0.10,
+    # Never FLATTEN the commissioned split (keeps the main's coordinated green
+    # band; adapt within +/-30%). This is the key anti-gridlock bound.
+    # DEMAND-WEIGHTED BAND EXCEPTION: the band may pin a phase the COMMIS-
+    # SIONED plan itself under-serves (39590: 4-lane main, ~6s commissioned
+    # green, raw DS 5.0 -> capped at 7.8s forever). Jets go through once the
+    # compressed DS weight reaches 3.0 -- ceiling lifted to 2x commissioned
+    # share (plus the band). One-way: the floor stays inside the band.
+    # TIGHTENED 2026-10-20 (0.30 -> 0.06): band=0.30 let the main drop from its
+    # commissioned ~60% to ~42% of the budget, and the DEMAND EXCEPTION below
+    # (ceiling -> 2x commissioned when DS>=3) made it worse -- once
+    # DS_ORDER_PRESERVE let DS reach 5+, the exception fired on EVERY queued
+    # phase (unreachable under the old 2.0 clamp), so minor phases grabbed 2x
+    # their share and squeezed the main below its floor -> progression broke ->
+    # gridlock. Pin the main HARD to commissioned (+/-6%) and DISABLE the
+    # exception so FAITHFUL is genuinely "commissioned plan + tiny nudges".
+    "DS_SPLIT_COMMISSIONED_BAND": 0.06,
+    "DS_BAND_DEMAND_ENABLE": False, "DS_BAND_DEMAND_DS": 3.0,
+    "DS_BAND_DEMAND_MULT": 2.0,
+    # CYCLE: whole-system common cycle from the critical intersection, crept
+    # gently (<=2s/solve) within a tight band around commissioned; grows under
+    # oversaturation. Reviewed ~per cycle, not every 30s.
+    "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+    "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 2.0,
+    "DS_CYCLE_MIN_RATIO": 0.90, "DS_CYCLE_MAX_RATIO": 1.20,
+    "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+    "DS_MASTER_DS_CYCLE": True, "DS_MASTER_INTERVAL_S": 120.0,
+    "DS_MASTER_DS_STEP_S": 2.0, "DS_MASTER_DS_WARM_S": 300.0,
+    "DS_MASTER_MIN_RATIO": 0.90, "DS_MASTER_MAX_RATIO": 1.20,
+    # Share the split plan across the subsystem (coherent, whole-system).
+    "DS_MASTER_SPLITS": True,
+    # KEEP THE COMMISSIONED OFFSETS -- do NOT re-solve them (progression is what
+    # makes the fixed plan work; re-solving is the #1 gridlock cause).
+    "DS_MASTER_OFFSETS": False,
+    # No phase reordering / regrouping / marriage (disrupt coordination).
+    "PLAN_RESTRUCTURE": False, "SCATS_PHASE_SKIP": False, "DS_MARRY_DIVORCE": False,
+    "SCATS_SEQUENCE_BY_Y": False, "SCATS_LEADLAG": False,
+    "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False,
+    "SCATS_PLAN_LIBRARY": False, "SCATS_POG_OFFSETS": False,
+    # Whole-system cycle from the busiest (critical) intersection.
+    "SCATS_CRITICAL_INTERSECTION": True,
+}
+
+# ── FULLY-ADAPTIVE SCATS (2026-10-20, operator direction) ─────────────────────# NOT fixed-time at all: SEED with Webster splits (demand-resolved from measured
+# flow -- the "signal plan that resolves the intersection"), then WORK OUT THE
+# CYCLE in real time. The cycle is a single STABILISING scalar, so it can move
+# faster (the gridlock came from aggressive per-phase SPLIT/OFFSET churn, NOT from
+# moving the cycle); splits stay gentle + flow-proportional (protect the main),
+# offsets seed from the Webster green-wave and are then held (no thrash re-solve).
+# Whole-system common cycle from the critical intersection. SCATS DS rules
+# throughout (target 0.90, incremental, discharge-measured, starve-guarded).
+_PURE_SCATS_ADAPTIVE_BASE = {
+    **_PURE_SCATS_GRAD_BASE,
+    # SEED: Webster from measured demand (NOT the fixed commissioned plan) + a
+    # Webster green-wave for the initial offsets. Fully adaptive from there.
+    "PLAN_OPTIMIZE": True, "PLAN_MEASURED": False, "PLAN_OPTIMIZE_OFFSETS": True,
+    # SPLITS: QUEUE-AWARE flow-proportional (serves the backlog, never DS-equalise
+    # -> never starve the main). Responsive (half-cycle review, up to 5s/move).
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 5.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_FLOW_QUEUE_AWARE": True,
+    # Real-SCATS cadence + convergent step (2026-10-20 fix, see FAITHFUL above).
+    # 15% of budget/cycle: ADAPTIVE is meant to move more, still no swing.
+    "DS_SOLVE_PER_CYCLE": True, "DS_SPLIT_MAX_MOVE_FRAC": 0.15,
+    # Never flatten the main's green band -- adapt within +/-45% of commissioned
+    # (wider than FAITHFUL, since ADAPTIVE is meant to move more).
+    # Below band exception as in FAITHFUL: the ceiling is lifted for a genuine
+    # over-saturated (compressed-DS >= 3) phase so the jam can actually drain.
+    # TIGHTENED 2026-10-20 (0.45 -> 0.12): same flattening as FAITHFUL but ADAPTIVE
+    # is allowed to move a bit more (+/-12%). Demand exception DISABLED (it now
+    # mis-fires with DS_ORDER_PRESERVE's 5+ range, see FAITHFUL note) so the main
+    # band is actually protected.
+    "DS_SPLIT_COMMISSIONED_BAND": 0.12,
+    "DS_BAND_DEMAND_ENABLE": False, "DS_BAND_DEMAND_DS": 3.0,
+    "DS_BAND_DEMAND_MULT": 2.0,
+    # QUEUE-SERVE FLOOR (2026-10-20): a phase with a measured standing queue
+    # gets queue-discharge time as a split floor (capped 20s / 35% of budget),
+    # so every queued vehicle can at least clear the intersection.
+    "QUEUE_SERVE_FLOOR": True, "QUEUE_SERVE_CAP_S": 20.0,
+    "QUEUE_SERVE_MAX_FRAC": 0.35,
+    # CYCLE = the primary adaptive lever: converge to the DS-optimal cycle quickly
+    # via the SCATS curve, WIDE band so it can actually find the right cycle (not
+    # pinned near commissioned), whole-system common cycle from the critical DS.
+    "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+    "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+    "DS_CYCLE_MIN_RATIO": 0.70, "DS_CYCLE_MAX_RATIO": 1.50,
+    "DS_MASTER_CYCLE": True, "DS_MASTER_DS_CYCLE": True,
+    "DS_MASTER_COMMISSIONED": False,          # not anchored to commissioned
+    "DS_MASTER_INTERVAL_S": 60.0, "DS_MASTER_DS_STEP_S": 5.0,
+    "DS_MASTER_DS_WARM_S": 120.0,             # start working the cycle early
+    "DS_MASTER_MIN_RATIO": 0.70, "DS_MASTER_MAX_RATIO": 1.50,
+    "DS_MASTER_SPLITS": True,
+    # OFFSETS: seeded by the Webster green-wave above; HOLD them (no thrash).
+    "DS_MASTER_OFFSETS": False,
+    # No phase reordering / regrouping / marriage (disrupt coordination).
+    "PLAN_RESTRUCTURE": False, "SCATS_PHASE_SKIP": False, "DS_MARRY_DIVORCE": False,
+    "SCATS_CRITICAL_INTERSECTION": True,
+}
+
+# ── WIN-ONLY ACTUATION OVERLAY (2026-10-20) ───────────────────────────────────
+# The commissioned plan is OPTIMAL for the design-hour AVERAGE demand, so any
+# re-derivation of splits/cycle/offsets moves AWAY from it and loses. The only way
+# to BEAT fixed-time on its own design hour is to ADD value WITHOUT subtracting
+# from the coordinated backbone: capture the cycle-to-cycle variance it cannot.
+# These three heuristics do exactly that, all inside _actuated_gap_out (runs every
+# tick on top of whatever plan the arm holds):
+#   * GAP-OUT   -- end a phase early once its queue is cleared AND arrivals dried
+#                  up, banking the slack to the next needy phase (demand-protected:
+#                  never while a queue stands or vehicles are still arriving).
+#   * MAX-OUT   -- force-terminate a phase at SCATS_MAX_OUT_S so one movement can
+#                  never hog the cycle.
+#   * SPILLBACK -- if a phase's DOWNSTREAM receiving link is >=80% full, stop
+#                  feeding it and switch to a movement whose exit has room (kills
+#                  the spillback cascade that collapses throughput).
+# Pure WIN-ONLY: deviates from the plan opportunistically, returns to it next
+# cycle, coordination preserved.
+_WIN_ACTUATION = {
+    "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 55.0,
+    "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+    "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
+    "SPILLBACK_GATE": True, "SPILLBACK_GATE_FRAC": 0.80, "JAM_VEH_SPACING_M": 7.0,
+}
+# INITPLAN_ADAPT backbone as a reusable base (commissioned plan, cycle+offsets
+# HELD, only gentle +/-6% split nudges -- the best non-learner last run at 901).
+_INITPLAN_ADAPT_BASE = {
+    **_SCATS_INITPLAN_BASE,
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_FLOW_QUEUE_AWARE": True, "DS_SOLVE_PER_CYCLE": False,
+    "DS_SPLIT_COMMISSIONED_BAND": 0.06,
+    "DS_CYCLE_ADAPT": False, "DS_MASTER_CYCLE": False,
+    "DS_MASTER_SPLITS": False, "DS_MASTER_OFFSETS": False,
+}
+# PBIL backbone as a reusable base (best arm last run at 739, serves > NO_TSP).
+_PBIL_BASE = {
+    **_PURE_SCATS_GRAD_BASE,
+    "PBIL_TS_MODE": True, "PBIL_GEN_S": 300.0, "PBIL_DELTA": 0.25,
+    "PBIL_ALPHA": 0.20, "PBIL_MIN_P": 0.05, "PBIL_WARM_S": 120.0,
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_FLOW_QUEUE_AWARE": True, "DS_SPLIT_COMMISSIONED_BAND": 0.08,
+    **_GENTLE_JITTER,                       # universal extend/gap jitter (operator)
+    # RULE-BASED TSP PRIORITY (2026-10-21, operator): PBIL already extends the bus
+    # green JIT (BUS_PRIO_JIT); add the EARLY-GREEN/RECALL so a bus approaching a RED
+    # bus phase that would MISS gets the green brought forward (truncate the current
+    # non-ped phase after min-green). Bus-ETA ruled, bounded, pedestrian-safe.
+    "BUS_PRIO_RECALL_ENABLE": True,
+}
+
+# ══ FAITHFUL SCATS SOLVER + GATED TSP FLAVOURS (2026-10-21, operator plan) ═══════
+# The target architecture: a FAITHFUL SCATS solver that CONTINUOUSLY and GRADUALLY
+# evolves the signal plan (gentle DS-proportional split nudges within a tight band,
+# reviewed ~every cycle, commissioned CYCLE + OFFSETS HELD -- the config that stays
+# stable and near NO_TSP), WITH bus-TSP flavours (green extension / early red /
+# phase insertion) layered on top and fired as JITTERED priorities ONLY WHEN THEY
+# WILL WORK -- i.e. DS-gated (don't push into a saturated cross) + net-benefit
+# gated (bus pax-s saved > cross pax-s cost) + cascade-priced. This underlay is
+# method-agnostic (no decider mode, no action-kill); each arm below adds its
+# decider (PURE_SCATS / CELLQLEARN / DCTSP_ZIG) and which flavours it may fire.
+_SCATS_SOLVER_UNDERLAY = {
+    # measurement: real SCATS-commissioned seed + green-independent per-movement DS
+    "PLAN_SCATS_HIST": True, "SCATS_HIST_DAYTYPE": 8, "SCATS_HIST_TOD_MIN": 480.0,
+    "DS_GREEN_INDEPENDENT": True, "DS_PER_TURN_FLOW": True,
+    "DS_ORDER_PRESERVE": True, "DS_ORDER_CEIL": 8.0,
+    "SCATS_DS_DISCHARGE": True, "DS_LANE_WORST": True, "PHASE_STARVE_GUARD": True,
+    "SIDE_FLOW_MEASURED_ONLY": True, "SCATS_SIDE_MONITOR": True,
+    "SCATS_TRANSIT_PRIORITY": False, "DS_PAX_WEIGHTED": False,
+    "DS_CAP_FLOOR_GREEN_S": 7.0, "DS_MIN_GREEN_S": 7.0,
+    # CONTINUOUS GRADUAL SOLVER: gentle DS-proportional splits, tight band, held
+    # cycle + offsets (adapting those breaks coordination).
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0, "DS_SOLVE_PER_CYCLE": True,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0, "DS_FLOW_QUEUE_AWARE": True,
+    "DS_SPLIT_MAX_MOVE_FRAC": 0.10, "DS_SPLIT_COMMISSIONED_BAND": 0.06,
+    "DS_CYCLE_ADAPT": False, "DS_MASTER_CYCLE": False, "DS_MASTER_OFFSETS": False,
+    "DS_MASTER_SPLITS": True, "SCATS_CRITICAL_INTERSECTION": True,
+    "PLAN_RESTRUCTURE": False, "SCATS_PHASE_SKIP": False, "DS_MARRY_DIVORCE": False,
+    # JIT discrete bus priority (green-boost + recall), bus-eta gated
+    "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+    "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0,
+    "BUS_PRIO_JIT_ENABLE": True, "BUS_PRIO_JIT_MARGIN_S": 2.0,
+    "BUS_PRIO_JIT_STRIKE_S": 30.0, "BUS_PRIO_QUEUE_DELAY_S": 2.0,
+    # TSP-ACTION GATING: fire a flavour only when it will WORK.
+    "DS_BALANCE_GATE": True, "DS_MAX": 1.70,     # not into a saturated conflicting app.
+    "CASCADE_COST_MODE": True,                    # price the downstream cascade
+    "DECIDER_COST_VETO_RATIO": 1.5,               # bus pax-s saved > 1.5x cross cost
+    # don't pour queue-relief green into a phase whose exit is jammed (thrown away)
+    "RELIEF_NEEDS_DOWNSTREAM": True,
+    # GENTLE ACTUATED JITTER (2026-10-21): on every phase, EXTEND a little while the
+    # queue is still discharging OR vehicles are still oncoming, and END EARLY only
+    # when the queue is fully cleared AND nothing is oncoming -- then switch to the
+    # MOST-STARVED phase next. Robust to the Aimsun 'queued-but-cleared' bug (direct
+    # standing-count cross-check). Extend is BOUNDED to commissioned +30%/+8s so it
+    # can't balloon a side phase and starve the main.
+    "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 70.0,
+    "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+    "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
+    "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 2.0,
+    "ACT_EXTEND_BAND": 0.30, "ACT_EXTEND_ABS_CAP_S": 8.0,
+    "ACT_EXTEND_MIN_OCC_VEH": 2.0, "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+}
+
+# ══ FAITHFUL SCATS MASTER (regional) SOLVER (2026-10-21) ═════════════════════════
+# Makes the controller act like REAL SCATS across the whole subsystem instead of
+# holding a static plan: ONE common cycle per subsystem, driven by the CRITICAL
+# intersection's degree of saturation via the SCATS cycle-length curve (target DS
+# 0.90), moved GRADUALLY (<=3 s per review, ~every cycle) and banded TIGHT around
+# the commissioned cycle -- NOT the wide-band Webster ADAPTIVE that gridlocked. The
+# CRUCIAL safe piece is the OFFSET adapter: a POG hill-climb that only KEEPS an
+# offset nudge when it RAISES arrivals-on-green (Purdue coordination), reversing
+# bad moves -- so coordination can evolve without the re-solve that broke the green
+# wave. Splits still evolve gently (band from the underlay). Overlay ON TOP of
+# _SCATS_SOLVER_UNDERLAY (it flips the held cycle/offsets back on).
+_SCATS_MASTER = {
+    "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True, "DS_CYCLE_TARGET": 0.90,
+    "DS_CYCLE_STEP_S": 3.0, "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+    "DS_MASTER_CYCLE": True, "DS_MASTER_DS_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+    "DS_MASTER_INTERVAL_S": 60.0, "DS_MASTER_DS_STEP_S": 3.0,
+    "DS_MASTER_DS_WARM_S": 120.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+    "DS_MASTER_MIN_RATIO": 0.85, "DS_MASTER_MAX_RATIO": 1.15, "PLAN_CYCLE_BAND": 0.15,
+    "DS_MASTER_SPLITS": True, "SCATS_CRITICAL_INTERSECTION": True,
+    # offsets: POG hill-climb (the only coordination-safe online offset adapter)
+    "DS_MASTER_OFFSETS": True, "SCATS_POG_OFFSETS": True,
+    "SCATS_POG_STEP_S": 2.0, "SCATS_POG_EPS": 0.01,
+}
 
 ARMS = [
     {"name": "NO_TSP", "strategy": "NORMAL", "method": "NO_TSP",
@@ -350,6 +836,39 @@ ARMS = [
         "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
         "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
         "MEASURED_SIDE_COST": True}},
+
+    # CELLQ_CTM_COUPLED: the KG-winner uncoordinated learner PLUS its OWN CTM
+    # corridor coupling (2026-10-06). This is CELLQ's native coordination -- NOT
+    # the KALMAN/SHOCKWAVE pre-arm (which regressed CELLQ; uncoordinated won) but
+    # the next-intersection downstream-platoon penalty (_continuous_corridor_penalty)
+    # that couples the corridor WITHOUT any pre-arm. CORRIDOR_COUPLE_BIDIRECTIONAL
+    # scores general traffic in BOTH arterial directions, not just the bus heading.
+    # A/B vs CELLQ_LEARN_UNCOORD isolates exactly the coupling (one variable). NB:
+    # corridor coupling has previously HURT on KG (car exploded) -- Logan may differ.
+    {"name": "CELLQ_CTM_COUPLED", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True,
+        "CELLQ_CORRIDOR_COUPLED": True, "CORRIDOR_COUPLE_BIDIRECTIONAL": True}},
+
+    # CELLQ_CTM_REWARD: the KG-winner learner with its REWARD cross-cost computed by
+    # the genuine multi-cell Daganzo CTM (_ctm_cross_cost_paxs) instead of the
+    # single-cell analytic estimate (2026-10-06). Aligns the CELLQ learner's own cost
+    # model with the multicell family (MP_ECTM/CTMGS, CELLQLEARN_DP) that is the only
+    # arm beating NO_TSP. A/B vs CELLQ_LEARN_UNCOORD isolates the reward COST MODEL.
+    {"name": "CELLQ_CTM_REWARD", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "BXT_CORRIDOR_MODE": True,
+        "CELLQ_CORRIDOR_LEARN": True,
+        "BXT_ALPHA": 0.3, "BXT_GAMMA": 0.5, "BXT_EPSILON": 0.02,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True,
+        "CELLQ_CTM_REWARD": True}},
 
     {"name": "CELLQ_VDET_ON", "strategy": "GLOBAL_REWARD",
      "method": "CELLQLEARN", "coordinated": False, "coordination_algo": "KALMAN",
@@ -381,6 +900,96 @@ ARMS = [
         "MEASURED_SIDE_COST": True,
         "VIRTUAL_DET_FROM_PLAN": True,
         "EXCLUDE_BUS_FROM_CAR_QUEUE": True}},
+
+    # ZIGDOG (2026-10-02): per-cycle receding-horizon AOG optimizer. Every
+    # cycle it re-solves the NEXT cycle's phase service (HOLD/GE/ER + seconds)
+    # from the bus timetable ETAs + live schedule deviation and the measured
+    # demands, maximising expected arrivals-on-green; the plan is cached
+    # between boundaries and re-optimised at each new cycle. See dctsp_zigdog
+    # in shared_tsp_engine/specialized_modes.py.
+    {"name": "ZIGDOG", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_MODE": True,
+        # Inherit the CellQLearn-corridor CTM controller's cross cost.
+        "ZIGDOG_CTM": True,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+
+    # ZIGDOG_Q (2026-10-02): plain tabular Q-learner on the SAME phase-binary
+    # state space (one bit per green phase; 4 phases -> 4 states/junction,
+    # 48 across the corridor). 3 actions {HOLD, GE-best, ER-best}, TD(0) +
+    # epsilon-greedy with an optimistic ZIGDOG-seeded init, CTM cross cost.
+    {"name": "ZIGDOG_Q", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+
+    # ZIGDOG_QP (2026-10-04): PREDICTIVE variant -- the state adds the
+    # red-queue bucket (queue-release prediction) and the bus-context bit
+    # (fleet tracker), with the queue-release scoring term + band caps on.
+    {"name": "ZIGDOG_QP", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "ZIGDOG_Q_STATE_QUEUE": True, "ZIGDOG_Q_STATE_BUS": True,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+
+    # ── Channel-usage ablations (2026-10-04) ─────────────────────────────
+    # Each disables ONE information channel of ZIGDOG_QP. If the objective /
+    # action profile is invariant vs ZIGDOG_QP, that channel is NOT being
+    # consumed by the controller (the audit question: is everything biting?).
+    {"name": "ZIGDOG_QP_NODP", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "ZIGDOG_Q_STATE_QUEUE": True, "ZIGDOG_Q_STATE_BUS": True,
+        "ZIGDOG_DP_ENABLE": False,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+    {"name": "ZIGDOG_QP_NOQREL", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "ZIGDOG_Q_STATE_QUEUE": True, "ZIGDOG_Q_STATE_BUS": True,
+        "ZIGDOG_QUEUE_REL": False,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+    {"name": "ZIGDOG_QP_NOSQB", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "ZIGDOG_Q_STATE_QUEUE": False, "ZIGDOG_Q_STATE_BUS": True,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+    {"name": "ZIGDOG_QP_NOBUS", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True,
+        "ZIGDOG_Q_STATE_QUEUE": True, "ZIGDOG_Q_STATE_BUS": False,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
+
+    # ZIGCTM (2026-10-02): a NORMAL CTM controller on the same phase-binary
+    # state space -- ZIGDOG_Q's learner with the AOG/bus term removed
+    # (ZIGDOG_BUS_W=0): reward = corridor surplus - CTM cross cost only.
+    # Isolates what the schedule/AOG term (ZIGDOG/ZIGDOG_Q) actually buys.
+    {"name": "ZIGCTM", "strategy": "GLOBAL_REWARD", "method": "ZIGDOG_Q",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "ZIGDOG_Q_MODE": True,
+        "ZIGDOG_CTM": True, "ZIGDOG_BUS_W": 0.0,
+        "MEASURED_STATE_FEED": True, "MEASURED_QUEUE_FEED": True,
+        "MEASURED_SIDE_COST": True}},
 
     {"name": "CELLQLEARN", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
      "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
@@ -594,7 +1203,7 @@ ARMS = [
     # the old NASH_GATE, which was just the bargaining heuristic under a different
     # log tag (a weighted SUM, with its NASH_* knobs inert).
     {"name": "NASH_BARGAIN", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
-     "coordinated": True, "coordination_algo": "NASH", "reward_overrides": {
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
         "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
         "NASH_CORRIDOR_MODE": True,
         "NASH_GATE_MODE": False, "BARGAIN_SPM_MODE": False, "DCTSP_ZIG_MODE": False,
@@ -608,6 +1217,12 @@ ARMS = [
         # bps*surplus and over-weights raw bus benefit (2026-09-10). Individual
         # rationality (bps>cpc) is still enforced inside _nash_bargain_pick.
         "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        # 2026-10-17 risk margin: require the transit benefit to clear the
+        # DETECTOR-ESTIMATED cross cost by 1.5x before an action is eligible.
+        # At ratio 1.0 this arm measured +17% total corridor delay / +13.4% avg
+        # passenger delay vs NO_TSP -- it was accepting transfers whose real cross
+        # cost exceeded the estimate.
+        "NASH_NET_GATE_RATIO": 1.5,
         # CTM cell-to-cell cascade in cpc: the bargain surplus (bps-cpc) now
         # includes downstream spillback, so it won't "bargain" an action that
         # gridlocks the corridor.
@@ -621,6 +1236,69 @@ ARMS = [
         "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
         # Viability gate ON (2026-09-12): stand down on saturation instead of
         # bargaining into gridlock (NASH seed spread 113-193 on KG).
+        "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        **_GENTLE_JITTER}},                     # universal extend/gap jitter (operator)
+
+    # NASH_BARGAIN_THRU: the THROUGHPUT twin of NASH_BARGAIN. Identical Nash
+    # structure (same net-surplus p_T=0 bargain, same integer durations, same CTM
+    # cascade, same congestion gate) EXCEPT NASH_THRU_SURPLUS=1, so the bargaining
+    # surplus is the net passengers DISCHARGED per cycle (_net_pax_throughput_delta:
+    # served-phase gain - cross-phase loss - switching loss + bus_pax) instead of
+    # the net passenger-DELAY saved. That is the "bargain between signal time and
+    # most throughput" variant: it pushes the most people through the network, and a
+    # saturated competitor is self-gating (stealing its green yields ~0 extra
+    # throughput, so the surplus goes negative with no separate rule).
+    {"name": "NASH_BARGAIN_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+         "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+         "NASH_CORRIDOR_MODE": True,
+         "NASH_GATE_MODE": False, "BARGAIN_SPM_MODE": False, "DCTSP_ZIG_MODE": False,
+         "MP_ECTM_MODE": False, "BXT_MODE": False,
+         "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+         "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+         "NASH_THRU_SURPLUS": True,
+         "NASH_NET_GATE_RATIO": 1.5,
+         "CASCADE_COST_MODE": True,
+         "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+         "NASH_CONVERGENCE_TOL": 0.01,
+         "NASH_INTEGER_DURATIONS": True,
+         "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+         "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+         "DCTSP_CONGESTION_GATE": True,
+         "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    # NASH_CTM: the PAIRED A/B for NASH_BARGAIN. IDENTICAL config in every respect
+    # (same net-surplus p_T=0 bargain, same integer-duration recoverability cap, same
+    # corridor best-response, same congestion gate) EXCEPT it prices the cross-street
+    # cost with the genuine multi-cell Daganzo CTM model (CTM_CROSS_COST_MODE) instead
+    # of the single-cell point-queue analytic cost. Rationale (2026-10-06): the Nash
+    # wiring is correct -- it evaluates every candidate on current state via
+    # _dctsp_eval_action and plays the bargain -- but its cross cost `cpc` was the
+    # analytic single-cell estimate, which UNDER-prices a long red (no per-cell
+    # storage, no backward-wave spillback). The surplus>0 individual-rationality gate
+    # then over-accepts and cars back up. The CTM cost (measured arrivals, per-cell
+    # storage, spillback) is the faithful price. This arm isolates ONLY the cost MODEL
+    # so the A/B vs NASH_BARGAIN measures exactly that. The forward CASCADE add-on
+    # (downstream main-release spillback) stays on in BOTH arms -- it is orthogonal.
+    {"name": "NASH_CTM", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "NASH_CORRIDOR_MODE": True,
+        "NASH_GATE_MODE": False, "BARGAIN_SPM_MODE": False, "DCTSP_ZIG_MODE": False,
+        "MP_ECTM_MODE": False, "BXT_MODE": False,
+        "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "NASH_NET_GATE_RATIO": 1.5,
+        "CASCADE_COST_MODE": True,
+        # THE ONE DIFFERENCE vs NASH_BARGAIN: faithful multi-cell CTM cross cost.
+        "CTM_CROSS_COST_MODE": True,
+        "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+        "NASH_CONVERGENCE_TOL": 0.01,
+        "NASH_INTEGER_DURATIONS": True,
+        "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
         "DCTSP_CONGESTION_GATE": True,
         "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
 
@@ -680,21 +1358,1548 @@ ARMS = [
         "DCTSP_CONGESTION_GATE": True,
         "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
 
-    # MILP-based TSP — selects a fixed-duration signal action with bus priority.
-    # It does not optimize a continuous timing schedule.
-    # MILP_MPC: the REAL multi-period rolling-horizon MILP (OR-Tools CP-SAT,
-    # milp_mpc_controller.py) run as its own CONTROL_MODE -- NOT the old
-    # single-cycle greedy dctsp_milp_tsp decider (which never actually used
-    # MILP_HORIZON_CYCLES). strategy="MILP_MPC" makes set_control_mode patch
-    # CONTROL_MODE="MILP_MPC" so the per-second horizon controller runs.
-    # REQUIRES OR-Tools installed in Aimsun's Python; the engine logs
-    # [MILP_MPC] FATAL and produces no TSP if it is missing.
     {"name": "MILP_MPC", "strategy": "MILP_MPC", "method": "MILP_MPC",
     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
         "MILP_MPC_HORIZON_S": 300.0, "MILP_MPC_REPLAN_S": 30.0,
         "MILP_MPC_TIME_LIMIT_S": 1.5, "MILP_MPC_EPSILON_LATE_S": 60.0,
         "MILP_MPC_EPSILON_Z4_S": 90.0, "MILP_MPC_Z4_BASELINE": 380.0,
         "MILP_MPC_ACTION_S": 10.0}},
+
+    # ── A/B CONTROLS (2026-10-12) ────────────────────────────────────────────
+    {"name": "CHAMP_CELLQ_NOGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False}},
+
+    {"name": "CHAMP_CELLQ_STARVE_GATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_MAIN_STARVE_GATE": True,
+        "BXT_MAIN_STARVE_VEH": 8.0, "BXT_MAIN_STARVE_OCC": 1.2,
+        "BXT_MAIN_STARVE_S_PER_VEH": 1.0}},
+
+    {"name": "CHAMP_CELLQ_STARVE_COST_OFF", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "SAT_RELIEF_BONUS": False}},
+
+    # ── SCATS degree-of-saturation arms (2026-10-14) ──────────────────────────
+    # Test the SCATS mechanism DIRECTLY -- balance every approach's MEASURED
+    # degree of saturation -- rather than the analytic-delay ledger. So these
+    # arms turn the analytic net-benefit / main-starve gates OFF and rely only on
+    # the DS gate / DS plan adapter, to isolate whether the SCATS observable
+    # beats the predicted-delay machinery that keeps losing to NO_TSP.
+    # (a) DS-balance GATE only: veto a time-stealing action when a conflicting
+    #     approach is already at/above DS_MAX (0.90). Nothing else gated.
+    {"name": "CHAMP_SCATS_DSGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
+
+    # ── SCATS DS-GATE tuning variants (2026-10-16) ────────────────────────────
+    # The DS gate is the KG clean-winner; these vary HOW it acts for the focused
+    # SCATS test (test_scats.py). All share the DSGATE base (no analytic gates).
+    #
+    # CEILING CALIBRATION (2026-10-17): the ceilings were 0.85/0.90/0.95, which are
+    # ALL below the corridor's measured DS (mean 1.80, max 2.00, clamped at
+    # DS_CLAMP_MAX=2.0). Every conflicting approach therefore exceeded all three, so
+    # the three variants vetoed identically and the A/B was degenerate -- measured:
+    # TIGHT and LOOSE produced bit-identical per-seed metrics. The ceilings now span
+    # the real DS range: 1.40 (bites often) / 1.70 (base) / 2.00 (only at the clamp,
+    # i.e. lets priority through most of the time).
+    # TIGHT: lower ceiling -> gate bites sooner, protects the cross harder (acts
+    # less). LOOSE: higher ceiling -> lets bus priority through more. THRU: pair
+    # the gate with the net-throughput reward so the OBJECTIVE and the gate agree.
+    {"name": "CHAMP_SCATS_DSGATE_TIGHT", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.40}},
+
+    {"name": "CHAMP_SCATS_DSGATE_LOOSE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 2.00}},
+
+    # (a2) ADAPTIVE ceiling (2026-10-17): NO hand-picked DS number at all. The gate
+    #      compares the conflicting approach against the junction's OWN DS spread
+    #      measured this tick -- veto only when it sits in the worse DS_REL_MARGIN
+    #      fraction of the junction's own min..max range. Scale-free (the corridor's
+    #      absolute DS cancels, so it needs no re-calibration when demand or the
+    #      corridor changes), self-tuning (adapts as the corridor loads/clears), and
+    #      degenerate-safe (a uniformly saturated junction vetoes nothing because
+    #      there is no better approach to protect). This is SCATS balance read
+    #      literally: do not over-serve one approach at the expense of a WORSE one
+    #      at the same junction. TIGHT margin = stricter (vetoes more).
+    {"name": "CHAMP_SCATS_DSGATE_REL", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True,
+        "DS_GATE_RELATIVE": True, "DS_REL_MARGIN": 0.5}},
+
+    {"name": "CHAMP_SCATS_DSGATE_REL_TIGHT", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True,
+        "DS_GATE_RELATIVE": True, "DS_REL_MARGIN": 0.25}},
+
+    {"name": "CHAMP_SCATS_DSGATE_THRU", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0, "W_DELAY_LEDGER": 0.3}},
+
+    # (a4) DSGATE + WHOLE-SIGNAL PLAN RE-TIMING (2026-10-19): the DSGATE champion
+    #      with the SCATS re-timing job switched ON -- DS split-adapt (retime the
+    #      base plan toward equal DS at rest) plus the online SEQ/RG restructure
+    #      (reorder the phase sequence / regroup signal groups, conflict-checked).
+    #      A/B partner of CHAMP_SCATS_DSGATE (gate on, so the analytic gates stay
+    #      off) so the marginal value of re-timing is isolated from the gate.
+    {"name": "CHAMP_SCATS_DSGATE_RESTRUCTURE", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10,
+        "PLAN_RESTRUCTURE": True,
+        "RESTRUCTURE_ORDER": True, "RESTRUCTURE_GROUP": True,
+        "RESTRUCTURE_MIN_GAIN_S": 3.0, "RESTRUCTURE_MAX_PHASES": 8,
+        "PHASE_SEQ_MAX_PER_CYCLE": 1}},
+
+    # ── PURE SCATS (2026-10-19): throw the fixed-time plan away and solve the
+    #    signal CONTINUOUSLY from SCATS logic alone -- NO TSP. This is the
+    #    "just run SCATS, but bus-passenger-weighted saturation" arm:
+    #      * CONTROL_MODE=DRL_DENSITY calls run_reward_tsp EVERY STEP, which runs
+    #        the DS plan adapt every tick -- the plan is retimed CONTINUOUSLY from
+    #        MEASURED degree of saturation and does NOT wait for a bus:
+    #          - CYCLE LENGTH (DS_CYCLE_ADAPT): grow/shrink the cycle so the
+    #            busiest approach's DS is driven to DS_CYCLE_TARGET, splits scaled
+    #            proportionally, bounded by the SCATS cycle range.
+    #          - SPLITS (DS_PLAN_ADAPT): move bounded green from the lowest-DS
+    #            phase to the highest-DS phase until the DS spread closes.
+    #        Both are pure DS feedback; no bus-delay objective anywhere. The
+    #        whole-signal RESTRUCTURE is deliberately OFF here because it adopts a
+    #        reorder/regroup only on PREDICTED BUS-DELAY gain -- not DS.
+    #      * EVERY bus-priority action family is switched OFF (GE/INS/GR/SEQ,
+    #        phase rotation, green realloc) so the candidate pool holds ONLY
+    #        NO_ACTION -- no green extension, no insertion, no early red, no
+    #        offset correction, no phase advance. Nothing in the run is bus-
+    #        triggered; the signal is a plain SCATS controller.
+    #      * The ONE difference from plain SCATS is that DS is passenger-weighted
+    #        (DS_PAX_WEIGHTED + DS_BUS_PAX_WEIGHT): an approach carrying buses
+    #        reads a higher saturation and is fed more of the split where buses
+    #        are relevant. DS_BUS_PAX_WEIGHT is the only bus knob.
+    #      * No analytic net-benefit / starvation gate: the DS adapt IS the
+    #        controller. A/B vs NO_TSP isolates pure-SCATS-with-bus-pax-DS.
+    {"name": "CHAMP_SCATS_PURE_PAX", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # INITIAL PLAN SOLVED UPFRONT from the TOTAL (OD-rated) system demand:
+        # Webster cycle + splits at startup (the way SCATS initialises from the
+        # flow profile), then the DS adapt refines it online. PLAN_TRANSIT_WEIGHT
+        # is 0 so the start plan is demand-only -- no bus premium anywhere; the
+        # only bus effect stays the pax-weighted DS.
+        "PLAN_OPTIMIZE": True,
+        "PLAN_TRANSIT_WEIGHT": 0.0,
+        "PLAN_OPTIMIZE_OFFSETS": True,    # seed the regional green-wave
+        # MASTER (regional) planner: ONE common cycle per subsystem solved from
+        # the group's TOTAL demand and embedded into every local controller's
+        # base plan. Locals then adapt splits within it (two-level SCATS).
+        "DS_MASTER_CYCLE": True, "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.5, "DS_MASTER_MAX_RATIO": 1.5,
+        # MEASURED-FLOW regional OFFSETS: green-wave re-solved from live link
+        # travel times every master interval (SCATS offset layer).
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        # SCATS re-timing: continuous DS splits + DS cycle-length selection.
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_SPLIT_PROPORTIONAL": True,     # SCATS split law (direct DS-proportional)
+        # PHASE SKIPPING: zero-demand phases drop to the skip floor, their green
+        # reclaimed for the critical (main) phase.
+        "SCATS_PHASE_SKIP": True, "SCATS_SKIP_DS": 0.05, "SCATS_SKIP_GREEN_S": 3.0,
+        # PER-LANE worst-lane DS (turn-lane aware) + SCATS master split broadcast
+        # + master cycle from the critical DS via the SCATS calibration curve.
+        "DS_LANE_WORST": True, "DS_MASTER_SPLITS": True,
+        "DS_MASTER_DS_CYCLE": True, "SCATS_CYCLE_CURVE": True,
+        # PHASE REDUCTION: fold negligible-demand phases into a compatible phase
+        # (isolated from re-order/re-group so only the reduction is measured).
+        "PLAN_RESTRUCTURE": True, "RESTRUCTURE_ORDER": False,
+        "RESTRUCTURE_GROUP": False, "RESTRUCTURE_MERGE_SAME": True,
+        "RESTRUCTURE_MERGE_DS": 0.10,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10,
+        "DS_ADAPT_EVERY_S": 15.0,
+        "DS_CYCLE_ADAPT": True, "DS_CYCLE_TARGET": 0.90,
+        "DS_CYCLE_HYST": 0.05, "DS_CYCLE_STEP_S": 5.0,
+        # Cycle range derived from each junction's COMMISSIONED cycle:
+        # 0.5x .. 1.5x of CycleTime (no hand-picked seconds).
+        "DS_CYCLE_MIN_RATIO": 0.5, "DS_CYCLE_MAX_RATIO": 1.5,
+        # SCATS TRANSIT PRIORITY at the MEDIUM level (graded SCATS PT priority):
+        # a detected bus raises its phase's DS by the medium pax-weight (0.5), so
+        # the SCATS split law stretches the transit phase's green -- the real SCATS
+        # mechanism, no external preemption. This is the ONLY bus effect in the arm.
+        # (Was DS_PAX_WEIGHTED weight 1.0 == effectively HIGH; medium = 0.5.)
+        "SCATS_TRANSIT_PRIORITY": True, "SCATS_TP_LEVEL": "medium",
+        "DS_PAX_WEIGHTED": True,
+        # SCATS dynamic subsystem MARRIAGE/DIVORCE: the master re-partitions each
+        # corridor's subsystems every solve from the members' live required cycles
+        # (marry compatible neighbours, divorce a junction whose demand diverges).
+        "DS_MARRY_DIVORCE": True, "DS_MARRY_TOL": 0.15, "DS_MARRY_HOLD_S": 120.0,
+        # SCATS is MEASURED-detector, not demand-prior: drop the OD seed on the
+        # side/cross shockwave flow (empty approach -> 0, not a fabricated ~1400 vph).
+        "SIDE_FLOW_MEASURED_ONLY": True,
+        # SCATS DS = green utilization from STOP-LINE discharge (not arrival/capacity):
+        # bounded near 1.0, the real SCATS degree-of-saturation that drives splits.
+        "SCATS_DS_DISCHARGE": True,
+        # Kill EVERY bus-priority action family: pure SCATS, no TSP.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False,
+        "DCTSP_GREEN_REALLOC_MODE": False,
+        # No specialised decider may commit (else it bypasses the pool/gates).
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a2) SCOOT-RS: the TRL-SCOOT control law (bus-free). Regional critical-DS
+    #      cycle + flow-proportional splits + green-wave offsets. Ported from the
+    #      SCOOT reference (github.com/boadadf/scoot-ai): the cycle grows with the
+    #      subsystem's busiest DS, and green is proportional to each phase's
+    #      measured flow. Bus enters ONLY via the passenger-weighted DS.
+    {"name": "CHAMP_SCOOT_RS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCOOT",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # Start plan solved upfront from the total demand (Webster), then SCOOT
+        # takes over: regional cycle + flow splits + green-wave offsets.
+        "PLAN_OPTIMIZE": True,
+        "PLAN_TRANSIT_WEIGHT": 0.0,        # demand-only start plan (no bus premium)
+        "PLAN_OPTIMIZE_OFFSETS": True,     # SCOOT offsets (regional progression)
+        # The SCOOT law.
+        "SCOOT_RS_MODE": True, "SCOOT_RS_TARGET_DS": 0.90, "SCOOT_RS_HYST": 0.05,
+        "SCOOT_RS_CYCLE_STEP_S": 5.0,
+        "SCOOT_RS_MIN_RATIO": 0.5, "SCOOT_RS_MAX_RATIO": 1.5,
+        "SCOOT_RS_WARMUP_S": 300.0, "SCOOT_RS_OFFSETS": True,
+        # Regional common-cycle plumbing (master broadcasts _master_common_cycle_s).
+        "DS_MASTER_CYCLE": True, "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.5, "DS_MASTER_MAX_RATIO": 1.5,
+        # MEASURED-FLOW regional OFFSETS + phase skipping (shared plumbing).
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "SCATS_PHASE_SKIP": True, "SCATS_SKIP_DS": 0.05, "SCATS_SKIP_GREEN_S": 3.0,
+        # PER-LANE worst-lane DS (turn-lane aware) + SCATS master split broadcast
+        # + master cycle from the critical DS via the SCATS calibration curve.
+        "DS_LANE_WORST": True, "DS_MASTER_SPLITS": True,
+        "DS_MASTER_DS_CYCLE": True, "SCATS_CYCLE_CURVE": True,
+        # PHASE REDUCTION: fold negligible-demand phases into a compatible phase
+        # (isolated from re-order/re-group so only the reduction is measured).
+        "PLAN_RESTRUCTURE": True, "RESTRUCTURE_ORDER": False,
+        "RESTRUCTURE_GROUP": False, "RESTRUCTURE_MERGE_SAME": True,
+        "RESTRUCTURE_MERGE_DS": 0.10,
+        # Local cycle drives toward the common cycle; band = commissioned cycle.
+        "DS_CYCLE_ADAPT": True, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.5, "DS_CYCLE_MAX_RATIO": 1.5,
+        "DS_MIN_GREEN_S": 7.0,
+        # Passenger-weighted demand -- the ONLY bus effect in this arm.
+        "DS_PAX_WEIGHTED": True, "DS_BUS_PAX_WEIGHT": 1.0,
+        # Kill EVERY bus-priority action family: pure SCOOT, no TSP.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False,
+        "DCTSP_GREEN_REALLOC_MODE": False,
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a3) CHAMP_SCATS_CMEAS: the MEASURED-cycle variant of (a1). The OD demand
+    #      Webster cycle is dropped entirely -- it is only a coarse network-wide
+    #      prior and saturated every junction (Y=0.95 -> 150 s). Instead the
+    #      master builds the common cycle from the members' COMMISSIONED cycles
+    #      (busiest wins, exactly SCATS) and the local controller runs the
+    #      commissioned plan, retiming splits from MEASURED DS and the cycle from
+    #      MEASURED DS within the commissioned band. Pure measured-flow SCATS.
+    {"name": "CHAMP_SCATS_CMEAS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # PLAN_OPTIMIZE runs, but sourced from the COMMISSIONED plan (measured
+        # splits + master cycle) instead of the OD-demand Webster prior.
+        "PLAN_OPTIMIZE": True, "PLAN_MEASURED": True,
+        "PLAN_OPTIMIZE_OFFSETS": True,
+        # MASTER from COMMISSIONED cycles (not the demand prior).
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.5, "DS_MASTER_MAX_RATIO": 1.5,
+        # MEASURED-FLOW regional OFFSETS: green-wave re-solved on the master
+        # interval from live link travel times (SCATS offset layer).
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        # SCATS re-timing: MEASURED-DS splits + MEASURED-DS cycle selection.
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_SPLIT_PROPORTIONAL": True,     # SCATS split law (direct DS-proportional)
+        # PHASE SKIPPING: zero-demand phases -> skip floor, green to the main phase.
+        "SCATS_PHASE_SKIP": True, "SCATS_SKIP_DS": 0.05, "SCATS_SKIP_GREEN_S": 3.0,
+        # PER-LANE worst-lane DS (turn-lane aware) + SCATS master split broadcast
+        # + master cycle from the critical DS via the SCATS calibration curve.
+        "DS_LANE_WORST": True, "DS_MASTER_SPLITS": True,
+        "DS_MASTER_DS_CYCLE": True, "SCATS_CYCLE_CURVE": True,
+        # PHASE REDUCTION: fold negligible-demand phases into a compatible phase
+        # (isolated from re-order/re-group so only the reduction is measured).
+        "PLAN_RESTRUCTURE": True, "RESTRUCTURE_ORDER": False,
+        "RESTRUCTURE_GROUP": False, "RESTRUCTURE_MERGE_SAME": True,
+        "RESTRUCTURE_MERGE_DS": 0.10,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10,
+        "DS_ADAPT_EVERY_S": 15.0,
+        "DS_CYCLE_ADAPT": True, "DS_CYCLE_TARGET": 0.90,
+        "DS_CYCLE_HYST": 0.05, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.5, "DS_CYCLE_MAX_RATIO": 1.5,
+        # SCATS TRANSIT PRIORITY at the MEDIUM level (graded SCATS PT priority):
+        # a detected bus raises its phase's DS by the medium pax-weight (0.5), so
+        # the SCATS split law stretches the transit phase's green -- the real SCATS
+        # mechanism, no external preemption. This is the ONLY bus effect in the arm.
+        # (Was DS_PAX_WEIGHTED weight 1.0 == effectively HIGH; medium = 0.5.)
+        "SCATS_TRANSIT_PRIORITY": True, "SCATS_TP_LEVEL": "medium",
+        "DS_PAX_WEIGHTED": True,
+        # SCATS dynamic subsystem MARRIAGE/DIVORCE: the master re-partitions each
+        # corridor's subsystems every solve from the members' live required cycles
+        # (marry compatible neighbours, divorce a junction whose demand diverges).
+        "DS_MARRY_DIVORCE": True, "DS_MARRY_TOL": 0.15, "DS_MARRY_HOLD_S": 120.0,
+        # SCATS is MEASURED-detector, not demand-prior: drop the OD seed on the
+        # side/cross shockwave flow (empty approach -> 0, not a fabricated ~1400 vph).
+        "SIDE_FLOW_MEASURED_ONLY": True,
+        # SCATS DS = green utilization from STOP-LINE discharge (not arrival/capacity):
+        # bounded near 1.0, the real SCATS degree-of-saturation that drives splits.
+        "SCATS_DS_DISCHARGE": True,
+        # Kill EVERY bus-priority action family: pure SCATS, no TSP.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False,
+        "DCTSP_GREEN_REALLOC_MODE": False,
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a3b) CHAMP_SCATS_SIGNALS: the MINIMAL overlay -- "use the already-inputted
+    #       signals, just solve those phases" (operator 2026-10-19). Start from the
+    #       model's COMMISSIONED plan (the real SCATS phases + cycle) and solve ONLY
+    #       the SPLITS from measured green-utilization DS. NO generalized derivation:
+    #       no Webster, no cycle change, no phase restructure/skip, no master
+    #       grouping/marriage, no master cycle/offsets. Isolates whether the
+    #       generalized plan is what's hurting -- if this BEATS CMEAS, it is.
+    {"name": "CHAMP_SCATS_SIGNALS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # Commissioned plan as-is; no OD/Webster prior, no offset re-solve.
+        "PLAN_OPTIMIZE": True, "PLAN_MEASURED": True, "PLAN_OPTIMIZE_OFFSETS": False,
+        # Solve SPLITS only (green moves between phases; cycle + phase set fixed).
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_MIN_GREEN_S": 6.0,                 # real SCATS min green (TIM.DAT)
+        # EVERYTHING generalized OFF: keep the commissioned cycle + phases intact.
+        "DS_CYCLE_ADAPT": False, "SCATS_CYCLE_CURVE": False,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_DS_CYCLE": False,
+        "DS_MASTER_OFFSETS": False, "DS_MASTER_SPLITS": False,
+        "DS_MARRY_DIVORCE": False,
+        "PLAN_RESTRUCTURE": False, "SCATS_PHASE_SKIP": False,
+        # Measured-detector SCATS DS (green utilization) + per-lane + safety guard.
+        "SCATS_DS_DISCHARGE": True, "DS_LANE_WORST": True,
+        "SIDE_FLOW_MEASURED_ONLY": True, "PHASE_STARVE_GUARD": True,
+        # Transit priority medium (pax-weighted DS).
+        "SCATS_TRANSIT_PRIORITY": True, "SCATS_TP_LEVEL": "medium",
+        "DS_PAX_WEIGHTED": True,
+        # Pure SCATS: kill every TSP action family.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False, "DCTSP_GREEN_REALLOC_MODE": False,
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a3c) CHAMP_SCATS_LOCAL: isolated per-junction adaptive SCATS -- NO grouped
+    #       logic (no master/marriage/offsets). Uses the AVAILABLE commissioned
+    #       phases but solves for ORDER (phase sequence) + TIMINGS (splits + local
+    #       cycle) from measured DS at each junction independently. Variant of
+    #       CHAMP_SCATS_SIGNALS that adds order + cycle solving but still no grouping.
+    {"name": "CHAMP_SCATS_LOCAL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # Commissioned phases available; no OD/Webster prior.
+        "PLAN_OPTIMIZE": True, "PLAN_MEASURED": True, "PLAN_OPTIMIZE_OFFSETS": False,
+        # Solve ORDER (re-sequence phases) but NOT grouping/merging -- keep the
+        # available phases, just order them; split + cycle solved locally.
+        "PLAN_RESTRUCTURE": True, "RESTRUCTURE_ORDER": True,
+        "RESTRUCTURE_GROUP": False, "RESTRUCTURE_MERGE_SAME": False,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_MIN_GREEN_S": 6.0,
+        # LOCAL cycle solving via the SCATS curve (per junction, NOT the master).
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+        # NO grouped logic at all.
+        "DS_MASTER_CYCLE": False, "DS_MASTER_DS_CYCLE": False,
+        "DS_MASTER_OFFSETS": False, "DS_MASTER_SPLITS": False,
+        "DS_MARRY_DIVORCE": False, "SCATS_PHASE_SKIP": False,
+        # Measured-detector SCATS DS + per-lane + safety guard.
+        "SCATS_DS_DISCHARGE": True, "DS_LANE_WORST": True,
+        "SIDE_FLOW_MEASURED_ONLY": True, "PHASE_STARVE_GUARD": True,
+        # Transit priority medium.
+        "SCATS_TRANSIT_PRIORITY": True, "SCATS_TP_LEVEL": "medium",
+        "DS_PAX_WEIGHTED": True,
+        # Pure SCATS: kill every TSP action family.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False, "DCTSP_GREEN_REALLOC_MODE": False,
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a4) CHAMP_SCOOT_RS_CMEAS: the MEASURED-cycle variant of (a2). Same SCOOT
+    #      law (critical-DS regional cycle + flow-proportional splits) but the
+    #      common cycle is built from COMMISSIONED cycles and the plan starts from
+    #      the network commissioned plan (no OD prior, no OD offsets). Bus-free.
+    {"name": "CHAMP_SCOOT_RS_CMEAS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCOOT",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        # PLAN_OPTIMIZE runs, sourced from the COMMISSIONED plan (measured splits
+        # + master cycle) rather than the OD-demand Webster prior.
+        "PLAN_OPTIMIZE": True, "PLAN_MEASURED": True,
+        "PLAN_OPTIMIZE_OFFSETS": True,
+        # The SCOOT law.
+        "SCOOT_RS_MODE": True, "SCOOT_RS_TARGET_DS": 0.90, "SCOOT_RS_HYST": 0.05,
+        "SCOOT_RS_CYCLE_STEP_S": 5.0,
+        "SCOOT_RS_MIN_RATIO": 0.5, "SCOOT_RS_MAX_RATIO": 1.5,
+        "SCOOT_RS_WARMUP_S": 300.0, "SCOOT_RS_OFFSETS": False,
+        # MASTER from COMMISSIONED cycles (not the demand prior).
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.5, "DS_MASTER_MAX_RATIO": 1.5,
+        # MEASURED-FLOW regional OFFSETS (the SCOOT green-wave, measured).
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        # PHASE SKIPPING (shared): zero-flow phases -> skip floor.
+        "SCATS_PHASE_SKIP": True, "SCATS_SKIP_DS": 0.05, "SCATS_SKIP_GREEN_S": 3.0,
+        # PER-LANE worst-lane DS (turn-lane aware) + SCATS master split broadcast
+        # + master cycle from the critical DS via the SCATS calibration curve.
+        "DS_LANE_WORST": True, "DS_MASTER_SPLITS": True,
+        "DS_MASTER_DS_CYCLE": True, "SCATS_CYCLE_CURVE": True,
+        # PHASE REDUCTION: fold negligible-demand phases into a compatible phase
+        # (isolated from re-order/re-group so only the reduction is measured).
+        "PLAN_RESTRUCTURE": True, "RESTRUCTURE_ORDER": False,
+        "RESTRUCTURE_GROUP": False, "RESTRUCTURE_MERGE_SAME": True,
+        "RESTRUCTURE_MERGE_DS": 0.10,
+        # Local cycle drives toward the common cycle; band = commissioned cycle.
+        "DS_CYCLE_ADAPT": True, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.5, "DS_CYCLE_MAX_RATIO": 1.5,
+        "DS_MIN_GREEN_S": 7.0,
+        # Passenger-weighted demand -- the ONLY bus effect in this arm.
+        "DS_PAX_WEIGHTED": True, "DS_BUS_PAX_WEIGHT": 1.0,
+        # Kill EVERY bus-priority action family: pure SCOOT, no TSP.
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "ZIG_ENABLE_GR": False, "ZIG_ENABLE_SEQ": False,
+        "PHASE_ROTATION_MODE": False,
+        "DCTSP_GREEN_REALLOC_MODE": False,
+        "BXT_MODE": False, "BXT_CORRIDOR_MODE": False,
+        "CELLQ_CORRIDOR_LEARN": False, "CELLQ_CORRIDOR_COUPLED": False,
+        "DCTSP_ZIG_MODE": False, "MP_ECTM_MODE": False, "MP_ECTM_DP_MODE": False,
+        "CPDQL_MODE": False, "CELLQLEARN_DP_MODE": False,
+        "BARGAIN_SPM_MODE": False, "META_TSP_MODE": False,
+        "MDN_DELAY_MODE": False, "HS_EXT_MODE": False,
+        "CENTRALIZED_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIGDOG_MODE": False}},
+
+    # (a5) CHAMP_SCATS_GRADUAL: load the COMMISSIONED fixed-time plan and change it
+    #      GRADUALLY -- splits, cycle and offsets all move in SMALL increments each
+    #      interval toward the measured SCATS targets. This is SCATS's own operating
+    #      principle ("the plan is reviewed and modified in small increments, almost
+    #      cycle-by-cycle"): the commissioned green wave is never destroyed by a
+    #      single big jump, so the retiming can only improve on the base plan.
+    {"name": "CHAMP_SCATS_GRADUAL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        # Splits: <=3 s green moved per cycle.
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 3.0,
+        # Cycle: <=2 s per interval, only +/-15% around the commissioned cycle.
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 2.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        # Master from COMMISSIONED cycles; common cycle + splits + offsets, all
+        # moved in small steps.
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.85, "DS_MASTER_MAX_RATIO": 1.15,
+        "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+        "DS_MASTER_DS_STEP_S": 2.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+        "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 4.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.15,
+        "DS_MARRY_DIVORCE": False}},
+
+    # (a5b) CHAMP_SCATS_GRADUAL_SLOW: the same but with even SMALLER increments
+    #       (<=2 s split, <=1 s cycle, +/-10% cycle band, <=2 s offset per
+    #       interval) -- the most conservative possible SCATS overlay. Tests
+    #       whether slow-and-steady beats the fixed-time plan without ever
+    #       disturbing the commissioned progression.
+    {"name": "CHAMP_SCATS_GRADUAL_SLOW", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 2.0,
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 1.0,
+        "DS_CYCLE_MIN_RATIO": 0.90, "DS_CYCLE_MAX_RATIO": 1.10,
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.90, "DS_MASTER_MAX_RATIO": 1.10,
+        "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+        "DS_MASTER_DS_STEP_S": 1.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+        "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 2.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.15,
+        "DS_MARRY_DIVORCE": False}},
+
+    # (a5c) CHAMP_SCATS_GRADUAL_LOCAL: the gradual law driven PER JUNCTION only --
+    #       NO master common cycle, NO grouped offsets, NO marriage. Each junction
+    #       nudges its own splits and cycle from its own measured DS in small
+    #       increments. Isolates whether the GROUPED (master) logic is the culprit
+    #       versus local adaptation alone.
+    {"name": "CHAMP_SCATS_GRADUAL_LOCAL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 3.0,
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 2.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_DS_CYCLE": False,
+        "DS_MASTER_SPLITS": False, "DS_MASTER_OFFSETS": False,
+        "DS_MARRY_DIVORCE": False}},
+
+    # (a5d) CHAMP_SCATS_OFFSETS_ONLY: the SAFEST overlay -- the commissioned plan
+    #       (cycle + splits) is FROZEN; ONLY the regional green-wave offsets adapt,
+    #       in small increments, toward the measured travel-time targets. If this
+    #       beats NO_TSP, the offset layer is safe and the split/cycle layers are
+    #       what need work.
+    {"name": "CHAMP_SCATS_OFFSETS_ONLY", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": False, "DS_CYCLE_ADAPT": False,
+        "SCATS_CYCLE_CURVE": False,
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 1.0, "DS_MASTER_MAX_RATIO": 1.0,
+        "DS_MASTER_DS_CYCLE": False, "DS_MASTER_SPLITS": False,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 4.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.15,
+        "DS_MARRY_DIVORCE": False}},
+
+    # ── (a6) PURE MAX-PRESSURE arms ───────────────────────────────────────────
+    # MAX PRESSURE IS THE ONLY DECIDER. No plan optimiser, no SCATS DS adaptation,
+    # no master/offsets, no learners -- the signal is driven purely by the
+    # pax-weighted pressure pi_m = n_up - sum(n_down) (a queued bus counts ~27x a
+    # car, so transit priority is intrinsic). FIX recomputes a proportional green
+    # split each cycle; FLEX re-evaluates every MAXPRESSURE_T_A seconds.
+    {"name": "CHAMP_MP_PURE_FIX", "strategy": "GLOBAL_REWARD",
+     "method": "MAXPRESSURE_FIX",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "MAXPRESSURE_FIX_MODE": True,
+        "MAXPRESSURE_FLEX_MODE": False,
+        "MAXPRESSURE_G_MIN": 5, "MAXPRESSURE_G_MAX": 60,
+        "MAXPRESSURE_CYCLE_FIX": 120, "MAXPRESSURE_T_L": 3,
+        "MAXPRESSURE_MEAS_PERIOD": 4,
+        # transit-weighted pressure (queued bus ~27x a car)
+        "MP_TRANSIT_PAX_WEIGHT": 1.0,
+        # MP is the ONLY decider: nothing else retimes the plan.
+        "PLAN_OPTIMIZE": False, "DS_PLAN_ADAPT": False, "DS_CYCLE_ADAPT": False,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_OFFSETS": False,
+        "DS_MASTER_SPLITS": False, "DS_MASTER_DS_CYCLE": False,
+        "MP_ECTM_MODE": False, "DCTSP_ZIG_MODE": False, "BXT_MODE": False,
+        "BARGAIN_SPM_MODE": False, "CENTRALIZED_MODE": False,
+        "CELLQLEARN_DP_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False}},
+
+    {"name": "CHAMP_MP_PURE_FLEX", "strategy": "GLOBAL_REWARD",
+     "method": "MAXPRESSURE_FLEX",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "MAXPRESSURE_FLEX_MODE": True,
+        "MAXPRESSURE_FIX_MODE": False,
+        "MAXPRESSURE_G_MIN": 5, "MAXPRESSURE_G_MAX": 60,
+        "MAXPRESSURE_CYCLE_FLEX": 120, "MAXPRESSURE_T_L": 3,
+        "MAXPRESSURE_T_A": 3, "MAXPRESSURE_MEAS_PERIOD": 3,
+        "MP_TRANSIT_PAX_WEIGHT": 1.0,
+        "PLAN_OPTIMIZE": False, "DS_PLAN_ADAPT": False, "DS_CYCLE_ADAPT": False,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_OFFSETS": False,
+        "DS_MASTER_SPLITS": False, "DS_MASTER_DS_CYCLE": False,
+        "MP_ECTM_MODE": False, "DCTSP_ZIG_MODE": False, "BXT_MODE": False,
+        "BARGAIN_SPM_MODE": False, "CENTRALIZED_MODE": False,
+        "CELLQLEARN_DP_MODE": False, "NASH_BARGAIN_MODE": False,
+        "ZIG_ENABLE_GE": False, "ZIG_ENABLE_INS": False,
+        "REWARD_TSP_ENABLE_GE": False, "REWARD_TSP_ENABLE_INS": False}},
+
+    # ── (a7) POG-DRIVEN arm ───────────────────────────────────────────────────
+    # Act ACCORDING TO POG (Purdue arrivals-on-green). The gradual SCATS law, but
+    # every per-interval move is scaled by (1 - POG): a healthy coordinated wave
+    # (high POG) is barely disturbed; a broken wave (low POG) is repaired at full
+    # rate. POG is also priced into the decision (POG_DECISION_COST) so an action
+    # that displaces the main platoon is penalised where the wave is working.
+    {"name": "CHAMP_POG_GRADUAL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        # POG drives HOW MUCH to move.
+        "POG_ADAPT_GATE": True, "POG_DECISION_COST": True,
+        "POG_DECISION_WEIGHT": 1.0, "MONITOR_PROG_WEIGHT": 1.0,
+        # Adapt more often than once per cycle (the default) so POG can act.
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 15.0,
+        "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 10.0,
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.85, "DS_MASTER_MAX_RATIO": 1.15,
+        "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+        "DS_MASTER_DS_STEP_S": 2.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+        "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 6.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+        "DS_MARRY_DIVORCE": False}},
+
+    # ── (a8) FAST gradual arm ─────────────────────────────────────────────────
+    # The GRADUAL law with a BIGGER adaptation rate: SPLIT_MAX_MOVE 15 s, adapt
+    # every 30 s (4x/cycle), cycle step 10 s, offset step 10 s, cycle band +/-20%.
+    # Responds to "the greens barely move" -- full-rate but still bounded moves.
+    {"name": "CHAMP_SCATS_GRADUAL_FAST", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 15.0,
+        "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 15.0,
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_CURVE": True,
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 10.0,
+        "DS_CYCLE_MIN_RATIO": 0.80, "DS_CYCLE_MAX_RATIO": 1.20,
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.80, "DS_MASTER_MAX_RATIO": 1.20,
+        "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+        "DS_MASTER_DS_STEP_S": 5.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+        "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 10.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.25,
+        "DS_MARRY_DIVORCE": False}},
+
+    # (a9) CHAMP_SCATS_SOLVER: the combined REAL-TIME SOLVER -- commissioned plan,
+    #      true DS-EQUALISING splits, real-time WEBSTER cycle, y-ordered phase
+    #      SEQUENCE, measured-DS master + small-step offsets. This is the arm that
+    #      uses every real-time heuristic at once; compare it against the
+    #      one-heuristic-at-a-time gradual arms and against MP/SCOOT.
+    # FAITHFUL SCATS: gentle, coordinated, progression-preserving (see base note).
+    # The one to beat NO_TSP -- keeps commissioned offsets, flow-proportional
+    # splits, ~1-2s per-cycle moves, whole-system cycle.
+    {"name": "CHAMP_SCATS_FAITHFUL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_FAITHFUL_BASE}},
+
+    # CHAMP_INITPLAN (2026-10-21, operator request): the reference arm --
+    # Aimsun's INITIAL commissioned plan, TSP machinery measuring but writing
+    # NOTHING. The control-plan ablation: whatever differs from NO_TSP is the
+    # machinery's bare presence; whatever differs from FAITHFUL is what the
+    # writing heuristics actually did.
+    {"name": "CHAMP_INITPLAN", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE}},
+
+    # FULLY-ADAPTIVE SCATS: NOT fixed-time -- Webster seed + real-time cycle
+    # (operator direction 2026-10-20). See _PURE_SCATS_ADAPTIVE_BASE note.
+    {"name": "CHAMP_SCATS_ADAPTIVE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_ADAPTIVE_BASE}},
+
+    # CHAMP_MAXPRESSURE (2026-10-21 request): NO fixed-time retiming at all.
+    # Reactive MaxPressure machine (FLEX): every control step inject the phase
+    # needing the most alleviation (MEASURED standing queue per phase per lane,
+    # pax-weighting untouched), keep a phase while it REMAINS argmax and
+    # GRADUALLY EXTEND it (+3s at a time, bounded by G_MAX=50s and +40s past
+    # configured), switch on a >10%+1.0 pressure hysteresis, min-green 8s.
+    # Phase injection respects the yellow/all-red (MP_DIRECT_TRANSITION).
+    # This is the "extend/reduce + inject the next most-needy phase" arm.
+    {"name": "CHAMP_MAXPRESSURE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "MAXPRESSURE_FIX_MODE": False, "MAXPRESSURE_FLEX_MODE": True,
+        "MAXPRESSURE_CYCLIC": True,
+        # G_MAX 50->30 (2026-10-20): at 50 one phase pinned at 51s every cycle,
+        # so 4 greens summed ~140s -> ~160s uncoordinated cycle -> gridlock.
+        # Capping each green at 30s bounds the cycle (<=4x30=120s green).
+        "MAXPRESSURE_G_MIN": 8, "MAXPRESSURE_G_MAX": 30,
+        "MP_PER_PHASE_PRESSURES": True, "MP_EXTEND_ENABLE": True,
+        "MP_EXTEND_STEP_S": 3.0, "MP_EXTEND_MAX_S": 15.0,   # 40->15 (bound cycle)
+        "MP_DIRECT_TRANSITION": True,
+        "MP_TRANSIT_PAX_WEIGHT": 1.0,
+        "MEASURED_QUEUE_FEED": True}},
+
+    # CHAMP_MP_NASH (2026-10-21 request): MaxPressure WITH Nash bargaining.
+    # Cooperative bargaining between the conflicting movements (utility
+    # U_i = -D_i, disagreement D_i0 = min-green-only delay, maximise the Nash
+    # product) computes the green-share allocation every 5 s; the FLEX
+    # machine serves/extends by per-phase token bucket and injects the phase
+    # with the largest remaining claim. Fairness: low-volume approaches keep
+    # green above their min-green floor instead of being starved by argmax
+    # pressure. Falls open to pure MP argmax when demand is unmeasurable.
+    {"name": "CHAMP_MP_NASH", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "MAXPRESSURE_FIX_MODE": False, "MAXPRESSURE_FLEX_MODE": True,
+        "MAXPRESSURE_CYCLIC": True,
+        # G_MAX 50->30 + extend 40->15 (bound the cycle, see MAXPRESSURE arm).
+        "MAXPRESSURE_G_MIN": 8, "MAXPRESSURE_G_MAX": 30,
+        "MP_PER_PHASE_PRESSURES": True, "MP_EXTEND_ENABLE": True,
+        "MP_EXTEND_STEP_S": 3.0, "MP_EXTEND_MAX_S": 15.0,
+        "MP_DIRECT_TRANSITION": True,
+        "MP_NASH_ENABLE": True,
+        "MP_TRANSIT_PAX_WEIGHT": 1.0,
+        "MEASURED_QUEUE_FEED": True}},
+
+    # CHAMP_SCATS_POG (2026-10-21 request): the fully-adaptive SCATS arm with
+    # the POG (arrivals-on-green) mechanism as the governor: the healthier the
+    # coordinated wave, the SMALLER every adapt step (POG_ADAPT_GATE scales
+    # 1-POG), and POG-driven offset hill-climbing on top of the measured solve.
+    {"name": "CHAMP_SCATS_POG", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_ADAPTIVE_BASE,
+         "POG_ADAPT_GATE": True,
+         "SCATS_POG_OFFSETS": True, "SCATS_POG_STEP_S": 3.0,
+         "SCATS_POG_EPS": 0.01}},
+
+    # CHAMP_INITPLAN_ADAPT (2026-10-21, operator direction): keep Aimsun's
+    # INITIAL (commissioned) plan as the base -- it scores like NO_TSP, proving
+    # the machinery is harmless -- and add ONLY a GENTLE adaptive split nudge.
+    # Never re-seeds, never re-solves offsets, never moves the cycle:
+    # flow-proportional splits (never DS-equalising, which robbed the main),
+    # <=2 s/cycle, reviewed ~every 30 s. "Keep the initial plan, adapt the
+    # phases/timings carefully" arm.
+    {"name": "CHAMP_INITPLAN_ADAPT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+         "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+         "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+         "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+         "DS_FLOW_QUEUE_AWARE": True,
+         "DS_SOLVE_PER_CYCLE": False,
+         "DS_SPLIT_COMMISSIONED_BAND": 0.06,   # tightened 0.30->0.06 (protect main)
+         "DS_CYCLE_ADAPT": False, "DS_MASTER_CYCLE": False,
+         "DS_MASTER_SPLITS": False, "DS_MASTER_OFFSETS": False}},
+
+    # CHAMP_PBIL (2026-10-21): PBIL timing learner over the measured
+    # flow-proportional split re-solve. Each generation samples a binary gene
+    # per phase; the gene scales that phase's demand weight, and the
+    # probability vector is reinforced from the generation's measured pax-delay.
+    # State persists (JSON) so learning continues across runs on the same seed.
+    {"name": "CHAMP_PBIL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE,
+         "PBIL_TS_MODE": True, "PBIL_GEN_S": 300.0, "PBIL_DELTA": 0.25,
+         "PBIL_ALPHA": 0.20, "PBIL_MIN_P": 0.05, "PBIL_WARM_S": 120.0,
+         "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+         "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+         "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+         "DS_FLOW_QUEUE_AWARE": True,
+         "DS_SPLIT_COMMISSIONED_BAND": 0.08}},   # tightened 0.30->0.08 (protect main)
+
+    # ══ WIN-ONLY ACTUATION VARIANTS (2026-10-20) ═════════════════════════════════
+    # Goal: BEAT NO_TSP on the design hour by adding surgical actuation to the
+    # commissioned backbone (gap-out + max-out + spillback gate), never re-deriving
+    # the plan. Isolation arms (_SPILL / _GAP) attribute the effect; coupled arms
+    # stack the actuation onto the backbones that were already closest to NO_TSP.
+
+    # FLAGSHIP: commissioned plan (writes NOTHING to splits/cycle) + full win-only
+    # actuation. The cleanest "NO_TSP + surgical actuation" test -- deviates ONLY
+    # to capture wasted green and dodge spillback. Should be the first to beat 651.
+    {"name": "CHAMP_COMM_ACT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE, **_WIN_ACTUATION}},
+
+    # ISOLATION: commissioned + SPILLBACK gate only (attribute the cascade-prevention).
+    {"name": "CHAMP_COMM_SPILL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+         "SPILLBACK_GATE": True, "SPILLBACK_GATE_FRAC": 0.80,
+         "JAM_VEH_SPACING_M": 7.0}},
+
+    # ISOLATION: commissioned + GAP-OUT/MAX-OUT only (attribute the slack capture).
+    {"name": "CHAMP_COMM_GAP", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+         "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 55.0,
+         "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+         "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05}},
+
+    # FLAGSHIP + BUS: commissioned + full actuation + discrete SCATS bus priority.
+    {"name": "CHAMP_COMM_ACT_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE, **_WIN_ACTUATION,
+         "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+         "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0}},
+
+    # COUPLE: gentle commissioned split-nudge arm (901) + win-only actuation.
+    {"name": "CHAMP_INITADAPT_ACT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_INITPLAN_ADAPT_BASE, **_WIN_ACTUATION}},
+
+    # COUPLE: the best learner (PBIL, 739, serves > NO_TSP) + win-only actuation.
+    {"name": "CHAMP_PBIL_ACT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_BASE, **_WIN_ACTUATION}},
+
+    # COUPLE: PBIL + win actuation + bus priority (the full stacked SCATS arm).
+    {"name": "CHAMP_PBIL_ACT_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_BASE, **_WIN_ACTUATION,
+         "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+         "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0}},
+
+    # COUPLE: the best TSP arm (NASH_BARGAIN, 916, bus-TSP already) + gap-out +
+    # spillback gate. NASH bargains bus actions; the actuation harvests the rest.
+    {"name": "CHAMP_NASH_ACT", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "NASH_CORRIDOR_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0, "NASH_NET_GATE_RATIO": 1.5,
+        "CASCADE_COST_MODE": True, "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+        "NASH_CONVERGENCE_TOL": 0.01, "NASH_INTEGER_DURATIONS": True,
+        "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+        "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        **_WIN_ACTUATION}},
+
+    # ══ PURE VEHICLE-ACTUATED (2026-10-21) ═══════════════════════════════════════
+    # "An arm that just gradually EXTENDS and DECREASES the current phase as it
+    # works out whether the phase has cleared or needs extending." Commissioned
+    # phase SEQUENCE + green floors, but the green of each phase is decided in real
+    # time: EXTEND while busy (standing queue or arrivals), gap-out/max-out when
+    # cleared, spillback gate so it never extends into a jam. NO plan re-derivation,
+    # NO master cycle, NO split solve -- the cycle EMERGES from demand. Local by
+    # nature (extending shifts the cycle), so progression is not held; this is the
+    # classic actuated controller as a clean baseline vs the coordinated arms.
+    {"name": "CHAMP_ACTUATED", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+         "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 3.0,
+         "ACT_EXTEND_MAX_GREEN_S": 50.0, "ACT_EXTEND_MIN_OCC_VEH": 2.0,
+         "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+         "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 55.0,
+         "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+         "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
+         "SPILLBACK_GATE": True, "SPILLBACK_GATE_FRAC": 0.80,
+         "JAM_VEH_SPACING_M": 7.0}},
+
+    # Pure actuated + discrete bus priority.
+    {"name": "CHAMP_ACTUATED_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+         "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 3.0,
+         "ACT_EXTEND_MAX_GREEN_S": 50.0, "ACT_EXTEND_MIN_OCC_VEH": 2.0,
+         "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+         "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 55.0,
+         "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+         "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
+         "SPILLBACK_GATE": True, "SPILLBACK_GATE_FRAC": 0.80, "JAM_VEH_SPACING_M": 7.0,
+         "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+         "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0}},
+
+    # ══ BEST-OF COMBINATIONS (2026-10-21) ════════════════════════════════════════
+    # Built from what actually made the winners win (5-seed run analysis): the top
+    # three arms (PBIL 739 serving MORE pax than NO_TSP; INITPLAN_ADAPT 901;
+    # NASH_BARGAIN 916) ALL hold the commissioned CYCLE + OFFSETS and differ only
+    # in their ADD-ONS. The winning mechanisms, isolated:
+    #   (a) real SCATS-commissioned seed + green-independent DS  (PLAN_SCATS_HIST)
+    #   (b) JIT discrete bus priority (serves more people)        -> PBIL has it,
+    #       INITPLAN_ADAPT did NOT (that gap is most of 901 vs 739)
+    #   (c) gentle LEARNED split nudges within a tight band       (PBIL learner)
+    #   (d) cycle/offsets HELD (adapting them cost FAITHFUL +260hr)
+    # CHAMP_BESTOF stacks ALL of them + the win-only actuation (gap-out/max-out/
+    # spillback) on the PBIL backbone, band tightened to 0.06, locks pinned.
+    {"name": "CHAMP_BESTOF", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_BASE, **_WIN_ACTUATION,
+         # pin the holds that the winners relied on (already SPM defaults; explicit
+         # so the recipe can't drift): commissioned CYCLE + OFFSETS held.
+         "DS_CYCLE_ADAPT": False, "DS_MASTER_CYCLE": False, "DS_MASTER_OFFSETS": False,
+         # tightest split band -- every winner kept splits ~commissioned.
+         "DS_SPLIT_COMMISSIONED_BAND": 0.06}},
+
+    # ISOLATE mechanism (b): INITPLAN_ADAPT (901, cycle-locked gentle splits, NO
+    # bus) + JIT discrete bus priority. If this closes most of the 901->739 gap,
+    # bus priority is the single biggest add-on -- the cleanest attribution.
+    {"name": "CHAMP_INITADAPT_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_INITPLAN_ADAPT_BASE,
+         "SCATS_BUS_PRIORITY": True, "BUS_PRIO_MAX_EXT_S": 10.0,
+         "BUS_PRIO_MAX_RECALL_S": 8.0, "BUS_PRIO_COOLDOWN_S": 60.0,
+         "BUS_PRIO_JIT_ENABLE": True, "BUS_PRIO_JIT_MARGIN_S": 2.0,
+         "BUS_PRIO_JIT_STRIKE_S": 30.0, "BUS_PRIO_QUEUE_DELAY_S": 2.0}},
+
+    # ══ SCATS SOLVER + GATED TSP FLAVOURS (2026-10-21, the beat-NO_TSP family) ════
+    # Faithful gradual SCATS solver (_SCATS_SOLVER_UNDERLAY) + bus-TSP flavours fired
+    # only when DS/net-benefit/JIT gates pass. Progression: SOLVER (no actions) ->
+    # +GE/INS (CELLQLEARN) -> +GE/ER/INS/GR (ZIG) -> gate-tuning. The isolation lets
+    # us see which flavour (if any) tips it below NO_TSP without a cascade.
+
+    # (0) reference: the gradual SCATS solver alone, NO TSP actions (should ~tie).
+    {"name": "CHAMP_ST_SOLVER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_SCATS_SOLVER_UNDERLAY}},
+
+    # (1) solver + DS-GATED GREEN-EXTENSION + PHASE-INSERTION (CELLQLEARN/BXT, the
+    #     documented NO_TSP-beater's decider) -- the proven flavours on the solver.
+    {"name": "CHAMP_ST_DSGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, **_SCATS_SOLVER_UNDERLAY,
+         "BXT_MODE": True, "BXT_NET_BENEFIT_GATE": True,
+         "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
+
+    # (2) solver + ALL flavours (ZIG decider: GE + EARLY_RED + INS + GREEN_REALLOC),
+    #     each DS/net-benefit/cascade gated -- the full "jittered priority when it
+    #     will work" arm.
+    {"name": "CHAMP_ST_ZIG", "strategy": "GLOBAL_REWARD", "method": "DCTSP_ZIG",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_SCATS_SOLVER_UNDERLAY,
+         "GLOBAL_REWARD_MODE": True, "DCTSP_ZIG_MODE": True,
+         "MP_ECTM_MODE": False, "BXT_MODE": False, "BARGAIN_SPM_MODE": False,
+         "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+         "ZIG_ENABLE_GE": True, "ZIG_ENABLE_INS": True, "ZIG_ENABLE_GR": True,
+         "ZIG_ENABLE_SEQ": False,
+         "ZIG_BALANCE_FACTOR": 0.35, "ZIG_GE_BALANCE_FACTOR": 0.6,
+         "ZIG_MIN_GAIN_S": 15.0, "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+         "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+         "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.65}},
+
+    # (3) ALL flavours with the ADAPTIVE (scale-free) DS gate instead of a fixed
+    #     ceiling -- vetoes vs the junction's own DS spread (no magic number).
+    {"name": "CHAMP_ST_ZIG_REL", "strategy": "GLOBAL_REWARD", "method": "DCTSP_ZIG",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_SCATS_SOLVER_UNDERLAY,
+         "GLOBAL_REWARD_MODE": True, "DCTSP_ZIG_MODE": True,
+         "MP_ECTM_MODE": False, "BXT_MODE": False, "BARGAIN_SPM_MODE": False,
+         "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+         "ZIG_ENABLE_GE": True, "ZIG_ENABLE_INS": True, "ZIG_ENABLE_GR": True,
+         "ZIG_ENABLE_SEQ": False,
+         "ZIG_BALANCE_FACTOR": 0.35, "ZIG_GE_BALANCE_FACTOR": 0.6,
+         "ZIG_MIN_GAIN_S": 15.0, "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+         "DS_BALANCE_GATE": True, "DS_GATE_RELATIVE": True, "DS_REL_MARGIN": 0.5,
+         "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.65}},
+
+    # ══ FAITHFUL SCATS MASTER SOLVER (continuous regional cycle + POG offsets) ════
+    # (4) the solver with the REGIONAL master cycle + POG offsets ACTIVE (no TSP) --
+    #     the controller now continuously evolves ONE common cycle per subsystem
+    #     from the critical intersection and hill-climbs offsets on arrivals-on-
+    #     green. This is "act like real SCATS across all intersections". On the
+    #     design hour it should ~tie NO_TSP (the commissioned cycle is already
+    #     tuned); its value shows off-design -- but it proves the regional solver
+    #     runs without the gridlock the old wide-band ADAPTIVE caused.
+    {"name": "CHAMP_ST_MASTER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_SCATS_SOLVER_UNDERLAY,
+         **_SCATS_MASTER}},
+
+    # (5) the full thing: regional master solver + ALL gated TSP flavours (ZIG).
+    {"name": "CHAMP_ST_MASTER_ZIG", "strategy": "GLOBAL_REWARD", "method": "DCTSP_ZIG",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_SCATS_SOLVER_UNDERLAY, **_SCATS_MASTER,
+         "GLOBAL_REWARD_MODE": True, "DCTSP_ZIG_MODE": True,
+         "MP_ECTM_MODE": False, "BXT_MODE": False, "BARGAIN_SPM_MODE": False,
+         "CENTRALIZED_MODE": False, "CELLQLEARN_DP_MODE": False,
+         "ZIG_ENABLE_GE": True, "ZIG_ENABLE_INS": True, "ZIG_ENABLE_GR": True,
+         "ZIG_ENABLE_SEQ": False,
+         "ZIG_BALANCE_FACTOR": 0.35, "ZIG_GE_BALANCE_FACTOR": 0.6,
+         "ZIG_MIN_GAIN_S": 15.0, "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+         "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+         "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.65}},
+
+    # ══ MAXPRESSURE AS SCATS (2026-10-21) ════════════════════════════════════════
+    # Use the MP machine's CYCLIC FIX mode to emulate SCATS: once per cycle, split
+    # the commissioned cycle PROPORTIONAL TO per-phase pressure (measured standing
+    # queue ~ degree of saturation), round-robin in the commissioned SEQUENCE, over
+    # the REAL GREEN PHASES ONLY (_mp_phase_ring -- never an interphase, never a
+    # phase outside the ring). The commissioned cycle is kept (coordination) and the
+    # split is clamped to +/-MP_FIX_COMMISSIONED_BAND of each phase's commissioned
+    # share, so pressure can rebalance green toward the loaded approach WITHOUT
+    # flattening the main. The DS split solver is OFF (MP owns the splits).
+    {"name": "CHAMP_MP_SCATS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_SCATS_SOLVER_UNDERLAY,
+         "DS_PLAN_ADAPT": False, "DS_SOLVE_PER_CYCLE": False,  # MP owns the splits
+         "MAXPRESSURE_FIX_MODE": True, "MAXPRESSURE_FLEX_MODE": False,
+         "MAXPRESSURE_CYCLIC": True,
+         "MAXPRESSURE_G_MIN": 7, "MAXPRESSURE_G_MAX": 90,
+         "MP_PER_PHASE_PRESSURES": True, "MEASURED_QUEUE_FEED": True,
+         "MP_TRANSIT_PAX_WEIGHT": 1.0,
+         # RAMPED UP (2026-10-21): re-split every 20s (reactive MP) + wider 0.35 band
+         # so pressure can shift more green toward a building queue.
+         "MP_FIX_COMMISSIONED_BAND": 0.35, "MP_FIX_RESOLVE_S": 20.0}},
+
+    # ══ MP-SCATS BASELINE + GAME-THEORY TSP OVERRIDE (2026-10-21, operator) ═══════
+    # The MP FIX cyclic pressure-split acts as the adaptive SCATS baseline; ON TOP,
+    # a game-theory decider grants bus priority (GE/EARLY-RED/INS) as a transient
+    # OVERRIDE only when the game says it helps. The MP machine runs from its flag
+    # (independent of method), so method=NASH_BARGAIN gives the bus decider while MP
+    # FIX owns the baseline splits -- real TSP: adaptive plan + gated priority.
+
+    # (A) MP-SCATS baseline + NASH BARGAINING bus TSP (bus vs cross net-surplus
+    #     game, p_T=0 => pick the action that cuts TOTAL passenger delay most, with
+    #     the cascade priced in + corridor best-response coupling).
+    {"name": "CHAMP_MP_NASH_SCATS", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {
+        # -- NASH game TSP override --
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True, "NASH_CORRIDOR_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0, "NASH_NET_GATE_RATIO": 1.5,
+        "CASCADE_COST_MODE": True, "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+        "NASH_CONVERGENCE_TOL": 0.01, "NASH_INTEGER_DURATIONS": True,
+        "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+        "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        # -- MP-SCATS adaptive split BASELINE (pressure-proportional, banded) --
+        "PLAN_SCATS_HIST": True, "SCATS_HIST_DAYTYPE": 8, "SCATS_HIST_TOD_MIN": 480.0,
+        "MAXPRESSURE_FIX_MODE": True, "MAXPRESSURE_FLEX_MODE": False,
+        "MAXPRESSURE_CYCLIC": True, "MAXPRESSURE_G_MIN": 7, "MAXPRESSURE_G_MAX": 90,
+        "MP_PER_PHASE_PRESSURES": True, "MEASURED_QUEUE_FEED": True,
+        "MP_FIX_COMMISSIONED_BAND": 0.35, "MP_FIX_RESOLVE_S": 20.0,
+        **_GENTLE_JITTER}},
+
+    # (B) MP-SCATS baseline + THROUGHPUT GAME: the bargaining maximises SYSTEM NET
+    #     PASSENGER THROUGHPUT (people through - switching loss) rather than a delay
+    #     surplus -- "play a game that enhances the reward of the system". Same MP
+    #     baseline + bus override.
+    {"name": "CHAMP_MP_GAME_SCATS", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True, "NASH_CORRIDOR_MODE": True,
+        "NASH_THRU_SURPLUS": True, "THROUGHPUT_REWARD": True,   # system-throughput game
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0, "NASH_NET_GATE_RATIO": 1.5,
+        "CASCADE_COST_MODE": True, "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+        "NASH_CONVERGENCE_TOL": 0.01, "NASH_INTEGER_DURATIONS": True,
+        "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+        "DCTSP_CONGESTION_GATE": True, "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        "PLAN_SCATS_HIST": True, "SCATS_HIST_DAYTYPE": 8, "SCATS_HIST_TOD_MIN": 480.0,
+        "MAXPRESSURE_FIX_MODE": True, "MAXPRESSURE_FLEX_MODE": False,
+        "MAXPRESSURE_CYCLIC": True, "MAXPRESSURE_G_MIN": 7, "MAXPRESSURE_G_MAX": 90,
+        "MP_PER_PHASE_PRESSURES": True, "MEASURED_QUEUE_FEED": True,
+        "MP_FIX_COMMISSIONED_BAND": 0.35, "MP_FIX_RESOLVE_S": 20.0,
+        **_GENTLE_JITTER}},
+
+
+    {"name": "CHAMP_SCATS_SOLVER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN", "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        # SPLITS: true DS-equalising (Webster critical ratio, water-filled).
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 15.0,
+        "DS_ADAPT_STEP_S": 1.0, "DS_SPLIT_PROPORTIONAL": True,
+        "DS_SPLIT_DS_EQUAL": True, "DS_SPLIT_MAX_MOVE_S": 10.0,
+        # CYCLE: real-time Webster optimal cycle from measured Y.
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_LAW": "webster",
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        # SEQUENCE: serve the busiest phase first.
+        "SCATS_SEQUENCE_BY_Y": True,
+        # GAP-OUT: end a CLEARED phase early -> next demanded phase, but never
+        # while a queue stands or arrivals are still high (future vehicles).
+        "SCATS_GAP_OUT": True, "SCATS_GAP_MIN_GREEN_S": 10.0,
+        "SCATS_GAP_MAX_OCC_VEH": 1.5, "SCATS_GAP_MAX_FLOW_VPH": 200.0,
+        "SCATS_GAP_NEXT_MIN_Y": 0.02,
+        # MAX-OUT pair: force-terminate at the max green.
+        "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 60.0,
+        # LEAD/LAG same-approach through/turn ordering by opposing flow.
+        "SCATS_LEADLAG": True, "SCATS_LEADLAG_HEAVY_Y": 0.5,
+        # CRITICAL-INTERSECTION master cycle.
+        "SCATS_CRITICAL_INTERSECTION": True,
+        # PLAN LIBRARY by demand regime.
+        "SCATS_PLAN_LIBRARY": True,
+        # POG-driven offset hill-climb (takes over from the travel-time solve).
+        "SCATS_POG_OFFSETS": True, "SCATS_POG_STEP_S": 3.0,
+        "SCATS_POG_EPS": 0.01,
+        # MASTER from commissioned + small-step offsets.
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0,
+        "DS_MASTER_MIN_RATIO": 0.85, "DS_MASTER_MAX_RATIO": 1.15,
+        "DS_MASTER_DS_CYCLE": True, "DS_MASTER_DS_WARM_S": 300.0,
+        "DS_MASTER_DS_STEP_S": 3.0, "DS_MASTER_DS_MIN_CRIT": 0.30,
+        "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 6.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+        "DS_MARRY_DIVORCE": False}},
+
+    # ── SINGLE-HEURISTIC ABLATIONS (one-seed isolation) ───────────────────────
+    # Each spreads _ABL_BASE and turns on EXACTLY ONE new heuristic.
+    {"name": "CHAMP_ABL_BASE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True}},
+
+    # Isolate critical-intersection: BASE (crit ON) vs NO_CRIT (crit OFF).
+    {"name": "CHAMP_ABL_NO_CRIT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": False}},
+
+    {"name": "CHAMP_ABL_CYC_WEBSTER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_CYCLE_LAW": "webster"}},
+
+    {"name": "CHAMP_ABL_CYC_LADDER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_CYCLE_LAW": "ladder",
+                          "SCATS_CYCLE_LADDER_S": 5.0}},
+
+    {"name": "CHAMP_ABL_SEQ_Y", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_SEQUENCE_BY_Y": True}},
+
+    {"name": "CHAMP_ABL_LEADLAG", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_LEADLAG": True}},
+
+    {"name": "CHAMP_ABL_GAPOUT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_GAP_OUT": True}},
+
+    {"name": "CHAMP_ABL_MAXOUT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 60.0}},
+
+    {"name": "CHAMP_ABL_PLANLIB", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_PLAN_LIBRARY": True}},
+
+    {"name": "CHAMP_ABL_POGOFF", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "SCATS_POG_OFFSETS": True}},
+
+    # Isolate the DS-EQUALISING split: base uses it (True); this arm reverts to the
+    # old floor + free*(w/sum w) form.
+    {"name": "CHAMP_ABL_OLDSPLIT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "DS_SPLIT_DS_EQUAL": False}},
+
+    # Isolate the PASSENGER-FACTOR CAP: base caps paxf at 2.0; this restores the
+    # old unbounded factor (expect DS to pin at the clamp again).
+    {"name": "CHAMP_ABL_PAXF_OFF", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ABL_BASE, "SCATS_CRITICAL_INTERSECTION": True,
+                          "DS_PAXF_MAX": 33.0}},
+
+    # (b) DS PLAN ADAPT only: SCATS splits -- at rest, retime the base plan toward
+    #     equal DS. The learner still runs on top, but the plant itself optimises.
+    {"name": "CHAMP_SCATS_DSPLAN", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10}},
+
+    # (c) FULL SCATS: DS gate + DS plan adapt together, analytic gates off.
+    {"name": "CHAMP_SCATS_FULL", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10}},
+
+    # (c2) FULL SCATS + WHOLE-SIGNAL RESTRUCTURE + queue-aware baseline: the
+    #      one-click "test everything" arm. DS gate + DS plan adapt (as FULL),
+    #      plus the SCATS restructuring moves -- reorder the phase sequence and
+    #      regroup the phase->signal-group map at the junction level (conflict
+    #      graph checked) -- and the queue-aware no-action baseline so NO_ACTION
+    #      is charged for the standing queue instead of being a free option.
+    {"name": "CHAMP_SCATS_RESTRUCTURE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10,
+        "NO_ACTION_QUEUE_AWARE": True, "QUEUE_DISCHARGE_S_PER_VEH": 2.0,
+        "PLAN_RESTRUCTURE": True,
+        "RESTRUCTURE_ORDER": True, "RESTRUCTURE_GROUP": True,
+        "RESTRUCTURE_MIN_GAIN_S": 3.0, "RESTRUCTURE_MAX_PHASES": 8,
+        "PHASE_SEQ_MAX_PER_CYCLE": 1}},
+
+    # (c3) As (c2) but drives the whole signal through the EXTERNAL regime
+    #      (GroupBasedController / ECIChangeSignalGroupState) one window at a
+    #      time. Only effective where ECIGetControlType reports External (2/3);
+    #      elsewhere it no-ops. Kept separate because it MUST NOT be mixed with
+    #      the transition-based jumps used by (c2).
+    {"name": "CHAMP_SCATS_RESTRUCTURE_EXT", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "DS_PLAN_ADAPT": True, "DS_ADAPT_STEP_S": 1.0,
+        "DS_MIN_GREEN_S": 7.0, "DS_SPREAD_TOL": 0.10,
+        "NO_ACTION_QUEUE_AWARE": True, "QUEUE_DISCHARGE_S_PER_VEH": 2.0,
+        "PLAN_RESTRUCTURE": True,
+        "RESTRUCTURE_ORDER": True, "RESTRUCTURE_GROUP": True,
+        "GROUP_BASED_CONTROL": True,
+         "RESTRUCTURE_MIN_GAIN_S": 3.0, "RESTRUCTURE_MAX_PHASES": 8,
+         "PHASE_SEQ_MAX_PER_CYCLE": 1}},
+
+    # (f) NET-DELAY GUARD + MAIN-CORRIDOR FLOOR (2026-10-17): the two NEW
+    #     objective-aligned guards, A/B'd directly. The scored objective is
+    #     PaxEquivPassages / TotalPassDelay_hrs (network-wide) but every guard is
+    #     per-junction and the DS/bargain arms switch MODE_NET_BENEFIT_GATE off --
+    #     so NET_PAX_DELAY_GATE (hard break-even on _car_for_veto) and
+    #     MAIN_CORRIDOR_FLOOR_GATE (main-approach delay cap) are the ONLY global
+    #     constraints. No DS gate here so the effect of these two is isolated.
+    #     Tight ratio (1.0) = strict break-even; loosen to 1.5 to tune.
+    {"name": "CHAMP_NETGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+        "NO_ACTION_QUEUE_AWARE": True, "QUEUE_DISCHARGE_S_PER_VEH": 2.0,
+        "NET_PAX_DELAY_GATE": True, "NET_PAX_DELAY_RATIO": 1.0,
+        "MAIN_CORRIDOR_FLOOR_GATE": True, "MAIN_CORRIDOR_HARM_RATIO": 1.0}},
+
+    {"name": "CHAMP_NETGATE_LOOSE", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+        "NO_ACTION_QUEUE_AWARE": True, "QUEUE_DISCHARGE_S_PER_VEH": 2.0,
+        "NET_PAX_DELAY_GATE": True, "NET_PAX_DELAY_RATIO": 1.5,
+        "MAIN_CORRIDOR_FLOOR_GATE": True, "MAIN_CORRIDOR_HARM_RATIO": 1.5}},
+    #     bin (+ the DS gate as the safety net). Grows the Q-table ~4x so it needs
+    #     the train seed; A/B against DSGATE to see if conditioning helps.
+    {"name": "CHAMP_SCATS_DSSTATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70,
+        "DS_IN_LEARNER_STATE": True}},
+
+    # (e2) SELF-GATING: the SCATS saturation cost is folded into the ACTION's own
+    #      reward (DS_COST_IN_REWARD), so a bad action scores below NO_ACTION on
+    #      its merits -- NO external veto/gate at all (net-benefit, DS-balance,
+    #      main-starve all OFF). This is the "actions gate themselves" design.
+    {"name": "CHAMP_SCATS_SELFGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+         **_CELLQ_GATED_BASE,
+         "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+         "BXT_MAIN_STARVE_GATE": False, "DS_BALANCE_GATE": False,
+         "DS_COST_IN_REWARD": True, "DS_COST_CAP_PAXS": 6000.0}},
+
+    # (e2b) SELF-GATE + NET-THROUGHPUT combined (2026-10-16): the convex SCATS
+    #       self-gating cost prices conflicting-approach harm INTO the action's own
+    #       reward (so a harmful action scores below NO_ACTION on its merits), the
+    #       net-throughput objective supplies the "people put through, net of the
+    #       capacity the switch destroys" term, and SELF_GATE_RELIEF suppresses the
+    #       external vetoes so the action is judged on ITS OWN ledger alone -- no
+    #       double-counting. Both mechanisms were previously written but never
+    #       wired (engine.py:10440 / 10550 had no call site); they are now gated
+    #       behind DS_COST_IN_REWARD / THROUGHPUT_REWARD / SELF_GATE_RELIEF and
+    #       only this arm (and CHAMP_SCATS_SELFGATE/CHAMP_THRU separately) enables
+    #       them, so no existing arm or result changes.
+    {"name": "CHAMP_SCATS_SELFGATE_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+         **_CELLQ_GATED_BASE,
+         "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+         "BXT_MAIN_STARVE_GATE": False, "DS_BALANCE_GATE": False,
+         "DS_COST_IN_REWARD": True, "DS_COST_CAP_PAXS": 6000.0,
+         "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0, "W_DELAY_LEDGER": 0.3,
+         "SELF_GATE_RELIEF": True}},
+
+    # (e3) NET THROUGHPUT objective: the reward IS the people put through the
+    #      system, net of switching capacity loss (W_DELAY_LEDGER=0 => pure
+    #      throughput). Ungameable by starvation; no external gate. This is the
+    #      operator's "more people through = the real objective" reframing.
+    {"name": "CHAMP_THRU", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+        "BXT_MAIN_STARVE_GATE": False, "DS_BALANCE_GATE": False,
+        "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0, "W_DELAY_LEDGER": 0.0}},
+
+    # (e4) THROUGHPUT blended with a little delay ledger (keeps bus responsiveness
+    #      while throughput dominates). A/B against pure throughput.
+    {"name": "CHAMP_THRU_BLEND", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+        "BXT_MAIN_STARVE_GATE": False, "DS_BALANCE_GATE": False,
+        "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0, "W_DELAY_LEDGER": 0.3}},
+
+    # (e5) MULTI-HEAD Q: two learned heads -- a bus-PRIORITY head (delay ledger,
+    #      bus-centric state) and a NETWORK head (net throughput, DS+queue+
+    #      downstream state) -- mixed value = Q_bus + w_net·Q_net with w_net gated
+    #      by saturation (idle in free flow, full when loaded). Explicit bus-vs-
+    #      network arbitration that conditions on different state per objective.
+    {"name": "CHAMP_MULTIHEAD", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "MODE_NET_BENEFIT_GATE": False, "BXT_NET_BENEFIT_GATE": False,
+        "BXT_MAIN_STARVE_GATE": False, "DS_BALANCE_GATE": False,
+        "MULTIHEAD_Q": True, "MULTIHEAD_W_NET": 1.0,
+        "MULTIHEAD_NET_GATE_DSMIN": 0.60}},
+
+    # (e) Transit-weighted MaxPressure: the research analogue of SCATS's DS
+    #     balancing (provably queue-stabilising) WITH bus priority folded in as a
+    #     pressure weight, so priority can never starve a saturated competitor.
+    {"name": "CHAMP_MP_TRANSIT", "strategy": "GLOBAL_REWARD", "method": "MAXPRESSURE_FLEX",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "MAXPRESSURE_FLEX_MODE": True,
+        "MAXPRESSURE_FIX_MODE": False,
+        "MP_ECTM_MODE": False, "DCTSP_ZIG_MODE": False, "BXT_MODE": False,
+        "BARGAIN_SPM_MODE": False, "CENTRALIZED_MODE": False,
+        "CELLQLEARN_DP_MODE": False, "NASH_BARGAIN_MODE": False,
+        "MP_TRANSIT_PAX_WEIGHT": 4.0,
+        "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+        "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    # ── RELIEF ARMS (cost + benefit) ────────────────────────────────────────
+    {"name": "CHAMP_CELLQ_MP_RELIEF", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_MAIN_STARVE_GATE": True,
+        # MP_RELIEF self-gates: drop the external hard net-benefit clamp so
+        # the relief credit in the action's own ledger acts as the break-even
+        # test (car_for_veto > benefit-with-relief * veto_ratio), instead of
+        # an externally-overlaid gate that suppresses every relief action
+        # regardless of whether relief itself makes the action break-even.
+        "BXT_NET_BENEFIT_GATE": False,
+        "SAT_RELIEF_BONUS": True,
+        "SAT_RELIEF_MIN_X": 0.85, "SAT_RELIEF_MAX_X": 1.30,
+        "SAT_RELIEF_RATE_PAXS": 60.0, "SAT_RELIEF_CAP_PAXS": 2500.0,
+        "SELF_GATE_RELIEF": True}},
+
+    {"name": "CHAMP_CTM_MULTI_RELIEF", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "CELLQ_CTM_REWARD": True,
+        "CELLQ_CTM_STATE": True,
+        "BXT_MAIN_STARVE_GATE": True,
+        "SAT_RELIEF_BONUS": True}},
+
+    {"name": "CHAMP_MARL_RELIEF", "strategy": "GLOBAL_REWARD", "method": "DCTSP_MARL",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "REWARD_ALPHA": 1.0, "REWARD_BETA": 1.0,
+        "REWARD_GAMMA": 1.0, "DCTSP_GREEN_REALLOC_MODE": True,
+        "GREEN_REALLOC_RECOVER_FRACTION": 1.0, "DCTSP_W_H": 0.50,
+        "DCTSP_CAR_WEIGHT": 1.00, "BXT_MODE": False, "DCTSP_ZIG_MODE": False,
+        "MP_ECTM_MODE": False, "BARGAIN_SPM_MODE": False,
+        "CENTRALIZED_MODE": False, "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        "SAT_RELIEF_BONUS": True}},
+
+    {"name": "CHAMP_NASH_RELIEF", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "CONTINUOUS_MONITOR_MODE": True, "NASH_CONTINUOUS_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "CONTINUOUS_MONITOR_MIN_GAIN_PAXS": 50.0,
+        "NASH_MIN_BUS_DELAY_S": 15.0, "NASH_MIN_GAIN_S": 15.0,
+        "DECIDER_COST_VETO_RATIO": 2.0,
+        "SAT_RELIEF_BONUS": True}},
+
+    # ── PROACTIVE ARMS (timetable-driven) ────────────────────────────────────
+    {"name": "CHAMP_CELLQ_PROACTIVE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_MAIN_STARVE_GATE": True,
+        "SAT_RELIEF_BONUS": True,
+        "PROACTIVE_MODE": True,
+        "PROACTIVE_TICK_S": 5.0, "PROACTIVE_MIN_STAGE": "SAT",
+        "PROACTIVE_MAX_HORIZON_S": 120.0, "PROACTIVE_REQUIRE_TIMETABLE": True,
+        "PROACTIVE_MAX_ACTIONS_PER_TICK": 5}},
+
+    {"name": "CHAMP_MARL_PROACTIVE", "strategy": "GLOBAL_REWARD", "method": "DCTSP_MARL",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "REWARD_ALPHA": 1.0, "REWARD_BETA": 1.0,
+        "REWARD_GAMMA": 1.0, "DCTSP_GREEN_REALLOC_MODE": True,
+        "GREEN_REALLOC_RECOVER_FRACTION": 1.0, "DCTSP_W_H": 0.50,
+        "DCTSP_CAR_WEIGHT": 1.00, "BXT_MODE": False, "DCTSP_ZIG_MODE": False,
+        "MP_ECTM_MODE": False, "BARGAIN_SPM_MODE": False,
+        "CENTRALIZED_MODE": False, "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        "PROACTIVE_MODE": True}},
+
+    {"name": "CHAMP_NASH_PROACTIVE", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "CONTINUOUS_MONITOR_MODE": True, "NASH_CONTINUOUS_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "CONTINUOUS_MONITOR_MIN_GAIN_PAXS": 50.0,
+        "NASH_MIN_BUS_DELAY_S": 15.0, "NASH_MIN_GAIN_S": 15.0,
+        "DECIDER_COST_VETO_RATIO": 2.0,
+        "PROACTIVE_MODE": True}},
+
+    # ── PURE_STATE saturation relief (timetable + real-time fused ETA) ───────
+    {"name": "CHAMP_CELLQ_PURE_STATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE,
+        "BXT_MAIN_STARVE_GATE": True,
+        "SAT_RELIEF_BONUS": True,
+        "PURE_STATE_MODE": True,
+        "PURE_STATE_TICK_S": 5.0, "PURE_STATE_MIN_STAGE": "SAT",
+        "PURE_STATE_MAX_HORIZON_S": 120.0, "PURE_STATE_REQUIRE_TIMETABLE": True,
+        "PURE_STATE_MAX_ACTIONS_PER_TICK": 5,
+        "PURE_STATE_CAR_OCC": 1.5, "PURE_STATE_BUS_OCC": 40.0,
+        "PURE_STATE_SAT_RAMP": 1.0}},
+
+    {"name": "CHAMP_MARL_PURE_STATE", "strategy": "GLOBAL_REWARD", "method": "DCTSP_MARL",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "REWARD_ALPHA": 1.0, "REWARD_BETA": 1.0,
+        "REWARD_GAMMA": 1.0, "DCTSP_GREEN_REALLOC_MODE": True,
+        "GREEN_REALLOC_RECOVER_FRACTION": 1.0, "DCTSP_W_H": 0.50,
+        "DCTSP_CAR_WEIGHT": 1.00, "BXT_MODE": False, "DCTSP_ZIG_MODE": False,
+        "MP_ECTM_MODE": False, "BARGAIN_SPM_MODE": False,
+        "CENTRALIZED_MODE": False, "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        "PURE_STATE_MODE": True}},
+
+    {"name": "CHAMP_NASH_PURE_STATE", "strategy": "GLOBAL_REWARD", "method": "NASH_BARGAIN",
+     "coordinated": True, "coordination_algo": "KALMAN", "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "CONTINUOUS_MONITOR_MODE": True, "NASH_CONTINUOUS_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "CONTINUOUS_MONITOR_MIN_GAIN_PAXS": 50.0,
+        "NASH_MIN_BUS_DELAY_S": 15.0, "NASH_MIN_GAIN_S": 15.0,
+        "DECIDER_COST_VETO_RATIO": 2.0,
+        "PURE_STATE_MODE": True}},
+
+    # ── LIVE-COST / REQUIRE-BUS fixes (2026-10-13) ───────────────────────────
+    # Diagnosis: NASH_PURE_STATE took 62 actions (53 insertions, 46 with NO bus)
+    # at jammed junctions (x>1, cross q in the hundreds) on a phantom main
+    # benefit, doubling car delay (19.6->41.7s) with bus delay flat. These arms
+    # apply the two fixes, isolated so each delta is attributable:
+    #   LIVE_COST_ALWAYS       measured MAIN + SIDE cost is a permanent floor
+    #   REQUIRE_BUS_FOR_ACTION any action with no bus is vetoed to NO_ACTION
+    {"name": "CHAMP_CELLQ_LIVECOST", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, "LIVE_COST_ALWAYS": True}},
+
+    {"name": "CHAMP_CELLQ_REQBUS", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, "REQUIRE_BUS_FOR_ACTION": True}},
+
+    {"name": "CHAMP_CELLQ_LIVECOST_REQBUS", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, "LIVE_COST_ALWAYS": True,
+                          "REQUIRE_BUS_FOR_ACTION": True}},
+
+    {"name": "CHAMP_NASH_LIVECOST_REQBUS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+        "CONTINUOUS_MONITOR_MODE": True, "NASH_CONTINUOUS_MODE": True,
+        "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+        "CONTINUOUS_MONITOR_MIN_GAIN_PAXS": 50.0,
+        "NASH_MIN_BUS_DELAY_S": 15.0, "NASH_MIN_GAIN_S": 15.0,
+        "DECIDER_COST_VETO_RATIO": 2.0,
+        "LIVE_COST_ALWAYS": True, "REQUIRE_BUS_FOR_ACTION": True}},
+
+    {"name": "CHAMP_MARL_LIVECOST_REQBUS", "strategy": "GLOBAL_REWARD",
+     "method": "DCTSP_MARL", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        "GLOBAL_REWARD_MODE": True, "REWARD_ALPHA": 1.0, "REWARD_BETA": 1.0,
+        "REWARD_GAMMA": 1.0, "DCTSP_GREEN_REALLOC_MODE": True,
+        "GREEN_REALLOC_RECOVER_FRACTION": 1.0, "DCTSP_W_H": 0.50,
+        "DCTSP_CAR_WEIGHT": 1.00, "BXT_MODE": False, "DCTSP_ZIG_MODE": False,
+        "MP_ECTM_MODE": False, "BARGAIN_SPM_MODE": False,
+        "CENTRALIZED_MODE": False, "DCTSP_CONGESTION_GATE": True,
+        "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+        "LIVE_COST_ALWAYS": True, "REQUIRE_BUS_FOR_ACTION": True}},
+
+    # ── CLEAN STATE-BASED arm (2026-10-13): the full vision -- auto-placed
+    # detectors from the live plan, no speculative pre-arm, actions require a
+    # bus, and the measured main+side cost is always on.
+    {"name": "CHAMP_CELLQ_CLEAN", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE,
+                          "LIVE_COST_ALWAYS": True,
+                          "REQUIRE_BUS_FOR_ACTION": True,
+                          "AUTO_PLACE_DETECTORS": True,
+                          "DISABLE_PREARM": True}},
+
+    {"name": "CHAMP_CELLQ_NOPREARM", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, "DISABLE_PREARM": True}},
+
 ]
 
 
@@ -857,7 +3062,56 @@ def _run_signature(m):
 # embedded interpreter the import dies with [WinError 127] every replication
 # (proven 2026-09-09: 10+ [MILP_MPC] FATALs, rows bit-identical to NO_TSP per
 # seed). Revisit iff the Aimsun-visible interpreter gains a working scipy.
-PARKED_ARMS = {"MILP_MPC"}
+PARKED_ARMS = {
+    "MILP_MPC", "CENTRALISED",
+    # ── Byte-identical duplicates (2026-10-17 cull) ──────────────────────────
+    # Full-row comparison over the shared result seeds showed these produce
+    # IDENTICAL (or near-identical on 4/5 seeds) results to the kept
+    # representative: the flag that supposedly distinguishes each one is inert
+    # on the KG corridor. Kept defined (and in the method map) so the ablation
+    # can be restored in one line; parked so the campaign stops paying for it.
+    #   DS_REL_MARGIN (0.5 vs 0.25) inert     -> REL_TIGHT  == DSGATE_REL
+    #   THROUGHPUT_REWARD inert in DS arms    -> DSGATE_THRU == DSGATE_REL
+    #   DS_IN_LEARNER_STATE inert             -> DSSTATE    == DSGATE_REL
+    #   DS_MAX ceiling inert (identical 4/5)  -> LOOSE/TIGHT == DSGATE
+    #   NASH_THRU_SURPLUS / CTM_CROSS_COST    -> NASH_CTM   == NASH_BARGAIN_THRU
+    #   SELF_GATE_RELIEF near-inert           -> SELFGATE_THRU ~= CHAMP_THRU
+    #   GROUP_BASED_CONTROL no-ops off External control -> RESTRUCTURE_EXT ~= RESTRUCTURE
+    "CHAMP_SCATS_DSGATE_LOOSE", "CHAMP_SCATS_DSGATE_TIGHT",
+    "CHAMP_SCATS_DSGATE_REL_TIGHT", "CHAMP_SCATS_DSGATE_THRU",
+    "CHAMP_SCATS_DSSTATE", "CHAMP_SCATS_SELFGATE_THRU",
+    "NASH_CTM", "CHAMP_SCATS_RESTRUCTURE_EXT",
+    # ── Likely-inert ablation families (2026-10-17 cull, round 2) ────────────
+    # Each differs from a kept sibling by ONE feature flag whose effect is weak
+    # / unproven on the KG corridor. Parked to shrink the campaign; un-park a
+    # line to re-ablate. Kept siblings: ZIGDOG_QP, MAXPRESSURE_FIX,
+    # CELLQ_BUSSPLIT, DCTSP_MARL, NASH_BARGAIN.
+    #   ZIGDOG state ablations  (DP_ENABLE / QUEUE_REL / Q_STATE_*)
+    "ZIGDOG_QP_NODP", "ZIGDOG_QP_NOQREL", "ZIGDOG_QP_NOSQB", "ZIGDOG_QP_NOBUS",
+    #   MaxPressure loosened variant
+    "MAXPRESSURE_LB",
+    #   virtual-detector placement ablations
+    "CELLQ_VDET_ON", "CELLQ_VDET_BUSSPLIT",
+    #   MARL / Nash relief+proactive+pure-state trios (kept: DCTSP_MARL, NASH_BARGAIN)
+    "CHAMP_MARL_RELIEF", "CHAMP_MARL_PROACTIVE", "CHAMP_MARL_PURE_STATE",
+    "CHAMP_NASH_RELIEF", "CHAMP_NASH_PROACTIVE", "CHAMP_NASH_PURE_STATE",
+    # ── Byte-identical cull, round 3 (2026-10-18, from the 143-row KG campaign) ─
+    # Fingerprinted every arm on ALL 274 metric columns x 5 eval seeds
+    # (test_scats_all_vs_nkgotsp.csv). Three clusters are identical to within
+    # rtol=1e-3/atol=1e-2; two were already parked above. Remaining:
+    #   CHAMP_NETGATE == CHAMP_MULTIHEAD        (EXACT, all 274 cols x 7 seeds:
+    #       identical Obj/TotPD/MainPD/PaxEq/queue/stops/TSP counters --
+    #       i.e. NET_PAX_DELAY_GATE + MAIN_CORRIDOR_FLOOR_GATE never changed the
+    #       outcome. NOTE: their veto prints are suppressed by LOG_COST_VETO and
+    #       their skip counters are NOT aggregated into summary.json, so "never
+    #       fired" cannot be distinguished from "fired but unmeasured" yet --
+    #       un-park this arm once the skip-counter export is fixed.)
+    "CHAMP_NETGATE",
+    #   near-identical to CHAMP_MULTIHEAD (byte-equal on 4/5 eval seeds):
+    #   CHAMP_NETGATE_LOOSE    differs only seed600 (183.40 vs 182.57, +0.5%)
+    #   CHAMP_CTM_MULTI_RELIEF differs only seed400 (176.86 vs 185.32, -4.6%)
+    "CHAMP_NETGATE_LOOSE", "CHAMP_CTM_MULTI_RELIEF",
+}
 
 
 _EXPECTED_ACTIVE_MODE = {
@@ -867,8 +3121,19 @@ _EXPECTED_ACTIVE_MODE = {
     "DCTSP_ZIG": "ZIG", "DCTSP_MP_ECTM": "MP_ECTM",
     "DCTSP_BARGAIN_SPM": "BARGAIN", "NASH_GATE": "NASH_GATE",
     "NASH_BARGAIN": "NASH_BARGAIN",
+    # NASH_CTM runs the SAME dctsp_nash_bargain decider (CTM cross cost only).
+    "NASH_CTM": "NASH_BARGAIN",
     "MILP_TSP": "MILP_TSP", "DCTSP_MARL_RL": "CPDQL",
     "CENTRALISED": "CENTRALIZED",
+    "ZIGDOG": "ZIGDOG",
+    "ZIGDOG_Q": "ZIGDOG_Q",
+    "ZIGDOG_QP": "ZIGDOG_Q",
+    "ZIGDOG_QP_NODP": "ZIGDOG_Q",
+    "ZIGDOG_QP_NOQREL": "ZIGDOG_Q",
+    "ZIGDOG_QP_NOSQB": "ZIGDOG_Q",
+    "ZIGDOG_QP_NOBUS": "ZIGDOG_Q",
+    # ZIGCTM uses the ZIGDOG_Q learner with ZIGDOG_BUS_W=0 -> reports ZIGDOG_Q.
+    "ZIGCTM": "ZIGDOG_Q",
     # MARL-family arms run CONTROL_MODE=DRL_DENSITY with per-arm run_config
     # overlays (GLOBAL_REWARD_MODE, MEASURED_*_FEED, CPDQL_MODE). The engine
     # reports ACTIVE_TSP_MODE=GENERIC for all of them, so verify the control
@@ -887,6 +3152,64 @@ _EXPECTED_ACTIVE_MODE = {
     # '@X' = a whole CONTROL_MODE arm (not a _spm decider flag): the engine
     # reports ACTIVE_TSP_MODE=GENERIC, so verify CONTROL_MODE==X from the summary.
     "MILP_MPC": "@MILP_MPC",
+
+    # ── NEW ARMS (2026-10-12): all modes mapped to their expected engine mode ──
+    # Proactive arms (timetable-driven)
+    "CHAMP_CELLQ_PROACTIVE": "BXT",
+    "CHAMP_MARL_PROACTIVE": "@DRL_DENSITY",
+    "CHAMP_NASH_PROACTIVE": "NASH_BARGAIN",
+    # Pure-state saturation relief (timetable + real-time fused ETA)
+    "CHAMP_CELLQ_PURE_STATE": "BXT",
+    "CHAMP_MARL_PURE_STATE": "@DRL_DENSITY",
+    "CHAMP_NASH_PURE_STATE": "NASH_BARGAIN",
+    # Relief arms (cost + benefit)
+    "CHAMP_CELLQ_MP_RELIEF": "BXT",
+    "CHAMP_CTM_MULTI_RELIEF": "BXT",
+    "CHAMP_MARL_RELIEF": "@DRL_DENSITY",
+    "CHAMP_NASH_RELIEF": "NASH_BARGAIN",
+    # A/B controls
+    "CHAMP_CELLQ_NOGATE": "BXT",
+    "CHAMP_CELLQ_STARVE_GATE": "BXT",
+    "CHAMP_CELLQ_STARVE_COST_OFF": "BXT",
+    "CHAMP_CTM_MULTI_RELIEF": "BXT",
+    "CHAMP_CELLQ_PURE_STATE": "BXT",
+    "CHAMP_CELLQ_PROACTIVE": "BXT",
+    "CHAMP_CELLQ_STARVE_GATE": "BXT",
+    "CHAMP_CELLQ_STARVE_COST_OFF": "BXT",
+    "CHAMP_CTM_MULTI_RELIEF": "BXT",
+    "CHAMP_MARL_RELIEF": "@DRL_DENSITY",
+    "CHAMP_NASH_RELIEF": "NASH_BARGAIN",
+    "CHAMP_MARL_PURE_STATE": "@DRL_DENSITY",
+    "CHAMP_NASH_PURE_STATE": "NASH_BARGAIN",
+    "CHAMP_CTM_MULTI_RELIEF": "BXT",
+    "CHAMP_CELLQ_LIVECOST": "BXT",
+    "CHAMP_CELLQ_REQBUS": "BXT",
+    "CHAMP_CELLQ_LIVECOST_REQBUS": "BXT",
+    "CHAMP_NASH_LIVECOST_REQBUS": "NASH_BARGAIN",
+    "CHAMP_MARL_LIVECOST_REQBUS": "@DRL_DENSITY",
+    "CHAMP_CELLQ_CLEAN": "BXT",
+    "CHAMP_CELLQ_NOPREARM": "BXT",
+    # SCATS degree-of-saturation arms (2026-10-14): CELLQ base => BXT decider;
+    # transit MaxPressure => the FLEX decider.
+    # SCATS-solver + gated-TSP family (2026-10-21): verify the decider actually ran.
+    "CHAMP_ST_DSGATE": "BXT", "CHAMP_ST_ZIG": "ZIG", "CHAMP_ST_ZIG_REL": "ZIG",
+    "CHAMP_ST_MASTER_ZIG": "ZIG",
+    "CHAMP_MP_NASH_SCATS": "NASH_BARGAIN", "CHAMP_MP_GAME_SCATS": "NASH_BARGAIN",
+    "CHAMP_SCATS_DSGATE": "BXT",
+    "CHAMP_SCATS_DSGATE_TIGHT": "BXT",
+    "CHAMP_SCATS_DSGATE_LOOSE": "BXT",
+    "CHAMP_SCATS_DSGATE_THRU": "BXT",
+    "CHAMP_SCATS_DSGATE_RESTRUCTURE": "BXT",
+    "CHAMP_SCATS_DSPLAN": "BXT",
+    "CHAMP_SCATS_FULL": "BXT",
+    "CHAMP_SCATS_DSSTATE": "BXT",
+    "CHAMP_SCATS_SELFGATE": "BXT",
+    "CHAMP_SCATS_RESTRUCTURE": "BXT",
+    "CHAMP_SCATS_RESTRUCTURE_EXT": "BXT",
+    "CHAMP_THRU": "BXT",
+    "CHAMP_THRU_BLEND": "BXT",
+    "CHAMP_MULTIHEAD": "BXT",
+    "CHAMP_MP_TRANSIT": "MAXPRESSURE_FLEX",
 }
 
 
@@ -1079,6 +3402,13 @@ def _run_and_collect(_br, rep, name, strategy, seed, scalar, coordinated, coord_
             # All arms decide on the measured flow + queue feed (not LWR estimate).
             _run_reward_cfg.setdefault("MEASURED_STATE_FEED", True)
             _run_reward_cfg.setdefault("MEASURED_QUEUE_FEED", True)
+        if GLOBAL_STATE_FULL:
+            # Every state-based arm's state carries the SIGNAL PHASE (elapsed
+            # green + clearance) and the measured flow/queue, across ALL its
+            # actions -- the state and the no-action future baseline then refer
+            # to the same phase-aware observation (2026-10-03).
+            _run_reward_cfg.setdefault("STATE_INCLUDE_SIGNAL_CLOCKS", True)
+            _run_reward_cfg.setdefault("STATE_INCLUDE_FLOW_QUEUE", True)
         if SMOKE_HEURISTIC_PRIOR and bool(_run_reward_cfg.get("BXT_MODE", False)):
             # SMOKE only: give the UNTRAINED BXT learner a traditional-TSP prior so
             # it acts instead of argmaxing NO_ACTION on an empty Q-table (which is
@@ -1140,6 +3470,74 @@ def _run_and_collect(_br, rep, name, strategy, seed, scalar, coordinated, coord_
         return m   # may be blank; ranker drops it
 
 
+def _preflight_engine_static():
+    """Abort BEFORE any run if the shared engine has a module-level leaked
+    statement (a line from inside a function left at column 0). That raises
+    NameError when the engine is imported, so the controller fails to load and
+    EVERY run produces no sim, no log and no metrics -- silently, for hours
+    (2026-10-13). py_compile cannot see it (valid syntax); this static ast check
+    can. No import, no Aimsun deps, no side effects."""
+    try:
+        import bundle_preflight as _bp
+    except Exception as _e:
+        _br.log(f"[PREFLIGHT] bundle_preflight unavailable ({_e!r}); "
+                f"skipping engine static check")
+        return
+    _eng = _os.path.join(_ROOT, "shared_tsp_engine", "engine.py")
+    _spec = _os.path.join(_ROOT, "shared_tsp_engine", "specialized_modes.py")
+    _probs = list(_bp.find_problems(_eng)) + list(_bp.find_problems(_spec))
+    if _probs:
+        _br.log("[PREFLIGHT] FATAL: engine static check FAILED:")
+        for _p in _probs:
+            _br.log(f"  [PREFLIGHT] {_p}")
+        raise RuntimeError(
+            "[PREFLIGHT] shared_tsp_engine has a module-level leaked statement. "
+            "The engine import WILL raise NameError, so the controller will not "
+            "load and NO run will produce a sim/log/metrics. Fix the file, then "
+            "restart Aimsun and re-run.")
+    _br.log("[PREFLIGHT] engine static check OK")
+
+
+def _preflight_engine_import():
+    """ACTUALLY import the bundle engine in-process and abort on ANY exception.
+
+    Complements the static check: this catches runtime import errors a static
+    pass cannot (a bad call inside a legit module-level statement, a missing
+    symbol, a broken sibling import). Runs inside Aimsun, so AAPI/PyANGKernel are
+    available -- exactly the context the simulation imports under.
+
+    Safe: the engine's module-level code is only its docstring, import guards and
+    constant assignments (verified), so importing early has no surprise side
+    effects. It also PINS the resolution to the bundle and refuses a foreign
+    shadow, mirroring the controller's own bundle guard.
+    """
+    import importlib
+    _eng_py = _os.path.join(_ROOT, "shared_tsp_engine", "engine.py")
+    if not _os.path.isfile(_eng_py):
+        raise RuntimeError("[PREFLIGHT] engine.py not found at %s" % _eng_py)
+    if _ROOT not in _sys.path:
+        _sys.path.insert(0, _ROOT)
+    try:
+        _eng = importlib.import_module("shared_tsp_engine.engine")
+    except Exception:
+        import traceback
+        _br.log("[PREFLIGHT] FATAL: engine IMPORT failed -- the controller will "
+                "not load and NO run will produce a sim/log/metrics. Fix the "
+                "engine, restart Aimsun, re-run. Traceback:")
+        for _ln in traceback.format_exc().splitlines():
+            _br.log("  [PREFLIGHT] " + _ln)
+        raise
+    _f = _os.path.abspath(getattr(_eng, "__file__", "") or "")
+    _exp = _os.path.abspath(_os.path.join(_ROOT, "shared_tsp_engine")).lower()
+    if not _f.lower().startswith(_exp):
+        raise RuntimeError(
+            "[PREFLIGHT] engine imported from OUTSIDE the bundle: %r (expected "
+            "under %r). A foreign shared_tsp_engine copy is shadowing the bundle."
+            % (_f, _exp))
+    _br.log("[PREFLIGHT] engine import OK (%s) %s"
+            % (getattr(_eng, "ENGINE_BUILD", "?"), _f))
+
+
 def main(arms=None, results_csv=None, resume=False):
     """Run the champion search. Pass `arms` (a subset of ARMS) and `results_csv`
     to run a subset (see champion_subset.py); defaults to the full 11-arm search.
@@ -1155,12 +3553,26 @@ def main(arms=None, results_csv=None, resume=False):
     RUN_CONFIG_PATH = _br.RUN_CONFIG_PATH
     PROJECT_DIR = _br.PROJECT_DIR
 
-    _learn_runs = sum(len(TRAIN_SEEDS) + len(EVAL_SEEDS) for a in arms if a["name"] in LEARNING_ARMS)
-    _other_runs = sum(len(EVAL_SEEDS) for a in arms if a["name"] not in LEARNING_ARMS)
+    # Fail fast on a broken engine rather than burning hours producing nothing.
+    try:
+        _preflight_engine_static()
+        _preflight_engine_import()
+    except Exception:
+        log("[PREFLIGHT] aborting batch -- engine failed preflight")
+        raise
+
+    # Count only RUNNABLE arms -- parked arms (PARKED_ARMS) are skipped in the
+    # run loop, so counting them here made the [run_num/n_total] progress line
+    # never reach its total. Report active + parked explicitly.
+    _active = [a for a in arms if a["name"] not in PARKED_ARMS]
+    _n_parked = len(arms) - len(_active)
+    _learn_runs = sum(len(TRAIN_SEEDS) + len(EVAL_SEEDS) for a in _active if a["name"] in LEARNING_ARMS)
+    _other_runs = sum(len(EVAL_SEEDS) for a in _active if a["name"] not in LEARNING_ARMS)
     n_total = (_learn_runs + _other_runs) * len(DEMAND_SCALARS)
     log("=" * 70)
     log(f"CHAMPION SEARCH (Phase 1) -- corridor={CORRIDOR}")
-    log(f"  {len(arms)} arms | eval seeds={EVAL_SEEDS} | learners train on {TRAIN_SEEDS}")
+    log(f"  {len(_active)} arms active ({_n_parked} parked) | eval seeds={EVAL_SEEDS} "
+        f"| learners train on {TRAIN_SEEDS}")
     log(f"  total runs = {n_total}  (learners: train+eval; others: eval)")
     log(f"  -> {RESULTS_CSV_}")
     log("=" * 70)
@@ -1260,12 +3672,23 @@ def main(arms=None, results_csv=None, resume=False):
                 is_learner = name in LEARNING_ARMS
                 if is_learner:
                     seeds_to_run = list(TRAIN_SEEDS) + list(SCORED_SEEDS)
-                    _set_controller_bxt_seeds(CONTROLLER_PATH, TRAIN_SEEDS, SCORED_SEEDS,
-                                              BXT_TRAIN_EPSILON,
-                                              freeze_on_eval=LEARNERS_FREEZE_ON_EVAL)
+                    _bxt = (_set_controller_bxt_seeds, CONTROLLER_PATH, TRAIN_SEEDS,
+                            SCORED_SEEDS, BXT_TRAIN_EPSILON)
                 else:
                     seeds_to_run = list(SCORED_SEEDS)
-                    _set_controller_bxt_seeds(CONTROLLER_PATH, [], [], BXT_TRAIN_EPSILON)
+                    _bxt = (_set_controller_bxt_seeds, CONTROLLER_PATH, [], [],
+                            BXT_TRAIN_EPSILON)
+                # NON-FATAL: this rewrites the controller .py on disk. A transient
+                # Errno 22 from Aimsun's loader holding the file used to abort the
+                # entire 258-run sweep (2026-10-19, arm 9, 07:03:14). Log and
+                # continue -- reward flags still come from run_config.py, and
+                # non-learners have nothing to patch here.
+                try:
+                    _bxt[0](*_bxt[1:], **({"freeze_on_eval": LEARNERS_FREEZE_ON_EVAL}
+                                          if is_learner else {}))
+                except Exception as _be:
+                    log(f"WARN bxt-seed patch {name}: {_be!r} -- continuing "
+                        f"(controller NOT patched for BXT seeds this arm)")
 
                 # Multi-regime training (task a): demand levels to cycle over the
                 # learner's TRAIN seeds. Empty -> classic single-demand training.
@@ -1297,14 +3720,32 @@ def main(arms=None, results_csv=None, resume=False):
                     _reg = f" | demand x{_run_scalar:g}" if _mr_demands else ""
                     log(f"[{run_num}/{n_total}] {CORRIDOR} | {name} | seed={seed} | {_phase}{_reg}")
                     # collection-race retry: re-collect (short wait) then re-run once
-                    m = _run_and_collect(_br, rep, name, strategy, seed, _run_scalar,
-                                         coordinated, coord_algo, _global_reward,
-                                         (None if is_baseline and not _numeric else (_numeric or None)),
-                                         bus_pred, CONTROLLER_PATH, RUN_CONFIG_PATH,
-                                         PROJECT_DIR, RESULTS_CSV_, log,
-                                         active_intersections=arm.get("active_intersections"))
+                    # 2026-10-02: a single failed collection must NOT abort the
+                    # whole sweep (observed: pipeline stopped after NO_TSP 300/400
+                    # because one run raised). Log, count as flagged, continue.
+                    # CARRY-OVER stays fatal via the check below.
+                    try:
+                        m = _run_and_collect(_br, rep, name, strategy, seed, _run_scalar,
+                                             coordinated, coord_algo, _global_reward,
+                                             (None if is_baseline and not _numeric else (_numeric or None)),
+                                             bus_pred, CONTROLLER_PATH, RUN_CONFIG_PATH,
+                                             PROJECT_DIR, RESULTS_CSV_, log,
+                                             active_intersections=arm.get("active_intersections"))
+                    except Exception as _re:
+                        log(f"  [RUN FAIL] {name} seed={seed} {_phase}: {_re!r} "
+                            f"-- continuing with the next run")
+                        _flagged_runs += 1
+                        continue
                     if m is not None:
                         _br.append_master_csv(RESULTS_CSV_, m)
+                        # DEDUP: mark this folder consumed so no later run can
+                        # re-feed it as a second CSV row (re-fired twins).
+                        try:
+                            _fld = m.get("stats_results_folder")
+                            if _fld:
+                                _br._CONSUMED_RESULT_FOLDERS.add(str(_fld))
+                        except Exception:
+                            pass
                         if (USE_TOPUP_SEEDS and is_learner
                                 and seed == GATE_SEED):
                             _check_september_gate(name, m, log)

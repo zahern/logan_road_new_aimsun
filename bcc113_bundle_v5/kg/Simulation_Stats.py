@@ -1089,6 +1089,34 @@ class SimulationStats:
             # Extra safety: count buses this step for logging
             d.setdefault('buses_this_step', 0)
             d['buses_this_step'] = len(on_call)
+
+        # ── Corridor-level loop tracker (2026-10-13) ─────────────────────────
+        # A "loop" = a bus ENTERS the corridor (appears in ANY managed junction's
+        # detection window) and later LEAVES it entirely (present in NONE). ONE
+        # count per physical corridor traversal, independent of how many junctions
+        # the bus happened to be detected at -- unlike the per-junction N_BusTrips
+        # (which is a SUM over junctions). loops_per_bus and mean_loop_tt_s are
+        # then a clean inverse pair (more loops <-> shorter loop time), so the
+        # "completed more but slower?" question becomes answerable.
+        try:
+            _present = set()
+            for _iid, _d in self._inter.items():
+                _w = _d.get('bus_on_window')
+                if _w:
+                    _present |= set(_w)
+            _cin = self.__dict__.setdefault('_corridor_in', {})
+            _cloop = self.__dict__.setdefault('_corridor_loops', [])
+            _tnow = float(time)
+            for _v in _present:
+                if _v not in _cin:
+                    _cin[_v] = _tnow
+            for _v in [_v for _v in _cin if _v not in _present]:
+                _et = _cin.pop(_v)
+                _tt = _tnow - float(_et)
+                if 5.0 < _tt < _MAX_BUS_TRIP_S:
+                    _cloop.append((_v, float(_et), _tnow, _tt))
+        except Exception:
+            pass
     
     #==========================
     # ANALYTICAL OBJECTIVE  (called from harmony search objective functions)
@@ -1184,6 +1212,14 @@ class SimulationStats:
             # Learned-Q decider action vetoed because its analytic cross cost
             # exceeded the bus benefit — forced to NO_ACTION.
             'decider_cost_veto':  'n_decider_cost_veto',
+            # Global-delay break-even safety net (2026-10-17): the action's full
+            # local social cost (_car_for_veto: cross+side+main-starve+self-gating)
+            # exceeded its bus benefit — the objective-aligned hard guard.
+            'net_pax_delay_veto': 'n_net_pax_delay_veto',
+            # Main-corridor delay floor (2026-10-17): the action's predicted
+            # MAIN-approach delay (main queue x green taken x occupancy) exceeded
+            # its bus benefit.
+            'main_corridor_veto': 'n_main_corridor_veto',
             # Pre-arm-sourced decision that tried a timing action (OC/GR/ER/PT/VP)
             # and was hard-vetoed to GE/INS/NO_ACTION (#2, 2026-08-24).
             'prearm_timing_veto': 'n_prearm_timing_veto',
@@ -1197,6 +1233,19 @@ class SimulationStats:
             'focus_suppressed':   'n_focus_suppressed',
             # ETA horizon — bus detected but too far for any useful strategy
             'eta_horizon':        'n_eta_horizon',
+            # --- Previously-UNMAPPED reasons (fixed 2026-10-18) ---
+            # engine.py/specialized_modes.py emitted every one of these, but they
+            # were absent from this map, so .get(skip_type) returned None and the
+            # skip was silently DROPPED (never counted, never exported). The
+            # ds_balance_veto omission in particular made the entire DS-balance
+            # gate unmeasurable from any output file.
+            'ds_balance_veto':    'n_ds_balance_veto',
+            'seq_cap':            'n_seq_cap',
+            'recoverability_veto': 'n_recoverability_veto',
+            'progression_veto':   'n_progression_veto',
+            'no_bus_act':         'n_no_bus_act',
+            'prearm_unservable':  'n_prearm_unservable',
+            'ds_selfgate_cost':   'n_ds_selfgate_cost',
         }.get(skip_type)
         if key:
             d.setdefault(key, 0)
@@ -1473,6 +1522,24 @@ class SimulationStats:
             'n_skipped_ins':         d.get('n_skipped_ins', 0),
             'n_detected_no_action':  d.get('n_detected_no_action', 0),
             'n_natural_green':       d.get('n_natural_green', 0),
+            # Veto / skip counters (2026-10-18): recorded by record_tsp_skip but
+            # previously neither aggregated nor exported anywhere.
+            'n_prearm_cost_gate':    d.get('n_prearm_cost_gate', 0),
+            'n_decider_cost_veto':   d.get('n_decider_cost_veto', 0),
+            'n_net_pax_delay_veto':  d.get('n_net_pax_delay_veto', 0),
+            'n_main_corridor_veto':  d.get('n_main_corridor_veto', 0),
+            'n_ds_balance_veto':     d.get('n_ds_balance_veto', 0),
+            'n_prearm_timing_veto':  d.get('n_prearm_timing_veto', 0),
+            'n_tsp_rule_veto':       d.get('n_tsp_rule_veto', 0),
+            'n_twoway_band_veto':    d.get('n_twoway_band_veto', 0),
+            'n_focus_suppressed':    d.get('n_focus_suppressed', 0),
+            'n_eta_horizon':         d.get('n_eta_horizon', 0),
+            'n_seq_cap':             d.get('n_seq_cap', 0),
+            'n_recoverability_veto': d.get('n_recoverability_veto', 0),
+            'n_progression_veto':    d.get('n_progression_veto', 0),
+            'n_no_bus_act':          d.get('n_no_bus_act', 0),
+            'n_prearm_unservable':   d.get('n_prearm_unservable', 0),
+            'n_ds_selfgate_cost':    d.get('n_ds_selfgate_cost', 0),
             'total_extension_s':     d.get('total_extension_s', 0.0),
             'total_insertion_s':     d.get('total_insertion_s', 0.0),
             'total_insertion_wait_s': d.get('total_insertion_wait_s', 0.0),
@@ -1762,6 +1829,21 @@ class SimulationStats:
         """Headway/schedule deviation for one line arrival. dev>0 = late
         (passengers at stops wait longer); dev<0 = early (bunching risk).
         Penalty: late full-weight, early half-weight -- both hurt fidelity."""
+        # 2026-10-03: ONE record per bus per line per replication. The capture
+        # path is a per-tick enumeration; without this guard the same physical
+        # bus was re-recorded (~20x: n=11,295 for a ~516-bus run), multiplying
+        # the Z3 penalty and dominating objective_weighted.
+        if veh_id is not None:
+            try:
+                _seen_pairs = getattr(self, "_sched_seen_pairs", None)
+                if _seen_pairs is None:
+                    _seen_pairs = self._sched_seen_pairs = set()
+                _pair = (int(line_id), int(veh_id))
+                if _pair in _seen_pairs:
+                    return
+                _seen_pairs.add(_pair)
+            except Exception:
+                pass
         lst = getattr(self, "_sched_devs", None)
         if lst is None:
             lst = self._sched_devs = []
@@ -1854,6 +1936,18 @@ class SimulationStats:
         total_phase_skip    = 0
         total_phase_rot     = 0
         total_twoway_band_veto = 0
+        # Veto / skip counters (2026-10-18): recorded per-junction by
+        # record_tsp_skip but previously NEVER summed. Aggregated here and
+        # unpacked into _global_kpis below so the gates become measurable.
+        _VETO_KEYS = (
+            'n_prearm_cost_gate', 'n_decider_cost_veto', 'n_net_pax_delay_veto',
+            'n_main_corridor_veto', 'n_ds_balance_veto', 'n_prearm_timing_veto',
+            'n_tsp_rule_veto', 'n_twoway_band_veto', 'n_focus_suppressed',
+            'n_eta_horizon', 'n_seq_cap', 'n_recoverability_veto',
+            'n_progression_veto', 'n_no_bus_act', 'n_prearm_unservable',
+            'n_ds_selfgate_cost',
+        )
+        tsp_veto_totals = {_vk: 0 for _vk in _VETO_KEYS}
         total_extension_s  = 0.0
         total_insertion_s  = 0.0
         total_insertion_wait_s = 0.0
@@ -1902,6 +1996,8 @@ class SimulationStats:
             total_phase_skip    += d.get('n_phase_skip', 0)
             total_phase_rot     += d.get('n_phase_rot', 0)
             total_twoway_band_veto += d.get('n_twoway_band_veto', 0)
+            for _vk in _VETO_KEYS:
+                tsp_veto_totals[_vk] += d.get(_vk, 0)
             total_extension_s   += k['total_extension_s']
             total_insertion_s   += k['total_insertion_s']
             total_insertion_wait_s += k.get('total_insertion_wait_s', 0.0)
@@ -1918,6 +2014,16 @@ class SimulationStats:
         total_distinct_buses = len(all_distinct_bus_ids)
         total_distinct_cars = len(all_distinct_car_ids)
         total_distinct_trucks = len(all_distinct_truck_ids)
+
+        # Corridor-loop metrics (physical, detection-independent): one count per
+        # bus corridor traversal (entry -> full exit), so more loops <=> shorter
+        # mean loop time. Complements the per-junction N_BusTrips sum.
+        _alloops = list(getattr(self, '_corridor_loops', []) or [])
+        n_loop_completions = len(_alloops)
+        _loop_tts = [float(t[3]) for t in _alloops]
+        mean_loop_tt_s = (sum(_loop_tts) / len(_loop_tts)) if _loop_tts else 0.0
+        loops_per_bus = (n_loop_completions / total_distinct_buses
+                         if total_distinct_buses else 0.0)
 
         avg_bus_tt_s = (
             (total_bus_tt_hrs * 3600.0 / total_n_buses)
@@ -2125,6 +2231,41 @@ class SimulationStats:
             avg_pass_delay_s = _clean_total_paxs / total_passengers
             avg_obj_delay = avg_pass_delay_s
 
+        # ── CHEAT-PROOF metric: avg delay INCLUDING virtual-queue wait (2026-10-05) ─
+        # The objective above counts only IN-NETWORK (section) delay over SERVED
+        # passengers, so a controller that gridlocks ENTRY can hide the resulting
+        # wait -- those vehicles sit in the virtual queue, off every measured
+        # section, and not serving them even shrinks the served denominator (the
+        # starvation cheat). Fold the ALREADY-MEASURED VQ wait
+        # (numVehiclesInVQ x waitingTimeVirtualQueue x occupancy) into a SEPARATE
+        # metric averaged over total persons (served + VQ), which starvation cannot
+        # game. The existing Objective_PaxPerDelayHr is left untouched.
+        try:
+            _vq_occ = float(getattr(self, 'VQ_OCC', 1.2) or 1.2)   # VQ ~ cars at CarOcc
+            _vq_veh_all  = max(0.0, float(getattr(self, '_net_extra_vq_veh_all', 0) or 0))
+            _vq_wait_all = max(0.0, float(getattr(self, '_net_extra_wait_vq_all', 0.0) or 0.0))
+            # Prefer the PER-STEP integral (engine Priority 2b accumulator).
+            # The finish-time snapshot (_vq_veh_all * _vq_wait_all) misses a
+            # controller that gridlocks entry and then clears before the run
+            # ends, which is precisely the starvation cheat being checked.
+            _acc = getattr(self, '_vq_veh_s_accum', None) or {}
+            _int_veh_s = max(0.0, float(_acc.get('veh_s', 0.0) or 0.0))
+            _peak_veh_s = max(0.0, float(_acc.get('peak_veh_s', 0.0) or 0.0))
+            _snap_pax_s = max(0.0, _vq_veh_all * _vq_wait_all * _vq_occ)
+            _int_pax_s = _int_veh_s * _vq_occ
+            # Take whichever is larger: the integral when the per-step path ran,
+            # the snapshot otherwise (e.g. side sections never in the sim).
+            sim_vq_delay_pax_s = max(_int_pax_s, _snap_pax_s)
+            self._vq_peak_veh_s = max(_peak_veh_s, _int_veh_s)
+            _vq_pax = _vq_veh_all * _vq_occ
+            _denom_inclvq = float(total_passengers) + _vq_pax
+            avg_pax_delay_incl_vq_s = (
+                (_clean_total_paxs + sim_vq_delay_pax_s) / _denom_inclvq
+                if _denom_inclvq > 0 else avg_pass_delay_s)
+        except Exception:
+            sim_vq_delay_pax_s = 0.0
+            avg_pax_delay_incl_vq_s = avg_pass_delay_s
+
 # ── Weighted multi-objective (Z1 delay / Z3 schedule / Z4 throughput) ───
         # A proper weighted SUM of three objectives (not the old collapse where
         # objective_total == Z1). Z1 and Z3 share a common currency (pax·s) so
@@ -2193,6 +2334,9 @@ class SimulationStats:
             'bus_total_tt_hrs':          total_bus_tt_hrs,
             'n_buses':                   total_n_buses,
             'n_distinct_buses':          total_distinct_buses,
+            'n_loop_completions':        n_loop_completions,
+            'mean_loop_tt_s':            mean_loop_tt_s,
+            'loops_per_bus':             loops_per_bus,
             'n_distinct_cars':           total_distinct_cars,
             'n_distinct_trucks':         total_distinct_trucks,
             'avg_bus_tt_s':              avg_bus_tt_s,
@@ -2216,6 +2360,9 @@ class SimulationStats:
             'car_passengers':            car_passengers,
             'truck_passengers':          truck_passengers,
             'avg_pass_delay_s':          avg_pass_delay_s,
+            'sim_vq_delay_pax_s':        sim_vq_delay_pax_s,
+            'vq_peak_veh_s':             float(getattr(self, '_vq_peak_veh_s', 0.0) or 0.0),
+            'avg_pax_delay_incl_vq_s':   avg_pax_delay_incl_vq_s,
             'avg_bus_pass_delay_s':      avg_bus_pass_delay_s,
             'avg_car_pass_delay_s':      avg_car_pass_delay_s,
             'avg_truck_pass_delay_s':    avg_truck_pass_delay_s,
@@ -2243,6 +2390,23 @@ class SimulationStats:
             'n_tsp_phase_skip':          total_phase_skip,
             'n_tsp_phase_rot':           total_phase_rot,
             'n_twoway_band_veto':        total_twoway_band_veto,
+            # Veto / skip totals (2026-10-18). Explicit so they are greppable in
+            # the output; the values themselves come from the aggregation above.
+            'n_prearm_cost_gate':        tsp_veto_totals.get('n_prearm_cost_gate', 0),
+            'n_decider_cost_veto':       tsp_veto_totals.get('n_decider_cost_veto', 0),
+            'n_net_pax_delay_veto':      tsp_veto_totals.get('n_net_pax_delay_veto', 0),
+            'n_main_corridor_veto':      tsp_veto_totals.get('n_main_corridor_veto', 0),
+            'n_ds_balance_veto':         tsp_veto_totals.get('n_ds_balance_veto', 0),
+            'n_prearm_timing_veto':      tsp_veto_totals.get('n_prearm_timing_veto', 0),
+            'n_tsp_rule_veto':           tsp_veto_totals.get('n_tsp_rule_veto', 0),
+            'n_focus_suppressed':        tsp_veto_totals.get('n_focus_suppressed', 0),
+            'n_eta_horizon':             tsp_veto_totals.get('n_eta_horizon', 0),
+            'n_seq_cap':                 tsp_veto_totals.get('n_seq_cap', 0),
+            'n_recoverability_veto':     tsp_veto_totals.get('n_recoverability_veto', 0),
+            'n_progression_veto':        tsp_veto_totals.get('n_progression_veto', 0),
+            'n_no_bus_act':              tsp_veto_totals.get('n_no_bus_act', 0),
+            'n_prearm_unservable':       tsp_veto_totals.get('n_prearm_unservable', 0),
+            'n_ds_selfgate_cost':        tsp_veto_totals.get('n_ds_selfgate_cost', 0),
             'total_extension_s':         total_extension_s,
             'total_insertion_s':         total_insertion_s,
             'avg_extension_s': (total_extension_s / total_exts if total_exts > 0 else 0.0),
@@ -4048,7 +4212,13 @@ class SimulationStats:
                 _vqa     = float(getattr(st, 'virtualQueueAvg',        0.0) or 0.0)
                 _vqm     = float(getattr(st, 'virtualQueueMax',        0.0) or 0.0)
                 _vqveh   = int(  getattr(st, 'numVehiclesInVQ',        0)   or 0)
+                # -1.0 is Aimsun's "no queue" sentinel and is truthy, so a bare
+                # `or 0.0` lets it through into the accumulator; a negative mean
+                # would then force sim_vq_delay_pax_s to 0 and silently disable
+                # the cheat-check for the worst-gridlocking arm. Clamp first.
                 _wtvq    = float(getattr(st, 'waitingTimeVirtualQueue', 0.0) or 0.0)
+                if _wtvq < 0.0:
+                    _wtvq = 0.0
                 _sd      = float(getattr(st, 'Sd',                     0.0) or 0.0)  # Exit-Based Speed km/h
 
                 # Direct sums
@@ -4612,6 +4782,7 @@ class SimulationStats:
             headers=[
                 "ScenarioID", "ExperimentID", "ReplicationID", "TSP_Strategy",
                 "BusTotalTT_hrs", "N_BusTrips", "N_DistinctBuses", "N_DistinctCars", "N_DistinctTrucks",
+                "N_LoopCompletions", "MeanLoopTT_s", "LoopsPerBus",
                 "AvgBusTT_s",
                 "StdBusTT_s",
                 "TotalPassDelay_hrs", "SidePassDelay_hrs", "MainPassDelay_hrs",
@@ -4620,8 +4791,10 @@ class SimulationStats:
                 "AvgMainPassDelay_pax_h_per_sim_h", "AvgSidePassDelay_pax_h_per_sim_h",
                 "AvgTotalPassDelay_pax_h_per_sim_h", "SimDuration_hrs",
                 "SimTotalDelay_pax_s", "SimBusDelay_pax_s", "SimCarDelay_pax_s", "SimTruckDelay_pax_s",
+                "SimVQDelay_pax_s", "VQPeakVeh_s",
                 "PaxEquivPassages", "BusPaxEquivPassages", "CarPaxEquivPassages", "TruckPaxEquivPassages",
                 "AvgPassDelay_s", "AvgBusPassDelay_s", "AvgCarPassDelay_s", "AvgTruckPassDelay_s",
+                "AvgPassDelay_inclVQ_s",
                 "AvgObjPassDelay",
                 "TSP_Detections", "TSP_Extensions", "TSP_Insertions",
                 # Previously-uncounted timing actions (GR/ER/OC/VP/PT)
@@ -4629,6 +4802,12 @@ class SimulationStats:
                 "TSP_PhaseSkip", "TSP_PhaseRot",
                 "TSP_Skipped_GE", "TSP_Skipped_Ins", "TSP_Detected_NoAction", "TSP_NaturalGreen",
                 "TSP_TwowayBandVeto",
+                # Veto / skip counters (2026-10-18): why an arm did NOT act.
+                "TSP_PrearmCostGate", "TSP_DeciderCostVeto", "TSP_NetPaxDelayVeto",
+                "TSP_MainCorridorVeto", "TSP_DSBalanceVeto", "TSP_PrearmTimingVeto",
+                "TSP_TSPRuleVeto", "TSP_FocusSuppressed", "TSP_ETAHorizon",
+                "TSP_SeqCap", "TSP_RecoverabilityVeto", "TSP_ProgressionVeto",
+                "TSP_NoBusAct", "TSP_PrearmUnservable", "TSP_DSSelfGateCost",
                 "TSP_TotalExtension_s", "TSP_TotalInsertion_s",
                 "TSP_AvgExtension_s", "TSP_AvgInsertion_s", "TSP_AvgInsertionWait_s",
                 # Objective metric
@@ -4638,6 +4817,12 @@ class SimulationStats:
                 "Obj_Z2_progression_paxs",
                 "Obj_Z3_schedule_paxs", "Obj_Z4_throughput_pax",
                 "ttotal_bus_tt_deviation_sec",
+                # Per-bus schedule adherence (2026-10-12): the observable bus
+                # lateness-vs-timetable metric. avg_sched_dev_s = mean signed
+                # deviation (+late / -early), avg_abs_sched_dev_s = mean |dev|,
+                # sched_pct_late = % of arrivals late, sched_dev_n = arrivals.
+                "avg_sched_dev_s", "avg_abs_sched_dev_s",
+                "sched_pct_late", "sched_dev_n",
                 # Corridor coordinator pre-arm outcomes
                 "Prearm_Fired", "Prearm_Success", "Prearm_Missed",
                 "Prearm_Expired", "Prearm_Discarded",
@@ -4719,6 +4904,9 @@ class SimulationStats:
                 g.get('n_distinct_buses', 0),
                 g.get('n_distinct_cars', 0),
                 g.get('n_distinct_trucks', 0),
+                g.get('n_loop_completions', 0),
+                self._safe_round(g.get('mean_loop_tt_s', 0), 2),
+                self._safe_round(g.get('loops_per_bus', 0), 3),
                 self._safe_round(g.get('avg_bus_tt_s', 0), 1),
                 self._safe_round(g.get('std_bus_tt_s', 0), 1),
                 self._safe_round(g.get('total_pass_delay_hrs', 0), 4),
@@ -4735,6 +4923,8 @@ class SimulationStats:
                 self._safe_round(g.get('sim_bus_delay', 0), 2),
                 self._safe_round(g.get('sim_car_delay', 0), 2),
                 self._safe_round(g.get('sim_truck_delay', 0), 2),
+                self._safe_round(g.get('sim_vq_delay_pax_s', 0), 2),
+                self._safe_round(g.get('vq_peak_veh_s', 0), 2),
                 self._safe_round(g.get('total_passengers', 0), 1),
                 self._safe_round(g.get('bus_passengers', 0), 1),
                 self._safe_round(g.get('car_passengers', 0), 1),
@@ -4743,6 +4933,7 @@ class SimulationStats:
                 self._safe_round(g.get('avg_bus_pass_delay_s', 0), 2),
                 self._safe_round(g.get('avg_car_pass_delay_s', 0), 2),
                 self._safe_round(g.get('avg_truck_pass_delay_s', 0), 2),
+                self._safe_round(g.get('avg_pax_delay_incl_vq_s', 0), 2),
                 self._safe_round(g.get('avg_obj_pass_delay', 0), 4),
                 g.get('n_tsp_detections', 0),
                 g.get('n_tsp_extensions', 0),
@@ -4757,6 +4948,22 @@ class SimulationStats:
                 g.get('n_tsp_detected_no_action', 0),
                 g.get('n_tsp_natural_green', 0),
                 g.get('n_twoway_band_veto', 0),
+                # Veto / skip totals (2026-10-18) — must stay in header order.
+                g.get('n_prearm_cost_gate', 0),
+                g.get('n_decider_cost_veto', 0),
+                g.get('n_net_pax_delay_veto', 0),
+                g.get('n_main_corridor_veto', 0),
+                g.get('n_ds_balance_veto', 0),
+                g.get('n_prearm_timing_veto', 0),
+                g.get('n_tsp_rule_veto', 0),
+                g.get('n_focus_suppressed', 0),
+                g.get('n_eta_horizon', 0),
+                g.get('n_seq_cap', 0),
+                g.get('n_recoverability_veto', 0),
+                g.get('n_progression_veto', 0),
+                g.get('n_no_bus_act', 0),
+                g.get('n_prearm_unservable', 0),
+                g.get('n_ds_selfgate_cost', 0),
                 self._safe_round(g.get('total_extension_s', 0), 2),
                 self._safe_round(g.get('total_insertion_s', 0), 2),
                 self._safe_round(g.get('avg_extension_s', 0), 2),
@@ -4768,7 +4975,18 @@ class SimulationStats:
                 self._safe_round(g.get('obj_Z2_progression_paxs', 0), 1),
                 self._safe_round(g.get('obj_Z3_schedule_paxs', 0), 1),
                 self._safe_round(g.get('obj_Z4_throughput_pax', 0), 1),
+                # Schedule-deviation block: the header declares FIVE columns here
+                # (ttotal_bus_tt_deviation_sec, avg_sched_dev_s, avg_abs_sched_dev_s,
+                # sched_pct_late, sched_dev_n) but only ONE value was supplied, so the
+                # row ran 4 short and EVERY column after it (the whole ~120-column
+                # Net_* block) was shifted left by 4 -- which is why Net_NumStops_Car/
+                # Bus/HOV/Truck read empty and every other Net_* value was mislabelled.
+                # Same mapping as the batch writer further down.
                 self._safe_round(_schedule.get('total_abs_deviation_s', 0), 1),
+                self._safe_round(_schedule.get('average_deviation_s', 0), 1),
+                self._safe_round(_schedule.get('average_abs_deviation_s', 0), 1),
+                self._safe_round(_schedule.get('pct_late', 0), 1),
+                int(_schedule.get('n', 0)),
                 # Pre-arm coordination stats
                 self._prearm_stats.get("fired",     0),
                 self._prearm_stats.get("success",   0),
@@ -4986,6 +5204,13 @@ class SimulationStats:
                     "TSP_Skipped_Ins",       # harmony BP opt ≤ 0.5 s
                     "TSP_Detected_NoAction", # NORMAL mode detections
                     "TSP_NaturalGreen",      # bus naturally clears on green
+                    # Veto / skip counters (2026-10-18): why this junction did
+                    # not act (per-junction view of the network gates).
+                    "TSP_PrearmCostGate", "TSP_DeciderCostVeto", "TSP_NetPaxDelayVeto",
+                    "TSP_MainCorridorVeto", "TSP_DSBalanceVeto", "TSP_PrearmTimingVeto",
+                    "TSP_TSPRuleVeto", "TSP_TwowayBandVeto", "TSP_FocusSuppressed", "TSP_ETAHorizon",
+                    "TSP_SeqCap", "TSP_RecoverabilityVeto", "TSP_ProgressionVeto",
+                    "TSP_NoBusAct", "TSP_PrearmUnservable", "TSP_DSSelfGateCost",
                     # Duration averages
                     "TSP_AvgExtension_s",    # mean granted GE per extension event
                     "TSP_AvgInsertion_s",    # mean granted BP per insertion event
@@ -5047,6 +5272,23 @@ class SimulationStats:
                     k['n_skipped_ins'],
                     k['n_detected_no_action'],
                     k['n_natural_green'],
+                    # Veto / skip counters (2026-10-18) — must stay in header order.
+                    k.get('n_prearm_cost_gate', 0),
+                    k.get('n_decider_cost_veto', 0),
+                    k.get('n_net_pax_delay_veto', 0),
+                    k.get('n_main_corridor_veto', 0),
+                    k.get('n_ds_balance_veto', 0),
+                    k.get('n_prearm_timing_veto', 0),
+                    k.get('n_tsp_rule_veto', 0),
+                    k.get('n_twoway_band_veto', 0),
+                    k.get('n_focus_suppressed', 0),
+                    k.get('n_eta_horizon', 0),
+                    k.get('n_seq_cap', 0),
+                    k.get('n_recoverability_veto', 0),
+                    k.get('n_progression_veto', 0),
+                    k.get('n_no_bus_act', 0),
+                    k.get('n_prearm_unservable', 0),
+                    k.get('n_ds_selfgate_cost', 0),
                     round(k['avg_extension_s'], 2),
                     round(k['avg_insertion_s'], 2),
                     round(k['avg_insertion_wait_s'], 2),
@@ -5203,6 +5445,9 @@ class SimulationStats:
             'global_kpis': {
                 'bus_total_tt_hrs':      round(g['bus_total_tt_hrs'], 4),
                 'n_buses':               g['n_buses'],
+                'n_loop_completions':    g.get('n_loop_completions', 0),
+                'mean_loop_tt_s':        round(g.get('mean_loop_tt_s', 0.0), 2),
+                'loops_per_bus':         round(g.get('loops_per_bus', 0.0), 3),
                 'avg_bus_tt_s':          round(g['avg_bus_tt_s'], 1),
                 'std_bus_tt_s':          round(g['std_bus_tt_s'], 1),
                 'total_pass_delay_hrs':  round(g['total_pass_delay_hrs'], 4),
@@ -5222,6 +5467,12 @@ class SimulationStats:
                 'avg_obj_pass_delay':    round(g['avg_obj_pass_delay'], 4),
                 'ttotal_bus_tt_deviation_sec': round(
                     _schedule.get('total_abs_deviation_s', 0.0), 1),
+                # Per-bus schedule adherence (2026-10-12): observable bus delay
+                # vs timetable, averaged over arrivals (+late / -early).
+                'avg_sched_dev_s':     round(_schedule.get('average_deviation_s', 0.0), 1),
+                'avg_abs_sched_dev_s': round(_schedule.get('average_abs_deviation_s', 0.0), 1),
+                'sched_pct_late':      round(_schedule.get('pct_late', 0.0), 1),
+                'sched_dev_n':         int(_schedule.get('n', 0)),
                 'n_tsp_detections':      g['n_tsp_detections'],
                 'n_tsp_extensions':      g['n_tsp_extensions'],
                 'n_tsp_insertions':      g['n_tsp_insertions'],
@@ -5255,6 +5506,26 @@ class SimulationStats:
                                                g.get('n_detected_no_action', 0)),
                 'n_natural_green':       g.get('n_tsp_natural_green',
                                                g.get('n_natural_green', 0)),
+                # Veto / skip counters (2026-10-18): tell you WHY an arm did not
+                # act, and whether each hard gate actually fired. Previously
+                # absent from summary.json entirely.
+                'n_prearm_cost_gate':    g.get('n_prearm_cost_gate', 0),
+                'n_decider_cost_veto':   g.get('n_decider_cost_veto', 0),
+                'n_net_pax_delay_veto':  g.get('n_net_pax_delay_veto', 0),
+                'n_main_corridor_veto':  g.get('n_main_corridor_veto', 0),
+                'n_ds_balance_veto':     g.get('n_ds_balance_veto', 0),
+                'n_prearm_timing_veto':  g.get('n_prearm_timing_veto', 0),
+                'n_tsp_rule_veto':       g.get('n_tsp_rule_veto', 0),
+                'n_twoway_band_veto':    g.get('n_twoway_band_veto',
+                                               g.get('n_twoway_band_veto', 0)),
+                'n_focus_suppressed':    g.get('n_focus_suppressed', 0),
+                'n_eta_horizon':         g.get('n_eta_horizon', 0),
+                'n_seq_cap':             g.get('n_seq_cap', 0),
+                'n_recoverability_veto': g.get('n_recoverability_veto', 0),
+                'n_progression_veto':    g.get('n_progression_veto', 0),
+                'n_no_bus_act':          g.get('n_no_bus_act', 0),
+                'n_prearm_unservable':   g.get('n_prearm_unservable', 0),
+                'n_ds_selfgate_cost':    g.get('n_ds_selfgate_cost', 0),
                 'total_vehicles':        g.get('n_distinct_buses', 0) + g.get('n_distinct_cars', 0) + g.get('n_distinct_trucks', 0),
                 # _global_kpis does not carry the section lists; sum the
                 # per-intersection main/side section counts (which the junction

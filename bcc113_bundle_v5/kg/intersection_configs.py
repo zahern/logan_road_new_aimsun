@@ -1,6 +1,51 @@
 # intersection_configs.py
 # GroupBasedConfig blocks populated — conflict matrices in conflict_matrices/ subfolder.
 # Copy conflict_matrices/ folder to D:\Zeke_DEBUG_ERIC\kg\
+#
+# ── SCATS TRACEABILITY (North personalities) ─────────────────────────────
+# Source: iMove SCATS File Share/Personalities/North/B0xxx (LST *!LN + INTNUM).
+#   176  B0176  South Pine Rd & Railway Place [ALDERLEY]
+#   306  B0306  KELVIN GROVE & HERSTON
+#   307  B0307  Kelvin Grove, Windsor & Bishop
+#   308  B0308  Enoggera, Parker & Davidson
+#   309  B0309  Enoggera Rd, Edmonstone St & Ashgrove Ave
+#   310  B0310  Enoggera & Newmarket
+#   311  B0311  Enoggera Rd near Wickham St [NEWMARKET]
+#   312  B0312  Enoggera Road and Banks Street, Newmarket
+#   313  B0313  ENOGGERA & ALDERSON
+#   314  B0314  Enoggera, South-Pine & Samford
+#   371  B0371  Sicklefield & Pickering @ Alderley
+#   8129 B8129  Enoggera Rd & Moran St
+# Model external IDs (MINODE.eid in TEG_KGER_T2_2025Base_QUT_AITAN1_RECOVER.sqlite):
+#   39606->306 (CONFIRMED = SCATS 306, see per-intersection comment)
+#   39590->26041, 36393->26469, 36385->26037, 39593->26035, 39587->26028,
+#   39576->26024, 39578->26025, 1043762->None, 39569->26015, 39572->26017,
+#   38339->22225 (TMR base-model IDs, NOT SCATS sites — do not map 1:1).
+# Only 39606 carries its SCATS site as external ID. Map the remaining 11 via
+# the Aimsun GUI (node properties -> external ID / name against the SCATS
+# plan for that street) — do NOT guess from sequence numbers.
+#
+# ── GE EXTENSION — SOLVED, NOT FIXED ─────────────────────────────────────
+# No per-intersection 'GE_extension' fixed value is set in this file.
+# Solver modes pick GE at runtime within [GE_lower_bound, GE_upper_bound]
+# (5–15 s here), capped by min(GE_upper_bound, MAX_GE_EXTENSION_S=10.0,
+# GE_MAX_FRAC_OF_CYCLE*cycle): BXT_SOLVER ('deficit'/'harmony'/'de') and
+# REWARD_GE_SOLVER ('exact'/'de'; set 'exact' in run_config.py instead of
+# legacy 'grid'). Pure URTSP mode falls back to URTSP_DEFAULTS (10.0 s),
+# which equals the old effective value min(15.0, MAX 10.0) = 10.0 s,
+# so removing the fixed lines changes no behaviour.
+#
+# ── DETECTORS INLINE WITH SCATS ──────────────────────────────────────────
+# UpDetList/BusDet/BusCallDetectors/BusExitDetectors reference the Aimsun
+# model detectors (11137xxx) placed per the SCATS detector layout; at init
+# _resolve_urtsp_geometry() auto-resolves each to (section, ini/fin pos,
+# lane) from the live model and logs "[URTSP] lane-strict call detectors
+# resolved: X/Y". Verify inline-ness in the next run's log: expect full
+# resolution (e.g. 4/4, 6/6) and CONFIG SUMMARY BusDet/UpDetList populated.
+# DetDistance (uniform 40.0 m here) feeds stop-line ETA projection
+# (BusStoplineTime = time + DetDistance/speed); runtime presence uses the
+# real auto-resolved geometry. If ETAs need tightening, measure per-detector
+# setbacks from the model (Logan used measured 10–50 m) instead of 40.0.
 
 # ── Corridor groups: managed intersections in route order ──────────────────────
 # kg_corridor_a: primary approach (section 21xxx chain, descending)
@@ -33,7 +78,9 @@ Inter = {
 
 INTERSECTIONS_CONFIG = {
     # ============================================================
-    # INTERSECTION 39606
+    # INTERSECTION 39606 — SCATS B0306 KELVIN GROVE & HERSTON
+    # (confirmed: model external ID '306'; UpDet 1+3 = bus-approach subset of
+    # B0306 classes A1 K.G. I/BOUND, A2 K.G. O/BOUND, B1 K.G. R/TURN, C1 HERSTON)
     39606: {
         'IntersectionID': 39606,
         'BusPhase': 2,
@@ -63,7 +110,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 135.0,
@@ -114,7 +160,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 135.0,
@@ -165,7 +210,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 135.0,
@@ -216,7 +260,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 135.0,
@@ -267,7 +310,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 135.0,
@@ -318,7 +360,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 55.0,
@@ -369,7 +410,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 110.0,
@@ -420,7 +460,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 120.0,
@@ -471,7 +510,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 120.0,
@@ -522,7 +560,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 120.0,
@@ -573,7 +610,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 110.0,
@@ -624,7 +660,6 @@ INTERSECTIONS_CONFIG = {
         'par': 0.3,
         'CarOcc': 1.5,
         'BusOcc': 40.0,
-        'GE_extension': 15.0,
         'insertion_min_duration': 10.0,
         'insertion_max_duration': 65.0,
         'cycle_length': 110.0,

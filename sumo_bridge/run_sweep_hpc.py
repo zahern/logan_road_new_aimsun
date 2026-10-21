@@ -31,6 +31,8 @@ from sweep_arms import (ARMS, LEARNING_ARMS, EVAL_SEEDS, TRAIN_SEEDS,
 REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 CSV_FIELDS = ["corridor", "arm", "strategy", "seed", "phase", "demand_scalar",
               "obj_pax_per_delay_hr", "avg_bus_pass_delay_s",
+    # incl. entry backlog (SUMO_SOURCE: entry backlog, not Aimsun VQ)
+    "sim_vq_delay_pax_s", "avg_pax_delay_incl_vq_s", "avg_pass_delay_s",
               "avg_total_pass_delay_per_hr", "avg_main_delay_per_hr",
               "avg_side_delay_per_hr", "bus_passengers", "ok", "wall_s",
               # v8 action-profile telemetry: is the action space working?
@@ -78,11 +80,17 @@ def prepare_sandbox(corridor, sandbox_dir):
 
 def build_jobs(args):
     wanted = set(args.arms.split(",")) if args.arms else None
+    # Signal-settings SOLVER arms parked at launch (2026-10-04): they optimise
+    # the plan rather than per-bus TSP and were skewing campaign comparisons.
+    # Explicitly naming one in --arms overrides the park.
+    _parked = {"MILP_MPC", "CENTRALISED"}
     scalars = [float(x) for x in args.demand.split(",")]
     jobs = []
     for scalar in scalars:
         for arm in ARMS:
             if wanted and arm["name"] not in wanted:
+                continue
+            if arm["name"] in _parked and not (wanted and arm["name"] in wanted):
                 continue
             is_learner = arm["name"] in LEARNING_ARMS
             seeds = (list(TRAIN_SEEDS) + list(EVAL_SEEDS)) if is_learner \
@@ -107,6 +115,10 @@ def kpis_from_summary(workdir):
         "avg_obj_pass_delay": "obj_pax_per_delay_hr",
         "avg_bus_pass_delay_s": "avg_bus_pass_delay_s",
         "avg_total_pass_delay_per_hr": "avg_total_pass_delay_per_hr",
+        # incl. entry backlog (SUMO_SOURCE: entry backlog, not Aimsun VQ)
+        "sim_vq_delay_pax_s": "sim_vq_delay_pax_s",
+        "avg_pax_delay_incl_vq_s": "avg_pax_delay_incl_vq_s",
+        "avg_pass_delay_s": "avg_pass_delay_s",
         "avg_main_pass_delay_per_hr": "avg_main_delay_per_hr",
         "avg_side_pass_delay_per_hr": "avg_side_delay_per_hr",
         "bus_passengers": "bus_passengers",

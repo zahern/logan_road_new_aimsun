@@ -79,6 +79,19 @@ class Bridge(object):
         self.tls_cur = {}           # tls id -> phase idx
         self.tls_start = {}         # tls id -> sim time phase started
         self.tls_pending = {}       # tls id -> {phase idx: duration override}
+        self.tls_bad_phase = []     # (t, tls, bad_idx, n_phases) refused calls
+
+        # entry backlog = SUMO's virtual-queue analogue (2026-10-05)
+        self.entry_backlog_departed = 0      # cumulative vehicles inserted
+        self.entry_backlog_departed_pax = 0  # cumulative persons inserted
+        self.entry_backlog_now = 0.0         # loaded-but-not-departed right now
+        self.entry_backlog_veh_s = 0.0       # accumulated veh-seconds waiting
+        self.entry_backlog_wait_sum_s = 0.0  # for the mean-wait readout
+        self.entry_backlog_mean_wait_s = 0.0
+        self.entry_backlog_samples = 0
+        self.entry_backlog_last_log = ''
+        # per-step history: (t, veh-s accrued this step, backlog now)
+        self.entry_backlog_hist = []
 
         # detectors
         self.det_order = []         # aimsun det ids in enumeration order
@@ -197,9 +210,60 @@ class Bridge(object):
         except ValueError:
             return -1
 
+    # ── Entry backlog accumulator (2026-10-05) ─────────────────────────────
+    # Vehicles loaded by SUMO but not yet departed onto the network. Each
+    # second they wait here is real, off-network delay that no section scan
+    # can see -- the SUMO counterpart of Aimsun's virtual queue. We track the
+    # instantaneous count and accumulate veh-seconds, which is what the
+    # cheat-proof metric prices.
+    #
+    # getDepartedIDList() reports vehicles inserted THIS step; the difference
+    # against the cumulative loaded count is the backlog. A vehicle's wait
+    # ends when it departs, so total veh-seconds = sum over steps of backlog.
+    def _accumulate_entry_backlog(self):
+        try:
+            _dep = len(self.conn.simulation.getDepartedIDList())
+            _dep_p = len(self.conn.simulation.getDepartedPersonIDList())
+        except Exception:
+            return
+        self.entry_backlog_departed += _dep
+        self.entry_backlog_departed_pax += _dep_p
+        try:
+            _ld = self.conn.simulation.getLoadedNumber()
+        except Exception:
+            _ld = self.entry_backlog_departed
+        _back = max(0, int(_ld) - int(self.entry_backlog_departed))
+        self.entry_backlog_now = float(_back)
+        # veh-seconds accrued this step
+        self.entry_backlog_veh_s += _back * float(self.step_length)
+        if _back > 0:
+            # time-weighted mean wait of the vehicles still queued
+            self.entry_backlog_wait_sum_s += _back * float(self.step_length)
+            self.entry_backlog_mean_wait_s = (
+                self.entry_backlog_wait_sum_s
+                / max(self.entry_backlog_now * float(self.step_length), 1e-9))
+        else:
+            self.entry_backlog_mean_wait_s = 0.0
+        self.entry_backlog_samples += 1
+        try:
+            if len(self.entry_backlog_hist) > 40000:
+                del self.entry_backlog_hist[:20000]
+            self.entry_backlog_hist.append(
+                (round(self.now, 1), round(_back * float(self.step_length), 1),
+                 int(_back)))
+        except Exception:
+            pass
+        # pax-weighted: buses carry ~40 persons, so weight departures
+        if self.entry_backlog_samples % 300 == 1:
+            self.entry_backlog_last_log = (
+                "t=%.0f backlog=%d veh_s=%.0f mean_wait=%.1fs"
+                % (self.now, _back, self.entry_backlog_veh_s,
+                   self.entry_backlog_mean_wait_s))
+
     def step_refresh(self):
         """call after each simulationStep - single-pass vehicle snapshot"""
         self.now += self.step_length
+        self._accumulate_entry_backlog()
         # tls bookkeeping
         for tl in self.tls_phases:
             ph = self.conn.trafficlight.getPhase(tl)
@@ -544,6 +608,20 @@ def AKIGetVehicleFollowingPTLine(line, vi):
     return -1
 
 
+def AKIGetGlobalBusIds():
+    """EVERY bus-type vehicle currently in the SUMO network (int ids, same id
+    space as AKIGetVehicleFollowingPTLine). Lets the engine's global bus
+    iterator pick up injected / line-less buses, not only PT-registered ones.
+    """
+    out = []
+    for _sv in list(getattr(BRIDGE, "_bus_ids_cache", []) or []):
+        try:
+            out.append(BRIDGE._int_id(_sv))
+        except Exception:
+            continue
+    return out
+
+
 def AKIPTVehGetInf(veh_id):
     vid = BRIDGE._sumo_id(int(veh_id))
     inf = BRIDGE._veh_cache.get(vid) if vid else None
@@ -657,8 +735,29 @@ def ECIChangeDirectPhase(node, phase, timeSta, simtime, acycle, flag=0):
     k = BRIDGE._tls_key(node)
     if not k:
         return -1
-    BRIDGE.conn.trafficlight.setPhase(k, int(phase))
-    BRIDGE.tls_cur[k] = int(phase)
+    try:
+        _idx = int(phase)
+    except Exception:
+        return -1
+    # Bounds guard (2026-10-05): an index outside this junction's actual
+    # program makes SUMO answer command 0xc2 (TL_SET_PHASE_INDEX) with
+    # "phase index N is not in the allowed range", which killed whole
+    # replications after ~15 s and recorded a garbage objective. Refuse the
+    # action instead -- never clamp onto a different phase, that would turn
+    # green on the wrong movement.
+    try:
+        _nph = len(BRIDGE.tls_phases.get(k) or [])
+    except Exception:
+        _nph = 0
+    if _nph > 0 and not (0 <= _idx < _nph):
+        try:
+            BRIDGE.tls_bad_phase.append(
+                (float(getattr(BRIDGE, 'now', 0.0)), k, _idx, _nph))
+        except Exception:
+            pass
+        return -1
+    BRIDGE.conn.trafficlight.setPhase(k, _idx)
+    BRIDGE.tls_cur[k] = _idx
     BRIDGE.tls_start[k] = BRIDGE.now
     return 0
 
@@ -695,11 +794,17 @@ def ECIGetDurationsPhase(node, phase, timeSta, normal_p=None, max_p=None, min_p=
     return 0
 
 
-def ECIEnableEventsActivatingPhase(node, phase, enable):
+def ECIEnableEventsActivatingPhase(node, phase, enable, timeSta=None):
+    """Accept the trailing timeSta the real Aimsun API takes.
+
+    The shared engine passes 4 args (node, phase, enable, timeSta); this stub
+    took 3, so every green-extension timeout raised TypeError and killed the
+    replication via update()'s blanket except -> stop_simulation().
+    """
     return 0
 
 
-def ECIGetNbSignalGroupsPhaseofJunction(node, phase):
+def ECIGetNbSignalGroupsPhaseofJunction(node, phase, timeSta=None):
     k = BRIDGE._tls_key(node)
     if not k:
         return 0
@@ -707,7 +812,7 @@ def ECIGetNbSignalGroupsPhaseofJunction(node, phase):
     return sum(1 for c in st if c in "gG")
 
 
-def ECIGetSignalGroupPhaseofJunction(node, phase, sg_index):
+def ECIGetSignalGroupPhaseofJunction(node, phase, sg_index, timeSta=None):
     k = BRIDGE._tls_key(node)
     if not k:
         return -1
@@ -741,11 +846,134 @@ def _build_section_stats(sec):
     free_t = length / max(float(BRIDGE.edge_speed[e]), 1e-3)
     tt = length / speed if speed > 0.5 else length / max(free_t, 1e-3) * 10.0
     dta = max(tt - free_t, 0.0)          # mean delay per vehicle (s)
+    # ── Entry backlog = the SUMO virtual queue (2026-10-05) ─────────────────
+    # Aimsun parks entry-refused vehicles in a plant virtual queue exposed as
+    # virtualQueueAvg / waitingTimeVirtualQueue. SUMO has no such queue: the
+    # equivalent is the INSERTION BACKLOG -- vehicles that want to depart but
+    # have not been inserted onto the network yet. That is the same cheating
+    # vector the Aimsun metric was built to catch (a controller that gridlocks
+    # entry hides delay off-network while the served-denominator average
+    # improves), so the Aimsun VQ fields are backed with it here.
+    #
+    # SUMO_SOURCE: virtualQueue* / waitingTimeVirtualQueue on SUMO =
+    # entry backlog (loaded-but-not-departed), NOT an Aimsun virtual queue.
+    # The entry backlog is a NETWORK quantity, not a per-section one. It must
+    # NOT be reported per section: the engine charges it to every junction's
+    # side sections, which multiplied one backlog by the section count and
+    # inflated side delay ~12x. Per-section VQ fields stay 0; the backlog is
+    # published once via entry_backlog_stats() and priced by the stats
+    # roll-up, which is the correct place for a network-wide quantity.
     return _S(report=0, IdSection=int(sec), count=count, flow=flow,
               speed=speed, density=dens, DTa=dta, dtime=dta,
               input_count=count, input_flow=flow,
               traveltime=tt,
-              qmean=0.0, qmax=0.0, wtimeVQ=0.0, stime=0.0, nstops=0)
+              qmean=0.0, qmax=0.0, wtimeVQ=0.0,
+              waitingTimeVirtualQueue=0.0,
+              virtualQueueAvg=0.0, virtualQueueMax=0.0,
+              numVehiclesInVQ=0,
+              stime=0.0, nstops=0)
+
+
+def _edge_tls_index():
+    """edge id -> ordered list of tls ids governing it.
+
+    SUMO's route for a bus is a list of EDGE ids; the controller-facing
+    identity is a JUNCTION (tls) id. This maps between them so a bus's route
+    can be expressed as the ordered sequence of junctions it will pass.
+    Memoised on the tls phase table, which is fixed for a loaded network.
+    """
+    b = BRIDGE
+    cached = getattr(b, "_edge_tls_map", None)
+    if cached is not None:
+        return cached
+    m = {}
+    try:
+        _ids = b.conn.trafficlight.getIDList()
+    except Exception:
+        _ids = []
+    for tl in _ids:
+        try:
+            for e in b.conn.trafficlight.getControlledLanes(tl):
+                m.setdefault(str(e).rsplit("_", 1)[0], []).append(tl)
+        except Exception:
+            continue
+    b._edge_tls_map = m
+    return m
+
+
+def bus_route_ahead(vid):
+    """Ordered junctions ahead of a bus, nearest first.
+
+    Returns [(tls_id, distance_m, edge_id), ...] using the bus's remaining
+    route. This is what lets the predictors know not just where a bus is but
+    which junctions it still has to pass and in what order -- previously the
+    DP and the neighbour windows only had the CURRENT junction, so a bus two
+    intersections away had no representation of where it was headed.
+
+    distance_m accumulates edge length from the bus's current position to the
+    far end of each upcoming controlled edge. Never raises; returns [] when
+    the route or the edge/tls mapping is unavailable.
+    """
+    try:
+        b = BRIDGE
+        route = b.conn.vehicle.getRoute(str(vid))
+        idx = b.conn.vehicle.getRouteIndex(str(vid))
+        if not route:
+            return []
+        idx = max(0, min(int(idx), len(route) - 1))
+        emap = _edge_tls_index()
+        out = []
+        acc = 0.0
+        # remaining distance on the edge the bus is currently on
+        try:
+            cur_e = route[idx]
+            acc += max(0.0, float(b.edge_len.get(cur_e, 0.0)))
+            try:
+                lane = b.conn.vehicle.getLaneID(str(vid))
+                pos = b.conn.vehicle.getLanePosition(str(vid))
+                if lane and lane.startswith(cur_e):
+                    acc -= max(0.0, float(pos))
+            except Exception:
+                pass
+        except Exception:
+            pass
+        for e in route[idx:]:
+            tl = emap.get(str(e))
+            if tl:
+                out.append((tl[0], round(max(0.0, acc), 1), str(e)))
+            acc += max(0.0, float(b.edge_len.get(e, 0.0)))
+        return out
+    except Exception:
+        return []
+
+
+def entry_backlog_peak_veh_s():
+    """Largest single-step backlog veh-seconds seen (starvation severity).
+
+    The finish-time snapshot can miss a transient gridlock; the peak cannot.
+    """
+    try:
+        h = BRIDGE.entry_backlog_hist
+        return max((x[1] for x in h), default=0.0)
+    except Exception:
+        return 0.0
+
+
+def entry_backlog_stats():
+    """Network entry backlog (the SUMO stand-in for Aimsun's virtual queue).
+
+    Returns (backlog_now, mean_wait_s, cumulative_veh_s). Prices delay that
+    is real but invisible to every section scan: vehicles SUMO has loaded but
+    not yet inserted onto the network.
+    """
+    try:
+        # Defensive clamp: a negative wait or a negative accumulation would make
+        # sim_vq_delay_pax_s collapse to 0 and silently disable the cheat-check.
+        return (max(0.0, float(BRIDGE.entry_backlog_now)),
+                max(0.0, float(BRIDGE.entry_backlog_mean_wait_s)),
+                max(0.0, float(BRIDGE.entry_backlog_veh_s)))
+    except Exception:
+        return (0.0, 0.0, 0.0)
 
 
 def AKIEstGetCurrentStatisticsSection(sec, tp=0):

@@ -1082,6 +1082,32 @@ class SimulationStats:
             # Extra safety: count buses this step for logging
             d.setdefault('buses_this_step', 0)
             d['buses_this_step'] = len(on_call)
+
+        # ── Corridor-level loop tracker (2026-10-13) ─────────────────────────
+        # A "loop" = a bus ENTERS the corridor (appears in ANY managed junction's
+        # detection window) and later LEAVES it entirely. ONE count per physical
+        # corridor traversal, independent of how many junctions the bus was
+        # detected at (unlike the per-junction N_BusTrips sum). loops_per_bus and
+        # mean_loop_tt_s are a clean inverse pair (more loops <=> shorter time).
+        try:
+            _present = set()
+            for _iid, _d in self._inter.items():
+                _w = _d.get('bus_on_window')
+                if _w:
+                    _present |= set(_w)
+            _cin = self.__dict__.setdefault('_corridor_in', {})
+            _cloop = self.__dict__.setdefault('_corridor_loops', [])
+            _tnow = float(time)
+            for _v in _present:
+                if _v not in _cin:
+                    _cin[_v] = _tnow
+            for _v in [_v for _v in _cin if _v not in _present]:
+                _et = _cin.pop(_v)
+                _tt = _tnow - float(_et)
+                if 5.0 < _tt < _MAX_BUS_TRIP_S:
+                    _cloop.append((_v, float(_et), _tnow, _tt))
+        except Exception:
+            pass
     
     #==========================
     # ANALYTICAL OBJECTIVE  (called from harmony search objective functions)
@@ -1911,6 +1937,14 @@ class SimulationStats:
         total_distinct_cars = len(all_distinct_car_ids)
         total_distinct_trucks = len(all_distinct_truck_ids)
 
+        # Corridor-loop metrics (physical, detection-independent).
+        _alloops = list(getattr(self, '_corridor_loops', []) or [])
+        n_loop_completions = len(_alloops)
+        _loop_tts = [float(t[3]) for t in _alloops]
+        mean_loop_tt_s = (sum(_loop_tts) / len(_loop_tts)) if _loop_tts else 0.0
+        loops_per_bus = (n_loop_completions / total_distinct_buses
+                         if total_distinct_buses else 0.0)
+
         avg_bus_tt_s = (
             (total_bus_tt_hrs * 3600.0 / total_n_buses)
             if total_n_buses > 0 else 0.0
@@ -2189,6 +2223,9 @@ class SimulationStats:
             'bus_total_tt_hrs':          total_bus_tt_hrs,
             'n_buses':                   total_n_buses,
             'n_distinct_buses':          total_distinct_buses,
+            'n_loop_completions':        n_loop_completions,
+            'mean_loop_tt_s':            mean_loop_tt_s,
+            'loops_per_bus':             loops_per_bus,
             'n_distinct_cars':           total_distinct_cars,
             'n_distinct_trucks':         total_distinct_trucks,
             'avg_bus_tt_s':              avg_bus_tt_s,
@@ -2737,6 +2774,9 @@ class SimulationStats:
                         # Live snapshot for control feeds (MPC initial state):
                         # latest verified section state, refreshed every sample.
                         # Readers (engine._milp_mpc_prediction) check freshness
+                        # Periodic flush of time-series to bound memory in long runs.
+                        if len(self._section_ts) > 20000:
+                            self._flush_section_ts_partial(time)
                         # themselves; entries simply age out of relevance.
                         try:
                             _latest = getattr(self, "latest_section", None)
@@ -2829,6 +2869,73 @@ class SimulationStats:
                 self._audit_flow_methods(time, INTERVAL_S)
             except Exception as _fe:
                 self._probe_log(f"[STATS] flow audit failed: {_fe!r}")
+
+    # =========================================================================
+    # MEMORY-BOUNDING: periodic flush of section time-series (2026-10-10)
+    # =========================================================================
+    def _flush_section_ts_partial(self, current_time):
+        """
+        Flush time-series entries older than FLUSH_THRESHOLD_S to CSV and clear
+        them from memory. Prevents unbounded growth in long simulations.
+        Call periodically from the per-interval accumulation loop.
+        """
+        try:
+            FLUSH_THRESHOLD_S = 3600.0   # 1 hour of simulation time
+            run_path = getattr(self, "_run_path", None)
+            if not run_path or not os.path.isdir(run_path):
+                return
+            _ts = getattr(self, "_section_ts", None) or []
+            if len(_ts) <= 20000:
+                return
+            # Find cutoff index: keep entries within threshold of current_time
+            _cutoff = current_time - FLUSH_THRESHOLD_S
+            _keep_idx = 0
+            for i, _r in enumerate(_ts):
+                if float(_r.get('t_end_s', 0.0)) > _cutoff:
+                    _keep_idx = i
+                    break
+            if _keep_idx == 0:
+                return
+            _to_flush = _ts[:_keep_idx]
+            ts_csv = os.path.join(run_path, "section_timeseries.csv")
+            for _r in _to_flush:
+                self._append_csv(
+                    ts_csv,
+                    headers=[
+                        "ScenarioID", "ExperimentID", "ReplicationID",
+                        "TSP_Strategy", "t_start_s", "t_end_s",
+                        "SectionID", "IntersectionID", "IsMain",
+                        "Lanes", "Length_km",
+                        "q_veh_h", "k_vkm_lane", "v_kmh",
+                        "n_veh", "queue_veh", "src", "q_minus_kv",
+                        "aki_flow", "aki_sa", "aki_density",
+                        "k_snap_vkm_lane", "k_avg",
+                        "queue_veh_3", "queue_veh_10", "queue_m",
+                        "q_up_veh_h",
+                        "aki_longqueue_avg", "aki_longqueue_max",
+                    ],
+                    row=[
+                        self.scenario_id, self.experiment_id, self.replication_id,
+                        self.tsp_strategy, _r['t_start_s'], _r['t_end_s'],
+                        _r['sec'], _r['inter_id'], _r['is_main'],
+                        _r['lanes'], _r['length_km'],
+                        _r['q_veh_h'], _r['k_vkm_lane'], _r['v_kmh'],
+                        _r['n_veh'], _r['queue_veh'], _r['src'], _r['q_minus_kv'],
+                        _r.get('aki_flow', 0.0), _r.get('aki_sa', 0.0),
+                        _r.get('aki_density', 0.0),
+                        _r.get('k_snap_vkm_lane', 0.0), _r.get('k_avg', 0),
+                        _r.get('queue_veh_3', 0.0), _r.get('queue_veh_10', 0.0),
+                        _r.get('queue_m', 0.0),
+                        _r.get('q_up_veh_h', 0.0),
+                        _r.get('aki_longqueue_avg', 0.0),
+                        _r.get('aki_longqueue_max', 0.0),
+                    ],
+                )
+            # Remove flushed entries
+            del _ts[:_keep_idx]
+            self._probe_log(f"[STATS] flushed {len(_to_flush)} section_ts entries (kept {len(_ts)})")
+        except Exception as _fe:
+            self._probe_log(f"[STATS] _flush_section_ts_partial failed: {_fe!r}")
 
     # =========================================================================
     # NETWORK SECTION STATISTICS (collected at AAPIFinish)
@@ -4028,7 +4135,13 @@ class SimulationStats:
                 _vqa     = float(getattr(st, 'virtualQueueAvg',        0.0) or 0.0)
                 _vqm     = float(getattr(st, 'virtualQueueMax',        0.0) or 0.0)
                 _vqveh   = int(  getattr(st, 'numVehiclesInVQ',        0)   or 0)
+                # -1.0 is Aimsun's "no queue" sentinel and is truthy, so a bare
+                # `or 0.0` lets it through into the accumulator; a negative mean
+                # would then force sim_vq_delay_pax_s to 0 and silently disable
+                # the cheat-check for the worst-gridlocking arm. Clamp first.
                 _wtvq    = float(getattr(st, 'waitingTimeVirtualQueue', 0.0) or 0.0)
+                if _wtvq < 0.0:
+                    _wtvq = 0.0
                 _sd      = float(getattr(st, 'Sd',                     0.0) or 0.0)  # Exit-Based Speed km/h
 
                 # Direct sums
@@ -4595,6 +4708,7 @@ class SimulationStats:
             headers=[
                 "ScenarioID", "ExperimentID", "ReplicationID", "TSP_Strategy",
                 "BusTotalTT_hrs", "N_BusTrips", "N_DistinctBuses", "N_DistinctCars", "N_DistinctTrucks",
+                "N_LoopCompletions", "MeanLoopTT_s", "LoopsPerBus",
                 "AvgBusTT_s",
                 "StdBusTT_s",
                 "TotalPassDelay_hrs", "SidePassDelay_hrs", "MainPassDelay_hrs",
@@ -4709,14 +4823,17 @@ class SimulationStats:
                 g.get('n_distinct_buses', 0),
                 g.get('n_distinct_cars', 0),
                 g.get('n_distinct_trucks', 0),
+                g.get('n_loop_completions', 0),
+                self._safe_round(g.get('mean_loop_tt_s', 0), 2),
+                self._safe_round(g.get('loops_per_bus', 0), 3),
                 self._safe_round(g.get('avg_bus_tt_s', 0), 1),
                 self._safe_round(g.get('std_bus_tt_s', 0), 1),
                 self._safe_round(g.get('total_pass_delay_hrs', 0), 4),
+                self._safe_round(g.get('side_pass_delay_hrs', 0), 4),
+                self._safe_round(g.get('main_pass_delay_hrs', 0), 4),
                 self._safe_round(g.get('schedule_penalty_pax_s', 0), 1),
                 self._safe_round(g.get('schedule_penalty_hrs', 0), 4),
                 self._safe_round(g.get('total_pass_delay_incl_sched_hrs', 0), 4),
-                self._safe_round(g.get('side_pass_delay_hrs', 0), 4),
-                self._safe_round(g.get('main_pass_delay_hrs', 0), 4),
                 self._safe_round(g.get('avg_main_pass_delay_per_hr', 0),  4),
                 self._safe_round(g.get('avg_side_pass_delay_per_hr', 0),  4),
                 self._safe_round(g.get('avg_total_pass_delay_per_hr', 0), 4),
@@ -5237,6 +5354,9 @@ class SimulationStats:
             'global_kpis': {
                 'bus_total_tt_hrs':      round(g['bus_total_tt_hrs'], 4),
                 'n_buses':               g['n_buses'],
+                'n_loop_completions':    g.get('n_loop_completions', 0),
+                'mean_loop_tt_s':        round(g.get('mean_loop_tt_s', 0.0), 2),
+                'loops_per_bus':         round(g.get('loops_per_bus', 0.0), 3),
                 'avg_bus_tt_s':          round(g['avg_bus_tt_s'], 1),
                 'std_bus_tt_s':          round(g['std_bus_tt_s'], 1),
                 'total_pass_delay_hrs':  round(g['total_pass_delay_hrs'], 4),
