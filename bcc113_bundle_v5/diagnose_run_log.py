@@ -35,7 +35,22 @@ import sys
 import time
 from collections import Counter
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# __file__ is undefined when this is run from an Aimsun "Python Script"
+# object (exec(open(...).read())); fall back to FIXED_HERE, the bundle path,
+# then the current folder.
+def _bundle_here():
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        pass
+    for _d in (os.environ.get('FIXED_HERE', '').strip(),
+               r'C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5', os.getcwd()):
+        if _d and os.path.isdir(os.path.join(_d, 'shared_tsp_engine')):
+            return _d
+    return os.getcwd()
+
+
+HERE = _bundle_here()
 RED, AMBER, OK = 'RED', 'AMBER', 'ok'
 
 
@@ -262,13 +277,13 @@ def compare_csv(path):
     return out
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--log')
     ap.add_argument('--all', action='store_true')
     ap.add_argument('--csv')
     ap.add_argument('--logs-dir', default=os.path.join(HERE, 'kg', 'logs'))
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     if a.log:
         logs = [a.log]
     else:
@@ -302,5 +317,14 @@ def main():
     return 1 if worst == RED else 0
 
 
-if __name__ == '__main__':
+_IN_AIMSUN = '__file__' not in globals()
+if _IN_AIMSUN:
+    # Run from an Aimsun Python Script object: there is no command line and
+    # sys.exit would abort the console, so take the arguments from
+    # DIAG_ARGS (default --all) and just print the verdict, e.g.
+    #   import os; os.environ['DIAG_ARGS'] = '--all --csv game_ladder_kg_X.csv'
+    #   exec(open(r'C:\...\bcc113_bundle_v5\diagnose_run_log.py').read())
+    import shlex
+    main(shlex.split(os.environ.get('DIAG_ARGS', '--all'), posix=False))
+elif __name__ == '__main__':
     sys.exit(main())

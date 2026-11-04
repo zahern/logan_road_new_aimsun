@@ -24,7 +24,22 @@ import shutil
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# __file__ is undefined when this is run from an Aimsun "Python Script"
+# object (exec(open(...).read())); fall back to FIXED_HERE, the bundle path,
+# then the current folder.
+def _bundle_here():
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        pass
+    for _d in (os.environ.get('FIXED_HERE', '').strip(),
+               r'C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5', os.getcwd()):
+        if _d and os.path.isdir(os.path.join(_d, 'shared_tsp_engine')):
+            return _d
+    return os.getcwd()
+
+
+HERE = _bundle_here()
 src = io.open(os.path.join(HERE, 'shared_tsp_engine', 'engine.py'), encoding='utf-8').read()
 seg = {}
 for n in ast.parse(src).body:
