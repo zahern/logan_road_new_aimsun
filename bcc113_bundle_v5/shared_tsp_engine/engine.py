@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T1100-tactical-vloops-assume-tikz"
+ENGINE_BUILD = "2026-11-05T1500-kg-run1-fixes"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -23264,7 +23264,34 @@ class IntersectionController:
                                       "q_a=%.0f vph/lane)" % (
                                           _jid, _ap['phase'], _ap['stop_sec'], _mod,
                                           _meas, _sb[0].spec.x_m, _ls.spec.x_m, _qa), 120.0)
-            # (3) buses crossing the stop bar resolve the ETA / solve predictions
+            # (3a) ETA checks resolve on ARRIVAL -- the bus within 15 m of the
+            #      stop line, or stopped in the queue -- not on the crossing:
+            #      the crossing adds the red wait, which an ETA does not
+            #      predict (KG 2026-11-04: +44..+65 s "errors" were signal delay).
+            if _ap['role'] == 'bus' and _v['pend_bus']:
+                _scan = _VLT.get('scan') or {}
+                _lmax = _ap['layout'].l_max_m if math.isfinite(_ap['layout'].l_max_m) else 60.0
+                for (_cs, _cb, _cl) in _ap['chain']:
+                    for _vid, _pos, _spd, _ln, _isb in _scan.get(_cs, ()):
+                        if not _isb or _vid not in _v['pend_bus']:
+                            continue
+                        _d = _cb + (_cl - _pos)
+                        if _d <= 15.0 or (_spd <= 3.0 and _d <= _lmax + 20.0):
+                            _keep = []
+                            for _k in _v['pend_bus'][_vid]:
+                                if _k.startswith('eta_'):
+                                    _r = _lg.resolve(_k, (_jid, _vid), time)
+                                    if _r is not None:
+                                        self._vlt_log(('eta', _k), time,
+                                                      "[ASSUME] jct=%d bus=%d %s err=%+.1fs "
+                                                      "(actual ARRIVAL at %.0fm - predicted; "
+                                                      "signal wait excluded)"
+                                                      % (_jid, _vid, _k, _r[0], _d), 30.0)
+                                else:
+                                    _keep.append(_k)
+                            _v['pend_bus'][_vid] = _keep
+            # (3b) the stop-bar CROSSING resolves the solve predictions (they
+            #      include the signal delay) and any ETA the arrival test missed
             if _ap['role'] == 'bus' and _sb:
                 for _vid, _tc in list(_sb[0].bus_cross.items()):
                     for _k in _v['pend_bus'].pop(_vid, []):
@@ -23462,12 +23489,45 @@ class IntersectionController:
             _cruise = max(float(globals().get('SW_BUS_CRUISE_KMH', 40.0) or 40.0)
                           / 3.6, 0.5)
             _re = None
+            _src_chain = False
             if _tgt is not None:
                 _lens = {int(x): _sec_len_m(x) for x in _route}
                 _re = _swl.route_eta(
                     _route, _lens, _bsec, _bpos, _tgt, _cruise,
                     stop_secs=_SCHED_STOP_SECS.get(int(_line), ()) or (),
                     dwell_s=float(globals().get('SW_BUS_DWELL_S', 20.0) or 0.0))
+            if _re is None and _bsec > 0:
+                # Bus section not on the line's route list (connector, or a
+                # section AKIPTGetIdSectionInLine does not return): measure
+                # along the bus-phase approaches' upstream chains instead.
+                _reach_c = float(globals().get('VLOOP_TAC_REACH_M', 450.0) or 450.0) + 200.0
+                for _a in sorted(_apps):
+                    try:
+                        _segs_c, _why_c = self._upstream_chain(int(_a), _reach_c)
+                    except Exception as _swx:
+                        _note_swallow('_sw_bus_route_state#chain', _swx)
+                        continue
+                    for (_cs, _cb, _cl) in (_segs_c or []):
+                        if int(_cs) == _bsec:
+                            _dc = float(_cb) + max(0.0, float(_cl) - _bpos)
+                            _re = _swl.RouteEta(_dc, _dc / _cruise, 0.0, 0, _dc / _cruise)
+                            _tgt = int(_a)
+                            break
+                    if _re is not None:
+                        break
+                if _re is not None:
+                    _src_chain = True
+                _miss = getattr(self, '_sw_route_miss', None)
+                if _miss is None:
+                    _miss = set(); self._sw_route_miss = _miss
+                if (_line, _bsec) not in _miss and bool(globals().get('SW_BUS_LOG', True)):
+                    _miss.add((_line, _bsec))
+                    log_to_file("[BUS_ROUTE_MISS] jct=%s line=%s bus_sec=%d not in the "
+                                "line's route list (len=%d, first=%s, last=%s) -> %s"
+                                % (getattr(self, 'id', '?'), _line, _bsec, len(_route),
+                                   _route[:3], _route[-3:],
+                                   'measured along the approach chain' if _re is not None
+                                   else 'no chain either: detection ETA'), force=True)
             if _re is None:
                 # off-route / no line: straight-line distance from detection
                 _be = (getattr(self, '_bus_eta', {}) or {}).get(0)
@@ -23477,7 +23537,8 @@ class IntersectionController:
                 _nst = 0
                 _tgt = _tgt or (min(_apps) if _apps else None)
             else:
-                _dist, _eta, _src, _nst = _re.dist_m, _re.eta_s, 'route', _re.n_stops
+                _dist, _eta, _nst = _re.dist_m, _re.eta_s, _re.n_stops
+                _src = 'chain' if _src_chain else 'route'
             # vehicles that discharge ahead of the bus in its lane
             _n_ahead = 0.0
             _src_q = 'lane'           # same-lane count when on the approach
@@ -23593,11 +23654,31 @@ class IntersectionController:
         _cyc = float(getattr(self, 'cycle_len_s', 0.0) or 0.0) or float(
             self.config.get('CycleTime', 120.0) or 120.0)
         _red = max(0.0, _cyc - float(getattr(self, 'BusPhaseDuration', 20.0) or 20.0))
+        # REMAINING BUS GREEN = phase start + planned duration - now, when the
+        # bus phase is the current phase (0 otherwise: a GE only extends a
+        # running bus green). KG run 2026-11-04 measured the planned end at
+        # bias +1.4 s / p90 6 s, but NextRedStartTime[0][0] at bias +25 s /
+        # p90 89 s ([ASSUME_SUMMARY] rem_green_*), so NextRedStartTime is only
+        # the fallback when the plan cannot be read.
+        _rem = None
         try:
-            _rem = max(0.0, float(self.NextRedStartTime[0][0]) - float(time))
+            _jid_r = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            _bp_r = int(getattr(self, 'BusPhase', -1) or -1)
+            if int(ECIGetCurrentPhase(_jid_r)) == _bp_r:
+                _rem = max(0.0, float(ECIGetStartingTimePhase(_jid_r))
+                           + float(GetPhaseDuration(_jid_r, _bp_r, 0.0))
+                           - float(time))
+            else:
+                _rem = 0.0
         except Exception as _swx:
-            _note_swallow('_sw_bus_ctx#2', _swx)
-            _rem = 0.0
+            _note_swallow('_sw_bus_ctx#rem_plan', _swx)
+            _rem = None
+        if _rem is None:
+            try:
+                _rem = max(0.0, float(self.NextRedStartTime[0][0]) - float(time))
+            except Exception as _swx:
+                _note_swallow('_sw_bus_ctx#2', _swx)
+                _rem = 0.0
         try:
             _red_el = max(0.0, float(time) - float(self.RedStartTimeList[0][0]))
         except Exception as _swx:
@@ -31458,6 +31539,17 @@ def AAPIInit():
         try:
             _twoway_shift.clear()   # per-replication clock-shift accumulators
             _vlt_reset()            # tactical loops / assumption ledger
+            try:
+                log_to_file("[SCHED_STOPS_STATUS] lines with per-stop sections: %d "
+                            "(%s) -- 0 means the route ETA adds no dwell; the "
+                            "[SCHED_STOPS_PROBE] line of the session's first run "
+                            "names the line API" % (
+                                len(_SCHED_STOP_SECS),
+                                ', '.join('%s:%d' % (k, len(v)) for k, v in
+                                          list(_SCHED_STOP_SECS.items())[:8]) or '-'),
+                            force=True)
+            except Exception as _swx:
+                _note_swallow('AAPIInit#sched_status', _swx)
         except Exception:
             pass
         # (legacy mojibake comment truncated)
