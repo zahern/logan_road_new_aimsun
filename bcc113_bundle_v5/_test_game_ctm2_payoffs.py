@@ -31,10 +31,11 @@ import ctm_twoclass as _ctm2  # noqa: E402
 src = io.open(os.path.join(ENG, 'engine.py'), encoding='utf-8').read()
 seg = {}
 for n in ast.walk(ast.parse(src)):
-    if isinstance(n, ast.FunctionDef) and n.name in ('_game_ctm2_payoffs', '_cbql_ctm_geom') \
+    if isinstance(n, ast.FunctionDef) and n.name in ('_game_ctm2_payoffs', '_cbql_ctm_geom',
+                                                     '_game_ctm2_na') \
             and n.name not in seg:
         seg[n.name] = ast.get_source_segment(src, n)
-assert len(seg) == 2, seg.keys()
+assert len(seg) == 3, seg.keys()
 
 
 def _dedent(t):
@@ -49,7 +50,9 @@ class Inf(object):
 
 W = {'cur': 1, 'start': 0.0, 'veh': {}}
 SWALLOWED = []
+LOG = []
 ns = {
+    'log_to_file': lambda m, force=False: LOG.append(m),
     '_ctm2': _ctm2, '_CTM2_AVAILABLE': True,
     '_note_swallow': lambda tag, exc=None: SWALLOWED.append((tag, repr(exc))),
     'ECIGetCurrentPhase': lambda j: W['cur'],
@@ -139,9 +142,20 @@ W['veh'] = {30: [veh(2), veh(7)], 40: [veh(2), veh(7)]}
 z = c._game_ctm2_payoffs([('INS', 6.0)], 0.0)
 check('6 no bus -> b == 0 (cars stay in the car class)', abs(z[0][2]) < 1e-9, z[0])
 
-# 5b. interphase
-W.update(cur=5)
-check('5b interphase -> None', c._game_ctm2_payoffs([('GE', 3.0)], 0.0) is None)
+# 5b. interphase (phase 5, 4 s left): all red for 4 s, then the ring resumes
+#     at the next modelled phase -- payoffs, not a legacy fallback
+W.update(cur=5, start=-1.0)
+ns['GetPhaseDuration'] = lambda j, p, ts: {1: 20.0, 2: 30.0, 5: 5.0}.get(int(p), 0.0)
+W['veh'] = {30: [veh(2), veh(7, bus=True)], 40: [veh(2)]}
+pi = c._game_ctm2_payoffs([('INS', 6.0), ('GE', 3.0)], 0.0)
+check('5b interphase -> lead-time payoffs (no fallback)', pi is not None
+      and pi[0] is not None, pi)
+# 5c. nothing modelled -> None + one [GAME_CTM2_NA] reason
+Ctl._phase_origin_sections = lambda self: {}
+check('5c no modelled phases -> None', c._game_ctm2_payoffs([('GE', 3.0)], 0.0) is None)
+c._game_ctm2_payoffs([('GE', 3.0)], 0.0)
+na = [m for m in LOG if m.startswith('[GAME_CTM2_NA]')]
+check('5d reason logged once per junction', len(na) == 1, na)
 check('7 nothing swallowed', not SWALLOWED, SWALLOWED[:3])
 if fails:
     sys.exit('FAIL: %s' % fails)

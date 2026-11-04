@@ -374,9 +374,15 @@ def evaluate_sections(sec_snap, steps: Dict[int, List[bool]], bus_pce: float = 2
     return out
 
 
+def _shift(tl, lead, horizon):
+    if tl is None:
+        return None
+    return [(a + lead, min(b + lead, horizon), p) for a, b, p in tl if a + lead < horizon]
+
+
 def game_payoffs(sec_snap, ring, cur, rem, greens, bus_phase, actions,
                  intergreen=5.0, horizon=60.0, dt=2.0, bus_pce=2.0,
-                 bus_occ=40.0, car_occ=1.2):
+                 bus_occ=40.0, car_occ=1.2, lead=0.0):
     """Two-class CTM payoffs (B, C, b) in pax.s for each (type, seconds) in
     `actions`, against NO_ACTION over the horizon, in the convention the game
     solvers use:
@@ -384,18 +390,22 @@ def game_payoffs(sec_snap, ring, cur, rem, greens, bus_phase, actions,
         car_main  = car pax.s saved on approaches feeding the bus phase
         car_cross = car pax.s saved on the other approaches (usually < 0)
         B = b + car_main + max(0, car_cross)      C = max(0, -car_cross)
-    Entries are None for action types this model does not time."""
+    Entries are None for action types this model does not time.
+    lead > 0: every approach is red for `lead` s first (the decision falls in
+    an interphase / a phase with no modelled approaches); `cur` is then the
+    next modelled phase and `rem` its full planned green."""
     phases = list(ring)
-    na_tl = action_timeline('NO_ACTION', 0.0, ring, cur, rem, greens, bus_phase,
-                            intergreen, horizon)
+    lead = max(0.0, float(lead))
+    na_tl = _shift(action_timeline('NO_ACTION', 0.0, ring, cur, rem, greens, bus_phase,
+                                   intergreen, horizon), lead, horizon)
     if na_tl is None:
         return [None] * len(actions)
     base = evaluate_sections(sec_snap, green_steps(na_tl, phases, horizon, dt), bus_pce)
     main_secs = {s for s, v in sec_snap.items() if int(bus_phase) in v[3]}
     res = []
     for at, ap in actions:
-        tl = action_timeline(at, ap, ring, cur, rem, greens, bus_phase, intergreen,
-                             horizon)
+        tl = _shift(action_timeline(at, ap, ring, cur, rem, greens, bus_phase,
+                                    intergreen, horizon), lead, horizon)
         if tl is None:
             res.append(None)
             continue
@@ -507,6 +517,9 @@ def _selftest() -> None:
     Be, Ce, be = game_payoffs(snap_er, ring, 1, 6.0, gr, 1, [('ER', 4.0)])[0]
     _check(abs(be) < 1e-9 and Be > 0 and Ce == 0.0, ('ER after the bus', Be, Ce, be))
     _check(pay[2] is None, 'unmodelled action -> None')
+    # interphase: 3 s all-red first, then phase 1 with its full 20 s
+    pl = game_payoffs(snap, ring, 1, 20.0, gr, 1, [('GE', 4.0)], lead=3.0)
+    _check(pl[0] is not None and pl[0][2] >= 0.0, ('lead timeline', pl))
     print("game payoffs GE6: B=%.0f C=%.0f b=%.0f   ER4 (bus gone): B=%.0f C=%.0f b=%.0f pax.s"
           % (B, C, b, Be, Ce, be))
     print("OK: conservation, red/green, spillback, bus PCE, class split, "

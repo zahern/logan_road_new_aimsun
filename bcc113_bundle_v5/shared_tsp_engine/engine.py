@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T2100-games-ctm2-payoffs"
+ENGINE_BUILD = "2026-11-06T0900-ctm2-consistent-gates-dstruth-units"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -3113,6 +3113,11 @@ def _ds_calibration():
         import json
         with open(_p, encoding='utf-8') as f:
             _DS_CALIB_CACHE = json.load(f) or {}
+        if _DS_CALIB_CACHE and _DS_CALIB_CACHE.get('units') != 'total_veh_v2':
+            log_to_file('[DS CALIB] IGNORED %s: written before the 2026-11-05 units '
+                        'fix (per-lane-mean truth); re-run once to regenerate' % _p,
+                        force=True)
+            _DS_CALIB_CACHE = {}
         try:
             log_to_file('[DS CALIB] loaded %s (junctions=%d phases=%d)'
                         % (_p, len(_DS_CALIB_CACHE.get('junction') or {}),
@@ -3160,6 +3165,15 @@ def _finalize_ds_truth_check():
         return
 
     _q_by_sec, _f_by_sec, _times = {}, {}, set()
+    # UNITS (2026-11-05): section_timeseries queue_veh is PER LANE
+    # (Simulation_Stats writes queued_veh_per_lane), while the estimate
+    # (est_queue_veh = the DS snapshot's standing occupancy) is the TOTAL over
+    # every lane and section of the phase. The join used to AVERAGE the
+    # per-lane values across sections, so the "truth" was a per-lane mean and
+    # the estimator looked ~3.8x too high on KG (bias +6.8 veh, corr 0.75).
+    # Truth is now  sum_s queue_veh_s * lanes_s  -- the same total the estimate
+    # reports.
+    _ln_by_sec = {}
     try:
         with open(_truth_path, newline='', encoding='utf-8',
                   errors='replace') as f:
@@ -3169,12 +3183,14 @@ def _finalize_ds_truth_check():
                     _t = round(float(r.get('t_start_s') or -1), 3)
                     _qv = float(r.get('queue_veh') or 0.0)
                     _fv = float(r.get('q_veh_h') or 0.0)
+                    _lnv = max(int(float(r.get('lanes') or 1)), 1)
                 except Exception:
                     continue
                 if _s <= 0 or _t < 0:
                     continue
-                _q_by_sec.setdefault(_s, {})[_t] = _qv
+                _q_by_sec.setdefault(_s, {})[_t] = _qv * _lnv     # per lane -> total
                 _f_by_sec.setdefault(_s, {})[_t] = _fv
+                _ln_by_sec[_s] = _lnv
                 _times.add(_t)
     except Exception as _e:
         log_to_file('[DS TRUTH] truth read failed: %r' % (_e,), force=True)
@@ -3229,7 +3245,7 @@ def _finalize_ds_truth_check():
                         _fs.append(_f_by_sec[_s][_nt])
                 if not _qs:
                     continue
-                _tq = sum(_qs) / len(_qs)
+                _tq = sum(_qs)                       # total over the phase's sections
                 _tf = sum(_fs) / len(_fs)
                 _joined.append([_t, _j, _ph, '|'.join(str(x) for x in _secs),
                                 len(_secs), _eq, _tq, _eq - _tq, _efl, _tf,
@@ -3332,6 +3348,10 @@ def _finalize_ds_truth_check():
                     'mean_true_veh': round(_s2[6], 2)}
 
         _cal = {
+            # units marker: _ds_calibration ignores files without it (they were
+            # written with the per-lane-mean truth and would subtract ~4x too
+            # much from the real standing queue).
+            'units': 'total_veh_v2',
             'generated': datetime.datetime.now().isoformat(timespec='seconds'),
             'experiment': globals().get('_CURRENT_EXPERIMENT', 'UNKNOWN'),
             'build': globals().get('ENGINE_BUILD', ''),
@@ -23907,14 +23927,14 @@ class IntersectionController:
         _po = self._phase_origin_sections() or {}
         _ring = sorted(int(p) for p in _po)
         if not _ring:
+            self._game_ctm2_na('no signal-plan phases with approach sections')
             return None
         try:
             _cur = int(ECIGetCurrentPhase(_jid))
         except Exception as _swx:
             _note_swallow('_game_ctm2_payoffs#cur', _swx)
+            self._game_ctm2_na('current phase unreadable')
             return None
-        if _cur not in _ring:
-            return None                         # interphase: no clean timeline
         _greens = {}
         for _p in _ring:
             try:
@@ -23922,12 +23942,30 @@ class IntersectionController:
             except Exception as _swx:
                 _note_swallow('_game_ctm2_payoffs#dur', _swx)
                 _greens[_p] = 0.0
-        try:
-            _rem = max(0.0, float(ECIGetStartingTimePhase(_jid)) + _greens[_cur]
-                       - float(time))
-        except Exception as _swx:
-            _note_swallow('_game_ctm2_payoffs#rem', _swx)
-            return None
+        _lead = 0.0
+        if _cur in _ring:
+            try:
+                _rem = max(0.0, float(ECIGetStartingTimePhase(_jid)) + _greens[_cur]
+                           - float(time))
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_payoffs#rem', _swx)
+                self._game_ctm2_na('no phase start time')
+                return None
+        else:
+            # Interphase, or a green with no modelled approach: every modelled
+            # approach is red until the current phase ends, then the ring
+            # resumes at the next modelled phase with its full green.
+            try:
+                _dur_c = float(GetPhaseDuration(_jid, _cur, timeSta) or 0.0)
+                _lead = max(0.0, float(ECIGetStartingTimePhase(_jid)) + _dur_c
+                            - float(time))
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_payoffs#lead', _swx)
+                self._game_ctm2_na('no start time for phase %s' % _cur)
+                return None
+            _after = [p for p in _ring if p > _cur]
+            _cur = _after[0] if _after else _ring[0]
+            _rem = _greens[_cur]
         _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
         _sec_ph = {}
         for _p, _secs in _po.items():
@@ -23957,6 +23995,9 @@ class IntersectionController:
                     _arr = 0.0
             _snap[_s] = (_g, _ctm2.seed_cells(_g, _veh), _arr, tuple(sorted(_phs)))
         _dt = float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0)
+        if not _snap:
+            self._game_ctm2_na('no modelled approach sections')
+            return None
         return _ctm2.game_payoffs(
             _snap, _ring, _cur, _rem, _greens,
             int(getattr(self, 'BusPhase', -1) or -1), list(actions),
@@ -23965,7 +24006,18 @@ class IntersectionController:
             horizon=float(globals().get('GAME_CTM2_HORIZON_S', 60.0) or 60.0),
             dt=_dt, bus_pce=float(globals().get('CBQL_CTM_BUS_PCE', 2.0) or 2.0),
             bus_occ=float(getattr(self, 'BusOcc', 40.0) or 40.0),
-            car_occ=float(getattr(self, 'CarOcc', 1.5) or 1.5))
+            car_occ=float(getattr(self, 'CarOcc', 1.5) or 1.5), lead=_lead)
+
+    def _game_ctm2_na(self, reason):
+        """[GAME_CTM2_NA] once per junction per reason: why the CTM payoffs
+        were not available (the game then falls back to legacy payoffs)."""
+        _seen = getattr(self, '_game_ctm2_na_seen', None)
+        if _seen is None:
+            _seen = set(); self._game_ctm2_na_seen = _seen
+        if reason not in _seen:
+            _seen.add(reason)
+            log_to_file('[GAME_CTM2_NA] inter=%s %s -> legacy payoffs'
+                        % (getattr(self, 'id', '?'), reason), force=True)
 
     def _cbql_ctm_eval(self, _st, _snap, cur, action):
         """Per-phase CTM outcome of `action` from now (see evaluate_action)."""

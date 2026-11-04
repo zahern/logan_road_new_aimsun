@@ -9610,6 +9610,15 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
             _keep = [i for i, v in enumerate(_ctm2) if v is not None]
             cand = [(cand[i][0], cand[i][1], cand[i][2], cand[i][3],
                      max(0.0, float(_ctm2[i][2])), float(_ctm2[i][1])) for i in _keep]
+            # ROWS carry the CTM numbers too (2026-11-06): the engine's Z4
+            # gate, reward and logs read these rows. They used to keep the
+            # legacy bps/cpc, so Z4 vetoed CTM-chosen actions on a different
+            # model (KG 2026-11-05: all 30 lost game picks were Z4 holds).
+            # Row bps = CTM phase benefit B, cpc = CTM cross cost C.
+            rows = [r for r in rows if r[0] == 'NO_ACTION'] + [
+                (action_label(c[0], c[1]), c[1], 0.0, c[2], c[3],
+                 float(_ctm2[i][0]), float(_ctm2[i][1]), 0.0, 0.0)
+                for c, i in zip(cand, _keep)]
             _gc = [_tsp_games.Cand(str(c[0]), float(c[1]), float(_ctm2[i][0]),
                                    float(_ctm2[i][1]), float(_ctm2[i][2]))
                    for c, i in zip(cand, _keep)]
@@ -9819,8 +9828,8 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # Surplus / Nash value are on the FULL phase benefit (bus + mainline), so a
     # net-surplus (p_T=0) pick is exactly "minimise total passenger delay".
     # Monitor ticks use the CAR-ONLY phase total (see the frontier note above).
-    _bps_tot = _nash_phase_total_bps(self, _at, _ap,
-                                     (0.0 if _monitor else _bps))
+    _bps_tot = (_ctm2_B if _ctm2_B is not None else
+                _nash_phase_total_bps(self, _at, _ap, (0.0 if _monitor else _bps)))
     _surplus = _bps_tot - _cpc           # net corridor paxÃƒâ€šÃ‚Â·s of the chosen action
     # GATED SURPLUS (2026-11-02): the log must report the number the decider
     # TESTED, not a re-derivation of it. Under NASH_CORRIDOR_MODE the solver prices

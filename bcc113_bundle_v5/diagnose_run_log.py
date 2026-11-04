@@ -131,6 +131,15 @@ def analyse(path):
             flag(AMBER, '%d solves had an objective > 1e5 pax.s (legacy shockwave '
                         'term blowing up)' % blow)
     out.append('held by SOLVE_NO_GAIN: %d' % txt.count('[SOLVE_NO_GAIN]'))
+    z4 = txt.count('[Z4 GATE]')
+    if z4:
+        out.append('held by the Z4 gate: %d' % z4)
+        if dec.get('ACT', 0) and z4 > dec.get('ACT', 0):
+            flag(AMBER, 'the Z4 gate vetoed more actions (%d) than executed (%d)'
+                        % (z4, dec.get('ACT', 0)))
+    na = re.findall(r'\[GAME_CTM2_NA\] inter=(\S+) (.*) -> legacy payoffs', txt)
+    if na:
+        out.append('CTM2 payoffs unavailable: %s' % sorted(set(r for _j, r in na)))
     # ---- game solution concepts -------------------------------------------
     gs = re.findall(r'\[GAME_SOLVE\] .*?game=(\w+) (?:payoff=(\S+) )?.*?n=(\d+) '
                     r'feas=(\d+) pick=(\S+)(.*)', txt)

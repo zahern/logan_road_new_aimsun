@@ -155,6 +155,14 @@ check('7b log says payoff=ctm2 and n=3 (untimed GE 8 dropped)',
 ns['NASH_MIN_GAIN_S'] = 21.0          # 21 s x 40 pax = 840 < CTM B=900 > b=800
 (at, ap), gl = run('nash')
 check('7c min-gain gate uses the CTM phase benefit', (at, ap) == ('GE', 2.0), (at, ap))
+ns['GAME_SOLUTION'] = 'nash'
+_out = decide(J, 100.0, 0.0, 0, 30.0, 11, 1, 60.0, 0.0)
+_rows = {r[0]: r for r in _out[6]}
+check('7e rows carry the CTM numbers (what Z4 / the reward read)',
+      _rows.get('GE_2', (0,) * 9)[5] == 900.0 and _rows['GE_2'][6] == 50.0
+      and 'GE_8' not in _rows and 'NO_ACTION' in _rows, sorted(_rows))
+check('7f returned Nash value uses the CTM phase benefit',
+      abs(_out[2] - 900.0 * (900.0 - 50.0)) < 1e-6, _out[2])
 ns['NASH_MIN_GAIN_S'] = 0.0
 J._game_ctm2_payoffs = lambda acts, t, ts: None       # CTM state unreadable
 (at, ap), gl = run('nash')
