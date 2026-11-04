@@ -4095,11 +4095,22 @@ GE_DURATIONS_S = [5.0, 10.0, 15.0]
 INS_DURATIONS_S = [10.0, 15.0, 20.0]
 ER_DURATIONS_S = [10.0, 20.0, 30.0]
 GR_DURATIONS_S = [5.0, 10.0, 15.0]
-# Minimum viable committed action duration (s). Default 5.0 keeps the paper
-# champion unchanged; an arm may lower it to 1.0 so the shockwave/deficit-solved
-# extension executes at its true magnitude instead of being floored to NO_ACTION
-# (engine.py min-action-duration gate). Propagated via the engine flag list.
-MIN_ACTION_DURATION_S = 5.0
+# Minimum viable committed action duration (s). 1.0 since 2026-11-05: the GE /
+# insertion seconds are SOLVED (shockwave objective, DE) and a 1 s action is a
+# valid solution. The old 5.0 floor discarded every sub-5 s solve: on the KG
+# run of 2026-11-04 35 of 36 solves picked 1 s and 22 decisions died on this
+# floor, so the controller almost never acted. The solve is now also required
+# to LOWER total passenger delay vs doing nothing (SOLVE_REQUIRES_GAIN), so a
+# 1 s action only executes when it pays. Set 5.0 to restore the old floor.
+MIN_ACTION_DURATION_S = 1.0
+# Act on a solved GE / insertion only if the shockwave objective at the solved
+# seconds is LOWER than at 0 s (do nothing). The BXT paths ignored this and
+# proposed actions the objective said made things worse (e.g. 153 -> 195 pax.s).
+SOLVE_REQUIRES_GAIN = True
+# Smallest green extension any path will commit (s). Was never declared here,
+# so every reader fell back to its own 3.0 -- a hidden 3 s GE floor in nine
+# places. Declared at 1.0 so a solved 1 s GE survives every path.
+MIN_GE_EXTENSION_S = 1.0
 # CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
 # cooperative-game (Shapley) + Q-learning controller. Default off. The observe
 # increment derives the junction's phase structure from live data + runs the
@@ -5999,6 +6010,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     # bound by the disruptiveness cap already applied downstream.
     _ins_star = min(max(0.0, float(bus_eta_s) - _green_left), float(BXT_MAX_INS_S))
     _MIN_EFFECTIVE_GE_S = 1.0
+    _solve_no_gain = None    # set when the shockwave solve says acting does not pay
     _solved_param = {'GE': _ge_star, 'GREEN_REALLOC': _ge_star, 'INS': _ins_star}
 
     # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Individual-bus catch/miss term ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -6797,12 +6809,21 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         if (_use_solver and hasattr(self, 'solve_green_extension')
                 and _ge_ub > _MIN_EFFECTIVE_GE_S and _raw_deficit >= _MIN_EFFECTIVE_GE_S):
             try:
-                _opt_ge, _, _ = self.solve_green_extension(
+                _opt_ge, _b0g, _b1g = self.solve_green_extension(
                     min(_ge_star, _ge_ub), _ge_ub, time)
-                if _opt_ge >= _MIN_EFFECTIVE_GE_S:
+                if (bool(globals().get('SOLVE_REQUIRES_GAIN', True))
+                        and not (float(_b1g) + 1e-9 < float(_b0g))):
+                    _mag = 0.0          # solve says it does not pay -> hold
+                    _solve_no_gain = ('GE', float(_opt_ge), float(_b0g), float(_b1g))
+                    _log_func(self, "[SOLVE_NO_GAIN] inter=%s t=%.0f GE opt=%.1fs "
+                              "pax %.0f (no action) -> %.0f (solved): acting does not "
+                              "lower total passenger delay -> hold"
+                              % (getattr(self, 'id', '?'), float(time), _solve_no_gain[1],
+                                 _solve_no_gain[2], _solve_no_gain[3]), force=True)
+                elif _opt_ge >= _MIN_EFFECTIVE_GE_S:
                     _mag = float(_opt_ge)
-            except Exception:
-                pass
+            except Exception as _swx:
+                _note_swallow_spm(self, 'bxt_ge_solve', _swx)
         # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ETA-reachability gate (fixes far-ETA GEs that never help the bus) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # A GE extends the CURRENT bus green by at most _ge_ub, so it can only
         # bridge a bus arriving within (green_left + _ge_ub). The corridor pre-arm
@@ -6820,7 +6841,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _catchable = _eta_ok and (
             (_raw_deficit >= _MIN_EFFECTIVE_GE_S and _raw_deficit <= _ge_ub + 1e-6)
             or (_bus_stopped and float(no_act_delay) >= _MIN_EFFECTIVE_GE_S))
-        if _bus_stopped and _mag < _MIN_EFFECTIVE_GE_S:
+        if _bus_stopped and _mag < _MIN_EFFECTIVE_GE_S and _solve_no_gain is None:
             _mag = min(_ge_ub, max(_MIN_EFFECTIVE_GE_S, float(_ge_star) or _ge_ub))
         # Q-argmax already chose to ACT (it picked this family over NO_ACTION);
         # commit at the solved magnitude if the action is physically meaningful.
@@ -6878,12 +6899,21 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _use_solver = str(globals().get('BXT_SOLVER', 'harmony')).lower() != 'deficit'
         if _use_solver and hasattr(self, 'solve_bus_phase_green') and _bp_ub > _MIN_EFFECTIVE_GE_S:
             try:
-                _opt_bp, _, _ = self.solve_bus_phase_green(
+                _opt_bp, _b0b, _b1b = self.solve_bus_phase_green(
                     min(_MIN_EFFECTIVE_GE_S, _bp_ub), _bp_ub, time)
-                if _opt_bp >= _MIN_EFFECTIVE_GE_S:
+                if (bool(globals().get('SOLVE_REQUIRES_GAIN', True))
+                        and not (float(_b1b) + 1e-9 < float(_b0b))):
+                    _mag = 0.0          # solve says it does not pay -> hold
+                    _solve_no_gain = ('INS', float(_opt_bp), float(_b0b), float(_b1b))
+                    _log_func(self, "[SOLVE_NO_GAIN] inter=%s t=%.0f INS opt=%.1fs "
+                              "pax %.0f (no action) -> %.0f (solved): acting does not "
+                              "lower total passenger delay -> hold"
+                              % (getattr(self, 'id', '?'), float(time), _solve_no_gain[1],
+                                 _solve_no_gain[2], _solve_no_gain[3]), force=True)
+                elif _opt_bp >= _MIN_EFFECTIVE_GE_S:
                     _mag = float(_opt_bp)
-            except Exception:
-                pass
+            except Exception as _swx:
+                _note_swallow_spm(self, 'bxt_ins_solve', _swx)
         # ETA-reachability gate: an insertion/advance can only catch a bus that
         # arrives within ~one cycle; firing it 100-230 s early (corridor pre-arm)
         # just disrupts the cross phase without serving the bus.
@@ -11676,7 +11706,7 @@ MODE_FLAGS = [
     'STATE_QUEUE_PHYSICAL_FIRST',
     'GE_DURATIONS_S', 'INS_DURATIONS_S', 'ER_DURATIONS_S', 'GR_DURATIONS_S',
     # Shockwave-solved magnitude down to 1s (2026-11-04): floor + solver bound.
-    'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S',
+    'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S', 'SOLVE_REQUIRES_GAIN',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',
