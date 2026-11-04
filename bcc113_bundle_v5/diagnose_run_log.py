@@ -132,10 +132,12 @@ def analyse(path):
                         'term blowing up)' % blow)
     out.append('held by SOLVE_NO_GAIN: %d' % txt.count('[SOLVE_NO_GAIN]'))
     # ---- game solution concepts -------------------------------------------
-    gs = re.findall(r'\[GAME_SOLVE\] .*?game=(\w+) .*?n=(\d+) feas=(\d+) pick=(\S+)(.*)', txt)
+    gs = re.findall(r'\[GAME_SOLVE\] .*?game=(\w+) (?:payoff=(\S+) )?.*?n=(\d+) '
+                    r'feas=(\d+) pick=(\S+)(.*)', txt)
     if gs:
         by = {}
-        for g, n, f, pick, rest in gs:
+        for g, pm, n, f, pick, rest in gs:
+            g = '%s@%s' % (g, pm or 'legacy')
             d = by.setdefault(g, Counter())
             d['solves'] += 1
             d['picked' if pick != 'NO_ACTION' else 'held'] += 1

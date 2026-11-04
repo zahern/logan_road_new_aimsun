@@ -4132,6 +4132,14 @@ SW_INS_MAX_S = 15.0
 GAME_SOLUTION = ''
 GAME_TOL_BUS_FRAC = 0.25     # side-payment: share of joint surplus a player may lose
 GAME_TOL_CAR_FRAC = 0.25
+# Payoff model the games decide on. 'legacy' = the analytic evaluator (bus /
+# mainline benefit) + the Daganzo CTM cross cost (NASH_CTM_COST). 'ctm2' = the
+# two-class (bus / car) CTM for EVERY term: each candidate is timed against the
+# plan (ctm_twoclass.action_timeline) and simulated from the live cells for
+# GAME_CTM2_HORIZON_S; candidates it cannot time are dropped, not mixed.
+GAME_PAYOFF_MODEL = 'legacy'
+GAME_CTM2_HORIZON_S = 60.0
+GAME_CTM2_IG_S = 5.0
 # CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
 # cooperative-game (Shapley) + Q-learning controller. Default off. The observe
 # increment derives the junction's phase structure from live data + runs the
@@ -9573,6 +9581,7 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _frontier = []
     _nfeas = 0
     _margin = 0.0
+    _ctm2_B = None          # GAME_PAYOFF_MODEL='ctm2': the CTM phase benefit of the pick
     if _corridor_ran:
         if _bi is None:                          # corridor equilibrium = do nothing
             # _corr_diag is keyed by junction (the solver may evaluate a slice);
@@ -9587,11 +9596,31 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         # total (bus + mainline; car-only on monitor ticks), C = cross cost,
         # b = bus-only benefit. See tsp_games for every concept's rule.
         _gc = []
-        for _c in cand:
-            _bt = _nash_phase_total_bps(self, _c[0], _c[1],
-                                        (0.0 if _monitor else _c[4]))
-            _gc.append(_tsp_games.Cand(str(_c[0]), float(_c[1]), float(_bt),
-                                       float(_c[5]), 0.0 if _monitor else float(_c[4])))
+        _pmodel = str(globals().get('GAME_PAYOFF_MODEL', 'legacy') or 'legacy').lower()
+        _ctm2 = None
+        if _pmodel == 'ctm2' and hasattr(self, '_game_ctm2_payoffs'):
+            try:
+                _ctm2 = self._game_ctm2_payoffs([(c[0], c[1]) for c in cand],
+                                                time, timeSta)
+            except Exception as _ge:
+                _note_swallow_spm(self, 'game_ctm2_payoffs', _ge)
+                _ctm2 = None
+        if _ctm2 is not None:
+            # every term from the two-class CTM; untimed candidates dropped
+            _keep = [i for i, v in enumerate(_ctm2) if v is not None]
+            cand = [(cand[i][0], cand[i][1], cand[i][2], cand[i][3],
+                     max(0.0, float(_ctm2[i][2])), float(_ctm2[i][1])) for i in _keep]
+            _gc = [_tsp_games.Cand(str(c[0]), float(c[1]), float(_ctm2[i][0]),
+                                   float(_ctm2[i][1]), float(_ctm2[i][2]))
+                   for c, i in zip(cand, _keep)]
+            _pmodel = 'ctm2'
+        else:
+            _pmodel = 'legacy' if _pmodel != 'ctm2' else 'legacy_fallback'
+            for _c in cand:
+                _bt = _nash_phase_total_bps(self, _c[0], _c[1],
+                                            (0.0 if _monitor else _c[4]))
+                _gc.append(_tsp_games.Cand(str(_c[0]), float(_c[1]), float(_bt),
+                                           float(_c[5]), 0.0 if _monitor else float(_c[4])))
         _gp = _tsp_games.Params(
             p_bus=float(p_T), p_car=float(p_C),
             net_ratio=float(globals().get('NASH_NET_GATE_RATIO', 1.0) or 1.0),
@@ -9609,9 +9638,10 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         _ncand = len(_gc)
         _nfeas = int(_gd.get('nfeas', 0) or 0)
         try:
-            _log_func(self, "[GAME_SOLVE] inter=%s t=%.0f game=%s bus=%s n=%d feas=%d "
-                            "pick=%s%s%s" % (
-                getattr(self, 'id', '?'), float(time), _gsol, veh_id, _ncand, _nfeas,
+            _log_func(self, "[GAME_SOLVE] inter=%s t=%.0f game=%s payoff=%s bus=%s n=%d "
+                            "feas=%d pick=%s%s%s" % (
+                getattr(self, 'id', '?'), float(time), _gsol, _pmodel, veh_id, _ncand,
+                _nfeas,
                 ('%s_%gs u_bus=%.0f u_car=%.0f joint=%.0f' % (
                     _gc[_bi].family, _gc[_bi].duration, _gc[_bi].u_bus,
                     _gc[_bi].u_car, _gc[_bi].joint)) if _bi is not None else 'NO_ACTION',
@@ -9623,6 +9653,8 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         if _bi is None:
             _nash_held_log(self, time, veh_id, cand, _loc_diag, 'game:' + _gsol)
             return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
+        if _pmodel == 'ctm2':
+            _ctm2_B = float(_gc[_bi].B)
     else:
         # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tier 1: local Nash bargain ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Bargain on the FULL bus-phase benefit (bus + mainline through traffic)
@@ -9752,7 +9784,9 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # uses the PHASE total (bus + mainline through traffic) unless explicitly
     # disabled, which makes it main-approach benefit vs side-approach cost.
     _bps_gate = _bps
-    if bool(globals().get('NASH_MIN_GAIN_INCLUDE_MAIN', True)) and not _monitor:
+    if _ctm2_B is not None:
+        _bps_gate = max(float(_bps), _ctm2_B)    # same model as the game's payoffs
+    elif bool(globals().get('NASH_MIN_GAIN_INCLUDE_MAIN', True)) and not _monitor:
         try:
             _bps_gate = max(float(_bps),
                             float(_nash_phase_total_bps(self, _at, _ap, _bps)))
@@ -11791,6 +11825,7 @@ MODE_FLAGS = [
     'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S', 'SOLVE_REQUIRES_GAIN',
     'SW_INS_STRETCH', 'SW_INS_MAX_S',
     'GAME_SOLUTION', 'GAME_TOL_BUS_FRAC', 'GAME_TOL_CAR_FRAC',
+    'GAME_PAYOFF_MODEL', 'GAME_CTM2_HORIZON_S', 'GAME_CTM2_IG_S',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',

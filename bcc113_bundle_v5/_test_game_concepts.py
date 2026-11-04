@@ -134,6 +134,34 @@ PAY.update({('GE', 2.0): (50.0, 0.0, 400.0), ('GE', 4.0): (80.0, 0.0, 900.0)})
 for k in tsp_games.CONCEPTS:
     (at, ap), gl = run(k)
     check('5 %-18s holds' % k, at == 'NO_ACTION', (at, ap))
+print('7 GAME_PAYOFF_MODEL=ctm2 (two-class CTM payoffs)')
+PAY.clear()
+PAY.update({                                    # legacy payoffs favour GE 6
+    ('GE', 2.0): (280.0, 20.0, 100.0),
+    ('GE', 4.0): (200.0, 300.0, 150.0),
+    ('GE', 6.0): (700.0, 200.0, 300.0),
+    ('GE', 8.0): (300.0, 0.0, 600.0),
+})
+# CTM2 says GE 6 barely helps and GE 2 is best; GE 8 cannot be timed (None)
+CTM2 = {('GE', 2.0): (900.0, 50.0, 800.0), ('GE', 4.0): (400.0, 100.0, 300.0),
+        ('GE', 6.0): (300.0, 250.0, 280.0), ('GE', 8.0): None}
+J._game_ctm2_payoffs = lambda acts, t, ts: [CTM2[(a, float(d))] for a, d in acts]
+ns['GAME_PAYOFF_MODEL'] = 'ctm2'
+(at, ap), gl = run('nash')
+check('7a nash decides on CTM2 payoffs (GE 2, not legacy GE 6)', (at, ap) == ('GE', 2.0),
+      (at, ap))
+check('7b log says payoff=ctm2 and n=3 (untimed GE 8 dropped)',
+      gl and 'payoff=ctm2' in gl[0] and ' n=3 ' in gl[0], gl[:1])
+ns['NASH_MIN_GAIN_S'] = 21.0          # 21 s x 40 pax = 840 < CTM B=900 > b=800
+(at, ap), gl = run('nash')
+check('7c min-gain gate uses the CTM phase benefit', (at, ap) == ('GE', 2.0), (at, ap))
+ns['NASH_MIN_GAIN_S'] = 0.0
+J._game_ctm2_payoffs = lambda acts, t, ts: None       # CTM state unreadable
+(at, ap), gl = run('nash')
+check('7d CTM unavailable -> legacy payoffs, logged', (at, ap) == ('GE', 6.0)
+      and gl and 'payoff=legacy_fallback' in gl[0], (at, ap, gl[:1]))
+ns['GAME_PAYOFF_MODEL'] = 'legacy'
+del J._game_ctm2_payoffs
 check('6 nothing swallowed', not SWALLOWED, SWALLOWED[:3])
 if fails:
     sys.exit('FAIL: %s' % fails)

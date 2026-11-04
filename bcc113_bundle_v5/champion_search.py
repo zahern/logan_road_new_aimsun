@@ -6294,6 +6294,17 @@ if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
                 "CHAMP_ADAPTIVE_DSW_GAME_COOP", _gname,
                 {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
                  "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25}))
+    # _CTM2 twins: the same game decided on two-class (bus / car) CTM payoffs
+    # for every term (GAME_PAYOFF_MODEL='ctm2'), so legacy vs CTM2 separates the
+    # payoff model from the game.
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _cname = _gname + "_CTM2"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+                 "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
 
 # -- CELL-STATE BACK-PRESSURE arm (2026-11-04) ------------------------------
 # Store-and-forward / max-pressure release off the CTM cell state (queue x

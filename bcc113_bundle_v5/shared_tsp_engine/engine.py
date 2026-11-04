@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T1900-train-learners-ins-reach"
+ENGINE_BUILD = "2026-11-05T2100-games-ctm2-payoffs"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -23892,6 +23892,80 @@ class IntersectionController:
             _pri_secs |= {int(x) for x in (_po.get(_ph, []) or [])}
         _n_bus = sum(_seeded[_s][3] for _s in _pri_secs if _s in _seeded)
         return _snap, _n_bus
+
+    def _game_ctm2_payoffs(self, actions, time, timeSta=0.0):
+        """Two-class CTM payoffs (B, C, b) pax.s for each (type, seconds) in
+        `actions`, for the game solvers (GAME_PAYOFF_MODEL='ctm2'). Seeds every
+        real phase's approach sections from the LIVE vehicles (buses counted
+        separately), times each action against the plan (ctm_twoclass.
+        action_timeline) and simulates GAME_CTM2_HORIZON_S. Returns None when
+        the junction state cannot be read (interphase, no plan) -- the caller
+        then keeps the legacy payoffs. Entries are None for untimed actions."""
+        if not _CTM2_AVAILABLE:
+            return None
+        _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+        _po = self._phase_origin_sections() or {}
+        _ring = sorted(int(p) for p in _po)
+        if not _ring:
+            return None
+        try:
+            _cur = int(ECIGetCurrentPhase(_jid))
+        except Exception as _swx:
+            _note_swallow('_game_ctm2_payoffs#cur', _swx)
+            return None
+        if _cur not in _ring:
+            return None                         # interphase: no clean timeline
+        _greens = {}
+        for _p in _ring:
+            try:
+                _greens[_p] = float(GetPhaseDuration(_jid, _p, timeSta) or 0.0)
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_payoffs#dur', _swx)
+                _greens[_p] = 0.0
+        try:
+            _rem = max(0.0, float(ECIGetStartingTimePhase(_jid)) + _greens[_cur]
+                       - float(time))
+        except Exception as _swx:
+            _note_swallow('_game_ctm2_payoffs#rem', _swx)
+            return None
+        _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+        _sec_ph = {}
+        for _p, _secs in _po.items():
+            for _s in (_secs or []):
+                _sec_ph.setdefault(int(_s), set()).add(int(_p))
+        _snap = {}
+        for _s, _phs in _sec_ph.items():
+            _g = self._cbql_ctm_geom(_s)
+            _veh = []
+            try:
+                for _vi in range(max(int(AKIVehStateGetNbVehiclesSection(_s, True)), 0)):
+                    _inf = AKIVehStateGetVehicleInfSection(_s, _vi)
+                    _veh.append((_g.length_m - float(getattr(_inf, 'CurrentPos', 0.0) or 0.0),
+                                 _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_payoffs#veh', _swx)
+            _arr = None
+            try:
+                _arr = self._vlt_advance_vph(_s)
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_payoffs#adv', _swx)
+            if _arr is None:
+                try:
+                    _arr = max(0.0, float(self._measured_section_flow_vph(_s) or 0.0))
+                except Exception as _swx:
+                    _note_swallow('_game_ctm2_payoffs#arr', _swx)
+                    _arr = 0.0
+            _snap[_s] = (_g, _ctm2.seed_cells(_g, _veh), _arr, tuple(sorted(_phs)))
+        _dt = float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0)
+        return _ctm2.game_payoffs(
+            _snap, _ring, _cur, _rem, _greens,
+            int(getattr(self, 'BusPhase', -1) or -1), list(actions),
+            intergreen=float(globals().get('GAME_CTM2_IG_S',
+                                           globals().get('INS_INTERGREEN_S', 5.0)) or 5.0),
+            horizon=float(globals().get('GAME_CTM2_HORIZON_S', 60.0) or 60.0),
+            dt=_dt, bus_pce=float(globals().get('CBQL_CTM_BUS_PCE', 2.0) or 2.0),
+            bus_occ=float(getattr(self, 'BusOcc', 40.0) or 40.0),
+            car_occ=float(getattr(self, 'CarOcc', 1.5) or 1.5))
 
     def _cbql_ctm_eval(self, _st, _snap, cur, action):
         """Per-phase CTM outcome of `action` from now (see evaluate_action)."""

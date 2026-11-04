@@ -16,7 +16,10 @@ shared_tsp_engine/tsp_games.py, all paired against NO_TSP on the same seeds:
       CHAMP_ADAPTIVE_DSW_GAME_SOL_NONCOOP    non-cooperative request/allowance eq.
 
 The GAME_SOL_* arms are GAME_COOP with only GAME_SOLUTION changed, so their
-differences are the game. Games do not learn: no training seeds.
+differences are the game. Each also has a *_CTM2 twin deciding on two-class
+(bus / car) CTM payoffs (GAME_PAYOFF_MODEL='ctm2'). GAME_LADDER_PAYOFF picks
+ctm2 (default: M4, M5 + 8 CTM2 games), legacy, or both. Games do not learn:
+no training seeds.
 
 RUN -- in the Aimsun console with the KG model open, after a FULL restart:
 
@@ -41,19 +44,19 @@ if not _HERE:
     except NameError:
         _HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
 
-_os.environ.setdefault("FIXED_ARMS", ",".join([
-    "CHAMP_ADAPTIVE_DSW_GAME_BUS",
-    "CHAMP_ADAPTIVE_DSW_GAME_COOP",
-    "CHAMP_ADAPTIVE_DSW_GAME_EGAL",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_UTIL",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_NWELF",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_EGAL",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_KS",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_STACKBUS",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_STACKCAR",
-    "CHAMP_ADAPTIVE_DSW_GAME_SOL_NONCOOP",
-]))
+_SOL = ["NASH", "UTIL", "NWELF", "EGAL", "KS", "STACKBUS", "STACKCAR", "NONCOOP"]
+# GAME_LADDER_PAYOFF: which payoff model the GAME_SOL arms decide on --
+#   ctm2   (default) two-class bus/car CTM for every payoff term
+#   legacy analytic bus/mainline benefit + Daganzo CTM cross cost
+#   both   each game twice, to separate the payoff model from the game
+_PAY = _os.environ.get("GAME_LADDER_PAYOFF", "ctm2").strip().lower()
+_sol_arms = []
+if _PAY in ("legacy", "both"):
+    _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_" + k for k in _SOL]
+if _PAY in ("ctm2", "both"):
+    _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_%s_CTM2" % k for k in _SOL]
+_os.environ.setdefault("FIXED_ARMS", ",".join(
+    ["CHAMP_ADAPTIVE_DSW_GAME_BUS", "CHAMP_ADAPTIVE_DSW_GAME_COOP"] + _sol_arms))
 _os.environ.setdefault("FIXED_TRAIN_SEEDS", "")          # games do not learn
 _os.environ.setdefault("FIXED_OUT", "game_ladder_kg_%s.csv"
                        % _time.strftime("%Y%m%d_%H%M%S"))

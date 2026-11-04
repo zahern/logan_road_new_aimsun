@@ -265,6 +265,152 @@ def evaluate_action(snapshot: Snapshot, cur_phase: int, action: int,
 
 
 # --------------------------------------------------------------------------- #
+# Action timing profiles + per-section evaluation (game payoffs, 2026-11-05)   #
+# --------------------------------------------------------------------------- #
+# A junction's plan from NOW: the current phase with `rem` s of green left,
+# then the ring in order, each phase its planned green, an intergreen between
+# phases. Each TSP action rewrites that timeline:
+#   NO_ACTION        the plan
+#   GE  d            current (bus) green +d; the next phase's green -d (cycle
+#                    recovered, as the controller does)
+#   GR  d            current (cross) green ends d sooner (>= now); the ring
+#                    runs on, so the bus phase arrives d sooner
+#   INS d            current phase stops now; intergreen; the bus phase gets d
+#                    of green; intergreen; the interrupted phase resumes its
+#                    remaining green; then the ring as planned
+#   ER  d            current (bus) green ends d sooner; the rest moves earlier
+# Unknown action types return None (the caller keeps its legacy payoff).
+TIMED_ACTIONS = {'GE': 'GE', 'GREEN_REALLOC': 'GR', 'GR': 'GR', 'INS': 'INS',
+                 'INS_POST': 'INS', 'INS_PRETERM': 'INS', 'EARLY_RED': 'ER',
+                 'ER': 'ER', 'NO_ACTION': 'NA'}
+
+
+def action_timeline(action: str, d: float, ring: Sequence[int], cur: int,
+                    rem: float, greens: Dict[int, float], bus_phase: int,
+                    intergreen: float, horizon: float):
+    """[(t0, t1, phase)] green intervals from now (t=0) to `horizon` for the
+    junction under `action` of `d` s. None for an action type not modelled."""
+    kind = TIMED_ACTIONS.get(str(action))
+    if kind is None:
+        return None
+    ring = [int(p) for p in ring]
+    if int(cur) not in ring:
+        return None
+    d = max(0.0, float(d))
+    ig = max(0.0, float(intergreen))
+    rem = max(0.0, float(rem))
+    g = {int(p): max(0.0, float(greens.get(p, 0.0))) for p in ring}
+    out = []
+    t = 0.0
+
+    def run_ring(start_idx, t, first_green=None, next_adjust=None):
+        i = start_idx
+        first = True
+        while t < horizon:
+            p = ring[i % len(ring)]
+            dur = g[p] if not (first and first_green is not None) else first_green
+            if not first and next_adjust is not None and next_adjust[0] == p:
+                dur = max(0.0, dur + next_adjust[1])
+                next_adjust = None
+            if dur > 0:
+                out.append((t, min(t + dur, horizon), p))
+            t += dur + ig
+            first = False
+            i += 1
+        return t
+
+    ci = ring.index(int(cur))
+    if kind == 'NA':
+        run_ring(ci, 0.0, first_green=rem)
+    elif kind == 'GE':
+        nxt = ring[(ci + 1) % len(ring)]
+        run_ring(ci, 0.0, first_green=rem + d, next_adjust=(nxt, -d))
+    elif kind == 'GR':
+        run_ring(ci, 0.0, first_green=max(0.0, rem - d))
+    elif kind == 'ER':
+        run_ring(ci, 0.0, first_green=max(0.0, rem - d))
+    elif kind == 'INS':
+        t = ig
+        if d > 0:
+            out.append((t, min(t + d, horizon), int(bus_phase)))
+        t += d + ig
+        run_ring(ci, t, first_green=rem)
+    return [(a, b, p) for a, b, p in out if a < horizon]
+
+
+def green_steps(timeline, phases, horizon: float, dt: float) -> Dict[int, List[bool]]:
+    """{phase: [green at step k]} from a timeline."""
+    n = max(1, int(round(float(horizon) / max(float(dt), 1e-6))))
+    out = {int(p): [False] * n for p in phases}
+    for a, b, p in timeline:
+        if int(p) not in out:
+            continue
+        for k in range(n):
+            tk = (k + 0.5) * dt
+            if a <= tk < b:
+                out[int(p)][k] = True
+    return out
+
+
+@dataclass
+class SectionOutcome:
+    car_delay_vs: float
+    bus_delay_vs: float
+
+
+def evaluate_sections(sec_snap, steps: Dict[int, List[bool]], bus_pce: float = 2.0
+                      ) -> Dict[int, SectionOutcome]:
+    """sec_snap: {sec: (ApproachGeom, CellState, car_arrival_vph, phases)}.
+    A section is green at step k if ANY phase it feeds is green then (a
+    shared approach discharges whenever one of its movements runs)."""
+    out = {}
+    for sec, (geom, cells, arr, phases) in sec_snap.items():
+        lists = [steps[p] for p in phases if p in steps]
+        if not lists:
+            continue
+        prof = [any(col) for col in zip(*lists)]
+        r = simulate(geom, cells, prof, arr, bus_pce)
+        out[int(sec)] = SectionOutcome(r.car_delay_vs, r.bus_delay_vs)
+    return out
+
+
+def game_payoffs(sec_snap, ring, cur, rem, greens, bus_phase, actions,
+                 intergreen=5.0, horizon=60.0, dt=2.0, bus_pce=2.0,
+                 bus_occ=40.0, car_occ=1.2):
+    """Two-class CTM payoffs (B, C, b) in pax.s for each (type, seconds) in
+    `actions`, against NO_ACTION over the horizon, in the convention the game
+    solvers use:
+        b = bus pax.s saved (all approaches)
+        car_main  = car pax.s saved on approaches feeding the bus phase
+        car_cross = car pax.s saved on the other approaches (usually < 0)
+        B = b + car_main + max(0, car_cross)      C = max(0, -car_cross)
+    Entries are None for action types this model does not time."""
+    phases = list(ring)
+    na_tl = action_timeline('NO_ACTION', 0.0, ring, cur, rem, greens, bus_phase,
+                            intergreen, horizon)
+    if na_tl is None:
+        return [None] * len(actions)
+    base = evaluate_sections(sec_snap, green_steps(na_tl, phases, horizon, dt), bus_pce)
+    main_secs = {s for s, v in sec_snap.items() if int(bus_phase) in v[3]}
+    res = []
+    for at, ap in actions:
+        tl = action_timeline(at, ap, ring, cur, rem, greens, bus_phase, intergreen,
+                             horizon)
+        if tl is None:
+            res.append(None)
+            continue
+        o = evaluate_sections(sec_snap, green_steps(tl, phases, horizon, dt), bus_pce)
+        b = sum(base[s].bus_delay_vs - o[s].bus_delay_vs for s in o) * float(bus_occ)
+        cm = sum(base[s].car_delay_vs - o[s].car_delay_vs for s in o if s in main_secs) \
+            * float(car_occ)
+        cc = sum(base[s].car_delay_vs - o[s].car_delay_vs for s in o if s not in main_secs) \
+            * float(car_occ)
+        B = b + cm + max(0.0, cc)
+        res.append((B, max(0.0, -cc), b))
+    return res
+
+
+# --------------------------------------------------------------------------- #
 # Self-test (python -I ctm_twoclass.py)                                        #
 # --------------------------------------------------------------------------- #
 def _check(c, m):
@@ -330,8 +476,41 @@ def _selftest() -> None:
     _check(hold[1].bus_present == 1.0 and hold[2].bus_present == 0.0, hold)
     print("junction: bus delay hold=%.1f  switch-to=%.1f  away=%.1f veh.s"
           % (hold[1].bus_delay_vs, to_bus[1].bus_delay_vs, away[1].bus_delay_vs))
+    # Action timelines: ring [1 (bus), 2], greens 20/30, IG 5, 6 s left on 1.
+    ring, gr = [1, 2], {1: 20.0, 2: 30.0}
+    na = action_timeline('NO_ACTION', 0, ring, 1, 6.0, gr, 1, 5.0, 80.0)
+    _check(na[:3] == [(0.0, 6.0, 1), (11.0, 41.0, 2), (46.0, 66.0, 1)], na)
+    ge = action_timeline('GE', 4, ring, 1, 6.0, gr, 1, 5.0, 80.0)
+    _check(ge[:2] == [(0.0, 10.0, 1), (15.0, 41.0, 2)], ge)       # +4 bus, -4 cross
+    ins = action_timeline('INS', 8, ring, 2, 12.0, gr, 1, 5.0, 80.0)
+    _check(ins[:3] == [(5.0, 13.0, 1), (18.0, 30.0, 2), (35.0, 55.0, 1)], ins)
+    _check(action_timeline('PHASE_SKIP', 3, ring, 1, 6.0, gr, 1, 5.0, 80.0) is None,
+           'unknown action must be None')
+    # Game payoffs: a bus 10 m before the bus-phase stop line with 6 s of
+    # green left behind 3 cars; cross approach with 4 queued cars.
+    gm = ApproachGeom(length_m=120.0, lanes=1, dt_s=2.0)
+    gx = ApproachGeom(length_m=120.0, lanes=1, dt_s=2.0)
+    snap = {10: (gm, seed_cells(gm, [(2, False), (6, False), (9, False), (14, True)]),
+                 300.0, (1,)),
+            20: (gx, seed_cells(gx, [(2, False), (6, False), (10, False), (14, False)]),
+                 300.0, (2,))}
+    pay = game_payoffs(snap, ring, 1, 2.0, gr, 1, [('GE', 6.0), ('ER', 2.0),
+                                                   ('PHASE_SKIP', 3.0)])
+    B, C, b = pay[0]
+    _check(b > 0 and C > 0, ('GE helps the bus and costs the cross street', pay[0]))
+    _check(pay[1][2] < 0, ('ER before the bus has cleared makes it miss', pay[1]))
+    # ER after the bus has passed (no bus left): bus unaffected, cross gains
+    # (empty main approach: with mainline arrivals still coming, cutting the
+    #  bus-phase green costs mainline cars more than the cross street gains)
+    snap_er = {10: (gm, seed_cells(gm, []), 0.0, (1,)),
+               20: snap[20]}
+    Be, Ce, be = game_payoffs(snap_er, ring, 1, 6.0, gr, 1, [('ER', 4.0)])[0]
+    _check(abs(be) < 1e-9 and Be > 0 and Ce == 0.0, ('ER after the bus', Be, Ce, be))
+    _check(pay[2] is None, 'unmodelled action -> None')
+    print("game payoffs GE6: B=%.0f C=%.0f b=%.0f   ER4 (bus gone): B=%.0f C=%.0f b=%.0f pax.s"
+          % (B, C, b, Be, Ce, be))
     print("OK: conservation, red/green, spillback, bus PCE, class split, "
-          "junction action evaluation.")
+          "junction action evaluation, action timelines, game payoffs.")
 
 
 if __name__ == "__main__":
