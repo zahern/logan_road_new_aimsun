@@ -4088,6 +4088,19 @@ CBQL_RATIO_FLOOR = 0.05     # min Shapley ratio of either controller
 CBQL_SAMPLE_ACTIONS = True  # sample the joint policy (paper); False = argmax
 CBQL_BUS_DELAY_W = 1.0      # weight of the max-bus-delay term in R_P
 CBQL_BUS_FREE_KMH = 40.0    # bus reference speed for the bus-delay measure
+# Two-class (bus / non-bus) CTM feed for the CBQL state + reward (paper Sec.
+# 3.2; shared_tsp_engine/ctm_twoclass.py). On: Q[j] in the state is the CTM
+# standing queue of phase j, plus a bus level from the CTM bus density, and the
+# rewards are the CTM's expected car / bus delay for the action taken. Off: the
+# measured .DTa feed above.
+CBQL_USE_CTM = True
+CBQL_CTM_DT_S = 2.0          # step; cell length = v_free * dt
+CBQL_CTM_MAX_CELLS = 12      # cells per approach (reach = cells * cell length)
+CBQL_CTM_HORIZON_S = 20.0    # look-ahead for the expected-delay reward
+CBQL_CTM_INTERGREEN_S = 5.0  # lost time charged to a switch in the CTM
+CBQL_CTM_BUS_PCE = 2.0       # road space of one bus in cars
+CBQL_CTM_BUS_W = 0.0         # bus-vs-car reward weight; 0 => BusOcc / CarOcc
+CBQL_CTM_QUEUE_BIN_VEH = 4.0 # queue bin width for the state key (5 levels)
 
 # CELL-STATE BACK-PRESSURE RELEASE (store-and-forward / max-pressure off the CTM
 # cells): serve the phase maximising upstream_queue x downstream_free_space, with
@@ -11529,6 +11542,9 @@ MODE_FLAGS = [
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',
     'CBQL_POLICY_LR', 'CBQL_POLICY_FLOOR', 'CBQL_RATIO_FLOOR',
     'CBQL_SAMPLE_ACTIONS', 'CBQL_BUS_DELAY_W', 'CBQL_BUS_FREE_KMH',
+    'CBQL_USE_CTM', 'CBQL_CTM_DT_S', 'CBQL_CTM_MAX_CELLS', 'CBQL_CTM_HORIZON_S',
+    'CBQL_CTM_INTERGREEN_S', 'CBQL_CTM_BUS_PCE', 'CBQL_CTM_BUS_W',
+    'CBQL_CTM_QUEUE_BIN_VEH',
     'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
     'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',
     'CELL_BP_MAX_SWITCHES_PER_CYCLE',

@@ -150,12 +150,26 @@ class CbqlState:
     green_ratio: float               # lambda : green/cycle of current phase
     cycle_s: float                   # T
     phase_flow: Tuple[float, ...]    # Q[0..P-1] measured per-phase flow (veh/h)
+    # CTM feed (optional). When phase_queue is given, Q[j] in the key is the
+    # CTM standing queue of phase j (veh) instead of the measured flow, and
+    # bus_level (0/1/2 = none / one / several buses on the priority
+    # approaches, from the CTM bus density) is added -- the paper's "presence
+    # and urgency of priority vehicles" (Sec. 4.1).
+    phase_queue: Optional[Tuple[float, ...]] = None
+    bus_level: int = 0
+    queue_bin_veh: float = 4.0
+    queue_levels: int = 5
 
     def encode(self, flow_bin: float = 300.0,
                ratio_bins: int = 5, cycle_bin: float = 20.0) -> tuple:
         """Discretise to a hashable Q-table key (keeps the table finite)."""
         lam = min(ratio_bins - 1, int(self.green_ratio * ratio_bins))
         cyc = int(round(self.cycle_s / cycle_bin))
+        if self.phase_queue is not None:
+            b = max(float(self.queue_bin_veh), 1e-6)
+            top = max(int(self.queue_levels) - 1, 0)
+            q = tuple(min(top, int(max(0.0, x) // b)) for x in self.phase_queue)
+            return (self.green_phase, lam, cyc, q, min(int(self.bus_level), 2))
         q = tuple(int(f // flow_bin) for f in self.phase_flow)
         return (self.green_phase, lam, cyc, q)
 
@@ -320,6 +334,37 @@ def player_rewards(structure: PhaseStructure, phase_delay: Dict[int, float],
         "P": -(_mean(structure.priority_phases)
                + float(bus_w) * max(0.0, float(bus_delay_s or 0.0))),
         "N": -_mean(structure.non_priority_phases),
+    }
+
+
+def player_rewards_ctm(structure: PhaseStructure,
+                       car_delay_vs: Dict[int, float],
+                       bus_delay_vs: Dict[int, float],
+                       horizon_s: float, bus_w: float = 1.0
+                       ) -> Dict[str, float]:
+    """Rewards from the two-class CTM's predicted delay (veh.s over the
+    horizon) for the action taken -- R(s,a) = E[R | s, a] (eq. 9) with the
+    CTM as the model.
+
+       R_P = -( mean_{p in P} car_delay_p + bus_w * sum_{p in P} bus_delay_p ) / H
+       R_N = -( mean_{p in N} car_delay_p ) / H
+
+    Dividing by the horizon H gives "average vehicles held back", so the scale
+    does not move when the horizon is changed. Cars: per-group MEAN (same
+    reason as player_rewards). Buses: SUM over the priority phases -- each bus
+    is a discrete priority vehicle, and averaging would dilute one late bus.
+    bus_w is the bus-vs-car weight (e.g. BusOcc / CarOcc for passengers).
+    """
+    H = max(float(horizon_s), 1e-6)
+
+    def _mean(phs):
+        vals = [float(car_delay_vs[p]) for p in phs if p in car_delay_vs]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    bus = sum(float(bus_delay_vs.get(p, 0.0)) for p in structure.priority_phases)
+    return {
+        "P": -(_mean(structure.priority_phases) + float(bus_w) * bus) / H,
+        "N": -_mean(structure.non_priority_phases) / H,
     }
 
 
@@ -509,7 +554,19 @@ def _test_rewards() -> None:
     _check(r == {"P": -50.0, "N": -40.0}, r)
     r = player_rewards(st, {1: 20.0, 2: 30.0})   # phases 3/4 unmeasured
     _check(r == {"P": -20.0, "N": -30.0}, r)
-    print("   rewards: P=-(dP + w*bus), N=-dN  ok")
+    r = player_rewards_ctm(st, {1: 40.0, 2: 20.0, 3: 60.0},
+                           {1: 10.0, 2: 99.0}, horizon_s=20.0, bus_w=3.0)
+    _check(r == {"P": -(40.0 + 30.0) / 20.0, "N": -(40.0) / 20.0}, r)
+    print("   rewards: P=-(dP + w*bus), N=-dN  ok (measured and CTM forms)")
+
+
+def _test_state_key() -> None:
+    a = CbqlState(1, 0.4, 120.0, (900.0, 300.0), phase_queue=(3.0, 30.0),
+                  bus_level=5)
+    _check(a.encode() == (1, 2, 6, (0, 4), 2), a.encode())   # capped bins
+    b = CbqlState(1, 0.4, 120.0, (900.0, 300.0))
+    _check(b.encode() == (1, 2, 6, (3, 1)), b.encode())      # flow form kept
+    print("   state key: CTM form", a.encode(), " flow form", b.encode())
 
 
 def _test_learning() -> None:
@@ -557,6 +614,7 @@ def _selftest() -> None:
     _test_game()
     _test_policy()
     _test_rewards()
+    _test_state_key()
     _test_learning()
     print("\nOK: phase derivation, Q-defined Shapley game, eq.22 update, "
           "eq.18 policy, rewards -- all pass for both corridors.")

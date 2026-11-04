@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T0300-cbql-two-agent-qgame"
+ENGINE_BUILD = "2026-11-05T0500-cbql-ctm-twoclass"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -580,6 +580,20 @@ except Exception as _cbql_err:   # pragma: no cover - surfaced on the banner
     _cbql = None
     _CBQL_AVAILABLE = False
     _CBQL_IMPORT_ERR = repr(_cbql_err)
+
+# Two-class (bus / non-bus) CTM for the CBQL state + reward (paper Sec. 3.2).
+# Stdlib-only sibling module, same import mechanism. _CTM2_AVAILABLE False ->
+# CBQL falls back to the measured-delay feed.
+try:
+    try:
+        from . import ctm_twoclass as _ctm2
+    except ImportError:
+        import ctm_twoclass as _ctm2
+    _CTM2_AVAILABLE = True
+except Exception as _ctm2_err:   # pragma: no cover - surfaced on the banner
+    _ctm2 = None
+    _CTM2_AVAILABLE = False
+    _CTM2_IMPORT_ERR = repr(_ctm2_err)
 
 try:
     try:
@@ -22739,18 +22753,165 @@ class IntersectionController:
 
     def _cbql_learn_step(self, _st, _state, _delay):
         """Shared by observe + execute: credit the action taken at the previous
-        step (stored in self._cbql_prev) with the rewards measured NOW, for both
-        QL controllers (eq. 22 + eq. 18). Returns (rewards or None, bus_delay)."""
+        step (self._cbql_prev = (state, action, ctm_rewards|None)) for both QL
+        controllers (eq. 22 + eq. 18), bootstrapping on the game at _state.
+
+        Rewards: the CTM's expected delay for that (state, action), computed
+        when the action was taken (R(s,a) = E[R|s,a], eq. 9), when the CTM feed
+        is on; otherwise the delay measured NOW (.DTa / queue proxy + max bus
+        delay). Returns (rewards or None, bus_delay_s)."""
         _bus = self._cbql_bus_delay_s(_st)
         _rw = None
         _prev = getattr(self, '_cbql_prev', None)
         if _prev is not None:
-            _pstate, _pact = _prev
-            _rw = _cbql.player_rewards(
-                _st, _delay, _bus,
-                float(globals().get('CBQL_BUS_DELAY_W', 1.0)))
+            _pstate, _pact = _prev[0], _prev[1]
+            _rw = _prev[2] if len(_prev) > 2 else None
+            if _rw is None:
+                _rw = _cbql.player_rewards(
+                    _st, _delay, _bus,
+                    float(globals().get('CBQL_BUS_DELAY_W', 1.0)))
             self._cbql_ctl.learn(_pstate, int(_pact), _rw, _state)
         return _rw, _bus
+
+    # ── two-class CTM feed (paper Sec. 3.2) ──────────────────────────────
+    def _cbql_ctm_on(self):
+        return bool(_CTM2_AVAILABLE and globals().get('CBQL_USE_CTM', True))
+
+    def _cbql_ctm_geom(self, sec):
+        """ApproachGeom for one section, cached: plant length / speed limit /
+        lanes, the controller's JamDensity + SaturationFlow, the CELLQ wave
+        speed, and kg/ctm_calibration.json overrides when loaded."""
+        _c = getattr(self, '_cbql_ctm_geom_cache', None)
+        if _c is None:
+            _c = {}
+            self._cbql_ctm_geom_cache = _c
+        if int(sec) in _c:
+            return _c[int(sec)]
+        _len = 150.0
+        _vf = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
+        try:
+            _si = AKIInfNetGetSectionANGInf(int(sec))
+            if getattr(_si, 'report', -1) >= 0 and float(_si.length) > 0:
+                _len = float(_si.length)
+            _slim = float(getattr(_si, 'speedLimit', 0.0) or 0.0)
+            if _slim > 1.0:
+                _vf = _slim
+        except Exception:
+            pass
+        try:
+            _lanes = max(int(self._sec_lane_count(int(sec)) or 1), 1)
+        except Exception:
+            _lanes = 1
+        _w = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0) or 18.0)
+        _kj = float(getattr(self, 'JamDensity', 200.0) or 200.0)
+        _qs = float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)
+        try:
+            _cal = self._ctm_params(int(sec)) or {}
+        except Exception:
+            _cal = {}
+        _g = _ctm2.ApproachGeom(
+            length_m=_len, lanes=_lanes,
+            v_free_kmh=float(_cal.get('v_free_kmh', _vf) or _vf),
+            w_back_kmh=float(_cal.get('w_back_kmh', _w) or _w),
+            k_jam_vkm_lane=float(_cal.get('k_jam_vkm_lane', _kj) or _kj),
+            q_sat_vph_lane=float(_cal.get('q_max_vph_lane', _qs) or _qs),
+            dt_s=float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0),
+            max_cells=int(globals().get('CBQL_CTM_MAX_CELLS', 12) or 12))
+        _c[int(sec)] = _g
+        return _g
+
+    def _cbql_ctm_snapshot(self, _st):
+        """{phase: [(geom, cells, car_arrival_vph), ...]} over each phase's
+        origin (approach) sections, cells seeded from the LIVE vehicles with
+        buses (bus_type_pos) and cars counted separately. Also returns the
+        number of buses on the PRIORITY approaches (unique sections, so a
+        section feeding two priority phases is not double counted)."""
+        _po = self._phase_origin_sections() or {}
+        _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+        _seeded = {}                    # sec -> (geom, cells, arr, n_bus)
+        _snap = {}
+        for _ph in sorted(_st.phase_types):
+            _apps = []
+            for _s in sorted(_po.get(_ph, []) or []):
+                _s = int(_s)
+                if _s not in _seeded:
+                    _g = self._cbql_ctm_geom(_s)
+                    _veh = []
+                    try:
+                        _nv = max(int(AKIVehStateGetNbVehiclesSection(_s, True)), 0)
+                    except Exception:
+                        _nv = 0
+                    for _vi in range(_nv):
+                        try:
+                            _inf = AKIVehStateGetVehicleInfSection(_s, _vi)
+                            _d = _g.length_m - float(getattr(_inf, 'CurrentPos', 0.0) or 0.0)
+                            _veh.append((_d, _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
+                        except Exception:
+                            continue
+                    try:
+                        _arr = max(0.0, float(self._measured_section_flow_vph(_s) or 0.0))
+                    except Exception:
+                        _arr = 0.0
+                    _cells = _ctm2.seed_cells(_g, _veh)
+                    _seeded[_s] = (_g, _cells, _arr, sum(_cells.bus))
+                _g, _cells, _arr, _nb = _seeded[_s]
+                _apps.append((_g, _cells, _arr))
+            _snap[int(_ph)] = _apps
+        _pri_secs = set()
+        for _ph in _st.priority_phases:
+            _pri_secs |= {int(x) for x in (_po.get(_ph, []) or [])}
+        _n_bus = sum(_seeded[_s][3] for _s in _pri_secs if _s in _seeded)
+        return _snap, _n_bus
+
+    def _cbql_ctm_eval(self, _st, _snap, cur, action):
+        """Per-phase CTM outcome of `action` from now (see evaluate_action)."""
+        return _ctm2.evaluate_action(
+            _snap, int(cur), int(action),
+            horizon_s=float(globals().get('CBQL_CTM_HORIZON_S', 20.0) or 20.0),
+            intergreen_s=float(globals().get('CBQL_CTM_INTERGREEN_S', 5.0) or 0.0),
+            bus_pce=float(globals().get('CBQL_CTM_BUS_PCE', 2.0) or 2.0))
+
+    def _cbql_ctm_bus_w(self):
+        _w = float(globals().get('CBQL_CTM_BUS_W', 0.0) or 0.0)
+        if _w > 0.0:
+            return _w
+        _bo = float(getattr(self, 'BusOcc', 40.0) or 40.0)
+        _co = max(float(getattr(self, 'CarOcc', 1.5) or 1.5), 0.1)
+        return _bo / _co                     # passenger-equivalent default
+
+    def _cbql_make_state(self, _st, cur, lam, flow):
+        """CbqlState for this step. With the CTM feed on, Q[j] is the CTM
+        standing queue of phase j and the bus level comes from the CTM bus
+        density; returns (state, snapshot|None, per-phase queue|None)."""
+        if not self._cbql_ctm_on():
+            return _cbql.CbqlState(cur, lam, _st.cycle_s, flow), None, None
+        _snap, _n_bus = self._cbql_ctm_snapshot(_st)
+        _now = self._cbql_ctm_eval(_st, _snap, cur, cur)     # signal as it is
+        _pids = sorted(_st.phase_types)
+        _q = tuple(_now[_p].car_queue_veh + _now[_p].bus_queue_veh
+                   if _p in _now else 0.0 for _p in _pids)
+        _lvl = 0 if _n_bus < 0.5 else (1 if _n_bus < 1.5 else 2)
+        _state = _cbql.CbqlState(
+            cur, lam, _st.cycle_s, flow, phase_queue=_q, bus_level=_lvl,
+            queue_bin_veh=float(globals().get('CBQL_CTM_QUEUE_BIN_VEH', 4.0) or 4.0))
+        return _state, _snap, _q
+
+    def _cbql_commit(self, _st, _state, _snap, cur, action):
+        """Record the action REALLY taken in this state for the next learn
+        step, with its CTM expected rewards when the CTM feed is on."""
+        if int(action) not in _st.phase_types:
+            self._cbql_prev = None
+            return None
+        _rw = None
+        if _snap is not None:
+            _o = self._cbql_ctm_eval(_st, _snap, cur, action)
+            _rw = _cbql.player_rewards_ctm(
+                _st, {p: o.car_delay_vs for p, o in _o.items()},
+                {p: o.bus_delay_vs for p, o in _o.items()},
+                float(globals().get('CBQL_CTM_HORIZON_S', 20.0) or 20.0),
+                self._cbql_ctm_bus_w())
+        self._cbql_prev = (_state, int(action), _rw)
+        return _rw
 
     def _cbql_next_green_phase(self, _st, cur):
         """The next REAL green phase after `cur` in ring order (phase ids the
@@ -22785,26 +22946,28 @@ class IntersectionController:
                                  or 0.0) / max(_st.cycle_s, 1.0), 0.0), 1.0)
         except Exception:
             _lam = 0.5
-        _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
+        _state, _snap, _cq = self._cbql_make_state(_st, _cur, _lam, _flow)
         # LEARN FROM WHAT ACTUALLY RAN: observe-only never applies the pick, so
         # the action credited is the phase that was green at the PREVIOUS step,
-        # in that step's state, with the rewards measured NOW. First step of a
-        # replication (or after an interphase) has nothing to credit.
+        # in that step's state. First step of a replication (or after an
+        # interphase) has nothing to credit.
         _rw, _bus = self._cbql_learn_step(_st, _state, _delay)
-        self._cbql_prev = ((_state, int(_cur)) if _cur in _st.phase_types
-                           else None)
+        self._cbql_commit(_st, _state, _snap, _cur, _cur)
         # What the joint policy WOULD pick here -- logged only, never applied.
         _pick, _mix, _w = self._cbql_ctl.act(_state)
         _dpri = [_delay[_p] for _p in _st.priority_phases if _p in _delay]
         _dnon = [_delay[_p] for _p in _st.non_priority_phases if _p in _delay]
         log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%s dP=%.1f dN=%.1f "
-                    "bus=%.1f ratios=%s pmax=%.2f (observe-only)"
+                    "bus=%.1f ratios=%s pmax=%.2f%s (observe-only)"
                     % (_st.junction_id, time, _cur, _pick,
                        ("P%.1f/N%.1f" % (_rw["P"], _rw["N"])) if _rw else "-",
                        (sum(_dpri) / len(_dpri)) if _dpri else 0.0,
                        (sum(_dnon) / len(_dnon)) if _dnon else 0.0, _bus,
                        {k: round(x, 2) for k, x in _w.items()},
-                       max(_mix.values()) if _mix else 0.0), force=True)
+                       max(_mix.values()) if _mix else 0.0,
+                       (" ctmQ=%s busLvl=%d" % ([round(x, 1) for x in _cq],
+                                                _state.bus_level))
+                       if _cq is not None else ""), force=True)
 
     def _cbql_execute(self, time, timeSta, acycle):
         """CBQL phase-selection EXECUTION (flag CBQL_EXECUTE): at a decision
@@ -22847,17 +23010,17 @@ class IntersectionController:
         _pids = sorted(_st.phase_types)
         _flow = tuple(_flow_map.get(_ph, 0.0) for _ph in _pids)
         _lam = min(max(_el / max(_st.cycle_s, 1.0), 0.0), 1.0)
-        _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
-        # Credit the action REALISED at the previous decision step with the
-        # rewards measured now (both controllers), then sample the next phase
-        # from the Shapley-ratio-weighted joint policy.
+        _state, _snap, _cq = self._cbql_make_state(_st, _cur, _lam, _flow)
+        # Credit the action REALISED at the previous decision step (both
+        # controllers), then sample the next phase from the Shapley-ratio-
+        # weighted joint policy.
         _rw, _bus = self._cbql_learn_step(_st, _state, _delay)
         _pick, _mix, _w = self._cbql_ctl.act(_state)
         _pick = int(_pick)
         # Default: the current phase is held. Overwritten below only when a
         # switch is actually applied, so a rate-capped/failed switch is
         # credited as the hold it really was.
-        self._cbql_prev = (_state, int(_cur))
+        self._cbql_commit(_st, _state, _snap, _cur, _cur)
         _r = (_rw["P"] + _rw["N"]) if _rw else 0.0
         _force_max = _el >= _maxg
         if _pick == _cur and not _force_max:
@@ -22897,7 +23060,7 @@ class IntersectionController:
             return
         _sw.append(_now)
         self._cbql_exec_last_t = _now
-        self._cbql_prev = (_state, int(_pick))     # the switch really happened
+        self._cbql_commit(_st, _state, _snap, _cur, _pick)   # switch happened
         log_to_file("[CBQL EXEC] jct=%d t=%.0f %d->%d el=%.0fs R=%.1f bus=%.1f "
                     "ratios=%s sw=%d/%.0fs%s"
                     % (_jid, _now, _cur, _pick, _el, _r, _bus,
@@ -30689,6 +30852,15 @@ def AAPIInit():
         if _CBQL_AVAILABLE:
             log_to_file("[INIT] CBQL core loaded (cbql_shapley.py, stdlib-only) "
                         "-- CBQL_SHAPLEY mode available", force=True)
+            if _CTM2_AVAILABLE:
+                log_to_file("[INIT] two-class CTM loaded (ctm_twoclass.py) -- "
+                            "CBQL_USE_CTM=%s"
+                            % bool(globals().get('CBQL_USE_CTM', True)),
+                            force=True)
+            else:
+                log_to_file("[INIT] two-class CTM NOT loaded: %s -- CBQL uses "
+                            "the measured-delay feed"
+                            % globals().get('_CTM2_IMPORT_ERR', '?'), force=True)
         else:
             log_to_file(f"[INIT] CBQL core NOT loaded: "
                         f"{globals().get('_CBQL_IMPORT_ERR', '?')} "

@@ -33,10 +33,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ENG = os.path.join(HERE, 'shared_tsp_engine')
 sys.path.insert(0, ENG)
 import cbql_shapley as _cbql  # noqa: E402
+import ctm_twoclass as _ctm2  # noqa: E402
 
 src = io.open(os.path.join(ENG, 'engine.py'), encoding='utf-8').read()
 WANT = ('_cbql_observe', '_cbql_execute', '_cbql_learn_step',
-        '_cbql_bus_delay_s', '_cbql_next_green_phase')
+        '_cbql_bus_delay_s', '_cbql_next_green_phase', '_cbql_ctm_on',
+        '_cbql_ctm_geom', '_cbql_ctm_snapshot', '_cbql_ctm_eval',
+        '_cbql_ctm_bus_w', '_cbql_make_state', '_cbql_commit')
 found = {}
 for node in ast.walk(ast.parse(src)):
     if isinstance(node, ast.FunctionDef) and node.name in WANT:
@@ -66,8 +69,18 @@ class VehInf(object):
 
 
 VEH = {}          # section -> [VehInf]
+class SecInf(object):
+    report = 0
+    length = 200.0
+    speedLimit = 50.0
+
+
 ns = {
     '_cbql': _cbql,
+    '_ctm2': _ctm2,
+    '_CTM2_AVAILABLE': True,
+    'CBQL_USE_CTM': False,              # first block: measured-delay feed
+    'AKIInfNetGetSectionANGInf': lambda s: SecInf(),
     'log_to_file': lambda msg, force=False: LOG.append(msg),
     'ECIGetCurrentPhase': lambda jid: SIM['cur'],
     'ECIGetStartingTimePhase': lambda jid: SIM['start'],
@@ -103,6 +116,19 @@ class RecCtl(_cbql.CbqlTspController):
 class Ctl(object):
     bus_type_pos = 7
     TSPActiveTime = 0.0
+    JamDensity = 200.0
+    SaturationFlow = 1800.0
+    BusOcc = 40.0
+    CarOcc = 1.5
+
+    def _sec_lane_count(self, s):
+        return 1
+
+    def _ctm_params(self, s):
+        return {}
+
+    def _measured_section_flow_vph(self, s):
+        return 300.0
 
     def __init__(self):
         self._cbql_struct = STRUCT
@@ -210,6 +236,53 @@ c._cbql_execute(80.0, 0.0, 0)
 check('8 rate-capped switch not applied', len(SWITCHES) == n_sw)
 check('8b ...and credited as a hold of phase 2', c._cbql_prev[1] == 2,
       c._cbql_prev[1])
+
+print('two-class CTM feed')
+ns['CBQL_EXECUTE'] = False
+ns['CBQL_USE_CTM'] = True
+c = Ctl()
+LEARNS[:] = []
+VEH.clear()
+# phase 1 (priority, section 101): a bus 10 m and 3 cars near the stop line;
+# phase 2 (section 201): 6 cars queued. Phase 1 green.
+VEH[101] = [VehInf(7, 0.0, 190.0), VehInf(1, 0.0, 195.0),
+            VehInf(1, 0.0, 185.0), VehInf(1, 0.0, 180.0)]
+VEH[201] = [VehInf(1, 0.0, 200.0 - 4.0 * k) for k in range(6)]
+DELAY = {1: 10.0, 2: 10.0, 3: 10.0, 4: 10.0}
+SIM.update(cur=1, now=1000.0)
+c._cbql_observe(1000.0, 0.0)
+st1 = c._cbql_prev[0]
+check('10 state carries CTM queues + bus level',
+      st1.phase_queue is not None and st1.bus_level == 1
+      and len(st1.encode()) == 5, st1)
+check('10b phase 2 (red) shows its queue, phase 1 (green) little',
+      st1.phase_queue[1] >= 5.0 and st1.phase_queue[0] < st1.phase_queue[1],
+      st1.phase_queue)
+rw_hold = c._cbql_prev[2]
+check('11 CTM rewards stored at commit', rw_hold is not None
+      and rw_hold['P'] <= 0.0 and rw_hold['N'] < 0.0, rw_hold)
+check('11b log shows ctmQ/busLvl', 'ctmQ=' in LOG[-1] and 'busLvl=1' in LOG[-1],
+      LOG[-1])
+SIM.update(cur=1, now=1060.0)
+c._cbql_observe(1060.0, 0.0)
+check('12 learn used the STORED CTM rewards, not the .DTa feed',
+      LEARNS and LEARNS[-1][2] == rw_hold and LEARNS[-1][0] is st1,
+      LEARNS[-1:])
+# switching AWAY from the bus phase must cost the priority controller more
+# than holding it; switching TO phase 2 helps N
+_snap, _nb = c._cbql_ctm_snapshot(STRUCT)
+rw_away = c._cbql_commit(STRUCT, st1, _snap, 1, 2)
+check('13 switch away from bus phase: R_P worse, R_N better',
+      rw_away['P'] < rw_hold['P'] and rw_away['N'] > rw_hold['N'],
+      (rw_hold, rw_away))
+check('13b bus weight defaults to BusOcc/CarOcc',
+      abs(c._cbql_ctm_bus_w() - 40.0 / 1.5) < 1e-9)
+ns['CBQL_USE_CTM'] = False
+c2 = Ctl()
+SIM.update(cur=1, now=2000.0)
+c2._cbql_observe(2000.0, 0.0)
+check('14 CBQL_USE_CTM=False -> old flow state, no CTM rewards',
+      c2._cbql_prev[0].phase_queue is None and c2._cbql_prev[2] is None)
 
 print('\nlast log line:', LOG[-1])
 if fails:
