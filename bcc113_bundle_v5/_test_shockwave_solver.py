@@ -56,7 +56,8 @@ class Inf(object):
         self.__dict__.update(k)
 
 
-SEC = {10: 100.0, 20: 200.0, 30: 150.0}
+SEC = {10: 100.0, 20: 200.0, 30: 150.0, 15: 80.0}
+BUSPOS = {'sec': 10, 'pos': 40.0}
 LOG = []
 SWALLOWED = []
 ns = {
@@ -73,8 +74,14 @@ ns = {
     'AKIPTGetIdSectionInLine': lambda l, i: [10, 20, 30][i],
     'AKIInfNetGetSectionANGInf': lambda s: Inf(report=0, length=SEC.get(s, 0.0),
                                                speedLimit=50.0),
-    'AKIPTVehGetInf': lambda v: Inf(report=0, idSection=10, CurrentPos=40.0,
-                                    numberLane=1, CurrentSpeed=36.0),
+    'AKIPTVehGetInf': lambda v: Inf(report=0, idSection=BUSPOS['sec'],
+                                    CurrentPos=BUSPOS['pos'], numberLane=1,
+                                    CurrentSpeed=36.0),
+    # bus phase 1 is running: started at t=975 with a 30 s plan -> 5 s left
+    'ECIGetCurrentPhase': lambda j: 1,
+    'ECIGetStartingTimePhase': lambda j: 975.0,
+    'GetPhaseDuration': lambda j, ph, ts: 30.0,
+    'VLOOP_TAC_REACH_M': 450.0,
     'AKIVehStateGetNbVehiclesSection': lambda s, b: 0,
     'AKIVehStateGetVehicleInfSection': lambda s, i: None,
     'log_to_file': lambda m, force=False: LOG.append(m),
@@ -95,7 +102,7 @@ class Ctl(object):
     BusPhaseDuration = 30.0
     cycle_len_s = 120.0
     config = {'CycleTime': 120.0}
-    NextRedStartTime = [[1000.0 + 5.0]]      # 5 s of bus green left at t=1000
+    NextRedStartTime = [[1000.0 + 30.0]]     # WRONG on purpose: the plan says 5 s
     RedStartTimeList = [[1000.0 - 200.0]]
 
     def _phase_origin_sections(self):
@@ -105,6 +112,11 @@ class Ctl(object):
 
     def _measured_sections_queue_veh(self, secs):
         return self.MEASURED
+
+    def _upstream_chain(self, sec, reach):
+        # connector 15 feeds the approach but is NOT in line 900's route list
+        return ([(30, 0.0, 150.0), (15, 150.0, 80.0)], 'dead') if int(sec) == 30 \
+            else ([(int(sec), 0.0, SEC.get(int(sec), 50.0))], 'dead')
 
     def _zone_queue_count(self, sec):
         return (6, 60.0, 'ok') if int(sec) == 30 else (0, None, 'ok')
@@ -168,7 +180,20 @@ best = min(range(81), key=lambda g: obj[g])
 check('7 solve picks least serving GE (not the lower bound)', best == need,
       (best, need))
 
-print('\n' + '\n'.join(m for m in LOG if '[BUS_ROUTE]' in m))
+# 8. remaining green comes from the PLAN (5 s), not NextRedStartTime (30 s)
+check('8 remaining green from phase start + planned duration',
+      abs(ctx['rem_green'] - 5.0) < 1e-9, ctx['rem_green'])
+# 9. bus on a connector missing from the route list -> approach chain
+BUSPOS.update(sec=15, pos=30.0)
+c._sw_bus_cache = None
+bc = c._sw_bus_route_state(77, 2000.0)
+check('9 off-route section measured along the approach chain',
+      bc is not None and bc['src'] == 'chain' and abs(bc['dist_m'] - 200.0) < 1e-9
+      and bc['target'] == 30, bc)
+check('9b [BUS_ROUTE_MISS] logged once', sum('[BUS_ROUTE_MISS]' in m for m in LOG) == 1)
+BUSPOS.update(sec=10, pos=40.0)
+
+print('\n' + '\n'.join(m for m in LOG if '[BUS_ROUTE' in m))
 print('swallowed:', SWALLOWED or 'none')
 if fails:
     sys.exit('FAIL: %s' % fails)
