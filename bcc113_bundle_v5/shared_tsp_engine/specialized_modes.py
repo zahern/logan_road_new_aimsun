@@ -4078,10 +4078,16 @@ CBQL_DECISION_COOLDOWN_S = 3.0
 # Per-junction cap on agent-driven phase switches within a trailing one-cycle
 # window (anti-thrash); a max-green advance bypasses it. 0 disables the cap.
 CBQL_MAX_SWITCHES_PER_CYCLE = 4
-# Softmax temperature (s of delay/veh) turning the P/N Shapley values into
-# transition ratios: a gap of T s -> ~0.73/0.27, 3T -> ~0.95/0.05. Replaces the
-# shift-by-min normalisation that pinned the ratios at 1.0/0.0 (2026-11-05).
-CBQL_SHAPLEY_TEMP_S = 10.0
+# CBQL-TSP learner (2026-11-05, two QL controllers P/N + Q-defined Shapley
+# game; see cbql_shapley.CbqlTspController).
+CBQL_ALPHA = 0.3            # eq. 22 learning rate
+CBQL_GAMMA = 0.9            # eq. 22 discount on v_Shapley(s')
+CBQL_POLICY_LR = 0.05       # eq. 18 policy hill-climbing step
+CBQL_POLICY_FLOOR = 0.01    # min probability of any phase in a policy
+CBQL_RATIO_FLOOR = 0.05     # min Shapley ratio of either controller
+CBQL_SAMPLE_ACTIONS = True  # sample the joint policy (paper); False = argmax
+CBQL_BUS_DELAY_W = 1.0      # weight of the max-bus-delay term in R_P
+CBQL_BUS_FREE_KMH = 40.0    # bus reference speed for the bus-delay measure
 
 # CELL-STATE BACK-PRESSURE RELEASE (store-and-forward / max-pressure off the CTM
 # cells): serve the phase maximising upstream_queue x downstream_free_space, with
@@ -11520,7 +11526,9 @@ MODE_FLAGS = [
     'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
-    'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_SHAPLEY_TEMP_S',
+    'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',
+    'CBQL_POLICY_LR', 'CBQL_POLICY_FLOOR', 'CBQL_RATIO_FLOOR',
+    'CBQL_SAMPLE_ACTIONS', 'CBQL_BUS_DELAY_W', 'CBQL_BUS_FREE_KMH',
     'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
     'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',
     'CELL_BP_MAX_SWITCHES_PER_CYCLE',

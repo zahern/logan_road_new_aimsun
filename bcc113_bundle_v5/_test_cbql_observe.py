@@ -1,19 +1,27 @@
-"""Offline test of the CBQL observe step (engine._cbql_observe) and the
-Shapley ratio fix in cbql_shapley.py (2026-11-05).
+"""Offline test of the CBQL-TSP engine wiring (2026-11-05): the observe step
+(_cbql_observe), the execute step (_cbql_execute), the shared learn step and
+the bus-delay measure, against the two-controller learner in cbql_shapley.py.
 
-Pulls the REAL _cbql_observe method out of engine.py with ast (so this tests
-the patched source, not a copy) and drives it with a fake controller -- no
-Aimsun needed:
+Pulls the REAL methods out of engine.py with ast (so this tests the patched
+source, not a copy) and drives them with a fake controller -- no Aimsun:
 
     python -I _test_cbql_observe.py        (exit 0 = PASS)
 
 Checks:
-  1. ratios are never pinned at 1.0/0.0 (the KG log symptom)
-  2. the first step credits nothing (R=-)
-  3. each later step credits the phase that was green at the PREVIOUS step,
-     in the PREVIOUS step's state, with the delay measured NOW -- never the
-     logged pick
-  4. an interphase step leaves nothing to credit at the next step
+  observe
+    1. first step credits nothing (R=-)
+    2. each later step credits the phase green at the PREVIOUS step, in the
+       PREVIOUS state, with BOTH controllers' rewards measured NOW
+    3. R_P carries the bus-delay term; R_N does not
+    4. an interphase step leaves nothing to credit
+    5. ratios are never 0/1; 60 s throttle kept
+    6. observe does nothing on the execute arm (no double learning)
+  execute
+    7. a held phase is credited as a hold; an applied switch as the switch
+    8. a RATE-CAPPED switch is credited as the hold it really was
+  bus delay
+    9. max over buses on priority sections of time-on-section minus
+       distance / free speed; cars and non-priority sections ignored
 """
 import ast
 import io
@@ -27,45 +35,80 @@ sys.path.insert(0, ENG)
 import cbql_shapley as _cbql  # noqa: E402
 
 src = io.open(os.path.join(ENG, 'engine.py'), encoding='utf-8').read()
-meth = None
+WANT = ('_cbql_observe', '_cbql_execute', '_cbql_learn_step',
+        '_cbql_bus_delay_s', '_cbql_next_green_phase')
+found = {}
 for node in ast.walk(ast.parse(src)):
-    if isinstance(node, ast.FunctionDef) and node.name == '_cbql_observe':
-        meth = ast.get_source_segment(src, node)
-        break
-if meth is None:
-    sys.exit('ABORT: _cbql_observe not found in engine.py')
+    if isinstance(node, ast.FunctionDef) and node.name in WANT:
+        found[node.name] = ast.get_source_segment(src, node)
+missing = [w for w in WANT if w not in found]
+if missing:
+    sys.exit('ABORT: not found in engine.py: %s' % missing)
+
+
+def _dedent_method(seg):
+    # first line has no indent (get_source_segment), the body has 8 spaces
+    lines = seg.split('\n')
+    return '\n'.join([lines[0]] + [l[4:] if l.startswith('    ') else l
+                                   for l in lines[1:]])
+
 
 LOG = []
-STATE = {'cur': 1}
+SIM = {'cur': 1, 'now': 0.0, 'start': 0.0}
+SWITCHES = []
+
+
+class VehInf(object):
+    def __init__(self, typ, entered, pos):
+        self.type = typ
+        self.SectionEntranceT = entered
+        self.CurrentPos = pos
+
+
+VEH = {}          # section -> [VehInf]
 ns = {
     '_cbql': _cbql,
     'log_to_file': lambda msg, force=False: LOG.append(msg),
-    'ECIGetCurrentPhase': lambda jid: STATE['cur'],
+    'ECIGetCurrentPhase': lambda jid: SIM['cur'],
+    'ECIGetStartingTimePhase': lambda jid: SIM['start'],
     'GetPhaseDuration': lambda jid, ph, t: 30.0,
-    'CBQL_SHAPLEY_TEMP_S': 10.0,
+    'AKIGetCurrentSimulationTime': lambda: SIM['now'],
+    'AKIVehStateGetNbVehiclesSection': lambda s, b: len(VEH.get(s, [])),
+    'AKIVehStateGetVehicleInfSection': lambda s, i: VEH[s][i],
+    'ECIChangeDirectPhaseWithInterphaseTransition':
+        lambda jid, ph, ts, now, cyc: SWITCHES.append((now, ph)),
+    'CBQL_EXECUTE': False,
+    'CBQL_BUS_DELAY_W': 1.0,
+    'CBQL_BUS_FREE_KMH': 36.0,          # 10 m/s -> easy arithmetic
+    'CBQL_MIN_GREEN_S': 7.0,
+    'CBQL_MAX_GREEN_S': 60.0,
+    'CBQL_DECISION_COOLDOWN_S': 0.0,
+    'CBQL_MAX_SWITCHES_PER_CYCLE': 4,
 }
-exec('import textwrap\n' + 'def _cbql_observe' +
-     meth.split('def _cbql_observe', 1)[1].replace('\n    ', '\n'), ns)
 ns['globals'] = lambda: ns         # engine reads flags via globals().get
+exec('\n\n'.join(_dedent_method(found[w]) for w in WANT), ns)
 
 STRUCT = _cbql.PhaseStructure(
     38339, 4, {1: 'through', 2: 'through', 3: 'protected_left', 4: 'through'},
     (1,), (2, 3, 4), 120.0)
+LEARNS = []
 
 
-class RecAgent(_cbql.CbqlShapleyAgent):
-    def update(self, state, phase, reward, shapley_v):
-        UPDATES.append((state, phase, reward))
-        super().update(state, phase, reward, shapley_v)
-
-
-UPDATES = []
+class RecCtl(_cbql.CbqlTspController):
+    def learn(self, prev_state, prev_action, rewards, state):
+        LEARNS.append((prev_state, prev_action, dict(rewards)))
+        return super().learn(prev_state, prev_action, rewards, state)
 
 
 class Ctl(object):
-    _cbql_struct = STRUCT
-    _cbql_agent = RecAgent(STRUCT)
-    _cbql_last_log = -1.0e9
+    bus_type_pos = 7
+    TSPActiveTime = 0.0
+
+    def __init__(self):
+        self._cbql_struct = STRUCT
+        self._cbql_ctl = RecCtl(STRUCT, seed=1)
+        self._cbql_prev = None
+        self._cbql_last_log = -1.0e9
 
     def _cbql_ensure(self):
         return self._cbql_struct
@@ -73,9 +116,18 @@ class Ctl(object):
     def _cbql_phase_delay_flow(self, st):
         return dict(DELAY), {p: 300.0 for p in st.phase_types}
 
+    def _phase_origin_sections(self):
+        return {1: {101}, 2: {201}, 3: {301}, 4: {401}}
 
-Ctl._cbql_observe = ns['_cbql_observe']
-c = Ctl()
+    def _ped_protected_phases(self):
+        return set()
+
+    def _signal_cycle_s(self, ts):
+        return 120.0
+
+
+for _w in WANT:
+    setattr(Ctl, _w, ns[_w])
 fails = []
 
 
@@ -90,44 +142,74 @@ def ratios(line):
     return (float(m.group(1)), float(m.group(2))) if m else None
 
 
-# step 1: phase 1 green, delays close (55 vs 56) -- the old code gave 1.0/0.0
+print('observe')
+c = Ctl()
 DELAY = {1: 55.0, 2: 56.0, 3: 56.0, 4: 56.0}
-STATE['cur'] = 1
+SIM.update(cur=1, now=60.0)
 c._cbql_observe(60.0, 0.0)
-r = ratios(LOG[-1])
-check('ratios not pinned on a 1 s gap', r and 0.4 < r[0] < 0.6, LOG[-1])
-check('first step credits nothing', ' R=- ' in LOG[-1] and not UPDATES)
+check('1 first step credits nothing', ' R=- ' in LOG[-1] and not LEARNS, LOG[-1])
 s1 = c._cbql_prev[0]
 
-# step 2: phase 2 now green; phase 1 (green last step) must be credited with
-# the delay measured NOW on phase 1, in step 1's state
-DELAY = {1: 20.0, 2: 70.0, 3: 70.0, 4: 70.0}
-STATE['cur'] = 2
+# a bus on the priority approach: 30 s on section, 100 m covered at 10 m/s
+# -> 20 s delay. A car and a bus on a NON-priority section are ignored.
+VEH = {101: [VehInf(7, 90.0, 100.0), VehInf(1, 0.0, 0.0)],
+       201: [VehInf(7, 0.0, 0.0)]}
+DELAY = {1: 20.0, 2: 70.0, 3: 60.0, 4: 80.0}
+SIM.update(cur=2, now=120.0)
 c._cbql_observe(120.0, 0.0)
-check('credits previous green phase', UPDATES and UPDATES[-1][1] == 1,
-      UPDATES[-1:])
-check('reward = delay measured now', UPDATES[-1][2] == -20.0)
-check('credited in previous state', UPDATES[-1][0] is s1)
+pst, pact, rw = LEARNS[-1]
+check('2 credits previous green phase in previous state',
+      pact == 1 and pst is s1, (pact,))
+check('3 R_P = -(dP + bus), R_N = -mean dN',
+      rw == {'P': -40.0, 'N': -70.0}, rw)
+check('9 bus delay = 20 s (bus on priority section only)',
+      'bus=20.0' in LOG[-1], LOG[-1])
 r = ratios(LOG[-1])
-check('large gap: strong but not 0/1', r and r[0] > 0.9 and r[1] > 0.0,
-      LOG[-1])
+check('5 ratios not 0/1', r and 0.0 < r[0] < 1.0 and 0.0 < r[1] < 1.0, r)
 
-# step 3: interphase (99 is not a known phase) -> phase 2 credited, then nothing
-# pending for step 4
-STATE['cur'] = 99
-n = len(UPDATES)
+SIM.update(cur=99, now=180.0)
+n = len(LEARNS)
 c._cbql_observe(180.0, 0.0)
-check('phase 2 credited at step 3', len(UPDATES) == n + 1
-      and UPDATES[-1][1] == 2 and UPDATES[-1][2] == -70.0)
-check('interphase leaves nothing pending', c._cbql_prev is None)
-STATE['cur'] = 3
+check('2b phase 2 credited at step 3', len(LEARNS) == n + 1
+      and LEARNS[-1][1] == 2)
+check('4 interphase leaves nothing pending', c._cbql_prev is None)
+SIM.update(cur=3, now=240.0)
 c._cbql_observe(240.0, 0.0)
-check('no credit after interphase', len(UPDATES) == n + 1)
-
-# throttle still 60 s
+check('4b no credit after interphase', len(LEARNS) == n + 1)
 n_log = len(LOG)
 c._cbql_observe(250.0, 0.0)
-check('60 s throttle kept', len(LOG) == n_log)
+check('5b 60 s throttle kept', len(LOG) == n_log)
+ns['CBQL_EXECUTE'] = True
+n_log, n = len(LOG), len(LEARNS)
+c._cbql_observe(400.0, 0.0)
+check('6 observe idle on execute arm', len(LOG) == n_log and len(LEARNS) == n)
+
+print('execute')
+VEH.clear()
+c = Ctl()
+c._cbql_ctl.sample = False        # deterministic picks for the test
+LEARNS[:] = []
+SWITCHES[:] = []
+DELAY = {1: 30.0, 2: 30.0, 3: 30.0, 4: 30.0}
+# fresh table, argmax of a uniform mix -> lowest id (1) == current -> HOLD
+SIM.update(cur=1, now=10.0, start=0.0)
+c._cbql_execute(10.0, 0.0, 0)
+check('7 hold stored as current phase', c._cbql_prev[1] == 1 and not SWITCHES)
+# force a switch: at max green the executor advances to the next phase
+SIM.update(cur=1, now=70.0, start=0.0)
+c._cbql_execute(70.0, 0.0, 0)
+check('7b applied switch stored as the new phase',
+      SWITCHES and SWITCHES[-1][1] == 2 and c._cbql_prev[1] == 2, SWITCHES)
+check('7c previous hold was credited', LEARNS and LEARNS[-1][1] == 1)
+# rate cap: make the agent want phase 3, with the switch budget exhausted
+c._cbql_switch_times = [65.0, 66.0, 67.0, 68.0]
+SIM.update(cur=2, now=80.0, start=70.0)
+c._cbql_ctl.act = lambda st: (3, {1: 0, 2: 0, 3: 1.0, 4: 0}, {'P': .5, 'N': .5})
+n_sw = len(SWITCHES)
+c._cbql_execute(80.0, 0.0, 0)
+check('8 rate-capped switch not applied', len(SWITCHES) == n_sw)
+check('8b ...and credited as a hold of phase 2', c._cbql_prev[1] == 2,
+      c._cbql_prev[1])
 
 print('\nlast log line:', LOG[-1])
 if fails:

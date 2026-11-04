@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T0100-cbql-softmax-ratios"
+ENGINE_BUILD = "2026-11-05T0300-cbql-two-agent-qgame"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -22641,7 +22641,19 @@ class IntersectionController:
             log_to_file("[CBQL] build error: %r" % (_be,))
             return None
         self._cbql_struct = _st
-        self._cbql_agent = _cbql.CbqlShapleyAgent(_st)
+        # Two QL controllers (priority P / non-priority N) + the Q-defined
+        # Shapley game that mixes their policies (cbql_shapley.CbqlTspController).
+        # Seeded per junction so replications with the same seed replay.
+        self._cbql_ctl = _cbql.CbqlTspController(
+            _st,
+            alpha=float(globals().get('CBQL_ALPHA', 0.3)),
+            gamma=float(globals().get('CBQL_GAMMA', 0.9)),
+            policy_lr=float(globals().get('CBQL_POLICY_LR', 0.05)),
+            policy_floor=float(globals().get('CBQL_POLICY_FLOOR', 0.01)),
+            ratio_floor=float(globals().get('CBQL_RATIO_FLOOR', 0.05)),
+            sample=bool(globals().get('CBQL_SAMPLE_ACTIONS', True)),
+            seed=int(_st.junction_id))
+        self._cbql_prev = None
         self._cbql_last_log = -1.0e9
         _types = ",".join("%d:%s" % (k, v)
                           for k, v in sorted(_st.phase_types.items()))
@@ -22688,6 +22700,58 @@ class IntersectionController:
             _flow_map[_ph] = _f
         return _delay, _flow_map
 
+    def _cbql_bus_delay_s(self, _st):
+        """MAX delay (s) of any bus now on a PRIORITY phase's approach sections
+        -- the paper's second objective (minimise the maximum delay of priority
+        vehicles). Per bus: time on the section minus the time it would have
+        taken to cover the distance it has covered at CBQL_BUS_FREE_KMH.
+        0.0 when no bus is there or the bus type is unknown. Never raises."""
+        _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+        if _btp <= 0:
+            return 0.0
+        try:
+            _now = float(AKIGetCurrentSimulationTime())
+        except Exception:
+            return 0.0
+        _vf = max(float(globals().get('CBQL_BUS_FREE_KMH', 40.0) or 40.0),
+                  1.0) / 3.6
+        _po = self._phase_origin_sections() or {}
+        _secs = set()
+        for _ph in _st.priority_phases:
+            _secs |= set(_po.get(_ph, []) or [])
+        _worst = 0.0
+        for _s in _secs:
+            try:
+                _nv = max(int(AKIVehStateGetNbVehiclesSection(int(_s), True)), 0)
+            except Exception:
+                continue
+            for _vi in range(_nv):
+                try:
+                    _inf = AKIVehStateGetVehicleInfSection(int(_s), _vi)
+                    if int(getattr(_inf, 'type', -1)) != _btp:
+                        continue
+                    _on = _now - float(getattr(_inf, 'SectionEntranceT', _now))
+                    _pos = max(0.0, float(getattr(_inf, 'CurrentPos', 0.0) or 0.0))
+                    _worst = max(_worst, _on - _pos / _vf)
+                except Exception:
+                    continue
+        return max(0.0, _worst)
+
+    def _cbql_learn_step(self, _st, _state, _delay):
+        """Shared by observe + execute: credit the action taken at the previous
+        step (stored in self._cbql_prev) with the rewards measured NOW, for both
+        QL controllers (eq. 22 + eq. 18). Returns (rewards or None, bus_delay)."""
+        _bus = self._cbql_bus_delay_s(_st)
+        _rw = None
+        _prev = getattr(self, '_cbql_prev', None)
+        if _prev is not None:
+            _pstate, _pact = _prev
+            _rw = _cbql.player_rewards(
+                _st, _delay, _bus,
+                float(globals().get('CBQL_BUS_DELAY_W', 1.0)))
+            self._cbql_ctl.learn(_pstate, int(_pact), _rw, _state)
+        return _rw, _bus
+
     def _cbql_next_green_phase(self, _st, cur):
         """The next REAL green phase after `cur` in ring order (phase ids the
         agent knows, wrapping around). Returns `cur` if there is no other."""
@@ -22701,6 +22765,8 @@ class IntersectionController:
         """OBSERVE-ONLY CBQL step: derive the phase structure once, then run the
         Shapley cooperative game + delay-reward Q-update and LOG it. Does not
         change any signal -- safe to run on any arm. Throttled to 60 s."""
+        if globals().get('CBQL_EXECUTE', False):
+            return            # the executor learns; observing too would double-count
         _st = self._cbql_ensure()
         if _st is None:
             return
@@ -22720,39 +22786,25 @@ class IntersectionController:
         except Exception:
             _lam = 0.5
         _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
-        _v = _cbql.priority_game_value(_st, _delay)
-        _phi = _cbql.shapley_values(["P", "N"], _v)
-        _probs = _cbql.transition_probs_from_shapley(
-            _phi, float(globals().get('CBQL_SHAPLEY_TEMP_S', 10.0) or 10.0))
-        # LEARN FROM WHAT ACTUALLY RAN. Observe-only never applies the pick, so
-        # crediting the pick with a delay measured BEFORE it (the old code)
-        # taught the table nothing about consequences. Instead: the phase that
-        # was green at the PREVIOUS step is the action actually taken in that
-        # step's state; its reward is the delay on that phase measured NOW,
-        # one step later. First step of a replication has nothing to credit.
-        _r = None
-        _prev = getattr(self, '_cbql_prev', None)
-        if _prev is not None:
-            _pstate, _pphase = _prev
-            if _pphase in _delay:
-                _r = -float(_delay[_pphase])  # reward = -delay (minimise delay)
-                self._cbql_agent.update(
-                    _pstate, _pphase, _r,
-                    _phi.get("P" if _st.is_priority(_pphase) else "N", 0.0))
+        # LEARN FROM WHAT ACTUALLY RAN: observe-only never applies the pick, so
+        # the action credited is the phase that was green at the PREVIOUS step,
+        # in that step's state, with the rewards measured NOW. First step of a
+        # replication (or after an interphase) has nothing to credit.
+        _rw, _bus = self._cbql_learn_step(_st, _state, _delay)
         self._cbql_prev = ((_state, int(_cur)) if _cur in _st.phase_types
-                           else None)         # interphase: nothing to credit
-        # What the agent WOULD pick here -- logged only, never applied.
-        _pick = self._cbql_agent.select_phase(_state, shapley_bias=_probs)
-        _dmean = (sum(_delay.values()) / len(_delay)) if _delay else 0.0
+                           else None)
+        # What the joint policy WOULD pick here -- logged only, never applied.
+        _pick, _mix, _w = self._cbql_ctl.act(_state)
         _dpri = [_delay[_p] for _p in _st.priority_phases if _p in _delay]
         _dnon = [_delay[_p] for _p in _st.non_priority_phases if _p in _delay]
-        log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%s dmean=%.1f "
-                    "dP=%.1f dN=%.1f ratios=%s (observe-only)"
+        log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%s dP=%.1f dN=%.1f "
+                    "bus=%.1f ratios=%s pmax=%.2f (observe-only)"
                     % (_st.junction_id, time, _cur, _pick,
-                       ("%.1f" % _r) if _r is not None else "-", _dmean,
+                       ("P%.1f/N%.1f" % (_rw["P"], _rw["N"])) if _rw else "-",
                        (sum(_dpri) / len(_dpri)) if _dpri else 0.0,
-                       (sum(_dnon) / len(_dnon)) if _dnon else 0.0,
-                       {k: round(x, 2) for k, x in _probs.items()}), force=True)
+                       (sum(_dnon) / len(_dnon)) if _dnon else 0.0, _bus,
+                       {k: round(x, 2) for k, x in _w.items()},
+                       max(_mix.values()) if _mix else 0.0), force=True)
 
     def _cbql_execute(self, time, timeSta, acycle):
         """CBQL phase-selection EXECUTION (flag CBQL_EXECUTE): at a decision
@@ -22796,16 +22848,17 @@ class IntersectionController:
         _flow = tuple(_flow_map.get(_ph, 0.0) for _ph in _pids)
         _lam = min(max(_el / max(_st.cycle_s, 1.0), 0.0), 1.0)
         _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
-        _v = _cbql.priority_game_value(_st, _delay)
-        _phi = _cbql.shapley_values(["P", "N"], _v)
-        _probs = _cbql.transition_probs_from_shapley(
-            _phi, float(globals().get('CBQL_SHAPLEY_TEMP_S', 10.0) or 10.0))
-        _pick = int(self._cbql_agent.select_phase(_state, shapley_bias=_probs))
-        # learn from the delay realised on the phase we are LEAVING
-        _r = -float(_delay.get(_cur, 0.0))
-        self._cbql_agent.update(
-            _state, _cur, _r,
-            _phi.get("P" if _st.is_priority(_cur) else "N", 0.0))
+        # Credit the action REALISED at the previous decision step with the
+        # rewards measured now (both controllers), then sample the next phase
+        # from the Shapley-ratio-weighted joint policy.
+        _rw, _bus = self._cbql_learn_step(_st, _state, _delay)
+        _pick, _mix, _w = self._cbql_ctl.act(_state)
+        _pick = int(_pick)
+        # Default: the current phase is held. Overwritten below only when a
+        # switch is actually applied, so a rate-capped/failed switch is
+        # credited as the hold it really was.
+        self._cbql_prev = (_state, int(_cur))
+        _r = (_rw["P"] + _rw["N"]) if _rw else 0.0
         _force_max = _el >= _maxg
         if _pick == _cur and not _force_max:
             return                              # agent holds the current phase
@@ -22844,8 +22897,11 @@ class IntersectionController:
             return
         _sw.append(_now)
         self._cbql_exec_last_t = _now
-        log_to_file("[CBQL EXEC] jct=%d t=%.0f %d->%d el=%.0fs R=%.1f sw=%d/%.0fs%s"
-                    % (_jid, _now, _cur, _pick, _el, _r, len(_sw), _win,
+        self._cbql_prev = (_state, int(_pick))     # the switch really happened
+        log_to_file("[CBQL EXEC] jct=%d t=%.0f %d->%d el=%.0fs R=%.1f bus=%.1f "
+                    "ratios=%s sw=%d/%.0fs%s"
+                    % (_jid, _now, _cur, _pick, _el, _r, _bus,
+                       {k: round(x, 2) for k, x in _w.items()}, len(_sw), _win,
                        " (max-green)" if _force_max else ""), force=True)
 
     def run_reward_tsp(self, time, timeSta, acycle):
