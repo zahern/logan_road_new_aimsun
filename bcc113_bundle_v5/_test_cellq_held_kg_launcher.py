@@ -50,7 +50,10 @@ def run_head(env_extra, quiet=True):
     sys.stdout = _Sink()
     msg = None
     try:
-        exec(compile(head, LAUNCHER, 'exec'), {'__name__': '__main__'})
+        # __file__ as a script run would have it, so the launcher guards the
+        # folder this checkout is in (not the hard-coded C:\ path).
+        exec(compile(head, LAUNCHER, 'exec'), {'__name__': '__main__',
+                                               '__file__': LAUNCHER})
     except SystemExit as e:
         msg = str(e.code) if e.code is not None else ''
     finally:

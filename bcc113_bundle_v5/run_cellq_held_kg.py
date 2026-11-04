@@ -80,7 +80,20 @@ import os as _os
 import re as _re
 import time as _time
 
-_HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
+# The bundle folder. Inside Aimsun this file is run via exec(open(...).read()),
+# which defines no __file__, so the hard-coded path below is used exactly as
+# before. Run as a script (or from a test / another clone) it resolves to the
+# folder this file is actually in, so the output guard checks the RIGHT
+# folder. FIXED_HERE overrides both.
+_HERE_DEFAULT = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
+_HERE = _os.environ.get("FIXED_HERE", "").strip()
+if not _HERE:
+    try:
+        _HERE = _os.path.dirname(_os.path.abspath(__file__))
+        if not _os.path.isdir(_os.path.join(_HERE, "shared_tsp_engine")):
+            _HERE = _HERE_DEFAULT
+    except NameError:
+        _HERE = _HERE_DEFAULT
 
 SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
 
