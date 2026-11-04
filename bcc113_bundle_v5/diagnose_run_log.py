@@ -169,11 +169,21 @@ def analyse(path):
                 r = re.search(r'\(([^)]*)\)', rest)
                 d['held: ' + (r.group(1) if r else '?')] += 1
             d['feasible_sum'] += int(f)
+            if 'dominant=1' in rest:
+                d['dominant'] += 1
         for g, d in sorted(by.items()):
-            out.append('game   : %-18s solves=%d picked=%d held=%d mean feasible=%.1f %s'
+            out.append('game   : %-18s solves=%d picked=%d held=%d mean feasible=%.1f '
+                       'dominant=%d %s'
                        % (g, d['solves'], d['picked'], d['held'],
-                          d['feasible_sum'] / max(d['solves'], 1),
+                          d['feasible_sum'] / max(d['solves'], 1), d['dominant'],
                           {k: v for k, v in d.items() if k.startswith('held:')}))
+        # a pick that is best for BOTH bus and cars is every bargaining game's
+        # answer, so different games then give identical runs by design
+        _dom = sum(d['dominant'] for d in by.values())
+        _pk = sum(d['picked'] for d in by.values())
+        if _pk and _dom >= 0.8 * _pk:
+            out.append('         %d of %d picks were best for bus AND cars -- the games '
+                       'cannot differ on those' % (_dom, _pk))
             if d['picked'] == 0:
                 flag(AMBER, 'game %s never picked an action in %d solves'
                             % (g, d['solves']))

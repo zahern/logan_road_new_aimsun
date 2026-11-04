@@ -9655,7 +9655,8 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
                     _gc[_bi].family, _gc[_bi].duration, _gc[_bi].u_bus,
                     _gc[_bi].u_car, _gc[_bi].joint)) if _bi is not None else 'NO_ACTION',
                 (' (%s)' % _gd.get('reason')) if _bi is None and _gd.get('reason') else '',
-                (' eq=%s' % _gd.get('equilibria')) if _gd.get('equilibria') else ''),
+                (' eq=%s' % _gd.get('equilibria')) if _gd.get('equilibria') else '')
+                + (' dominant=1' if _gd.get('dominant') else ''),
                       force=True)
         except Exception as _ge:
             _note_swallow_spm(self, 'game_solve_log', _ge)

@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-06T0900-ctm2-consistent-gates-dstruth-units"
+ENGINE_BUILD = "2026-11-06T1000-nextred-check-game-dominance"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -23089,12 +23089,20 @@ class IntersectionController:
             _v['cur'], _v['cur_t0'] = _cur, time
             if _cur in _greens:
                 _v['served'][_cur] = _v['served'].get(_cur, 0) + 1
+        # Not on the step the bus green starts: _vlt_tick_all runs BEFORE
+        # controller.update() rewrites NextRedStartTime for the new phase, and
+        # the ledger keeps the FIRST prediction, so the check used to score a
+        # stale value (error ~ one green length: bias +26 s, p90 ~100 s in the
+        # KG runs of 2026-11-05). Read the bus phase's own PhaseIndex row.
         if (_chk and _cur == _bp and _v['cur_t0'] is not None
+                and time > _v['cur_t0'] + 0.5
                 and time - _v['rem_t'] >= 10.0):
             _v['rem_t'] = time
             try:
-                _lg.predict('rem_green_nextred_s', (_jid, _v['cur_t0']),
-                            float(self.NextRedStartTime[0][0]), time)
+                _row = int((getattr(self, 'PhaseIndex', None) or {}).get(_bp, 0))
+                _nrs = float(self.NextRedStartTime[_row][0])
+                if _nrs >= _v['cur_t0']:
+                    _lg.predict('rem_green_nextred_s', (_jid, _v['cur_t0']), _nrs, time)
             except Exception as _swx:
                 _note_swallow('_vlt_tick#2', _swx)
                 pass

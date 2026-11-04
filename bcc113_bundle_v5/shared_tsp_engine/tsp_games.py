@@ -124,6 +124,7 @@ def solve(concept: str, cands: Sequence[Cand], p: Params = None
         i = _argmax(sc)
         diag['score'] = sc.get(i)
         diag['reason'] = '' if i is not None else 'no action with B > r*C'
+        diag['dominant'] = _dominant(cands, i, list(sc))
         return i, diag
 
     if concept == 'noncoop_grant':
@@ -162,7 +163,20 @@ def solve(concept: str, cands: Sequence[Cand], p: Params = None
         raise ValueError(concept)
     i = _argmax(sc)
     diag['score'] = sc.get(i)
+    diag['dominant'] = _dominant(cands, i, feas)
     return i, diag
+
+
+def _dominant(cands, i, idx):
+    """True when pick i is best for BOTH players over the admissible set idx.
+
+    Every bargaining concept (Nash, KS, utilitarian, egalitarian, Nash
+    welfare, bus-led Stackelberg) then returns the same action, so identical
+    runs under different games are expected, not a wiring fault."""
+    if i is None or len(idx) < 2:
+        return False
+    return (all(cands[i].u_bus >= cands[k].u_bus - 1e-9 for k in idx)
+            and all(cands[i].u_car >= cands[k].u_car - 1e-9 for k in idx))
 
 
 def _noncoop_grant(cands, p, diag):
