@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T0800-shockwave-bus-term"
+ENGINE_BUILD = "2026-11-05T1100-tactical-vloops-assume-tikz"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -502,8 +502,22 @@ def _note_swallow(tag, exc=None):
                         _frame = f"{_f.name}:{_f.lineno}"
                 except Exception:
                     _frame = ''
-                log_to_file(f"[SWALLOWED] tag={tag} FIRST hit at {_frame} "
-                            f"-- {_det} (feature may not be working as intended)",
+                # WHERE IT WAS RAISED (2026-11-05): the innermost frames of the
+                # exception's own traceback, file:line function `source`, so a
+                # swallowed fault can be fixed from the log alone.
+                _raised = ''
+                try:
+                    if exc is not None and getattr(exc, '__traceback__', None):
+                        _tbx = _tb.extract_tb(exc.__traceback__)[-3:]
+                        _raised = ' <- '.join(
+                            "%s:%d %s `%s`" % (os.path.basename(_x.filename), _x.lineno,
+                                               _x.name, (_x.line or '').strip()[:90])
+                            for _x in reversed(_tbx))
+                except Exception:
+                    _raised = ''
+                log_to_file(f"[SWALLOWED] tag={tag} FIRST hit caught at {_frame} "
+                            f"-- {_det}" + (f" | raised at {_raised}" if _raised else '')
+                            + " (feature may not be working as intended)",
                             force=True)
             except Exception:
                 pass
@@ -513,7 +527,12 @@ def _note_swallow(tag, exc=None):
 def _swallow_report():
     """End-of-run summary of every try/except block that fired this run, worst
     first. Empty when nothing was swallowed. Printed unconditionally in AAPIFinish."""
-    _d = globals().get('_SWALLOW_DIAG') or {}
+    _d = dict(globals().get('_SWALLOW_DIAG') or {})
+    try:   # specialized_modes keeps its own counters (no access to this module)
+        for _t, _c in (getattr(_spm, '_SWALLOW_DIAG', {}) or {}).items():
+            _d['spm:' + _t] = _d.get('spm:' + _t, 0) + int(_c)
+    except Exception:
+        pass
     if not _d:
         return "[SWALLOWED] none this run"
     _items = sorted(_d.items(), key=lambda kv: -kv[1])
@@ -594,6 +613,182 @@ except Exception as _swl_err:   # pragma: no cover
     _SWL_AVAILABLE = False
     _SWL_IMPORT_ERR = repr(_swl_err)
 
+# Tactical virtual loops + assumption ledger (vloop_layout.py) and the
+# Qin & Zhang-style TikZ figures written at the end of each replication
+# (tikz_phase.py). Both stdlib-only siblings.
+try:
+    try:
+        from . import vloop_layout as _vll
+        from . import tikz_phase as _tkz
+    except ImportError:
+        import vloop_layout as _vll
+        import tikz_phase as _tkz
+    _VLL_AVAILABLE = True
+except Exception as _vll_err:   # pragma: no cover
+    _vll = _tkz = None
+    _VLL_AVAILABLE = False
+    _VLL_IMPORT_ERR = repr(_vll_err)
+
+# Per-replication state of the tactical loops: the shared assumption ledger,
+# the tick clock and a one-scan-per-section vehicle cache shared by every
+# junction in the same tick.
+_VLT = {'ledger': None, 'tick_t': -1.0e9, 'scan_t': None, 'scan': {},
+        'errs': 0}
+
+
+def _vlt_reset():
+    _VLT['ledger'] = _vll.AssumptionLedger() if _VLL_AVAILABLE else None
+    _VLT['tick_t'] = -1.0e9
+    _VLT['scan_t'] = None
+    _VLT['scan'] = {}
+    _VLT['errs'] = 0
+
+
+def _vlt_ledger():
+    if _VLT.get('ledger') is None and _VLL_AVAILABLE:
+        _VLT['ledger'] = _vll.AssumptionLedger()
+    return _VLT.get('ledger')
+
+
+def _vlt_scan(secs, now, bus_pos):
+    """{sec: [(vid, CurrentPos, speed_kmh, lane, is_bus)]}, each section read
+    at most once per tick however many junctions ask for it."""
+    if _VLT['scan_t'] != now:
+        _VLT['scan_t'] = now
+        _VLT['scan'] = {}
+    sc = _VLT['scan']
+    for s_ in secs:
+        s_ = int(s_)
+        if s_ in sc:
+            continue
+        rows = []
+        try:
+            for _i in range(max(int(AKIVehStateGetNbVehiclesSection(s_, True)), 0)):
+                try:
+                    _v = AKIVehStateGetVehicleInfSection(s_, _i)
+                    rows.append((int(_v.idVeh), float(_v.CurrentPos),
+                                 float(_v.CurrentSpeed), int(_v.numberLane),
+                                 bus_pos > 0 and int(_v.type) == bus_pos))
+                except Exception as _swx:
+                    _note_swallow('_vlt_scan#2', _swx)
+                    continue
+        except Exception as _swx:
+            _note_swallow('_vlt_scan#1', _swx)
+            pass
+        sc[s_] = rows
+    return sc
+
+
+def _vlt_tick_all(time, timeSta):
+    if not (_VLL_AVAILABLE and bool(globals().get('VLOOP_TACTICAL', True))):
+        return
+    _dt = float(globals().get('VLOOP_TAC_DT_S', 1.0) or 1.0)
+    if float(time) - _VLT['tick_t'] < _dt - 1e-6:
+        return
+    _VLT['tick_t'] = float(time)
+    for _ctrl in list(controllers.values()):
+        try:
+            _ctrl._vlt_tick(float(time), timeSta)
+        except Exception as _e:
+            _note_swallow('_vlt_tick_all#1', _e)
+            _VLT['errs'] += 1
+            if _VLT['errs'] <= 5:
+                log_to_file("[VLOOP] jct=%s tick error: %r"
+                            % (getattr(_ctrl, 'id', '?'), _e), force=True)
+    _lg = _vlt_ledger()
+    if _lg is not None:
+        _lg.expire(float(time), 900.0)
+
+
+def _vlt_finish():
+    """End of replication: [ASSUME_SUMMARY] lines, the summary + layout CSVs
+    and the TikZ figures into <run folder>/tikz/."""
+    if not _VLL_AVAILABLE:
+        return
+    _lg = _vlt_ledger()
+    _rows = []
+    if _lg is not None and bool(globals().get('ASSUME_CHECKS', True)):
+        for _k, _v in sorted(_lg.summary().items()):
+            _n, _b, _mae, _p90 = _v
+            if _mae is None:
+                log_to_file("[ASSUME_SUMMARY] %-34s n=%-5d true=%.0f%%" % (_k, _n, _b),
+                            force=True)
+            else:
+                log_to_file("[ASSUME_SUMMARY] %-34s n=%-5d bias=%+.2f mae=%.2f p90=%.2f"
+                            % (_k, _n, _b, _mae, _p90), force=True)
+            _rows.append((_k, _n, _b, _mae, _p90))
+    _dir = None
+    try:
+        _dir = stats._run_path()
+    except Exception as _swx:
+        _note_swallow('_vlt_finish#4', _swx)
+        _dir = None
+    if not _dir:
+        _dir = os.path.join(_CORRIDOR_DIR, 'results')
+    _td = os.path.join(_dir, 'tikz')
+    try:
+        os.makedirs(_td, exist_ok=True)
+        with open(os.path.join(_dir, 'assumption_checks.csv'), 'w') as _fh:
+            _fh.write("check,n,bias_or_pct_true,mae,p90\n")
+            for _r in _rows:
+                _fh.write(",".join("" if x is None else str(x) for x in _r) + "\n")
+        with open(os.path.join(_dir, 'vloop_layout.csv'), 'w') as _fh:
+            _fh.write("junction,phase,role,stop_sec,purposes,x_m,sec,pos_m,lanes,"
+                      "l_max_m,reach_m,note,warnings\n")
+            for _ctrl in controllers.values():
+                for _ap in (getattr(_ctrl, '_vlt', {}) or {}).get('approaches', []):
+                    _lay = _ap.get('layout')
+                    if _lay is None:
+                        continue
+                    for _lp in _lay.loops:
+                        _fh.write('%s,%s,%s,%s,%s,%.1f,%s,%.1f,%s,%.1f,%.1f,"%s","%s"\n' % (
+                            _lay.spec.junction, _lay.spec.phase, _lay.spec.role,
+                            _lay.spec.stop_sec, '+'.join(_lp.purposes), _lp.x_m,
+                            _lp.sec, _lp.pos_m, ' '.join(str(x) for x in _lp.lanes),
+                            _lay.l_max_m if math.isfinite(_lay.l_max_m) else -1,
+                            _lay.reach_m, _lp.note, ' | '.join(_lay.warnings)))
+    except Exception as _e:
+        _note_swallow('_vlt_finish#3', _e)
+        log_to_file("[VLOOP] summary write failed: %r" % (_e,), force=True)
+    if not bool(globals().get('TIKZ_EXPORT', True)):
+        return
+    _files, _caps = [], []
+    _exp = globals().get('_CURRENT_EXPERIMENT', '') or ''
+    for _jid, _ctrl in sorted(controllers.items()):
+        try:
+            _d = _ctrl._vlt_tikz_data()
+            if not _d:
+                continue
+            _f1 = 'jct%s_phase_sequence.tex' % _jid
+            with open(os.path.join(_td, _f1), 'w') as _fh:
+                _fh.write(_tkz.phase_sequence_tex(_jid, _d['phases'], _d['cycle'], _exp))
+            _files.append(_f1)
+            _caps.append('Junction %s phase sequence (%s): movements from the live '
+                         'signal plan, priority phases in red, run statistics below '
+                         'each phase.' % (_jid, _exp.replace('_', ' ')))
+            if _d['approaches']:
+                _f2 = 'jct%s_ctm_cells.tex' % _jid
+                with open(os.path.join(_td, _f2), 'w') as _fh:
+                    _fh.write(_tkz.ctm_cells_tex(_jid, _d['approaches'], _d['exits'],
+                                                 'J%s run-mean CTM occupancy' % _jid))
+                _files.append(_f2)
+                _caps.append('Junction %s CTM cells: run-mean occupancy per cell '
+                             '(car + bus pcu / storage), bus density as red bars, '
+                             '%d samples.' % (_jid, _d['n_samples']))
+        except Exception as _e:
+            _note_swallow('_vlt_finish#2', _e)
+            log_to_file("[TIKZ] jct=%s failed: %r" % (_jid, _e), force=True)
+    if _files:
+        try:
+            with open(os.path.join(_td, 'figures.tex'), 'w') as _fh:
+                _fh.write(_tkz.standalone_doc(_files, _caps))
+            log_to_file("[TIKZ] wrote %d figures + figures.tex to %s"
+                        % (len(_files), _td), force=True)
+        except Exception as _e:
+            _note_swallow('_vlt_finish#1', _e)
+            log_to_file("[TIKZ] wrapper failed: %r" % (_e,), force=True)
+
+
 # Network-wide PT lookups, cached per simulation second: which line every bus
 # in the network follows (AKIPTGetNumberLines / AKIGetVehicleFollowingPTLine),
 # and each line's route in order (AKIPTGetIdSectionInLine).
@@ -614,7 +809,8 @@ def _pt_line_of(veh_id, now):
                 _lid = int(AKIPTGetIdLine(_li))
                 for _vi in range(int(AKIGetNbVehiclesFollowingPTLine(_lid))):
                     _PT_VEH_LINE[int(AKIGetVehicleFollowingPTLine(_lid, _vi))] = _lid
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_pt_line_of#1', _swx)
             pass
     return _PT_VEH_LINE.get(int(veh_id))
 
@@ -628,7 +824,8 @@ def _pt_route_secs(line_id):
                 _s = int(AKIPTGetIdSectionInLine(int(line_id), _si))
                 if _s > 0:
                     _r.append(_s)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_pt_route_secs#1', _swx)
             pass
         _PT_ROUTE_SECS[int(line_id)] = _r
     return _r
@@ -642,7 +839,8 @@ def _sec_len_m(sec):
             _si = AKIInfNetGetSectionANGInf(int(sec))
             if getattr(_si, 'report', -1) >= 0:
                 _v = float(_si.length)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_sec_len_m#1', _swx)
             pass
         _SEC_LEN_CACHE[int(sec)] = _v
     return _v
@@ -22719,6 +22917,7 @@ class IntersectionController:
             _spec = self._cbql_build_spec()
             _st = _cbql.derive_phase_structure(_spec)
         except Exception as _be:
+            _note_swallow('_cbql_ensure#1', _be)
             log_to_file("[CBQL] build error: %r" % (_be,))
             return None
         self._cbql_struct = _st
@@ -22763,25 +22962,452 @@ class IntersectionController:
             _d = None
             try:
                 _d = self._measured_delay_per_veh_s(_secs)
-            except Exception:
+            except Exception as _swx:
+                _note_swallow('_cbql_phase_delay_flow#3', _swx)
                 _d = None
             if _d is None:                       # statless section -> cell-state proxy
                 try:
                     _q = self._measured_sections_queue_veh(_secs)
                     _d = (max(0.0, float(_q)) * _qw) if _q is not None else 0.0
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_cbql_phase_delay_flow#2', _swx)
                     _d = 0.0
             _delay[_ph] = float(_d)
             _f = 0.0
             for _s in (_secs or []):
                 try:
                     _f += max(0.0, float(self._measured_section_flow_vph(int(_s))))
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_cbql_phase_delay_flow#1', _swx)
                     pass
             _flow_map[_ph] = _f
         return _delay, _flow_map
 
     # ── shockwave bus state (network PT lookup + route + lane queue) ─────
+    # ── tactical virtual loops (vloop_layout) ─────────────────────────────
+    def _vlt_init(self):
+        """Approach skeleton: for every real green phase, each origin
+        (stop-line) section with its upstream chain to the next signal and the
+        exit sections its turnings feed."""
+        _st = {'approaches': [], 'built': False, 'learner': _vll.LaneUseLearner(),
+               'bank': None, 'cur': None, 'cur_t0': None, 'green_log': {},
+               'served': {}, 'ctm_acc': {}, 'ctm_n': 0, 'ctm_t': -1e9,
+               'bus_still': {}, 'stops_seen': {}, 'pend_bus': {},
+               'onset_done': {}, 'adv_t': -1e9, 'rem_t': -1e9, 'log_t': {}}
+        self._vlt = _st
+        _po = self._phase_origin_sections() or {}
+        try:
+            _turns = self._cbql_phase_turnings() or {}
+        except Exception as _swx:
+            _note_swallow('_vlt_init#2', _swx)
+            _turns = {}
+        _reach = float(globals().get('VLOOP_TAC_REACH_M', 450.0) or 450.0)
+        _bp = int(getattr(self, 'BusPhase', -1) or -1)
+        for _ph in sorted(_po):
+            for _s in sorted(_po[_ph]):
+                try:
+                    _segs, _why = self._upstream_chain(int(_s), _reach)
+                except Exception as _swx:
+                    _note_swallow('_vlt_init#1', _swx)
+                    _segs, _why = [], 'error'
+                _chain = [(int(a), float(b), float(c)) for a, b, c in (_segs or [])
+                          if float(c) > 0.0]
+                if not _chain:
+                    _L = _sec_len_m(int(_s)) or 50.0
+                    _chain = [(int(_s), 0.0, _L)]
+                _ex = sorted({int(t) for f, t in _turns.get(_ph, []) if int(f) == int(_s)})
+                _st['approaches'].append({
+                    'phase': int(_ph), 'role': 'bus' if int(_ph) == _bp else 'side',
+                    'stop_sec': int(_s), 'chain': _chain, 'why': str(_why),
+                    'exits': _ex, 'layout': None, 'loop_idx': []})
+        return _st
+
+    def _vlt_secs(self, built):
+        _v = self._vlt
+        out = set()
+        for _ap in _v['approaches']:
+            out.update(c[0] for c in _ap['chain'])
+            out.update(_ap['exits'])
+        return out
+
+    def _vlt_tick(self, time, timeSta):
+        _v = getattr(self, '_vlt', None)
+        if _v is None:
+            if not (self._phase_origin_sections() or {}):
+                return
+            _v = self._vlt_init()
+        _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+        _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+        _veh = _vlt_scan(self._vlt_secs(_v['built']), time, _btp)
+        _lg = _vlt_ledger()
+        _chk = bool(globals().get('ASSUME_CHECKS', True)) and _lg is not None
+        # ---- phase tracking (served greens, rem-green check) --------------
+        try:
+            _cur = int(ECIGetCurrentPhase(_jid))
+        except Exception as _swx:
+            _note_swallow('_vlt_tick#3', _swx)
+            _cur = None
+        _greens = {a['phase'] for a in _v['approaches']}
+        _bp = int(getattr(self, 'BusPhase', -1) or -1)
+        if _cur != _v['cur']:
+            _prev, _t0 = _v['cur'], _v['cur_t0']
+            if _prev in _greens and _t0 is not None:
+                _v['green_log'].setdefault(_prev, []).append(time - _t0)
+                if _chk and _prev == _bp:
+                    for _k in ('rem_green_nextred_s', 'rem_green_plan_s'):
+                        _r = _lg.resolve(_k, (_jid, _t0), time)
+                        if _r is not None:
+                            self._vlt_log('rem', time, "[ASSUME] jct=%d %s err=%+.1fs "
+                                          "(actual end - predicted end; a GE/ER "
+                                          "executed in between also shows here)"
+                                          % (_jid, _k, _r[0]))
+                if _v['built']:
+                    self._vlt_sat_check(_prev, _t0, time)
+                    for _ap in _v['approaches']:
+                        if _ap['phase'] == _prev:
+                            _ap['red_t0'] = time
+            _v['cur'], _v['cur_t0'] = _cur, time
+            if _cur in _greens:
+                _v['served'][_cur] = _v['served'].get(_cur, 0) + 1
+        if (_chk and _cur == _bp and _v['cur_t0'] is not None
+                and time - _v['rem_t'] >= 10.0):
+            _v['rem_t'] = time
+            try:
+                _lg.predict('rem_green_nextred_s', (_jid, _v['cur_t0']),
+                            float(self.NextRedStartTime[0][0]), time)
+            except Exception as _swx:
+                _note_swallow('_vlt_tick#2', _swx)
+                pass
+            try:
+                _lg.predict('rem_green_plan_s', (_jid, _v['cur_t0']),
+                            _v['cur_t0'] + float(GetPhaseDuration(_jid, _bp, timeSta)),
+                            time)
+            except Exception as _swx:
+                _note_swallow('_vlt_tick#1', _swx)
+                pass
+        # ---- warm-up: learn lane use, bays and bus stops ------------------
+        _warm = float(globals().get('VLOOP_TAC_WARM_S', 300.0) or 0.0)
+        _origins = {a['stop_sec']: a['chain'][0][2] for a in _v['approaches']}
+        _exits = set()
+        for a in _v['approaches']:
+            _exits.update(a['exits'])
+        if not _v['built']:
+            _v['learner'].observe(_origins, _exits, _veh,
+                                  float(globals().get('VLOOP_TAC_DT_S', 1.0) or 1.0))
+            self._vlt_learn_stops(time, _veh)
+            if time >= _warm:
+                self._vlt_build(time, timeSta, _veh)
+            return
+        # ---- loops --------------------------------------------------------
+        _bank = _v['bank']
+        if _bank is None:
+            return
+        _bank.update(time, {s_: _veh.get(s_, ()) for s_ in _bank.secs})
+        if _chk:
+            self._vlt_checks(time, timeSta)
+        # ---- CTM occupancy sample for the TikZ cell figure ----------------
+        if (bool(globals().get('TIKZ_EXPORT', True)) and _CTM2_AVAILABLE
+                and time - _v['ctm_t'] >= float(globals().get('TIKZ_SAMPLE_S', 30.0) or 30.0)):
+            _v['ctm_t'] = time
+            self._vlt_ctm_sample(_veh)
+
+    def _vlt_log(self, key, time, msg, every=60.0):
+        if not bool(globals().get('ASSUME_LOG', True)):
+            return
+        _lt = self._vlt['log_t']
+        if time - _lt.get(key, -1e9) >= every:
+            _lt[key] = time
+            log_to_file(msg, force=True)
+
+    def _vlt_learn_stops(self, time, veh):
+        """A bus held still (<1 km/h, <2 m moved) for >= 5 s with nobody within
+        12 m in front of it in its lane is DWELLING: record where, per
+        approach, as metres from the stop line."""
+        for _ap in self._vlt['approaches']:
+            for (_s, _base, _L) in _ap['chain']:
+                _rows = veh.get(_s, ())
+                for vid, pos, spd, lane, is_bus in _rows:
+                    if not is_bus:
+                        continue
+                    _k = (vid, _s)
+                    _p = self._vlt['bus_still'].get(_k)
+                    if spd <= 1.0 and _p and abs(pos - _p[0]) < 2.0:
+                        if time - _p[1] >= 5.0 and not _p[2]:
+                            _blocked = any(l2 == lane and 0.0 < p2 - pos <= 12.0
+                                           for v2, p2, s2, l2, b2 in _rows if v2 != vid)
+                            if not _blocked:
+                                _d = _base + (_L - pos)
+                                self._vlt['stops_seen'].setdefault(
+                                    _ap['stop_sec'], []).append(_d)
+                            self._vlt['bus_still'][_k] = (_p[0], _p[1], True)
+                    elif spd <= 1.0:
+                        self._vlt['bus_still'][_k] = (pos, time, False)
+                    else:
+                        self._vlt['bus_still'].pop(_k, None)
+
+    def _vlt_build(self, time, timeSta, veh):
+        _v = self._vlt
+        _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+        _lg = _vlt_ledger()
+        try:
+            _cyc = float(self._signal_cycle_s(timeSta) or 120.0)
+        except Exception as _swx:
+            _note_swallow('_vlt_build#4', _swx)
+            _cyc = 120.0
+        _all = []
+        for _ap in _v['approaches']:
+            _s = _ap['stop_sec']
+            _L0 = _ap['chain'][0][2]
+            _lanes = _v['learner'].lanes_for(_s, set(_ap['exits'])) if _ap['exits'] else ()
+            _nl = max(int(self._sec_lane_count(_s) or 1), 1)
+            if len(_lanes) >= _nl:
+                _lanes = ()                      # every lane -> no lane filter
+            _bay = _v['learner'].bay_len(_s, _lanes, _L0) if _lanes else None
+            try:
+                _side_lanes = int(getattr(AKIInfNetGetSectionANGInf(_s), 'nbSideLanes', 0) or 0)
+            except Exception as _swx:
+                _note_swallow('_vlt_build#3', _swx)
+                _side_lanes = -1
+            if _lg is not None and _side_lanes >= 0 and _bay is not None:
+                # a bay learned from vehicles should be a side lane in the model
+                _lg.flag('learned_bay_is_model_sidelane', _side_lanes > 0)
+            # bus stops: cluster the observed dwell points (>= 2 dwells)
+            _seen = sorted(_v['stops_seen'].get(_s, []))
+            _stops, _grp = [], []
+            for _d in _seen + [1e12]:
+                if _grp and _d - _grp[-1] > 15.0:
+                    if len(_grp) >= 2:
+                        _stops.append(_grp[len(_grp) // 2])
+                    _grp = []
+                _grp.append(_d)
+            try:
+                _g = float(GetPhaseDuration(_jid, _ap['phase'], timeSta) or 20.0)
+            except Exception as _swx:
+                _note_swallow('_vlt_build#2', _swx)
+                _g = 20.0
+            _qa = 0.0
+            try:
+                _qa = max(0.0, float(self._measured_section_flow_vph(_s) or 0.0))
+            except Exception as _swx:
+                _note_swallow('_vlt_build#1', _swx)
+                pass
+            _nlq = max(len(_lanes) if _lanes else _nl, 1)
+            _qa_l = (_qa / _nlq) if _qa > 0 else 0.5 * float(getattr(self, 'SaturationFlow', 1800.0))
+            _spec = _vll.ApproachSpec(
+                _jid, _ap['phase'], _ap['role'], _s, _ap['chain'], _ap['why'],
+                tuple(_lanes), _nl, _bay, _stops, _ap['exits'], _qa_l, _cyc, _g)
+            _fd = self._sw_lane_fd(_s)
+            _lay = _vll.plan_layout(
+                _spec, _fd,
+                ctm_reach_m=float(globals().get('CBQL_CTM_MAX_CELLS', 12)) *
+                max(float(globals().get('CBQL_CTM_DT_S', 2.0)) * _fd.vf, 5.0),
+                bus_cruise_kmh=float(globals().get('SW_BUS_CRUISE_KMH', 40.0) or 40.0),
+                bus_lead_s=max(float(globals().get('MAX_GE_EXTENSION_S', 10.0) or 10.0)
+                               + float(globals().get('INS_INTERGREEN_S', 5.0) or 5.0), 25.0))
+            _ap['layout'] = _lay
+            _ap['fd'] = _fd
+            _ap['loop_idx'] = list(range(len(_all), len(_all) + len(_lay.loops)))
+            _all.extend(_lay.loops)
+            log_to_file("[VLOOP_LAYOUT] " + _vll.layout_line(_lay)
+                        + " | learned: lanes=%s bay=%s stops=%s sideLanes(model)=%s"
+                        % (list(_lanes) or 'all', ('%.0fm' % _bay) if _bay else '-',
+                           ['%.0fm' % x for x in _stops] or '-', _side_lanes),
+                        force=True)
+        _v['bank'] = _vll.PointLoopBank(_all, stop_kmh=float(
+            globals().get('VLOOP_STOP_KPH', 3.0) or 3.0))
+        _v['built'] = True
+
+    def _vlt_loops(self, ap, purpose):
+        _b = self._vlt['bank']
+        return [_b.loops[i] for i in ap['loop_idx'] if purpose in _b.loops[i].spec.purposes]
+
+    def _vlt_checks(self, time, timeSta):
+        _v = self._vlt
+        _lg = _vlt_ledger()
+        _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+        _adv_due = time - _v['adv_t'] >= 5.0
+        if _adv_due:
+            _v['adv_t'] = time
+        for _ap in _v['approaches']:
+            if _ap.get('layout') is None:
+                continue
+            # (1) ADVANCE must sit upstream of the queue
+            if _adv_due:
+                for _ls in self._vlt_loops(_ap, 'ADVANCE'):
+                    _lg.flag('advance_clear_of_queue_' + _ap['role'], not _ls.stopped_on)
+            # (2) queue formation wave: model u vs onsets STOPBAR -> QUEUE loops
+            _sb = self._vlt_loops(_ap, 'STOPBAR')
+            _rt = _ap.get('red_t0')
+            if _sb and _rt is not None:
+                _t_sb = [t for t in _sb[0].onsets if t >= _rt - 1.0]
+                for _ls in self._vlt_loops(_ap, 'QUEUE_MID') + self._vlt_loops(_ap, 'QUEUE_TAIL'):
+                    _key = (id(_ls), _rt)
+                    if _key in _v['onset_done'] or not _t_sb:
+                        continue
+                    _tq = [t for t in _ls.onsets if t > _t_sb[0] + 1.0]
+                    if not _tq:
+                        continue
+                    _v['onset_done'][_key] = True
+                    _meas = (_ls.spec.x_m - _sb[0].spec.x_m) / (_tq[0] - _t_sb[0])
+                    _adv = self._vlt_loops(_ap, 'ADVANCE')
+                    _qa = None
+                    if _adv:
+                        _rd = _vll.PointLoopBank.reading(_adv[0], time, 300.0)
+                        _nl = len(_adv[0].spec.lanes) or max(int(self._sec_lane_count(_ap['stop_sec']) or 1), 1)
+                        _qa = _rd['flow_vph'] / _nl
+                    if _qa is not None:
+                        _mod = _swl.formation_wave_speed(_ap['fd'], _qa)
+                        _lg.compare('queue_formation_wave_ms', _mod, _meas)
+                        self._vlt_log(('w', _ap['stop_sec']), time,
+                                      "[ASSUME] jct=%d ph=%d sec=%d formation wave "
+                                      "model=%.2f m/s measured=%.2f m/s (loops %.0fm->%.0fm, "
+                                      "q_a=%.0f vph/lane)" % (
+                                          _jid, _ap['phase'], _ap['stop_sec'], _mod,
+                                          _meas, _sb[0].spec.x_m, _ls.spec.x_m, _qa), 120.0)
+            # (3) buses crossing the stop bar resolve the ETA / solve predictions
+            if _ap['role'] == 'bus' and _sb:
+                for _vid, _tc in list(_sb[0].bus_cross.items()):
+                    for _k in _v['pend_bus'].pop(_vid, []):
+                        _r = _lg.resolve(_k, (_jid, _vid), _tc)
+                        if _r is not None:
+                            self._vlt_log(('eta', _k), time,
+                                          "[ASSUME] jct=%d bus=%d %s err=%+.1fs (actual "
+                                          "stop-line crossing - predicted)"
+                                          % (_jid, _vid, _k, _r[0]), 30.0)
+                    _sb[0].bus_cross.pop(_vid, None)
+
+    def _vlt_sat_check(self, phase, t0, t1):
+        """Saturation headways at the STOPBAR during the green that just ended:
+        from the 4th vehicle per lane (start-up lost time excluded), headways
+        0.8-3.5 s, >= 3 of them -> measured q_s vs SaturationFlow."""
+        _lg = _vlt_ledger()
+        for _ap in self._vlt['approaches']:
+            if _ap['phase'] != phase or _ap.get('layout') is None:
+                continue
+            for _ls in self._vlt_loops(_ap, 'STOPBAR'):
+                _by = {}
+                for (t, lane, _b, _s) in _ls.crossings:
+                    if t0 <= t <= t1:
+                        _by.setdefault(lane, []).append(t)
+                _h = []
+                for _ts in _by.values():
+                    _ts.sort()
+                    _h.extend(b - a for a, b in zip(_ts[3:], _ts[4:]) if 0.8 <= b - a <= 3.5)
+                if len(_h) >= 3:
+                    _lg.compare('saturation_flow_vph_lane',
+                                float(getattr(self, 'SaturationFlow', 1800.0)),
+                                3600.0 / (sum(_h) / len(_h)))
+
+    def _vlt_ctm_sample(self, veh):
+        _v = self._vlt
+        _pce = float(globals().get('CBQL_CTM_BUS_PCE', 2.0) or 2.0)
+        for _ap in _v['approaches']:
+            _s = _ap['stop_sec']
+            try:
+                _g = self._cbql_ctm_geom(_s)
+            except Exception as _swx:
+                _note_swallow('_vlt_ctm_sample#1', _swx)
+                continue
+            _rows = [(_g.length_m - pos, is_bus) for _vid, pos, _sp, _ln, is_bus in veh.get(_s, ())]
+            _c = _ctm2.seed_cells(_g, _rows)
+            _acc = _v['ctm_acc'].setdefault(_s, [[0.0] * len(_c.car), [0.0] * len(_c.car), 0])
+            for _i in range(len(_c.car)):
+                _acc[0][_i] += min(1.0, (_c.car[_i] + _pce * _c.bus[_i]) / _g.storage_pcu)
+                _acc[1][_i] += _c.bus[_i]
+            _acc[2] += 1
+        _v['ctm_n'] += 1
+
+    def _vlt_advance_vph(self, sec, window_s=300.0):
+        """Arrival flow (veh/h, all lanes) measured at the ADVANCE loop of the
+        approach whose stop line is `sec`. None until the loops are built."""
+        _v = getattr(self, '_vlt', None)
+        if not _v or not _v.get('built'):
+            return None
+        for _ap in _v['approaches']:
+            if _ap['stop_sec'] == int(sec) and _ap.get('layout') is not None:
+                _adv = self._vlt_loops(_ap, 'ADVANCE')
+                if _adv and _adv[0].occ:
+                    return _vll.PointLoopBank.reading(
+                        _adv[0], _adv[0].occ[-1][0], window_s)['flow_vph']
+        return None
+
+    def _vlt_tikz_data(self):
+        _v = getattr(self, '_vlt', None)
+        if not _v:
+            return None
+        try:
+            _turns = self._cbql_phase_turnings() or {}
+        except Exception as _swx:
+            _note_swallow('_vlt_tikz_data#6', _swx)
+            _turns = {}
+        _st = None
+        if _CBQL_AVAILABLE:
+            try:
+                _st = self._cbql_ensure()
+            except Exception as _swx:
+                _note_swallow('_vlt_tikz_data#5', _swx)
+                _st = None
+        _bp = int(getattr(self, 'BusPhase', -1) or -1)
+        _picks = getattr(self, '_cbql_pick_counts', {}) or {}
+        _phases = []
+        for _ph in sorted(_turns):
+            _mv = []
+            for f, t in _turns[_ph]:
+                try:
+                    _mv.append((self._cbql_bearing(f), self._cbql_turn_type(f, t)))
+                except Exception as _swx:
+                    _note_swallow('_vlt_tikz_data#4', _swx)
+                    continue
+            _gl = _v['green_log'].get(_ph, [])
+            _phases.append({
+                'idx': _ph,
+                'type': (_st.phase_types.get(_ph, '') if _st else ''),
+                'priority': (_st.is_priority(_ph) if _st else _ph == _bp),
+                'movements': _mv,
+                'green_mean_s': (sum(_gl) / len(_gl)) if _gl else None,
+                'n_served': _v['served'].get(_ph, 0),
+                'picks': _picks.get(_ph) if _picks else None})
+        _apps, _ex = [], {}
+        _pri = set(_st.priority_phases) if _st else {_bp}
+        _by_sec = {}
+        for _ap in _v['approaches']:
+            _by_sec.setdefault(_ap['stop_sec'], []).append(_ap['phase'])
+            for e in _ap['exits']:
+                _ex[e] = True
+        for _s, _phs in sorted(_by_sec.items()):
+            _acc = _v['ctm_acc'].get(_s)
+            if not _acc or not _acc[2]:
+                continue
+            _n = float(_acc[2])
+            try:
+                _b = self._cbql_bearing(_s)
+            except Exception as _swx:
+                _note_swallow('_vlt_tikz_data#3', _swx)
+                _b = None
+            if _b is None:
+                continue
+            _apps.append({'sec': _s, 'bearing': _b,
+                          'occ': [x / _n for x in _acc[0]],
+                          'bus': [x / _n for x in _acc[1]],
+                          'phase_ids': sorted(set(_phs)),
+                          'priority': bool(set(_phs) & _pri)})
+        _exits = []
+        for e in sorted(_ex):
+            try:
+                _b = self._cbql_bearing(e)
+            except Exception as _swx:
+                _note_swallow('_vlt_tikz_data#2', _swx)
+                _b = None
+            if _b is not None:
+                _exits.append({'sec': e, 'bearing': _b})
+        try:
+            _cyc = float(self._signal_cycle_s(0.0) or 0.0)
+        except Exception as _swx:
+            _note_swallow('_vlt_tikz_data#1', _swx)
+            _cyc = None
+        return {'phases': _phases, 'cycle': _cyc, 'approaches': _apps,
+                'exits': _exits, 'n_samples': _v['ctm_n']}
+
     def _sw_lane_fd(self, sec=None):
         _vf = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
         if sec is not None:
@@ -22790,7 +23416,8 @@ class IntersectionController:
                 _sl = float(getattr(_si, 'speedLimit', 0.0) or 0.0)
                 if _sl > 1.0:
                     _vf = _sl
-            except Exception:
+            except Exception as _swx:
+                _note_swallow('_sw_lane_fd#1', _swx)
                 pass
         return _swl.LaneFD(_vf, float(getattr(self, 'JamDensity', 200.0) or 200.0),
                            float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0))
@@ -22862,7 +23489,8 @@ class IntersectionController:
                                 and float(getattr(_v, 'CurrentPos', 0.0)) > _bpos
                                 and int(getattr(_v, 'idVeh', -1)) != int(veh_id)):
                             _n_ahead += 1.0
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_sw_bus_route_state#6', _swx)
                     pass
             elif _tgt is not None:
                 # DETECTORS FIRST: the measured standing queue on the approach
@@ -22871,19 +23499,33 @@ class IntersectionController:
                 _q = None
                 try:
                     _q = self._measured_sections_queue_veh([int(_tgt)])
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_sw_bus_route_state#5', _swx)
                     _q = None
                 _qsrc = 'detector'
+                if _q is not None and bool(globals().get('ASSUME_CHECKS', True)):
+                    try:
+                        _zq = self._zone_queue_count(int(_tgt))
+                        _lgq = _vlt_ledger() if _VLL_AVAILABLE else None
+                        if _lgq is not None:
+                            _lgq.compare('queue_detector_vs_vehicle_scan_veh',
+                                         float(_zq[0] if isinstance(_zq, tuple) else _zq),
+                                         float(_q))
+                    except Exception as _swx:
+                        _note_swallow('_sw_bus_route_state#4', _swx)
+                        pass
                 if _q is None:
                     _qsrc = 'scan'
                     try:
                         _zq = self._zone_queue_count(int(_tgt))
                         _q = float(_zq[0] if isinstance(_zq, tuple) else _zq)
-                    except Exception:
+                    except Exception as _swx:
+                        _note_swallow('_sw_bus_route_state#3', _swx)
                         _q = 0.0
                 try:
                     _n_ahead = float(_q) / max(int(self._sec_lane_count(int(_tgt)) or 1), 1)
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_sw_bus_route_state#2', _swx)
                     _n_ahead = 0.0
                 _src_q = _qsrc
             _out = {'veh': int(veh_id), 'line': _line, 'sec': _bsec,
@@ -22891,9 +23533,32 @@ class IntersectionController:
                     'n_stops': int(_nst), 'n_ahead': float(_n_ahead),
                     'speed_ms': _bspd, 'cruise_ms': _cruise, 'src': _src,
                     'ahead_src': _src_q}
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_sw_bus_route_state#1', _swx)
             _out = None
         self._sw_bus_cache = (_ck, _out)
+        # ASSUMPTION CHECKS: route ETA and detection ETA predicted for the SAME
+        # bus at the SAME moment, resolved when it crosses this junction's
+        # STOPBAR virtual loop; bucketed by horizon.
+        _lg = _vlt_ledger() if _VLL_AVAILABLE else None
+        if (_out is not None and _lg is not None and _out.get('target') is not None
+                and bool(globals().get('ASSUME_CHECKS', True))):
+            _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+            _h = _out['eta_s']
+            _bk = ('lt60s' if _h < 60 else '60_180s' if _h < 180 else 'gt180s')
+            _pend = (getattr(self, '_vlt', {}) or {}).get('pend_bus')
+            if _pend is not None:
+                _k1 = 'eta_route_%s_s' % _bk
+                _lg.predict(_k1, (_jid, int(veh_id)), float(time) + _h, time)
+                _ks = _pend.setdefault(int(veh_id), [])
+                if _k1 not in _ks:
+                    _ks.append(_k1)
+                _be = (getattr(self, '_bus_eta', {}) or {}).get(0)
+                if _be and int(_be[0]) == int(veh_id):
+                    _k2 = 'eta_detect_%s_s' % _bk
+                    _lg.predict(_k2, (_jid, int(veh_id)), float(time) + float(_be[1]), time)
+                    if _k2 not in _ks:
+                        _ks.append(_k2)
         if _out is not None and bool(globals().get('SW_BUS_LOG', True)):
             _lt = getattr(self, '_sw_bus_log_t', {})
             if float(time) - float(_lt.get(int(veh_id), -1e9)) >= 30.0:
@@ -22930,11 +23595,13 @@ class IntersectionController:
         _red = max(0.0, _cyc - float(getattr(self, 'BusPhaseDuration', 20.0) or 20.0))
         try:
             _rem = max(0.0, float(self.NextRedStartTime[0][0]) - float(time))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_sw_bus_ctx#2', _swx)
             _rem = 0.0
         try:
             _red_el = max(0.0, float(time) - float(self.RedStartTimeList[0][0]))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_sw_bus_ctx#1', _swx)
             _red_el = 0.0
         return {'fd': _fd, 'bus': _bs, 't_free': _t_free, 'red_s': _red,
                 'rem_green': _rem, 'red_left': max(0.0, _red - _red_el),
@@ -22974,7 +23641,8 @@ class IntersectionController:
             return 0.0
         try:
             _now = float(AKIGetCurrentSimulationTime())
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_bus_delay_s#3', _swx)
             return 0.0
         _vf = max(float(globals().get('CBQL_BUS_FREE_KMH', 40.0) or 40.0),
                   1.0) / 3.6
@@ -22986,7 +23654,8 @@ class IntersectionController:
         for _s in _secs:
             try:
                 _nv = max(int(AKIVehStateGetNbVehiclesSection(int(_s), True)), 0)
-            except Exception:
+            except Exception as _swx:
+                _note_swallow('_cbql_bus_delay_s#2', _swx)
                 continue
             for _vi in range(_nv):
                 try:
@@ -22996,7 +23665,8 @@ class IntersectionController:
                     _on = _now - float(getattr(_inf, 'SectionEntranceT', _now))
                     _pos = max(0.0, float(getattr(_inf, 'CurrentPos', 0.0) or 0.0))
                     _worst = max(_worst, _on - _pos / _vf)
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow('_cbql_bus_delay_s#1', _swx)
                     continue
         return max(0.0, _worst)
 
@@ -23045,18 +23715,21 @@ class IntersectionController:
             _slim = float(getattr(_si, 'speedLimit', 0.0) or 0.0)
             if _slim > 1.0:
                 _vf = _slim
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_ctm_geom#3', _swx)
             pass
         try:
             _lanes = max(int(self._sec_lane_count(int(sec)) or 1), 1)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_ctm_geom#2', _swx)
             _lanes = 1
         _w = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0) or 18.0)
         _kj = float(getattr(self, 'JamDensity', 200.0) or 200.0)
         _qs = float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)
         try:
             _cal = self._ctm_params(int(sec)) or {}
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_ctm_geom#1', _swx)
             _cal = {}
         _g = _ctm2.ApproachGeom(
             length_m=_len, lanes=_lanes,
@@ -23088,19 +23761,30 @@ class IntersectionController:
                     _veh = []
                     try:
                         _nv = max(int(AKIVehStateGetNbVehiclesSection(_s, True)), 0)
-                    except Exception:
+                    except Exception as _swx:
+                        _note_swallow('_cbql_ctm_snapshot#4', _swx)
                         _nv = 0
                     for _vi in range(_nv):
                         try:
                             _inf = AKIVehStateGetVehicleInfSection(_s, _vi)
                             _d = _g.length_m - float(getattr(_inf, 'CurrentPos', 0.0) or 0.0)
                             _veh.append((_d, _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
-                        except Exception:
+                        except Exception as _swx:
+                            _note_swallow('_cbql_ctm_snapshot#3', _swx)
                             continue
-                    try:
-                        _arr = max(0.0, float(self._measured_section_flow_vph(_s) or 0.0))
-                    except Exception:
-                        _arr = 0.0
+                    _arr = None
+                    if bool(globals().get('VLOOP_TAC_FEED_CTM', True)):
+                        try:
+                            _arr = self._vlt_advance_vph(_s)   # ADVANCE loop, clear of the queue
+                        except Exception as _swx:
+                            _note_swallow('_cbql_ctm_snapshot#2', _swx)
+                            _arr = None
+                    if _arr is None:
+                        try:
+                            _arr = max(0.0, float(self._measured_section_flow_vph(_s) or 0.0))
+                        except Exception as _swx:
+                            _note_swallow('_cbql_ctm_snapshot#1', _swx)
+                            _arr = 0.0
                     _cells = _ctm2.seed_cells(_g, _veh)
                     _seeded[_s] = (_g, _cells, _arr, sum(_cells.bus))
                 _g, _cells, _arr, _nb = _seeded[_s]
@@ -23185,7 +23869,8 @@ class IntersectionController:
         self._cbql_last_log = float(time)
         try:
             _cur = int(ECIGetCurrentPhase(_st.junction_id))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_observe#2', _swx)
             _cur = 0
         _delay, _flow_map = self._cbql_phase_delay_flow(_st)
         _pids = sorted(_st.phase_types)
@@ -23193,7 +23878,8 @@ class IntersectionController:
         try:
             _lam = min(max(float(GetPhaseDuration(_st.junction_id, int(_cur), 0.0)
                                  or 0.0) / max(_st.cycle_s, 1.0), 0.0), 1.0)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_observe#1', _swx)
             _lam = 0.5
         _state, _snap, _cq = self._cbql_make_state(_st, _cur, _lam, _flow)
         # LEARN FROM WHAT ACTUALLY RAN: observe-only never applies the pick, so
@@ -23204,6 +23890,10 @@ class IntersectionController:
         self._cbql_commit(_st, _state, _snap, _cur, _cur)
         # What the joint policy WOULD pick here -- logged only, never applied.
         _pick, _mix, _w = self._cbql_ctl.act(_state)
+        _pc = getattr(self, '_cbql_pick_counts', None)
+        if _pc is None:
+            _pc = {}; self._cbql_pick_counts = _pc
+        _pc[int(_pick)] = _pc.get(int(_pick), 0) + 1
         _dpri = [_delay[_p] for _p in _st.priority_phases if _p in _delay]
         _dnon = [_delay[_p] for _p in _st.non_priority_phases if _p in _delay]
         log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%s dP=%.1f dN=%.1f "
@@ -23235,18 +23925,21 @@ class IntersectionController:
             return
         try:
             _cur = int(ECIGetCurrentPhase(_jid))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_execute#5', _swx)
             return
         if _cur not in _st.phase_types:
             return                              # interphase/unknown -> let it clear
         try:
             if int(_cur) in self._ped_protected_phases():
                 return                          # never truncate a pedestrian phase
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_execute#4', _swx)
             pass
         try:
             _el = _now - float(ECIGetStartingTimePhase(_jid))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_execute#3', _swx)
             return
         _ming = float(globals().get('CBQL_MIN_GREEN_S', 7.0) or 7.0)
         _maxg = float(globals().get('CBQL_MAX_GREEN_S', 60.0) or 60.0)
@@ -23266,6 +23959,10 @@ class IntersectionController:
         _rw, _bus = self._cbql_learn_step(_st, _state, _delay)
         _pick, _mix, _w = self._cbql_ctl.act(_state)
         _pick = int(_pick)
+        _pc = getattr(self, '_cbql_pick_counts', None)
+        if _pc is None:
+            _pc = {}; self._cbql_pick_counts = _pc
+        _pc[_pick] = _pc.get(_pick, 0) + 1
         # Default: the current phase is held. Overwritten below only when a
         # switch is actually applied, so a rate-capped/failed switch is
         # credited as the hold it really was.
@@ -23280,7 +23977,8 @@ class IntersectionController:
                 return
         try:
             _cyc = float(self._signal_cycle_s(timeSta) or 1.0)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_cbql_execute#2', _swx)
             _cyc = 1.0
         # PER-JUNCTION SWITCH-RATE GUARD: cap agent-driven phase changes to
         # CBQL_MAX_SWITCHES_PER_CYCLE within a trailing one-cycle window, so the
@@ -23305,6 +24003,7 @@ class IntersectionController:
             ECIChangeDirectPhaseWithInterphaseTransition(
                 _jid, int(_pick), timeSta, _now, _cyc)
         except Exception as _ce:
+            _note_swallow('_cbql_execute#1', _ce)
             log_to_file("[CBQL EXEC] jct=%d switch error: %r" % (_jid, _ce))
             return
         _sw.append(_now)
@@ -29919,6 +30618,7 @@ class IntersectionController:
             self._sw_solve_log('GE', time, lb, ub, opt, base_pax, _opt_pax)
             return opt, base_pax, _opt_pax
         except Exception as _e:
+            _note_swallow('solve_green_extension#1', _e)
             # Never let the solver break a decision -- fall back to "no gain
             # known", which the caller reads as do-nothing.
             log_to_file(f"[BXT] solve_green_extension error: {_e}")
@@ -30149,6 +30849,7 @@ class IntersectionController:
             self._sw_solve_log('INS', time, lb, ub, opt, base_pax, _opt_pax)
             return opt, base_pax, _opt_pax
         except Exception as _e:
+            _note_swallow('solve_bus_phase_green#1', _e)
             log_to_file(f"[BXT] solve_bus_phase_green error: {_e}")
             return max(0.0, float(lb)), 0.0, 0.0
         finally:
@@ -30168,6 +30869,16 @@ class IntersectionController:
                                opt, base_pax, opt_pax), force=True)
                 return
             _b = _c['bus']
+            _lg = _vlt_ledger() if _VLL_AVAILABLE else None
+            if _lg is not None and bool(globals().get('ASSUME_CHECKS', True)):
+                # predicted crossing time of the bus under the solved green
+                _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
+                _k = 'sw_solve_cross_%s_s' % kind
+                _lg.predict(_k, (_jid, int(_b['veh'])),
+                            float(time) + _b['eta_s'] + self._sw_bus_delay(_c, opt), time)
+                _pend = (getattr(self, '_vlt', {}) or {}).get('pend_bus')
+                if _pend is not None and _k not in _pend.setdefault(int(_b['veh']), []):
+                    _pend[int(_b['veh'])].append(_k)
             log_to_file("[SW_SOLVE] %s jct=%s t=%.0f [%.0f,%.0f] opt=%.1f "
                         "pax %.0f->%.0f bus=%d dist=%.0fm ahead=%.1f "
                         "busdelay %.1f->%.1fs" % (
@@ -30175,7 +30886,8 @@ class IntersectionController:
                             opt, base_pax, opt_pax, _b['veh'], _b['dist_m'],
                             _b['n_ahead'], self._sw_bus_delay(_c, 0.0),
                             self._sw_bus_delay(_c, opt)), force=True)
-        except Exception:
+        except Exception as _swx:
+            _note_swallow('_sw_solve_log#1', _swx)
             pass
 
     def BP_Objective_Function(self, GreenTime, time):
@@ -30745,6 +31457,7 @@ def AAPIInit():
             log_to_file(f"[INIT] engine flag reset failed: {_rste!r}", force=True)
         try:
             _twoway_shift.clear()   # per-replication clock-shift accumulators
+            _vlt_reset()            # tactical loops / assumption ledger
         except Exception:
             pass
         # (legacy mojibake comment truncated)
@@ -36310,6 +37023,13 @@ def _aapi_post_manage_impl(time, timeSta, timeTrans, acycle):
     global _bus_type_needs_recheck
     global _bus_type_provisional
     global _dynaropac_last_eval_t, _dynaropac_decision_header_written
+    # Tactical virtual loops + assumption checks (never raises).
+    try:
+        _vlt_tick_all(time, timeSta)
+    except Exception as _vlte:
+        if _VLT.get('errs', 0) < 3:
+            _VLT['errs'] = _VLT.get('errs', 0) + 1
+            log_to_file("[VLOOP] tick_all error: %r" % (_vlte,), force=True)
     if _bus_type_needs_recheck:
         # Try every 30 s for the first 600 s (10 min) to allow time for buses
         # to enter the network before giving up.  The original 120 s window was
@@ -37796,6 +38516,10 @@ def _overlay_detections_on_aimsun_map():
 
 def AAPIFinish():
     log_to_file("===== AAPIFinish =====")
+    try:
+        _vlt_finish()
+    except Exception as _vfe:
+        log_to_file("[VLOOP] finish error: %r" % (_vfe,), force=True)
     log_to_file("[SIM_END] microscopic simulation ended ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â AAPIFinish started")
 
     # (legacy mojibake comment truncated)

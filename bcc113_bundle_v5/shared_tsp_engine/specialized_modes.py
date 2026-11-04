@@ -2400,6 +2400,32 @@ REWARD_FUTURE_DEBT_GAIN      = 0.35 # weight on projected unrecovered green debt
 REWARD_FUTURE_OFFSET_GAIN    = 0.20 # weight on projected offset misalignment
 
 
+_SWALLOW_DIAG = {}
+
+
+def _note_swallow_spm(self, tag, exc=None):
+    """specialized_modes twin of engine._note_swallow: count every swallowed
+    exception per tag and log the FIRST one with where it was raised. The
+    engine merges these counts into its end-of-run [SWALLOWED] summary."""
+    try:
+        _n = _SWALLOW_DIAG.get(tag, 0) + 1
+        _SWALLOW_DIAG[tag] = _n
+        if _n == 1:
+            import traceback as _tb
+            import os as _os
+            _raised = ''
+            if exc is not None and getattr(exc, '__traceback__', None):
+                _raised = ' <- '.join(
+                    "%s:%d %s `%s`" % (_os.path.basename(_x.filename), _x.lineno,
+                                       _x.name, (_x.line or '').strip()[:90])
+                    for _x in reversed(_tb.extract_tb(exc.__traceback__)[-3:]))
+            _log_func(self, "[SWALLOWED] tag=spm:%s FIRST hit -- %r%s"
+                      % (tag, exc, (" | raised at " + _raised) if _raised else ''),
+                      force=True)
+    except Exception:
+        pass
+
+
 def _log_func(self, msg: str, force: bool = False):
     """Call the module-level log_to_file if available."""
     try:
@@ -4127,6 +4153,27 @@ SHOCKWAVE_MAGNITUDE_SEEDS = True  # shockwave GE/INS seeds for the DE refines
 SW_BUS_CRUISE_KMH = 40.0          # bus running speed between stops
 SW_BUS_DWELL_S = 20.0             # dwell per scheduled stop on the way
 SW_BUS_LOG = True                 # [BUS_ROUTE] / [SW_SOLVE] diagnostics
+
+# TACTICAL VIRTUAL LOOPS (2026-11-05; shared_tsp_engine/vloop_layout.py).
+# Point loops placed per approach from THIS intersection's geometry: stop bar,
+# queue mid/tail at the shockwave max queue, ADVANCE beyond it (upstream of a
+# turn bay, off a near-side bus stop), bay entry, CTM inflow edge, bus
+# check-in, exits. Lanes, bays and stops are LEARNED from vehicles during the
+# warm-up, then the layout is fixed and logged ([VLOOP_LAYOUT]). Read-only:
+# the loops feed the CBQL CTM arrivals (VLOOP_TAC_FEED_CTM) and the checks.
+VLOOP_TACTICAL = True
+VLOOP_TAC_DT_S = 1.0        # loop sampling period (s)
+VLOOP_TAC_WARM_S = 300.0    # learn lanes / bays / stops for this long first
+VLOOP_TAC_REACH_M = 450.0   # how far upstream to look (stops at a signal)
+VLOOP_TAC_FEED_CTM = True   # CBQL CTM arrivals from the ADVANCE loop
+# ASSUMPTION CHECKS: prediction vs outcome, logged as [ASSUME] and summarised
+# per replication as [ASSUME_SUMMARY] + <run>/assumption_checks.csv.
+ASSUME_CHECKS = True
+ASSUME_LOG = True
+# TikZ figures (Qin & Zhang Fig. 3 / 4-5 style) to <run>/tikz/ at the end of
+# each replication: per junction phase sequence + CTM cell occupancy.
+TIKZ_EXPORT = True
+TIKZ_SAMPLE_S = 30.0
 
 # Read by the rule layer (RULE_PERSON_DELAY_WARRANT gate) but never declared
 # or propagated, so CELLQLEARN_SAFE's 400 pax.s warrant was silently 0.
@@ -8779,7 +8826,8 @@ def _solve_ge_durations(self, bus_eta_s, rem_green, veh_id):
                                            _bs['n_ahead'], _bs['cruise_ms'])
                 if _ge > 0.0:
                     _cands.append(min(max(_ge, _lo), _hi))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow_spm(self, '_solve_ge_durations#5', _swx)
             pass
         try:
             _mq = (self._measured_main_queue_veh()
@@ -8789,20 +8837,23 @@ def _solve_ge_durations(self, bus_eta_s, rem_green, veh_id):
                 try:
                     _qa = max(0.0, float(np.max(np.asarray(
                         getattr(self, 'UpFlowList', [[0.0]]), dtype=float)[0])))
-                except Exception:
+                except Exception as _swx:
+                    _note_swallow_spm(self, '_solve_ge_durations#4', _swx)
                     _qa = 0.0
                 _gq = _swl.ge_to_clear_queue(self._sw_lane_fd(), float(rem_green),
                                              float(_mq) / _ln, _qa / _ln)
                 if _gq is not None and _gq > 0.0:
                     _cands.append(min(max(_gq, _lo), _hi))
-        except Exception:
+        except Exception as _swx:
+            _note_swallow_spm(self, '_solve_ge_durations#3', _swx)
             pass
     try:
         if int(veh_id) >= 0 and rem_green is not None:
             _miss = float(bus_eta_s) - float(rem_green)
             if _miss > 0.0:
                 _cands.append(min(max(_miss + 0.5, _lo), _hi))   # solved bus-serve
-    except Exception:
+    except Exception as _swx:
+        _note_swallow_spm(self, '_solve_ge_durations#2', _swx)
         pass
     try:
         _mq = (self._measured_main_queue_veh()
@@ -8811,7 +8862,8 @@ def _solve_ge_durations(self, bus_eta_s, rem_green, veh_id):
             _sf = max(float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)
                       / 3600.0, 0.1)
             _cands.append(min(max(float(_mq) / _sf, _lo), _hi))  # solved demand-clear
-    except Exception:
+    except Exception as _swx:
+        _note_swallow_spm(self, '_solve_ge_durations#1', _swx)
         pass
     _cands = sorted({round(float(c), 1) for c in _cands if c > 0.0})
     return _cands or _grid
@@ -8881,7 +8933,8 @@ def _sw_ins_seeds(self, veh_id, time, lo, cap):
         if _g <= 0.0:
             return []
         return [round(min(max(float(_g), float(lo)), float(cap)), 1)]
-    except Exception:
+    except Exception as _swx:
+        _note_swallow_spm(self, '_sw_ins_seeds#1', _swx)
         return []
 
 
@@ -11634,6 +11687,9 @@ MODE_FLAGS = [
     'CBQL_CTM_QUEUE_BIN_VEH',
     'SHOCKWAVE_BUS_TERM', 'SHOCKWAVE_MAGNITUDE_SEEDS', 'SW_BUS_CRUISE_KMH',
     'SW_BUS_DWELL_S', 'SW_BUS_LOG',
+    'VLOOP_TACTICAL', 'VLOOP_TAC_DT_S', 'VLOOP_TAC_WARM_S', 'VLOOP_TAC_REACH_M',
+    'VLOOP_TAC_FEED_CTM', 'ASSUME_CHECKS', 'ASSUME_LOG', 'TIKZ_EXPORT',
+    'TIKZ_SAMPLE_S',
     'RULE_PERSON_DELAY_WARRANT', 'PERSON_DELAY_WARRANT_MIN_PAXS',
     'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
     'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',

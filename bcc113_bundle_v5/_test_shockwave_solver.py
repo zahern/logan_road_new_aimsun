@@ -58,8 +58,11 @@ class Inf(object):
 
 SEC = {10: 100.0, 20: 200.0, 30: 150.0}
 LOG = []
+SWALLOWED = []
 ns = {
-    '_swl': _swl, '_SWL_AVAILABLE': True,
+    '_note_swallow': lambda tag, exc=None: SWALLOWED.append((tag, repr(exc))),
+    '_swl': _swl, '_SWL_AVAILABLE': True, '_VLL_AVAILABLE': False,
+    '_vlt_ledger': lambda: None,
     '_PT_VEH_LINE': {}, '_PT_VEH_LINE_T': [-1.0], '_PT_ROUTE_SECS': {},
     '_SEC_LEN_CACHE': {}, '_SCHED_STOP_SECS': {900: [20]},
     'AKIPTGetNumberLines': lambda: 1,
@@ -166,6 +169,7 @@ check('7 solve picks least serving GE (not the lower bound)', best == need,
       (best, need))
 
 print('\n' + '\n'.join(m for m in LOG if '[BUS_ROUTE]' in m))
+print('swallowed:', SWALLOWED or 'none')
 if fails:
     sys.exit('FAIL: %s' % fails)
 print('PASS')

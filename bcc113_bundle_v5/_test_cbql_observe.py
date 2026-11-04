@@ -75,7 +75,9 @@ class SecInf(object):
     speedLimit = 50.0
 
 
+SWALLOWED = []
 ns = {
+    '_note_swallow': lambda tag, exc=None: SWALLOWED.append((tag, repr(exc))),
     '_cbql': _cbql,
     '_ctm2': _ctm2,
     '_CTM2_AVAILABLE': True,
@@ -129,6 +131,9 @@ class Ctl(object):
 
     def _measured_section_flow_vph(self, s):
         return 300.0
+
+    def _vlt_advance_vph(self, s):
+        return None          # tactical loops not built -> measured-flow fallback
 
     def __init__(self):
         self._cbql_struct = STRUCT
@@ -285,6 +290,7 @@ check('14 CBQL_USE_CTM=False -> old flow state, no CTM rewards',
       c2._cbql_prev[0].phase_queue is None and c2._cbql_prev[2] is None)
 
 print('\nlast log line:', LOG[-1])
+print('swallowed:', SWALLOWED or 'none')
 if fails:
     sys.exit('FAIL: %s' % fails)
 print('PASS')
