@@ -6262,6 +6262,39 @@ if (_GABL_BASE in {a["name"] for a in ARMS}
     if _GABL_BASE in LEARNING_ARMS:
         LEARNING_ARMS.add("CBQL_SHAPLEY_EXEC_KG")
 
+# -- GAME SOLUTION-CONCEPT LADDER (2026-11-05) -------------------------------
+# One arm per game (shared_tsp_engine/tsp_games.py). Every arm is the paper's
+# M5 arm (CHAMP_ADAPTIVE_DSW_GAME_COOP) -- same DSW base, same Harmony-Search
+# integer-duration proposer, same payoffs, gates and Z4 -- with ONLY the
+# solution concept (GAME_SOLUTION) changed, so differences between these arms
+# are attributable to the game played. The cooperative side-payment tolerance
+# is GAME_COOP's (25 % of the joint surplus). Every pick logs [GAME_SOLVE].
+#   GAME_SOL_NASH      asymmetric Nash bargaining (the M4 rule, local tier)
+#   GAME_SOL_UTIL      cooperative, utilitarian (max joint surplus)
+#   GAME_SOL_NWELF     cooperative, Nash welfare (max u_bus * u_car)
+#   GAME_SOL_EGAL      cooperative, egalitarian (max min(u_bus, u_car))
+#   GAME_SOL_KS        Kalai-Smorodinsky bargaining (proportional gains)
+#   GAME_SOL_STACKBUS  Stackelberg, bus leads, cars accept or refuse
+#   GAME_SOL_STACKCAR  Stackelberg, cars lead, the bus must still gain
+#   GAME_SOL_NONCOOP   non-cooperative request/allowance game, pure Nash eq.
+GAME_SOL_ARMS = [
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH", "nash"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_UTIL", "utilitarian"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_NWELF", "nash_welfare"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_EGAL", "egalitarian"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_KS", "kalai_smorodinsky"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_STACKBUS", "stackelberg_bus"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_STACKCAR", "stackelberg_car"),
+    ("CHAMP_ADAPTIVE_DSW_GAME_SOL_NONCOOP", "noncoop_grant"),
+]
+if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
+    for _gname, _gsol in GAME_SOL_ARMS:
+        if _gname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _gname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25}))
+
 # -- CELL-STATE BACK-PRESSURE arm (2026-11-04) ------------------------------
 # Store-and-forward / max-pressure release off the CTM cell state (queue x
 # downstream free space) with a spillback gate -- drains saturated approaches

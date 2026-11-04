@@ -131,6 +131,26 @@ def analyse(path):
             flag(AMBER, '%d solves had an objective > 1e5 pax.s (legacy shockwave '
                         'term blowing up)' % blow)
     out.append('held by SOLVE_NO_GAIN: %d' % txt.count('[SOLVE_NO_GAIN]'))
+    # ---- game solution concepts -------------------------------------------
+    gs = re.findall(r'\[GAME_SOLVE\] .*?game=(\w+) .*?n=(\d+) feas=(\d+) pick=(\S+)(.*)', txt)
+    if gs:
+        by = {}
+        for g, n, f, pick, rest in gs:
+            d = by.setdefault(g, Counter())
+            d['solves'] += 1
+            d['picked' if pick != 'NO_ACTION' else 'held'] += 1
+            if pick == 'NO_ACTION':
+                r = re.search(r'\(([^)]*)\)', rest)
+                d['held: ' + (r.group(1) if r else '?')] += 1
+            d['feasible_sum'] += int(f)
+        for g, d in sorted(by.items()):
+            out.append('game   : %-18s solves=%d picked=%d held=%d mean feasible=%.1f %s'
+                       % (g, d['solves'], d['picked'], d['held'],
+                          d['feasible_sum'] / max(d['solves'], 1),
+                          {k: v for k, v in d.items() if k.startswith('held:')}))
+            if d['picked'] == 0:
+                flag(AMBER, 'game %s never picked an action in %d solves'
+                            % (g, d['solves']))
     # ---- decider vetoes --------------------------------------------------
     vt = Counter(re.findall(r'\[CELLQ_HELD\].*?veto=([a-z_]+)\(', txt))
     if vt or '[CELLQ_ADMIT]' in txt:

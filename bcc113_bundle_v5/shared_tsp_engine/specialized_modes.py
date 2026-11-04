@@ -9,6 +9,13 @@ repo); where their behavior conflicts with the engine's own GE/INS reward
 evaluation, the engine's behavior wins.
 """
 import sys
+try:  # one candidate set, many games (stdlib-only sibling module)
+    try:
+        from . import tsp_games as _tsp_games
+    except ImportError:
+        import tsp_games as _tsp_games
+except Exception:  # pragma: no cover
+    _tsp_games = None
 try:  # kinematic-wave GE / INS seeds (stdlib-only sibling module)
     try:
         from . import shockwave_lwr as _swl
@@ -4115,6 +4122,16 @@ MIN_GE_EXTENSION_S = 1.0
 # waiting bus needs (vehicles ahead discharge + intergreen), up to SW_INS_MAX_S.
 SW_INS_STRETCH = True
 SW_INS_MAX_S = 15.0
+# GAME SOLUTION CONCEPT (2026-11-05; shared_tsp_engine/tsp_games.py). Empty =
+# the legacy dctsp_nash_bargain selection (unchanged). Set to one of
+#   nash | utilitarian | nash_welfare | egalitarian | kalai_smorodinsky |
+#   stackelberg_bus | stackelberg_car | noncoop_grant
+# to decide the SAME candidate set with that game. nash / utilitarian /
+# nash_welfare / egalitarian reproduce the legacy rules exactly (verified on
+# 2000 random frontiers). Every pick logs [GAME_SOLVE].
+GAME_SOLUTION = ''
+GAME_TOL_BUS_FRAC = 0.25     # side-payment: share of joint surplus a player may lose
+GAME_TOL_CAR_FRAC = 0.25
 # CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
 # cooperative-game (Shapley) + Q-learning controller. Default off. The observe
 # increment derives the junction's phase structure from live data + runs the
@@ -9525,7 +9542,9 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # field equal, all lines ending in [corridor]). Skip Tier 2 for cooperative
     # arms so their own coalition rule actually selects the action.
     _coop_pre = bool(globals().get('NASH_COOPERATIVE', False))
-    if (not _monitor and not _coop_pre
+    _gsol = (str(globals().get('GAME_SOLUTION', '') or '').strip().lower()
+             if _tsp_games is not None else '')
+    if (not _monitor and not _coop_pre and not _gsol
             and bool(globals().get('NASH_CORRIDOR_MODE', False))
             and _coord is not None
             and hasattr(_coord, 'nash_corridor_bestresponse')):
@@ -9561,6 +9580,48 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
             _nash_held_log(self, time, veh_id, cand,
                            _corr_diag.get(int(getattr(self, 'id', -1))),
                            'corridor')
+            return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
+    elif _gsol:
+        # -- GAME_SOLUTION: decide the same candidate set with one named game --
+        # Payoffs exactly as the legacy Tier-1 frontier builds them: B = phase
+        # total (bus + mainline; car-only on monitor ticks), C = cross cost,
+        # b = bus-only benefit. See tsp_games for every concept's rule.
+        _gc = []
+        for _c in cand:
+            _bt = _nash_phase_total_bps(self, _c[0], _c[1],
+                                        (0.0 if _monitor else _c[4]))
+            _gc.append(_tsp_games.Cand(str(_c[0]), float(_c[1]), float(_bt),
+                                       float(_c[5]), 0.0 if _monitor else float(_c[4])))
+        _gp = _tsp_games.Params(
+            p_bus=float(p_T), p_car=float(p_C),
+            net_ratio=float(globals().get('NASH_NET_GATE_RATIO', 1.0) or 1.0),
+            tol_bus_abs=float(globals().get('NASH_COOP_BUS_TOL', 0.0) or 0.0),
+            tol_car_abs=float(globals().get('NASH_COOP_CAR_TOL', 0.0) or 0.0),
+            tol_bus_frac=float(globals().get('GAME_TOL_BUS_FRAC', 0.25) or 0.0),
+            tol_car_frac=float(globals().get('GAME_TOL_CAR_FRAC', 0.25) or 0.0),
+            fair_w=float(globals().get('NASH_COOP_FAIR_W', 0.0) or 0.0))
+        try:
+            _bi, _gd = _tsp_games.solve(_gsol, _gc, _gp)
+        except Exception as _ge:
+            _note_swallow_spm(self, 'game_solve', _ge)
+            _bi, _gd = None, {'reason': 'error %r' % (_ge,), 'nfeas': 0, 'n': len(_gc)}
+        _frontier = [(g.B, g.C, g.b) for g in _gc]
+        _ncand = len(_gc)
+        _nfeas = int(_gd.get('nfeas', 0) or 0)
+        try:
+            _log_func(self, "[GAME_SOLVE] inter=%s t=%.0f game=%s bus=%s n=%d feas=%d "
+                            "pick=%s%s%s" % (
+                getattr(self, 'id', '?'), float(time), _gsol, veh_id, _ncand, _nfeas,
+                ('%s_%gs u_bus=%.0f u_car=%.0f joint=%.0f' % (
+                    _gc[_bi].family, _gc[_bi].duration, _gc[_bi].u_bus,
+                    _gc[_bi].u_car, _gc[_bi].joint)) if _bi is not None else 'NO_ACTION',
+                (' (%s)' % _gd.get('reason')) if _bi is None and _gd.get('reason') else '',
+                (' eq=%s' % _gd.get('equilibria')) if _gd.get('equilibria') else ''),
+                      force=True)
+        except Exception as _ge:
+            _note_swallow_spm(self, 'game_solve_log', _ge)
+        if _bi is None:
+            _nash_held_log(self, time, veh_id, cand, _loc_diag, 'game:' + _gsol)
             return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
     else:
         # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tier 1: local Nash bargain ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
@@ -11729,6 +11790,7 @@ MODE_FLAGS = [
     # Shockwave-solved magnitude down to 1s (2026-11-04): floor + solver bound.
     'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S', 'SOLVE_REQUIRES_GAIN',
     'SW_INS_STRETCH', 'SW_INS_MAX_S',
+    'GAME_SOLUTION', 'GAME_TOL_BUS_FRAC', 'GAME_TOL_CAR_FRAC',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',
