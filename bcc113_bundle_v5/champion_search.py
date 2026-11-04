@@ -1861,7 +1861,10 @@ ARMS = [
         "NASH_NET_GATE_RATIO": 1.5,
         "CASCADE_COST_MODE": True,
         # THE ONE DIFFERENCE vs NASH_BARGAIN: faithful multi-cell CTM cross cost.
-        "CTM_CROSS_COST_MODE": True,
+        # NASH_CTM_COST is the flag the Nash cost path reads (specialized_modes);
+        # the old key CTM_CROSS_COST_MODE was read by nothing, so this arm ran
+        # IDENTICAL to NASH_BARGAIN until 2026-11-05.
+        "NASH_CTM_COST": True,
         "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
         "NASH_CONVERGENCE_TOL": 0.01,
         "NASH_INTEGER_DURATIONS": True,

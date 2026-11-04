@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T0500-cbql-ctm-twoclass"
+ENGINE_BUILD = "2026-11-05T0800-shockwave-bus-term"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -580,6 +580,73 @@ except Exception as _cbql_err:   # pragma: no cover - surfaced on the banner
     _cbql = None
     _CBQL_AVAILABLE = False
     _CBQL_IMPORT_ERR = repr(_cbql_err)
+
+# Kinematic-wave (LWR / Newell) stop-line timing + route ETA, used to make the
+# GE / insertion objectives' BUS term depend on the green being solved.
+try:
+    try:
+        from . import shockwave_lwr as _swl
+    except ImportError:
+        import shockwave_lwr as _swl
+    _SWL_AVAILABLE = True
+except Exception as _swl_err:   # pragma: no cover
+    _swl = None
+    _SWL_AVAILABLE = False
+    _SWL_IMPORT_ERR = repr(_swl_err)
+
+# Network-wide PT lookups, cached per simulation second: which line every bus
+# in the network follows (AKIPTGetNumberLines / AKIGetVehicleFollowingPTLine),
+# and each line's route in order (AKIPTGetIdSectionInLine).
+_PT_VEH_LINE = {}
+_PT_VEH_LINE_T = [-1.0]
+_PT_ROUTE_SECS = {}
+_SEC_LEN_CACHE = {}
+
+
+def _pt_line_of(veh_id, now):
+    """PT line id of veh_id (None if it follows no line). Rebuilds the whole
+    network's bus -> line map at most once per simulated second."""
+    if int(float(now)) != int(_PT_VEH_LINE_T[0]):
+        _PT_VEH_LINE.clear()
+        _PT_VEH_LINE_T[0] = float(now)
+        try:
+            for _li in range(int(AKIPTGetNumberLines())):
+                _lid = int(AKIPTGetIdLine(_li))
+                for _vi in range(int(AKIGetNbVehiclesFollowingPTLine(_lid))):
+                    _PT_VEH_LINE[int(AKIGetVehicleFollowingPTLine(_lid, _vi))] = _lid
+        except Exception:
+            pass
+    return _PT_VEH_LINE.get(int(veh_id))
+
+
+def _pt_route_secs(line_id):
+    _r = _PT_ROUTE_SECS.get(int(line_id))
+    if _r is None:
+        _r = []
+        try:
+            for _si in range(int(AKIPTGetNumberSectionsInLine(int(line_id)))):
+                _s = int(AKIPTGetIdSectionInLine(int(line_id), _si))
+                if _s > 0:
+                    _r.append(_s)
+        except Exception:
+            pass
+        _PT_ROUTE_SECS[int(line_id)] = _r
+    return _r
+
+
+def _sec_len_m(sec):
+    _v = _SEC_LEN_CACHE.get(int(sec))
+    if _v is None:
+        _v = 0.0
+        try:
+            _si = AKIInfNetGetSectionANGInf(int(sec))
+            if getattr(_si, 'report', -1) >= 0:
+                _v = float(_si.length)
+        except Exception:
+            pass
+        _SEC_LEN_CACHE[int(sec)] = _v
+    return _v
+
 
 # Two-class (bus / non-bus) CTM for the CBQL state + reward (paper Sec. 3.2).
 # Stdlib-only sibling module, same import mechanism. _CTM2_AVAILABLE False ->
@@ -22714,6 +22781,188 @@ class IntersectionController:
             _flow_map[_ph] = _f
         return _delay, _flow_map
 
+    # ── shockwave bus state (network PT lookup + route + lane queue) ─────
+    def _sw_lane_fd(self, sec=None):
+        _vf = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
+        if sec is not None:
+            try:
+                _si = AKIInfNetGetSectionANGInf(int(sec))
+                _sl = float(getattr(_si, 'speedLimit', 0.0) or 0.0)
+                if _sl > 1.0:
+                    _vf = _sl
+            except Exception:
+                pass
+        return _swl.LaneFD(_vf, float(getattr(self, 'JamDensity', 200.0) or 200.0),
+                           float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0))
+
+    def _sw_bus_route_state(self, veh_id, time):
+        """Where the bus is and when it reaches THIS junction's stop line.
+
+        Looks the bus up directly in the network (AKIPTVehGetInf), finds its
+        PT line (network-wide map) and follows that line's ROUTE to the first
+        bus-phase approach section ahead, adding dwell at the line's scheduled
+        stops in between (_SCHED_STOP_SECS). Also counts the vehicles that will
+        discharge ahead of it in its lane: same-lane vehicles in front when it
+        is already on the approach, else the approach's standing queue per
+        lane. Returns a dict or None. Cached per (veh, second)."""
+        if not _SWL_AVAILABLE or veh_id is None or int(veh_id) < 0:
+            return None
+        _ck = (int(veh_id), int(float(time)))
+        _c = getattr(self, '_sw_bus_cache', None)
+        if _c and _c[0] == _ck:
+            return _c[1]
+        _out = None
+        try:
+            _inf = AKIPTVehGetInf(int(veh_id))
+            if getattr(_inf, 'report', -1) < 0:
+                raise ValueError('bus not in network')
+            _bsec = int(_inf.idSection)
+            _bpos = float(getattr(_inf, 'CurrentPos', 0.0) or 0.0)
+            _blane = int(getattr(_inf, 'numberLane', 0) or 0)
+            _bspd = max(float(getattr(_inf, 'CurrentSpeed', 0.0) or 0.0) / 3.6, 0.0)
+            _line = _pt_line_of(int(veh_id), time)
+            _po = self._phase_origin_sections() or {}
+            _bp = int(getattr(self, 'BusPhase', -1) or -1)
+            _apps = set(int(x) for x in (_po.get(_bp, []) or []))
+            _route = _pt_route_secs(_line) if _line is not None else []
+            _tgt = None
+            if _route and _bsec in _route:
+                _i0 = _route.index(_bsec)
+                for _s in _route[_i0:]:
+                    if _s in _apps:
+                        _tgt = _s
+                        break
+            _cruise = max(float(globals().get('SW_BUS_CRUISE_KMH', 40.0) or 40.0)
+                          / 3.6, 0.5)
+            _re = None
+            if _tgt is not None:
+                _lens = {int(x): _sec_len_m(x) for x in _route}
+                _re = _swl.route_eta(
+                    _route, _lens, _bsec, _bpos, _tgt, _cruise,
+                    stop_secs=_SCHED_STOP_SECS.get(int(_line), ()) or (),
+                    dwell_s=float(globals().get('SW_BUS_DWELL_S', 20.0) or 0.0))
+            if _re is None:
+                # off-route / no line: straight-line distance from detection
+                _be = (getattr(self, '_bus_eta', {}) or {}).get(0)
+                if not _be or int(_be[0]) != int(veh_id):
+                    raise ValueError('no route and no detection')
+                _dist, _eta, _src = float(_be[2]), float(_be[1]), 'detect'
+                _nst = 0
+                _tgt = _tgt or (min(_apps) if _apps else None)
+            else:
+                _dist, _eta, _src, _nst = _re.dist_m, _re.eta_s, 'route', _re.n_stops
+            # vehicles that discharge ahead of the bus in its lane
+            _n_ahead = 0.0
+            _src_q = 'lane'           # same-lane count when on the approach
+            if _tgt is not None and _bsec == _tgt:
+                try:
+                    for _vi in range(max(int(AKIVehStateGetNbVehiclesSection(_bsec, True)), 0)):
+                        _v = AKIVehStateGetVehicleInfSection(_bsec, _vi)
+                        if (int(getattr(_v, 'numberLane', -1)) == _blane
+                                and float(getattr(_v, 'CurrentPos', 0.0)) > _bpos
+                                and int(getattr(_v, 'idVeh', -1)) != int(veh_id)):
+                            _n_ahead += 1.0
+                except Exception:
+                    pass
+            elif _tgt is not None:
+                # DETECTORS FIRST: the measured standing queue on the approach
+                # (detector feed, stats.latest_section); only when that approach
+                # has no fresh measurement fall back to the vehicle scan.
+                _q = None
+                try:
+                    _q = self._measured_sections_queue_veh([int(_tgt)])
+                except Exception:
+                    _q = None
+                _qsrc = 'detector'
+                if _q is None:
+                    _qsrc = 'scan'
+                    try:
+                        _zq = self._zone_queue_count(int(_tgt))
+                        _q = float(_zq[0] if isinstance(_zq, tuple) else _zq)
+                    except Exception:
+                        _q = 0.0
+                try:
+                    _n_ahead = float(_q) / max(int(self._sec_lane_count(int(_tgt)) or 1), 1)
+                except Exception:
+                    _n_ahead = 0.0
+                _src_q = _qsrc
+            _out = {'veh': int(veh_id), 'line': _line, 'sec': _bsec,
+                    'target': _tgt, 'dist_m': float(_dist), 'eta_s': float(_eta),
+                    'n_stops': int(_nst), 'n_ahead': float(_n_ahead),
+                    'speed_ms': _bspd, 'cruise_ms': _cruise, 'src': _src,
+                    'ahead_src': _src_q}
+        except Exception:
+            _out = None
+        self._sw_bus_cache = (_ck, _out)
+        if _out is not None and bool(globals().get('SW_BUS_LOG', True)):
+            _lt = getattr(self, '_sw_bus_log_t', {})
+            if float(time) - float(_lt.get(int(veh_id), -1e9)) >= 30.0:
+                _lt[int(veh_id)] = float(time)
+                self._sw_bus_log_t = _lt
+                _be = (getattr(self, '_bus_eta', {}) or {}).get(0)
+                log_to_file("[BUS_ROUTE] jct=%s t=%.0f veh=%d line=%s sec=%d->%s "
+                            "dist=%.0fm eta=%.0fs stops=%d ahead=%.1f(%s) src=%s "
+                            "detect_eta=%s" % (
+                                getattr(self, 'id', '?'), float(time), _out['veh'],
+                                _out['line'], _out['sec'], _out['target'],
+                                _out['dist_m'], _out['eta_s'], _out['n_stops'],
+                                _out['n_ahead'], _out['ahead_src'], _out['src'],
+                                ("%.0fs" % float(_be[1])) if _be else '-'),
+                            force=True)
+        return _out
+
+    def _sw_bus_ctx(self, time, insertion=False):
+        """Inputs for the shockwave bus term, computed ONCE per solve (the
+        objective is called many times by DE). None -> legacy bus term."""
+        if not (_SWL_AVAILABLE and bool(globals().get('SHOCKWAVE_BUS_TERM', True))):
+            return None
+        _be = (getattr(self, '_bus_eta', {}) or {}).get(0)
+        _vid = int(_be[0]) if _be else int(getattr(self, 'last_detected_bus_id', -1) or -1)
+        _bs = self._sw_bus_route_state(_vid, time)
+        if _bs is None:
+            return None
+        _fd = self._sw_lane_fd(_bs.get('target'))
+        # free-run time over the same route (dwell included: dwell is not
+        # signal delay), and the bus's own run speed for the crossing
+        _t_free = _bs['eta_s']
+        _cyc = float(getattr(self, 'cycle_len_s', 0.0) or 0.0) or float(
+            self.config.get('CycleTime', 120.0) or 120.0)
+        _red = max(0.0, _cyc - float(getattr(self, 'BusPhaseDuration', 20.0) or 20.0))
+        try:
+            _rem = max(0.0, float(self.NextRedStartTime[0][0]) - float(time))
+        except Exception:
+            _rem = 0.0
+        try:
+            _red_el = max(0.0, float(time) - float(self.RedStartTimeList[0][0]))
+        except Exception:
+            _red_el = 0.0
+        return {'fd': _fd, 'bus': _bs, 't_free': _t_free, 'red_s': _red,
+                'rem_green': _rem, 'red_left': max(0.0, _red - _red_el),
+                'ins_start': float(globals().get('INS_INTERGREEN_S', 5.0) or 5.0),
+                'insertion': bool(insertion)}
+
+    def _sw_bus_delay(self, ctx, green_s):
+        """Signal delay (s) of the bus for a GE (or an inserted green) of
+        green_s seconds, by Newell's kinematic wave model. Monotone: if the
+        green is too short to discharge the bus, it waits a red."""
+        _fd = ctx['fd']; _b = ctx['bus']
+        _lead = max(0.0, _b['eta_s'] - _b['dist_m'] / _b['cruise_ms'])   # dwell
+        _d = _b['dist_m']; _n = _b['n_ahead']; _v = _b['cruise_ms']
+        if ctx['insertion']:
+            _st = ctx['ins_start']
+            _t = _lead + _swl.bus_cross_time(_fd, _d, _n, _st, _v)
+            if _t <= _st + max(0.0, float(green_s)):
+                return max(0.0, _t - ctx['t_free'])
+            _t2 = _lead + _swl.bus_cross_time(
+                _fd, _d, _n, ctx['red_left'] + max(0.0, float(green_s)), _v)
+            return max(0.0, _t2 - ctx['t_free'])
+        _t = _lead + _swl.bus_cross_time(_fd, _d, _n, 0.0, _v)
+        _end = ctx['rem_green'] + max(0.0, float(green_s))
+        if _t <= _end:
+            return max(0.0, _t - ctx['t_free'])
+        _t2 = _lead + _swl.bus_cross_time(_fd, _d, _n, _end + ctx['red_s'], _v)
+        return max(0.0, _t2 - ctx['t_free'])
+
     def _cbql_bus_delay_s(self, _st):
         """MAX delay (s) of any bus now on a PRIORITY phase's approach sections
         -- the paper's second objective (minimise the maximum delay of priority
@@ -29658,6 +29907,7 @@ class IntersectionController:
         """
         try:
             lb = max(0.0, float(lb)); ub = max(lb, float(ub))
+            self._sw_ctx = self._sw_bus_ctx(time, insertion=False)
             base_pax = float(self.GE_Objective_Function(0.0, time))
             if ub <= lb + 1e-6:
                 return lb, base_pax, float(self.GE_Objective_Function(lb, time))
@@ -29665,13 +29915,17 @@ class IntersectionController:
             if opt is None or (isinstance(opt, float) and math.isnan(opt)) or opt < 0:
                 opt = lb
             opt = min(max(float(opt), lb), ub)
-            return opt, base_pax, float(self.GE_Objective_Function(opt, time))
+            _opt_pax = float(self.GE_Objective_Function(opt, time))
+            self._sw_solve_log('GE', time, lb, ub, opt, base_pax, _opt_pax)
+            return opt, base_pax, _opt_pax
         except Exception as _e:
             # Never let the solver break a decision -- fall back to "no gain
             # known", which the caller reads as do-nothing.
             log_to_file(f"[BXT] solve_green_extension error: {_e}")
             _lb = max(0.0, float(lb))
             return _lb, 0.0, 0.0
+        finally:
+            self._sw_ctx = None     # never leak into other objective callers
 
     def GE_Objective_Function(self, GE, time):
         self._reset_harmony_work_arrays()
@@ -29826,6 +30080,16 @@ class IntersectionController:
         side_other_delay, side_total_veh = self._compute_side_delay_penalty(GE, _suppress_log=True)
 
         bus_delay_total   = self._safe_array_sum(self.BusDelay)
+        # SHOCKWAVE_BUS_TERM: the legacy BusDelay above does not depend on GE
+        # (HSGreenStartTimeList[0] is copied unchanged), so the solver only
+        # traded car queues and never saw whether the extension serves the
+        # bus. Replace it with the Newell-model bus delay for THIS GE.
+        _swc = getattr(self, '_sw_ctx', None)
+        if _swc is not None and not _swc.get('insertion'):
+            try:
+                bus_delay_total = float(self._sw_bus_delay(_swc, GE))
+            except Exception:
+                pass
         base_other_delay  = self._safe_array_sum(self.OtherDelay)
         other_delay_total = base_other_delay + safe_float(side_other_delay)
         total_veh         = self._safe_array_sum(self.TotalVeh) + safe_float(side_total_veh)
@@ -29873,6 +30137,7 @@ class IntersectionController:
         """
         try:
             lb = max(0.0, float(lb)); ub = max(lb, float(ub))
+            self._sw_ctx = self._sw_bus_ctx(time, insertion=True)
             base_pax = float(self.BP_Objective_Function(0.0, time))
             if ub <= lb + 1e-6:
                 return lb, base_pax, float(self.BP_Objective_Function(lb, time))
@@ -29880,10 +30145,38 @@ class IntersectionController:
             if opt is None or (isinstance(opt, float) and math.isnan(opt)) or opt < 0:
                 opt = lb
             opt = min(max(float(opt), lb), ub)
-            return opt, base_pax, float(self.BP_Objective_Function(opt, time))
+            _opt_pax = float(self.BP_Objective_Function(opt, time))
+            self._sw_solve_log('INS', time, lb, ub, opt, base_pax, _opt_pax)
+            return opt, base_pax, _opt_pax
         except Exception as _e:
             log_to_file(f"[BXT] solve_bus_phase_green error: {_e}")
             return max(0.0, float(lb)), 0.0, 0.0
+        finally:
+            self._sw_ctx = None     # never leak into other objective callers
+
+    def _sw_solve_log(self, kind, time, lb, ub, opt, base_pax, opt_pax):
+        """[SW_SOLVE] -- one line per solve showing the bus crossing the
+        shockwave term used, so a run proves the solver now sees the bus."""
+        _c = getattr(self, '_sw_ctx', None)
+        if not bool(globals().get('SW_BUS_LOG', True)):
+            return
+        try:
+            if _c is None:
+                log_to_file("[SW_SOLVE] %s jct=%s t=%.0f [%.0f,%.0f] opt=%.1f "
+                            "pax %.0f->%.0f bus_term=legacy"
+                            % (kind, getattr(self, 'id', '?'), float(time), lb, ub,
+                               opt, base_pax, opt_pax), force=True)
+                return
+            _b = _c['bus']
+            log_to_file("[SW_SOLVE] %s jct=%s t=%.0f [%.0f,%.0f] opt=%.1f "
+                        "pax %.0f->%.0f bus=%d dist=%.0fm ahead=%.1f "
+                        "busdelay %.1f->%.1fs" % (
+                            kind, getattr(self, 'id', '?'), float(time), lb, ub,
+                            opt, base_pax, opt_pax, _b['veh'], _b['dist_m'],
+                            _b['n_ahead'], self._sw_bus_delay(_c, 0.0),
+                            self._sw_bus_delay(_c, opt)), force=True)
+        except Exception:
+            pass
 
     def BP_Objective_Function(self, GreenTime, time):
         """
@@ -30234,6 +30527,12 @@ class IntersectionController:
         side_other_delay_bp, side_total_veh_bp = self._compute_side_delay_penalty(extra_red, _suppress_log=True)
 
         bus_delay_total   = self._safe_array_sum(self.BusDelay)
+        _swc = getattr(self, '_sw_ctx', None)
+        if _swc is not None and _swc.get('insertion'):
+            try:
+                bus_delay_total = float(self._sw_bus_delay(_swc, GreenTime))
+            except Exception:
+                pass
         base_other_delay  = self._safe_array_sum(self.OtherDelay)
         other_delay_total = base_other_delay + safe_float(side_other_delay_bp)
         total_veh         = self._safe_array_sum(self.TotalVeh) + safe_float(side_total_veh_bp)

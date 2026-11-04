@@ -9,6 +9,13 @@ repo); where their behavior conflicts with the engine's own GE/INS reward
 evaluation, the engine's behavior wins.
 """
 import sys
+try:  # kinematic-wave GE / INS seeds (stdlib-only sibling module)
+    try:
+        from . import shockwave_lwr as _swl
+    except ImportError:
+        import shockwave_lwr as _swl
+except Exception:  # pragma: no cover
+    _swl = None
 sys.path.insert(0, r"C:\AimsunPackages")
 
 import math
@@ -2476,10 +2483,14 @@ def _shockwave_optimal_green_s(self, min_s: float = 5.0, max_s: float = 20.0) ->
         pos_red = rdt_bus[(rdt_bus > 0.0) & (rdt_bus < 2.0 * _cycle)]
         q_arr_vph = float(np.mean(pos_flow)) if pos_flow.size > 0 else 0.0
         t_red_s   = float(np.max(pos_red))   if pos_red.size  > 0 else 30.0
-        q_arr_vps = q_arr_vph / 3600.0
-        k_arr  = q_arr_vps * k_jam / max(q_sat_vps, 1e-9)
-        w_back = q_arr_vps / max(k_jam - k_arr, 1.0)
-        N_q = max(0.0, w_back * t_red_s * k_jam)
+        # PER LANE (2026-11-05): UpFlowList is the APPROACH total while
+        # SaturationFlow / JamDensity are per lane, and the arrival density was
+        # q*k_jam/q_sat (= k_jam at capacity) instead of the uncongested-branch
+        # q/v_f. Both inflated the queue. Newell: the red builds q_a*t_red
+        # vehicles per lane, which clear in N / (q_s - q_a).
+        _lanes = max(int(getattr(self, 'NumberOfLanes', 1) or 1), 1)
+        q_arr_vps = q_arr_vph / 3600.0 / _lanes
+        N_q = max(0.0, q_arr_vps * t_red_s)
         q_discharge = max(0.0, q_sat_vps - q_arr_vps)
         t_clear = (N_q / q_discharge) if q_discharge > 0.01 else float(max_s)
         return float(np.clip(t_clear, min_s, max_s))
@@ -4101,6 +4112,27 @@ CBQL_CTM_INTERGREEN_S = 5.0  # lost time charged to a switch in the CTM
 CBQL_CTM_BUS_PCE = 2.0       # road space of one bus in cars
 CBQL_CTM_BUS_W = 0.0         # bus-vs-car reward weight; 0 => BusOcc / CarOcc
 CBQL_CTM_QUEUE_BIN_VEH = 4.0 # queue bin width for the state key (5 levels)
+
+# SHOCKWAVE BUS TERM (2026-11-05). The GE / insertion objectives
+# (engine GE_Objective_Function / BP_Objective_Function) priced the bus with a
+# term that did NOT depend on the green being solved, so DE only traded car
+# queues and never saw whether the extension/insertion got the bus through.
+# On: the bus term is Newell's kinematic-wave crossing time of THIS bus (looked
+# up in the network with AKIPTVehGetInf, following its PT line's route to the
+# stop line, dwell at its scheduled stops, vehicles ahead in its lane). Too
+# short a green -> the bus waits a red, so the solve is monotone and finds the
+# least green that serves it. The same model seeds the DE magnitude solves.
+SHOCKWAVE_BUS_TERM = True
+SHOCKWAVE_MAGNITUDE_SEEDS = True  # shockwave GE/INS seeds for the DE refines
+SW_BUS_CRUISE_KMH = 40.0          # bus running speed between stops
+SW_BUS_DWELL_S = 20.0             # dwell per scheduled stop on the way
+SW_BUS_LOG = True                 # [BUS_ROUTE] / [SW_SOLVE] diagnostics
+
+# Read by the rule layer (RULE_PERSON_DELAY_WARRANT gate) but never declared
+# or propagated, so CELLQLEARN_SAFE's 400 pax.s warrant was silently 0.
+# Defaults = the values the code actually ran with.
+RULE_PERSON_DELAY_WARRANT = True
+PERSON_DELAY_WARRANT_MIN_PAXS = 0.0
 
 # CELL-STATE BACK-PRESSURE RELEASE (store-and-forward / max-pressure off the CTM
 # cells): serve the phase maximising upstream_queue x downstream_free_space, with
@@ -8731,6 +8763,40 @@ def _solve_ge_durations(self, bus_eta_s, rem_green, veh_id):
     _grid = [float(x) for x in (globals().get('GE_DURATIONS_S') or [5.0, 10.0, 15.0])]
     _lo, _hi = (min(_grid), max(_grid)) if _grid else (5.0, 15.0)
     _cands = []
+    # SHOCKWAVE seeds (2026-11-05): the bus-serve below ignores the queue in
+    # front of the bus and the demand-clear ignores arrivals and lane count.
+    # Newell's model: the bus crosses at max(free run, its discharge slot);
+    # a queue clears in N_lane / (q_s - q_a). Added alongside the legacy
+    # seeds so DE starts from both.
+    if (bool(globals().get('SHOCKWAVE_MAGNITUDE_SEEDS', True)) and _swl is not None
+            and rem_green is not None):
+        try:
+            _bs = (self._sw_bus_route_state(int(veh_id), float(_eci_call('AKIGetCurrentSimulationTime', )))
+                   if int(veh_id) >= 0 else None)
+            if _bs is not None:
+                _fd = self._sw_lane_fd(_bs.get('target'))
+                _ge = _swl.ge_to_serve_bus(_fd, float(rem_green), _bs['dist_m'],
+                                           _bs['n_ahead'], _bs['cruise_ms'])
+                if _ge > 0.0:
+                    _cands.append(min(max(_ge, _lo), _hi))
+        except Exception:
+            pass
+        try:
+            _mq = (self._measured_main_queue_veh()
+                   if hasattr(self, '_measured_main_queue_veh') else None)
+            if _mq is not None and float(_mq) > 0.0:
+                _ln = max(int(getattr(self, 'NumberOfLanes', 1) or 1), 1)
+                try:
+                    _qa = max(0.0, float(np.max(np.asarray(
+                        getattr(self, 'UpFlowList', [[0.0]]), dtype=float)[0])))
+                except Exception:
+                    _qa = 0.0
+                _gq = _swl.ge_to_clear_queue(self._sw_lane_fd(), float(rem_green),
+                                             float(_mq) / _ln, _qa / _ln)
+                if _gq is not None and _gq > 0.0:
+                    _cands.append(min(max(_gq, _lo), _hi))
+        except Exception:
+            pass
     try:
         if int(veh_id) >= 0 and rem_green is not None:
             _miss = float(bus_eta_s) - float(rem_green)
@@ -8796,6 +8862,27 @@ def _de_solve_magnitude(_eval, lo, hi, seeds=(), n_pop=6, n_gen=6, F=0.6, CR=0.9
                 _pop[_i] = _trial; _val[_i] = _tv
     _bi = max(range(_n), key=lambda k: _val[k])
     return _pop[_bi], _val[_bi]
+
+
+def _sw_ins_seeds(self, veh_id, time, lo, cap):
+    """Shockwave seed for an inserted bus green: the length that lets THIS
+    bus discharge when the insertion starts after INS_INTERGREEN_S. [] when
+    there is no bus state or the seeds are off."""
+    if not (bool(globals().get('SHOCKWAVE_MAGNITUDE_SEEDS', True)) and _swl is not None):
+        return []
+    try:
+        _bs = self._sw_bus_route_state(int(veh_id), time) if int(veh_id) >= 0 else None
+        if _bs is None:
+            return []
+        _g = _swl.ins_green_to_serve_bus(
+            self._sw_lane_fd(_bs.get('target')),
+            float(globals().get('INS_INTERGREEN_S', 5.0) or 5.0),
+            _bs['dist_m'], _bs['n_ahead'], _bs['cruise_ms'])
+        if _g <= 0.0:
+            return []
+        return [round(min(max(float(_g), float(lo)), float(cap)), 1)]
+    except Exception:
+        return []
 
 
 def _de_seed_for(self, atype, time):
@@ -11545,6 +11632,9 @@ MODE_FLAGS = [
     'CBQL_USE_CTM', 'CBQL_CTM_DT_S', 'CBQL_CTM_MAX_CELLS', 'CBQL_CTM_HORIZON_S',
     'CBQL_CTM_INTERGREEN_S', 'CBQL_CTM_BUS_PCE', 'CBQL_CTM_BUS_W',
     'CBQL_CTM_QUEUE_BIN_VEH',
+    'SHOCKWAVE_BUS_TERM', 'SHOCKWAVE_MAGNITUDE_SEEDS', 'SW_BUS_CRUISE_KMH',
+    'SW_BUS_DWELL_S', 'SW_BUS_LOG',
+    'RULE_PERSON_DELAY_WARRANT', 'PERSON_DELAY_WARRANT_MIN_PAXS',
     'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
     'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',
     'CELL_BP_MAX_SWITCHES_PER_CYCLE',
@@ -13330,7 +13420,8 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 _c = _eval_cand('GE', float(_x))
                 return _c[2] if _c is not None else -1.0e18
             _bx, _ = _de_solve_magnitude(
-                _ev_ge, min(_ge_cands), _ge_cap, seeds=_ge_cands)
+                _ev_ge, min(_ge_cands), _ge_cap, seeds=_ge_cands,
+                rng_seed=_de_seed_for(self, 'GE', time))
             _ge_cands = sorted(set(_ge_cands + [round(min(float(_bx), _ge_cap), 1)]))
         except Exception:
             pass
@@ -13358,7 +13449,8 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 _c = _eval_cand('EARLY_RED', float(_x))
                 return _c[2] if _c is not None else -1.0e18
             _bx_er, _ = _de_solve_magnitude(
-                _ev_er, _er_lo, _er_cap, seeds=_er_seeds)
+                _ev_er, _er_lo, _er_cap, seeds=_er_seeds,
+                rng_seed=_de_seed_for(self, 'EARLY_RED', time))
             _er_seeds = sorted(set(_er_seeds
                                    + [round(min(float(_bx_er), _er_cap), 1)]))
         except Exception:
@@ -13401,11 +13493,14 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 + [float(_i) for _i in range(int(_lo), int(_cap) + 1)]))
             _seeds = _zigdog_cap_seeds(
                 _seeds, int(globals().get('ZIGDOG_MAX_SEEDS', 4) or 0))
+            if _famtype == 'INS':     # after the cap, so it is never dropped
+                _seeds = sorted(set(_seeds + _sw_ins_seeds(self, veh_id, time, _lo, _cap)))
             try:
                 def _ev_ig(_x, _ft=_famtype):
                     _c = _eval_cand(_ft, float(_x))
                     return _c[2] if _c is not None else -1.0e18
-                _bxg, _ = _de_solve_magnitude(_ev_ig, _lo, _cap, seeds=_seeds)
+                _bxg, _ = _de_solve_magnitude(_ev_ig, _lo, _cap, seeds=_seeds,
+                                              rng_seed=_de_seed_for(self, _famtype, time))
                 _seeds = sorted(set(
                     _seeds + [round(min(float(_bxg), _cap), 1)]))
             except Exception:
@@ -13732,7 +13827,8 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
                 _c = _score_fam('GE', float(_x))
                 return _c[2] if _c is not None else -1.0e18
             _bxq, _ = _de_solve_magnitude(
-                _ev_ge_q, min(_ge_cands), _ge_cap, seeds=_ge_cands)
+                _ev_ge_q, min(_ge_cands), _ge_cap, seeds=_ge_cands,
+                rng_seed=_de_seed_for(self, 'GE', time))
             _ge_cands = sorted(set(_ge_cands + [round(min(float(_bxq), _ge_cap), 1)]))
         except Exception:
             pass
@@ -13760,7 +13856,8 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
                 _c = _score_fam('EARLY_RED', float(_x))
                 return _c[2] if _c is not None else -1.0e18
             _bx_erq, _ = _de_solve_magnitude(
-                _ev_er_q, _er_lo, _er_cap, seeds=_er_seeds)
+                _ev_er_q, _er_lo, _er_cap, seeds=_er_seeds,
+                rng_seed=_de_seed_for(self, 'EARLY_RED', time))
             _er_seeds = sorted(set(_er_seeds
                                    + [round(min(float(_bx_erq), _er_cap), 1)]))
         except Exception:
@@ -13799,12 +13896,15 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
             _seeds = sorted(set(
                 [round(min(_cap, max(_lo, x)), 1) for x in _grid]
                 + [float(_i) for _i in range(int(_lo), int(_cap) + 1)]))
+            if _famtype == 'INS':
+                _seeds = sorted(set(_seeds + _sw_ins_seeds(self, veh_id, time, _lo, _cap)))
             try:
                 def _ev_igq(_x, _ft=_famtype):
                     _c = _score_fam(_ft, float(_x))
                     return _c[2] if _c is not None else -1.0e18
                 _bxgq, _ = _de_solve_magnitude(_ev_igq, _lo, _cap,
-                                               seeds=_seeds)
+                                               seeds=_seeds,
+                                               rng_seed=_de_seed_for(self, _famtype, time))
                 _seeds = sorted(set(
                     _seeds + [round(min(float(_bxgq), _cap), 1)]))
             except Exception:
