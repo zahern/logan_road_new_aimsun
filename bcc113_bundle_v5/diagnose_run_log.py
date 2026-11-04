@@ -324,7 +324,26 @@ if _IN_AIMSUN:
     # DIAG_ARGS (default --all) and just print the verdict, e.g.
     #   import os; os.environ['DIAG_ARGS'] = '--all --csv game_ladder_kg_X.csv'
     #   exec(open(r'C:\...\bcc113_bundle_v5\diagnose_run_log.py').read())
+    # The Aimsun log window shows one entry per printed line, which is hard to
+    # read or copy, so the whole report is also saved to a text file.
+    import contextlib
     import shlex
-    main(shlex.split(os.environ.get('DIAG_ARGS', '--all'), posix=False))
+    _buf = io.StringIO()
+    with contextlib.redirect_stdout(_buf):
+        try:
+            main(shlex.split(os.environ.get('DIAG_ARGS', '--all'), posix=False))
+        except SystemExit:
+            pass
+    _rep = os.path.join(HERE, 'kg', 'logs', 'diagnose_report_%s.txt'
+                        % time.strftime('%Y%m%d_%H%M%S'))
+    try:
+        if not os.path.isdir(os.path.dirname(_rep)):
+            _rep = os.path.join(HERE, os.path.basename(_rep))
+        with io.open(_rep, 'w', encoding='utf-8') as _fh:
+            _fh.write(_buf.getvalue())
+    except Exception as _e:
+        _rep = 'NOT SAVED (%r)' % (_e,)
+    print(_buf.getvalue())
+    print('DIAGNOSE REPORT SAVED TO: %s' % _rep)
 elif __name__ == '__main__':
     sys.exit(main())
