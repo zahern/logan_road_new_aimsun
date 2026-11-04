@@ -193,6 +193,8 @@ LEARNING_ARMS = {
     "CHAMP_CELLQ_PURE_STATE", "CHAMP_CELLQ_LIVECOST",
     "CHAMP_CELLQ_REQBUS", "CHAMP_CELLQ_LIVECOST_REQBUS",
     "CHAMP_CELLQ_CLEAN", "CHAMP_CELLQ_NOPREARM",
+    # PAPER LADDER (2026-10-29): the DSW + gated-CellQLearn arm must train.
+    "CHAMP_ADAPTIVE_DSW_CELLQ_GATED",
     # SCATS DS arms (2026-10-14): CELLQ learners -> need a train seed (MP_TRANSIT
     # is analytic MaxPressure, so it is deliberately NOT registered here).
     "CHAMP_SCATS_DSGATE", "CHAMP_SCATS_DSGATE_TIGHT", "CHAMP_SCATS_DSGATE_LOOSE",
@@ -384,7 +386,11 @@ def _disable_batch_plotting(controller_path):
     for the batch so runs are ~3x faster and less exposed to a mid-plot crash."""
     for flag, val in (("MARK_DETECTION_POINTS", "False"),
                       ("OVERLAY_DETECTIONS_ON_MAP", "False"),
-                      ("TRACK_BUS_POSITIONS", "False"),
+                      # TRACK_BUS_POSITIONS is deliberately NOT patched off:
+                      # the 3 s PT scan is the ONLY source of position-based
+                      # detections (zone-entry) and corridor bus XY. Forcing it
+                      # False left [DET SUMMARY] "Active buses tracked: 0" and
+                      # detection coverage at ~40% of bus passages.
                       ("STATUS_DASHBOARD_INTERVAL_S", "0.0")):
         try:
             _set_controller_flag(controller_path, flag, val)
@@ -411,7 +417,88 @@ _GENTLE_JITTER = {
     "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 2.0,
     "ACT_EXTEND_BAND": 0.30, "ACT_EXTEND_ABS_CAP_S": 8.0,
     "ACT_EXTEND_MIN_OCC_VEH": 2.0, "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+    # PAY FOR THE EXTENSION (2026-10-21). Measured on CHAMP_MP_GAME_SCATS:
+    # 1003 [ACT EXT] events, borrowed=0 on EVERY one, cycle_extra up to 17.8 s
+    # -> green was only ever ADDED, never taken from another phase, so the cycle
+    # drifted and coordination broke. Donor takes the added seconds from the
+    # phases that follow (min-green floored, bus/ped phases protected); the cap
+    # is the backstop if no donor has room.
+    "ACT_EXTEND_DONOR": True, "ACT_EXTEND_DONOR_MAX_FRAC": 0.25,
+    "CYCLE_CAP_ENABLE": True,
+    "CYCLE_CAP_SLACK_S": 4.0, "CYCLE_CAP_SLACK_FRAC": 0.05,
 }
+
+# ROLLING CYCLE PLANNER (2026-10-22, operator): observe the whole system for
+# one full cycle, then apply a jointly-solved plan on the NEXT cycle. The
+# engine-side planner (shared_tsp_engine/cycle_planner.py) seeds from SCATS
+# history and uses PBIL pressure to choose a global main-share gene vector.
+# These are opt-in arms; the model plan is kept as the fallback.
+_CYCLE_PLANNER_BASE = {
+    "PLAN_SCATS_HIST": False,
+    "PLAN_OPTIMIZE": False,
+    "PLAN_OPTIMIZE_OFFSETS": False,
+    # (2026-10-23) MATCH MIN-GREEN TO COMMISSIONED. The commissioned plan runs
+    # minor phases at 6.0s, but PLAN_MIN_GREEN_S / DS_MIN_GREEN_S defaulted to 7.0
+    # -> the instant the controller rewrote the plan it inflated EVERY minor phase
+    # 6->7s and stole that +6-8s straight from the main (measured: main 74->67.7
+    # at 1043762, and the same -6..-8s on every junction) -> main delay +53-190%.
+    # NO_TSP is immune because it runs the commissioned plan verbatim. Floor at 6s
+    # so a 6s commissioned minor is NOT force-raised above its commissioned green.
+    "PLAN_MIN_GREEN_S": 6.0,
+    "DS_MIN_GREEN_S": 6.0,
+    # Hold the commissioned offset; do NOT pin an absolute model bus-green start
+    # against the changing cycle/splits (that caused the "current phase
+    # infeasible"/fallback storm). Gentle split nudges apply directly.
+    "PLAN_OFFSET_PRESERVE": False,
+    "DS_PLAN_ADAPT": False,
+    "DS_SOLVE_PER_CYCLE": False,
+    "DS_CYCLE_ADAPT": False,
+    "SCATS_POG_STATE_SOLVE": False,
+    "SCATS_POG_OFFSETS": False,
+    "DS_MASTER_OFFSETS": False,
+    "CYCLE_PLANNER": True,
+    "CYCLE_PLANNER_USE_SCATS": True,
+    "CYCLE_PLANNER_PBIL": True,
+    "CYCLE_PLANNER_DELAY_CYCLES": 1,
+    "CYCLE_PLANNER_INTERVAL_S": 120.0,
+    "CYCLE_PLANNER_WARM_S": 300.0,
+    "CYCLE_PLANNER_CANDIDATES": 8,
+    "CYCLE_PLANNER_DELTA": 0.15,
+    "CYCLE_PLANNER_MAIN_DOWN_FRAC": 0.05,
+    "CYCLE_PLANNER_HORIZON_CYCLES": 4,
+    "PBIL_HORIZON_CYCLES": 4,
+    # Online arrival-rate tuning: the planner re-derives the base split from a
+    # composite estimate each cycle instead of only the SCATS seed.
+    "CYCLE_PLANNER_ARRIVAL_TUNE": True,
+    "CYCLE_PLANNER_UNMAPPED_MODE": "green_weighted",
+    "CYCLE_PLANNER_ARRIVAL_BLEND": 0.50,
+    "CYCLE_PLANNER_ARRIVAL_ALPHA": 0.30,
+    "CYCLE_PLANNER_ARRIVAL_MIN_VPH": 0.0,
+    "CYCLE_PLANNER_PBIL_ALPHA": 0.20,
+    "CYCLE_PLANNER_PBIL_MIN_P": 0.05,
+    "SCATS_GAP_MAIN_PHASE": False,
+    "ACT_EXTEND_MAIN": True,
+    "GLOBAL_REWARD_MODE": True,
+    "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+    "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+    "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+    "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+    "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 5,
+    "NASH_CONVERGENCE_TOL": 0.01,
+    "NASH_INTEGER_DURATIONS": True,
+    # No hard bus-priority gates: buses are a high-occupancy mechanism, not a
+    # special constraint. Passenger benefit still enters the objective.
+    "NASH_MIN_BUS_DELAY_S": 0.0, "NASH_MIN_GAIN_S": 0.0,
+    "BUS_PAX_WEIGHT": 1.0, "DS_BUS_PAX_WEIGHT": 1.0,
+    "TSP_CYCLE_LENGTH_OVERRIDE_S": None,
+    "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+    "DCTSP_CONGESTION_GATE": True,
+    "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+    "SCATS_BUS_PRIORITY": False,
+    "BUS_PRIO_JIT_ENABLE": False, "BUS_PRIO_RECALL_ENABLE": False,
+    "BUS_PRIO_MAX_EXT_S": 0.0,
+}
+
 
 # Tuned baseline for the learned-Q (CellQLearn) arms, copied from CELLQLEARN_GATED
 # so every new CHAMP_CELLQ_* arm is a clean DELTA off ONE tuned config (difference
@@ -535,6 +622,66 @@ _SCATS_INITPLAN_BASE = {
     "QUEUE_SERVE_FLOOR": False,
 }
 
+# FIXED-TIME + PBIL ACTIONS (2026-10-22, operator): the commissioned plan is
+# never re-timed. A per-junction PBIL categorical policy chooses one small
+# action per interval: NONE / GE / ER / INS. Actions are queued one interval
+# ahead. Three arms isolate the action families.
+_FIXED_ACTION_BASE = {
+    **_SCATS_INITPLAN_BASE,
+    "CYCLE_ACTION_PBIL": True,
+    "CYCLE_ACTION_ALLOW_GE": True,
+    "CYCLE_ACTION_ALLOW_ER": False,
+    "CYCLE_ACTION_ALLOW_INS": False,
+    "CYCLE_ACTION_INTERVAL_S": 120.0,
+    "CYCLE_ACTION_WARM_S": 300.0,
+    "CYCLE_ACTION_DELAY_CYCLES": 1,
+    "CYCLE_ACTION_GE_S": 2.0,
+    "CYCLE_ACTION_GE_MAX_S": 120.0,
+    "CYCLE_ACTION_ALPHA": 0.20,
+    "CYCLE_ACTION_MIN_P": 0.05,
+    # Let the PBIL action chooser own all actuation; do not double-fire the
+    # rule-based jitter / gap-out / insertion paths.
+    "ACTUATED_EXTEND": False, "SCATS_GAP_OUT": False,
+    "SCATS_MAX_OUT": False, "SPILLBACK_GATE": False,
+    "EMPTY_PHASE_SKIP_MODE": False,
+    "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+    "BUS_PRIO_RECALL_ENABLE": False,
+    "GLOBAL_REWARD_MODE": False, "NASH_BARGAIN_MODE": False,
+    "BXT_MODE": False, "ZIGDOG_MODE": False, "CELLQLEARN_DP_MODE": False,
+    "DS_PLAN_ADAPT": False, "DS_CYCLE_ADAPT": False,
+    "PLAN_OPTIMIZE": False, "PLAN_SCATS_HIST": False,
+}
+
+# SATURATION-GAME reward (2026-10-22, operator): commissioned fixed-time plan,
+# generalised-Nash decider, reward = saturation relief + net passenger
+# throughput - side/cross saturation cost. No hard bus gates.
+_DS_GAME_BASE = {
+    **_SCATS_INITPLAN_BASE,
+    "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+    "NASH_GATE_MODE": False, "NASH_CORRIDOR_MODE": True,
+    "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+    "NASH_NET_GATE_RATIO": 1.0, "CASCADE_COST_MODE": True,
+    "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 5,
+    "NASH_CONVERGENCE_TOL": 0.01, "NASH_INTEGER_DURATIONS": True,
+    "NASH_MIN_BUS_DELAY_S": 0.0, "NASH_MIN_GAIN_S": 0.0,
+    "BUS_PAX_WEIGHT": 1.0, "DS_BUS_PAX_WEIGHT": 1.0,
+    "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+    "BUS_PRIO_RECALL_ENABLE": False,
+    "SAT_GAME_REWARD": True, "SAT_GAME_RELIEF_W": 1.0,
+    "SAT_GAME_SIDE_W": 1.0, "SAT_GAME_THRU_W": 1.0,
+    "SAT_GAME_DS_TARGET": 0.90,
+    "SAT_RELIEF_BONUS": True, "SAT_RELIEF_MIN_X": 0.85,
+    "SAT_RELIEF_MAX_X": 1.30, "SAT_RELIEF_RATE_PAXS": 60.0,
+    "SAT_RELIEF_CAP_PAXS": 2500.0,
+    "MAIN_STARVATION_COST": True, "MAIN_STARVATION_X0": 1.0,
+    "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0,
+    "W_DELAY_LEDGER": 0.0, "DS_COST_IN_REWARD": True,
+    "DS_BALANCE_GATE": True, "DS_MAX": 0.90, "DS_SPREAD_TOL": 0.30,
+    "DECIDER_COST_VETO_RATIO": 1.0,
+}
+
+
+
 # Shared baseline for the SINGLE-HEURISTIC ABLATION arms. Every ABL_* arm spreads
 # this and turns on exactly ONE new real-time heuristic, so a one-seed test can
 # attribute the effect to that heuristic rather than to the compound SOLVER.
@@ -573,6 +720,12 @@ _ABL_BASE = {
 # cycle from the critical intersection.
 _PURE_SCATS_FAITHFUL_BASE = {
     **_PURE_SCATS_GRAD_BASE,
+    # (2026-10-23) Match min-green to the commissioned plan (minors run 6.0s). A
+    # 7.0 floor force-inflates every minor 6->7s and steals the +6-8s from the
+    # main the moment the DS splitter touches the plan -> main gridlock (measured
+    # CHAMP_ADAPTIVE_DS main 1664 hr vs NO_TSP 574). Floor at 6s instead.
+    "PLAN_MIN_GREEN_S": 6.0,
+    "DS_MIN_GREEN_S": 6.0,
     # SPLITS: QUEUE-AWARE flow-proportional (serves the backlog, protects the
     # main). Responsive enough to clear a queue within ~2 cycles now that the
     # weight points the RIGHT way (queue-aware); the robbing was the problem, not
@@ -708,6 +861,421 @@ _WIN_ACTUATION = {
     "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
     "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.05,
     "SPILLBACK_GATE": True, "SPILLBACK_GATE_FRAC": 0.80, "JAM_VEH_SPACING_M": 7.0,
+}
+
+# ── SCATS FLEXIBLE (AGGRESSIVE) profile (2026-10-21) ─────────────────────────
+# Opt-in overlay for win-actuation arms. The base _WIN_ACTUATION flexes a phase
+# only ~2 s per step up to commissioned+8 s and RESETS every cycle, which is why
+# the log showed 19.0 -> 21.0 s with cycle_extra=4.0 s. This profile:
+#   * step 3 s, starts flexing at the 6 s SCATS min green (not 10 s);
+#   * max green PER PHASE = min(60, commissioned*1.5, commissioned+15);
+#   * holds green while the arrival GAP <= 3.5 s (~1029 veh/h) -- a SCATS gap
+#     timer, not a flat flow floor;
+#   * PERSISTS the adapted duration into the next cycle (SCATS increments the
+#     plan rather than undoing it), bounded to +15% of the commissioned cycle.
+# Always pair with CYCLE_CAP_ENABLE: without a cycle bound this is exactly the
+# configuration that collapsed DSGATE before (111 -> 75).
+_SCATS_FLEX_AGGR = {
+    "ACTUATED_EXTEND": True,
+    "ACT_EXTEND_STEP_S": 3.0,
+    "ACT_EXTEND_MIN_OCC_VEH": 1.0,
+    "ACT_EXTEND_DONOR": True,          # pay for every extension by cutting the next phase
+    "ACT_EXTEND_DONOR_MAX_FRAC": 0.25,
+    "SCATS_FLEX_PROFILE": True,
+    "SCATS_FLEX_PERSIST": True,
+    "SCATS_FLEX_CYCLE_BAND": 0.15,
+    "SCATS_FLEX_MIN_GREEN_S": 6.0,
+    "SCATS_FLEX_GAP_S": 3.5,
+    "SCATS_FLEX_MAX_GREEN_S": 60.0,
+    "SCATS_FLEX_MAX_BAND": 0.50,
+    "SCATS_FLEX_MAX_ABS_S": 15.0,
+    "CYCLE_CAP_ENABLE": True,
+    "CYCLE_CAP_SLACK_S": 6.0,
+    "CYCLE_CAP_SLACK_FRAC": 0.10,
+}
+
+# ── EMULATION AXES (2026-10-21, operator: "test all the terms") ──────────────
+# PAX-DS: degree of saturation measured in PASSENGER units, not vehicles.
+#   demand_pax = q * paxf, paxf = 1 + bus_frac*((BusOcc/CarOcc)-1)*weight
+# The default cap DS_PAXF_MAX=2.0 makes a bus-dense approach read at most 2x a
+# car approach; these arms raise it to 4.0 so passenger saturation can actually
+# outrank vehicle saturation. Only ever used by the *_PAX* arms below.
+_PAXDS = {
+    "DS_PAX_WEIGHTED": True,
+    "DS_BUS_PAX_WEIGHT": 1.0,
+    "DS_PAXF_MAX": 4.0,
+}
+# SCATS's own transit mechanism: a detected bus raises the phase's DS by a
+# bounded level weight (low/medium/high = 0.25/0.5/1.0) instead of pax-weighting
+# the whole demand.
+_PAXDS_TP = {"SCATS_TRANSIT_PRIORITY": True, "SCATS_TP_LEVEL": "high"}
+
+# The three staged emulation bodies (same content as the CHAMP_SCATS_EMU_* arms;
+# defined here so the PAX variants share ONE source of truth).
+_EMU_SPLIT = {
+    "DS_PLAN_ADAPT": True, "DS_SOLVE_PER_CYCLE": True,
+    "DS_ADAPT_EVERY_S": 30.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_SPLIT_PROPORTIONAL": False, "DS_SPLIT_DS_EQUAL": True,
+    "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_SPLIT_MAX_MOVE_FRAC": 0.0,
+    "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+    "DS_CYCLE_ADAPT": False, "SCATS_SEQUENCE_BY_Y": False,
+    "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False, "ACTUATED_EXTEND": False,
+    "SCATS_POG_OFFSETS": False,
+    "DS_MASTER_CYCLE": False, "DS_MASTER_SPLITS": False,
+    "DS_MASTER_OFFSETS": False,
+    "SCATS_CRITICAL_INTERSECTION": False, "SCATS_LEADLAG": False,
+    "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+    "SCATS_PHASE_SKIP": False,
+}
+_EMU_CYCLE = {
+    **_EMU_SPLIT,
+    "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_LAW": "webster",
+    "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+    "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+}
+_EMU_FULL = {
+    **_EMU_CYCLE,
+    "SCATS_SEQUENCE_BY_Y": True,
+    "SCATS_GAP_OUT": True, "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 60.0,
+    "SCATS_GAP_MIN_GREEN_S": 10.0, "SCATS_GAP_MAX_OCC_VEH": 1.5,
+    "SCATS_GAP_MAX_FLOW_VPH": 200.0, "SCATS_GAP_NEXT_MIN_Y": 0.02,
+    "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 2.0,
+    "ACT_EXTEND_BAND": 0.30, "ACT_EXTEND_ABS_CAP_S": 8.0,
+    "ACT_EXTEND_MIN_OCC_VEH": 2.0, "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+    "ACT_EXTEND_DONOR": True, "ACT_EXTEND_DONOR_MAX_FRAC": 0.25,
+    "CYCLE_CAP_ENABLE": True, "CYCLE_CAP_SLACK_S": 4.0,
+    "CYCLE_CAP_SLACK_FRAC": 0.05,
+    "SCATS_LEADLAG": True, "SCATS_LEADLAG_HEAVY_Y": 0.5,
+    "SCATS_CRITICAL_INTERSECTION": True,
+    "SCATS_POG_OFFSETS": True, "SCATS_POG_STEP_S": 2.0, "SCATS_POG_EPS": 0.01,
+    "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+    "DS_MASTER_INTERVAL_S": 30.0, "DS_MASTER_MIN_RATIO": 0.85,
+    "DS_MASTER_MAX_RATIO": 1.15, "DS_MASTER_DS_CYCLE": True,
+    "DS_MASTER_DS_WARM_S": 300.0, "DS_MASTER_DS_STEP_S": 3.0,
+    "DS_MASTER_DS_MIN_CRIT": 0.30, "DS_MASTER_SPLITS": True,
+    "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+    "DS_OFFSET_MAX_STEP_S": 3.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+    "DS_MARRY_DIVORCE": False,
+}
+# CHAMP_PBIL's baseline exactly (jitter-free split learner).
+_PBIL_LEARN = {
+    **_PURE_SCATS_GRAD_BASE,
+    "PBIL_TS_MODE": True, "PBIL_GEN_S": 300.0, "PBIL_DELTA": 0.25,
+    "PBIL_ALPHA": 0.20, "PBIL_MIN_P": 0.05, "PBIL_WARM_S": 120.0,
+    "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+    "DS_SPLIT_PROPORTIONAL": True, "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+    "DS_FLOW_QUEUE_AWARE": True, "DS_SPLIT_COMMISSIONED_BAND": 0.08,
+}
+
+# TSP OVERLAY (2026-10-23): the rule-based bus-priority layer to STACK on top of a
+# plan loop -- Nash bus-priority decider + JIT green-extension + early-green recall,
+# all bounded and gated. Spread AFTER a plan base so it flips the "isolate the plan
+# loop" switches (GLOBAL_REWARD_MODE / NASH_BARGAIN_MODE / SCATS_BUS_PRIORITY) ON.
+# Mirrors CHAMP_ADAPTIVE_AIMSUN_TSP's overlay over CHAMP_ADAPTIVE_AIMSUN.
+_ADAPTIVE_TSP_LAYER = {
+    "GLOBAL_REWARD_MODE": True,
+    "NASH_BARGAIN_MODE": True,
+    "SCATS_BUS_PRIORITY": True,
+    "BUS_PRIO_JIT_ENABLE": True,
+    "BUS_PRIO_RECALL_ENABLE": True,
+    "BUS_PRIO_MAX_EXT_S": 10.0,
+    "BUS_PRIO_MAX_RECALL_S": 8.0,
+    "BUS_PRIO_COOLDOWN_S": 60.0,
+}
+
+# RESOLVED TSP LAYER (2026-10-24): the raw _ADAPTIVE_TSP_LAYER also switched on
+# the Nash decider (GLOBAL_REWARD_MODE/NASH_BARGAIN_MODE), which retimed the plan
+# and cost -7..-15%. This layer keeps the DSW plan loop isolated (both stay
+# False from _ADAPTIVE_DSW_RO) and enables ONLY the bounded rule-based bus
+# priority: smaller grants, longer cooldown, no early-green recall beyond 4 s.
+_ADAPTIVE_TSP_SAFE_LAYER = {
+    "SCATS_BUS_PRIORITY": True,
+    "BUS_PRIO_JIT_ENABLE": True,
+    "BUS_PRIO_RECALL_ENABLE": True,
+    "BUS_PRIO_MAX_EXT_S": 6.0,
+    "BUS_PRIO_MAX_RECALL_S": 4.0,
+    "BUS_PRIO_COOLDOWN_S": 120.0,
+    "BUS_PRIO_QUEUE_DELAY_S": 5.0,
+    "BUS_PRIO_JIT_MARGIN_S": 3.0,
+    "BUS_PRIO_JIT_STRIKE_S": 30.0,
+}
+
+# THROUGHPUT-OPEN overlay (2026-10-27, operator directive). The RL/game/CTM
+# methods should maximise PASSENGERS PUSHED THROUGH, not minimise a delay
+# ledger, and must NOT be gated on bus lateness. Root cause found this session:
+# the engine DEFAULTS (specialized_modes DECIDER_WARM_S=420,
+# DECIDER_MIN_LATENESS_S=30) silently SKIP the decider for every bus under 30 s
+# late, so any arm that did not override them (BELLMAN_CTM_DP/TUNED, and the
+# gated NASH/MARL bus arms) went near-inert -> "byte-identical" to the base.
+# 2026-10-29: the SPM default is now MIN_LATENESS=0 (lateness directive), and
+# the arm overrides below that still pinned 30.0 were updated to 0.0, so no
+# arm can silently re-introduce the gate. This overlay:
+#   * removes the bus-lateness gate entirely (MIN_LATENESS=0),
+#   * shortens the warm-up to just past the first adaptive-plan apply (120 s),
+#   * drops the DS-balance and congestion vetoes (open up),
+#   * keeps ONLY the break-even cost veto (block strictly cost>benefit) as a
+#     gridlock backstop -- any net-throughput-positive action is allowed,
+#   * turns the BOUNDED rule-based bus priority ON so a bus still gets a capped
+#     green extension / recall ON TOP of the adaptive DSW plan via the ungated
+#     _apply_scats_bus_priority path, independent of the decider.
+_ADAPTIVE_THRU_OPEN = {
+    "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0, "W_DELAY_LEDGER": 0.0,
+    "DECIDER_MIN_LATENESS_S": 0.0,      # forget bus lateness
+    "DECIDER_WARM_S": 120.0,            # act once the first adaptive plan lands
+    "DS_BALANCE_GATE": False,           # open
+    "DCTSP_CONGESTION_GATE": False,     # open -- push through congestion
+    # 2026-10-28 ROOT-CAUSE FIX: the decider path fires a corridor-wide green-wave
+    # PRE-ARM per bus (engine [GREEN_OFFSET] [wave/pre-arm]) using garbage speed
+    # estimates (44-123 m/s), granting downstream greens ~30s too early and forcing
+    # them into oversaturated junctions (max_sat 2.5). It fires even when the DP
+    # action is vetoed (NOTRUST: 82 waves on 4 commits -> main_delay 666->1530).
+    # False clears the pre-arm target set (engine 6340) but keeps the coordinator
+    # (corridor positions, Nash Tier-2, progression) fully alive. See coord-prearm-flag.
+    "COORD_PREARM_ENABLED": False,
+    "DECIDER_COST_VETO_RATIO": 1.0,     # only backstop: strictly cost>benefit
+    "DECIDER_COST_VETO_RATIO_INS": 3.0,
+    # BOUNDED bus priority acts ON TOP of the DSW plan (ungated overlay path)
+    "SCATS_BUS_PRIORITY": True, "BUS_PRIO_JIT_ENABLE": True,
+    "BUS_PRIO_RECALL_ENABLE": True, "BUS_PRIO_MAX_EXT_S": 8.0,
+    "BUS_PRIO_MAX_RECALL_S": 6.0, "BUS_PRIO_COOLDOWN_S": 60.0,
+}
+
+# ── WINNER BASE (2026-10-22) ────────────────────────────────────────────────
+# CHAMP_PAXDS_SPLIT scored 136.3 vs NO_TSP 129.4 (+5.3%) and beat every arm.
+# Everything below tunes ONE knob off this exact base: passenger-relative DS +
+# DS-equalising split, 2 s/cycle, +/-15% band, commissioned cycle/offsets and
+# phase set untouched, no actuation. That is the stable "SCATS strategic split"
+# configuration on this model.
+_PAX_SPLIT_WIN = {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS}
+
+# Shared reward_overrides for the DS-weighted adaptive arm + its hysteresis/TSP
+# variants (2026-10-23). Cycle planner with the plan CHOICE made saturation-
+# dominant (service_gap>>pressure, frozen) + commissioned min-green (6s, from
+# _CYCLE_PLANNER_BASE). Defined AFTER _PAX_SPLIT_WIN (it spreads it). Variants add
+# CYCLE_PLANNER_SWITCH_MARGIN and/or _ADAPTIVE_TSP_LAYER on top.
+_ADAPTIVE_DSW_RO = {
+    **_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+    "DS_SNAPSHOT_TTL_S": 1.0,
+    "CYCLE_PLANNER_PLAN_LIBRARY": True,
+    "CYCLE_PLANNER_ADAPTIVE_WEIGHTS": True,
+    "ADAPTIVE_WEIGHTS_PATH":
+        r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\kg\adaptive_weights_adaptive_dsw.json",
+    # FREEZE the seeded DS-dominant weights (no drift back to the pressure-heavy
+    # default via LR or the reg prior).
+    "ADAPTIVE_WEIGHT_LR": 0.0,
+    "ADAPTIVE_WEIGHT_REG": 0.0,
+    "CYCLE_PLANNER_ARRIVAL_TUNE": True,
+    "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90,
+    "DS_MASTER_CYCLE": False,
+    "DS_MASTER_SPLITS": False,
+    "DS_MASTER_OFFSETS": False,
+    "MASTER_LINK_PRESSURE": False,
+    "GLOBAL_REWARD_MODE": False,
+    "NASH_BARGAIN_MODE": False,
+    "SCATS_GAP_MAIN_PHASE": False,
+    "ACT_EXTEND_MAIN": True,
+}
+
+# ADAPTIVE-BASE SATURATION GAME (2026-10-24). A SEPARATE game-theory method
+# from the net-surplus Nash bargaining: generalized-Nash welfare over
+# degree-of-saturation relief + passenger throughput - side/cross saturation
+# cost. It keeps the DSW adaptive plan loop (so it is NOT the raw NASH_BARGAIN
+# collapse) and drops the hard bus gates. Frozen by default; the _TRAIN arm
+# enables the online exponentiated-gradient weight learner.
+# SHARED GAME WARM-START (2026-10-30): every game arm must be allowed to act
+# from the same point, otherwise the ladder compares the WINDOW, not the game.
+# GAME_BUS had DECIDER_WARM_S=420 while GAME_COOP/GAME_EGAL had 120, so COOP
+# fired at t=220 s (4x VQ, 2x delay on seed 300) while GAME_BUS waited for the
+# adaptive plan to settle at t=420.
+#   PAPER_GAME_WARM_S=420 (default) -> the window GAME_BUS was validated at; the
+#                                     adaptive plan has applied and buses are
+#                                     loaded, so early insertions cannot gridlock
+#                                     the fill phase
+#   PAPER_GAME_WARM_S=120           -> act as soon as a delayed bus is detected
+#   PAPER_GAME_WARM_S=0             -> act on the very first detection tick
+# NOTE: 120 s was tried on 2026-10-30 and produced 1489 h on seed 300 (vs 671 h
+# at 420 s) for BOTH game arms, i.e. acting during the fill phase is what
+# destroys the run. Keep 420 unless deliberately testing the early window.
+def _game_warm_s():
+    try:
+        return max(0.0, float(_os.environ.get("PAPER_GAME_WARM_S", 420.0)))
+    except Exception:
+        return 420.0
+
+
+_GAME_WARM_S = _game_warm_s()
+
+# SCATS-STYLE STRATEGIC + TACTICAL LAYER (2026-10-30). The adaptive DSW base only
+# HOLDS the commissioned plan: DS_PLAN_ADAPT, DS_CYCLE_ADAPT and the master
+# cycle/split/offset loop are all off, and the plan is never re-optimised from
+# DS. This dict turns on the SCATS machinery the engine already implements:
+#   strategic : DS-driven cycle / split / offset, proportional (not equalising)
+#               split, master cycle and master link pressure
+#   tactical  : gap-out, max-out, actuated extend, sequence-by-Y,
+#               critical-intersection and phase skip
+# Used by CHAMP_ADAPTIVE_AIMSUN_DSW_SCATS (no TSP) and ..._SCATS_VIAB (TSP gated
+# by the DS/regime viability layer).
+_SCATS_STRATEGIC = {
+    # strategic (plan-level)
+    "DS_PLAN_ADAPT": True,
+    "DS_SOLVE_PER_CYCLE": True,
+    "DS_ADAPT_EVERY_S": 30.0,
+    "DS_CYCLE_ADAPT": True,
+    "DS_MASTER_CYCLE": True,
+    "DS_MASTER_SPLITS": True,
+    "DS_MASTER_OFFSETS": True,
+    "MASTER_LINK_PRESSURE": True,
+    # SCATS proportional split rather than the DS-equalising variant
+    "DS_SPLIT_DS_EQUAL": False,
+    "DS_SPLIT_PROPORTIONAL": True,
+    "DS_SPLIT_MAX_MOVE_S": 2.0,
+    "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+    # tactical (cycle-level actuation)
+    "SCATS_GAP_OUT": True,
+    "SCATS_MAX_OUT": True,
+    "ACTUATED_EXTEND": True,
+    "SCATS_SEQUENCE_BY_Y": True,
+    "SCATS_CRITICAL_INTERSECTION": True,
+    "SCATS_PHASE_SKIP": True,
+}
+
+_ADAPTIVE_GAME_RO = {
+    **_ADAPTIVE_DSW_RO,
+    "DECIDER_WARM_S": _GAME_WARM_S,
+    "GLOBAL_REWARD_MODE": True, "NASH_BARGAIN_MODE": True,
+    "NASH_GATE_MODE": False, "NASH_CORRIDOR_MODE": True,
+    "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+    "NASH_NET_GATE_RATIO": 1.0, "CASCADE_COST_MODE": True,
+    "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 5,
+    "NASH_CONVERGENCE_TOL": 0.01, "NASH_INTEGER_DURATIONS": True,
+    "NASH_MIN_BUS_DELAY_S": 0.0, "NASH_MIN_GAIN_S": 0.0,
+    "BUS_PAX_WEIGHT": 1.0, "DS_BUS_PAX_WEIGHT": 1.0,
+    "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+    "BUS_PRIO_RECALL_ENABLE": False,
+    "SAT_GAME_REWARD": True, "SAT_GAME_RELIEF_W": 1.0,
+    "SAT_GAME_SIDE_W": 1.0, "SAT_GAME_THRU_W": 1.0,
+    "SAT_GAME_DS_TARGET": 0.90,
+    "SAT_RELIEF_BONUS": True, "SAT_RELIEF_MIN_X": 0.85,
+    "SAT_RELIEF_MAX_X": 1.30, "SAT_RELIEF_RATE_PAXS": 60.0,
+    "SAT_RELIEF_CAP_PAXS": 2500.0,
+    "MAIN_STARVATION_COST": True, "MAIN_STARVATION_X0": 1.0,
+    "THROUGHPUT_REWARD": True, "W_THROUGHPUT": 1.0,
+    "W_DELAY_LEDGER": 0.0, "DS_COST_IN_REWARD": True,
+    "DS_BALANCE_GATE": True, "DS_MAX": 0.90, "DS_SPREAD_TOL": 0.30,
+    # SELF-GATE RELIEF (2026-10-31): the game prices the cross-street cost into
+    # its own reward (Nash cpc + NASH_NET_GATE_RATIO) and carries
+    # THROUGHPUT_REWARD, so the engine's external break-even veto re-tested the
+    # same trade with a risk-adjusted upper bound and rejected nearly every pick
+    # (0 executions on 4/5 seeds, DeciderCostVeto 12-27/run). Relief makes the
+    # action accountable to its own ledger only.
+    "SELF_GATE_RELIEF": True,
+    "DECIDER_COST_VETO_RATIO": 1.0,
+}
+
+# ── SCATS OVERLAY, SPLIT BY SUB-LAYER (2026-10-31) ────────────────────────────
+# The combined SCATS arm scored -38% to -81% on KG. Its log shows why:
+#     [DS SKIP] 1018   [DS CYCLE] 994   [DS SPLIT] 1159   [ACT EXT] 570
+#     [PLAN_OPT] 698   cycle-identity violations 41
+#     natural-green terminations 513 (NO_TSP) -> 50
+# gap-out/max-out/phase-skip plus cycle adaptation plus the plan optimiser were
+# all rewriting the signal simultaneously, so the commissioned progression was
+# destroyed. They are now separable so one component can be tested at a time; the
+# default is the SAFE subset (proportional split only), which is the part that
+# historically scored +5% as CHAMP_PAXDS_SPLIT.
+import os as _os_scats
+
+
+def _scats_flag(_name, _default="0"):
+    return _os_scats.environ.get(_name, _default) not in ("0", "", "false", "False")
+
+
+_SCATS_DSGATE = {
+    # DS-GATE (2026-10-31, replaces the faithful-bounded split re-solve). On the
+    # 07:31 ladder the per-cycle proportional split lost -28% obj / +40% delay /
+    # +29% density on KG. The log shows why: the DS feed inflates to 7.6-8.0 late
+    # in the run (ds-demand-inflation), so the "proportional" split re-times every
+    # cycle on a saturated, signal-less feed -- greens thrash (a high-demand phase
+    # dropped to 0.5-1.8s, below min-green) and the commissioned progression is
+    # destroyed. Even bounded +-2s / +-15% could not survive the inflated feed.
+    #
+    # DS-GATE is the config prior A/B showed BEAT NO_TSP on KG (-4% delay,
+    # +1.5-1.9% served; scats-arms-first-results): HOLD the commissioned plan (no
+    # split/cycle/offset re-solve) and use the degree-of-saturation only to GATE
+    # (veto) priority actions on an oversaturated approach. Its worst case is the
+    # held DSW plan, which already beats NO_TSP, so it cannot drag the system below
+    # fixed-time. On the plain (no-TSP) SCATS arm the gate has no action to veto, so
+    # that arm reduces to the held DSW plan; the gate does real work on SCATS_VIAB,
+    # where it admits bus priority only where the signal state can repay it.
+    "DS_PLAN_ADAPT": False,
+    "DS_SOLVE_PER_CYCLE": False,
+    "DS_CYCLE_ADAPT": False,
+    "DS_BALANCE_GATE": True,
+    "DS_MAX": 1.70,
+    "DS_SPREAD_TOL": 0.30,
+}
+_SCATS_CYCLE = {
+    "DS_CYCLE_ADAPT": True,
+    "DS_MASTER_CYCLE": True,
+}
+_SCATS_OFFSET = {
+    "DS_MASTER_OFFSETS": True,
+    "MASTER_LINK_PRESSURE": True,
+}
+_SCATS_TACTICAL = {
+    "SCATS_GAP_OUT": True,
+    "SCATS_MAX_OUT": True,
+    "ACTUATED_EXTEND": True,
+    "SCATS_SEQUENCE_BY_Y": True,
+    "SCATS_CRITICAL_INTERSECTION": True,
+    "SCATS_PHASE_SKIP": True,
+}
+_SCATS_STRATEGIC = dict(_SCATS_DSGATE)
+if _scats_flag("PAPER_SCATS_CYCLE"):
+    _SCATS_STRATEGIC.update(_SCATS_CYCLE)
+if _scats_flag("PAPER_SCATS_OFFSET"):
+    _SCATS_STRATEGIC.update(_SCATS_OFFSET)
+if _scats_flag("PAPER_SCATS_TACTICAL"):
+    _SCATS_STRATEGIC.update(_SCATS_TACTICAL)
+# COMPOSITES (2026-10-31): the priority ladder is back on the plain DSW base.
+# Only the two SCATS arms use these. Order matters: `_ADAPTIVE_*_RO` already holds
+# the DSW values, so the SCATS overlay MUST come after it to take effect.
+_VIABILITY_OVERLAY = {
+    # Bus priority may only embed itself where the signal state can repay it.
+    # OPT-IN ONLY: the module default is OFF, because with the recalibrated DS
+    # (mean ~3.2 on the order-preserved scale) a 1.0 threshold would disarm every
+    # junction and silently remove TSP from any arm that forgot to override it.
+    "DS_VIABILITY_GATE": True,
+    # Threshold on the REPORTED DS (post DS_ORDER_PRESERVE compression, which
+    # reaches ~5.8 here). 3.0 sits above the observed mean and below the ceiling,
+    # so it disarms on genuine oversaturation rather than on every tick.
+    "DS_VIABILITY_DS_MAX": 3.0,
+    "REGIME_VIABILITY_MIN": 3,        # 3 = INCR_FAILURE, 4 = SPILLBACK
+    "SYSTEM_REGIME_IN_STATE": True,   # regime as a learner state dimension
+    "SYSTEM_REGIME_LOG": True,
+}
+_SCATS_DSW_BASE = {**_ADAPTIVE_DSW_RO, **_SCATS_STRATEGIC, **_VIABILITY_OVERLAY}
+_SCATS_GAME_BASE = {
+    **_ADAPTIVE_GAME_RO, **_SCATS_STRATEGIC, **_VIABILITY_OVERLAY,
+    # SELF-GATE RELIEF (2026-10-30): the game already prices the cross-street
+    # cost into its own reward (Nash cpc + NASH_NET_GATE_RATIO) and carries
+    # THROUGHPUT_REWARD. The engine's external break-even veto then tested the
+    # SAME trade again with a risk-adjusted upper bound and rejected nearly every
+    # pick: the fixed ladder shows GAME_BUS with 0 executions on seeds 300-600 and
+    # DeciderCostVeto 12-27 per run, i.e. the arm was numerically the passive DSW
+    # arm. With relief the action is judged on its own ledger.
+    "SELF_GATE_RELIEF": True,
+}
+# Training copy keeps its own weights file; the GAME arm above deliberately
+# inherits the DSW weights path so its plan loop is not degraded by an
+# untrained/default weights file (the 2026-10-24 suite loaded pressure=1.0 /
+# service_gap=1.0 for GAME while the base loaded 0.15/3.0).
+_ADAPTIVE_GAME_TRAIN_RO = {
+    **_ADAPTIVE_GAME_RO,
+    "ADAPTIVE_WEIGHTS_PATH":
+        r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\kg\adaptive_weights_adaptive_game.json",
+    "ADAPTIVE_WEIGHT_LR": 0.05,
+    "ADAPTIVE_WEIGHT_REG": 0.02,
 }
 # INITPLAN_ADAPT backbone as a reusable base (commissioned plan, cycle+offsets
 # HELD, only gentle +/-6% split nudges -- the best non-learner last run at 901).
@@ -1143,7 +1711,7 @@ ARMS = [
         "GLOBAL_REWARD_MODE": True, "CPDQL_MODE": True,
         "CPDQL_ALPHA": 0.1, "CPDQL_GAMMA": 0.9, "CPDQL_EPSILON": 0.1,
         "CPDQL_TRAIN_EPSILON": BXT_TRAIN_EPSILON,
-        "CPDQL_W_H": 0.5, "CPDQL_CAR_OCC": 1.5, "CPDQL_MIN_GAIN_S": 0.0,
+        "CPDQL_W_H": 0.5, "CPDQL_CAR_OCC": 1.2, "CPDQL_MIN_GAIN_S": 0.0,
         "DCTSP_W_H": 0.50, "DCTSP_CAR_WEIGHT": 1.00,
         "DCTSP_GREEN_REALLOC_MODE": False,
         "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
@@ -1395,6 +1963,19 @@ ARMS = [
     {"name": "CHAMP_SCATS_DSGATE", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
      "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
         **_CELLQ_GATED_BASE,
+        "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
+        "MODE_NET_BENEFIT_GATE": False,
+        "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
+
+    # (a1-AGR) DS-GATE + AGGRESSIVE SCATS FLEXIBLE actuation. Same DS gate and
+    # commissioned backbone as CHAMP_SCATS_DSGATE; the only delta is the
+    # _SCATS_FLEX_AGGR overlay: 3 s steps from the 6 s SCATS min green, per-phase
+    # max green (60 / +50% / +15 s), a 3.5 s gap timer, and PERSISTENT adaptation
+    # bounded to +15% of the commissioned cycle. A/B against CHAMP_SCATS_DSGATE
+    # isolates exactly "how much more aggressive may the actuation be".
+    {"name": "CHAMP_DSGATE_AGR", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
+        **_CELLQ_GATED_BASE, **_WIN_ACTUATION, **_SCATS_FLEX_AGGR,
         "BXT_NET_BENEFIT_GATE": False, "BXT_MAIN_STARVE_GATE": False,
         "MODE_NET_BENEFIT_GATE": False,
         "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
@@ -2545,6 +3126,2175 @@ ARMS = [
         "DS_OFFSET_MAX_STEP_S": 6.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
         "DS_MARRY_DIVORCE": False}},
 
+    # ── SCATS EMULATION, STAGED (2026-10-21) ─────────────────────────────────
+    # Running every SCATS mechanism at once (splits + cycle + sequence + POG
+    # offsets + master + actuation) collapsed the corridor (objective 47.5 vs
+    # NO_TSP 127). These three arms isolate the mechanisms so each can be
+    # attributed. All keep the commissioned plan as the base and move in small
+    # increments, per cycle.
+
+    # (1) STRATEGIC SPLIT ONLY: keep the commissioned cycle and offsets; move
+    #     green between phases by at most 2 s per cycle toward equal DS. No
+    #     cycle adaptation, no sequencing, no POG, no master, no actuation --
+    #     the cleanest test of "does DS-driven split tuning help on this model".
+    {"name": "CHAMP_SCATS_EMU_SPLIT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": True, "DS_SOLVE_PER_CYCLE": True,
+        "DS_ADAPT_EVERY_S": 30.0, "DS_ADAPT_STEP_S": 1.0,
+        "DS_SPLIT_PROPORTIONAL": False, "DS_SPLIT_DS_EQUAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_SPLIT_MAX_MOVE_FRAC": 0.0,
+        "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+        # everything else off: isolate the split mechanism
+        "DS_CYCLE_ADAPT": False, "SCATS_SEQUENCE_BY_Y": False,
+        "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False,
+        "ACTUATED_EXTEND": False,
+        "SCATS_POG_OFFSETS": False,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_SPLITS": False,
+        "DS_MASTER_OFFSETS": False,
+        "SCATS_CRITICAL_INTERSECTION": False, "SCATS_LEADLAG": False,
+        "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+        "SCATS_PHASE_SKIP": False,
+     }},
+
+    # (2) SPLIT + WEBSTER CYCLE: the split servo above plus the SCATS cycle
+    #     curve from critical DS (+/-15% of commissioned). Still no offsets,
+    #     sequencing, POG, master or actuation. Isolates "cycle adaptation",
+    #     which is the mechanism most likely to break the green wave.
+    {"name": "CHAMP_SCATS_EMU_CYCLE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS",
+     "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        "DS_PLAN_ADAPT": True, "DS_SOLVE_PER_CYCLE": True,
+        "DS_ADAPT_EVERY_S": 30.0, "DS_ADAPT_STEP_S": 1.0,
+        "DS_SPLIT_PROPORTIONAL": False, "DS_SPLIT_DS_EQUAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_SPLIT_MAX_MOVE_FRAC": 0.0,
+        "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_LAW": "webster",
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        # still off: offsets/sequence/POG/master/actuation
+        "SCATS_SEQUENCE_BY_Y": False,
+        "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False,
+        "ACTUATED_EXTEND": False,
+        "SCATS_POG_OFFSETS": False,
+        "DS_MASTER_CYCLE": False, "DS_MASTER_SPLITS": False,
+        "DS_MASTER_OFFSETS": False,
+        "SCATS_CRITICAL_INTERSECTION": False, "SCATS_LEADLAG": False,
+        "SCATS_BUS_PRIORITY": False, "BUS_PRIO_JIT_ENABLE": False,
+        "SCATS_PHASE_SKIP": False,
+     }},
+
+    # (3) FULL SCATS EMULATION (the former CHAMP_SCATS_EMU): everything on.
+    #     Kept for attribution against (1) and (2), but expect it to be the
+    #     least stable -- it changes cycle, sequence, offsets and actuation at
+    #     once. CHAMP_SCATS_EMU (old name) is retired; diff results by suffix.
+    # CHAMP_SCATS_EMU_FULL (2026-10-21): explicit SCATS emulation -- no WinTraff
+    # SCATS controller needed. It reproduces what the Aimsun SCATS interface
+    # exchanges with a real controller, computed in-engine from the same inputs:
+    #
+    #   SCATS input          -> emulation here
+    #   count + occupancy    -> virtual per-approach loop (_vloop_occupancy) +
+    #                           measured detector counts where the model has them
+    #                           (the [TUNING GATE] line says when loops are silent)
+    #   degree of saturation -> _approach_ds_snapshot: demand/capacity per phase,
+    #                           GREEN-INDEPENDENT, per-turn, order-preserving
+    #   strategic split      -> DS-equalising water-fill, moved by AT MOST
+    #                           DS_SPLIT_MAX_MOVE_S=2 s, solved ONCE PER CYCLE
+    #                           ("small increments, almost cycle by cycle")
+    #   cycle length         -> Webster curve from critical DS, +/-15% band
+    #   offsets              -> POG hill-climb (small steps) + master offsets
+    #   actuation            -> gap-out / max-out between min and max green
+    #   transit              -> discrete SCATS bus request (separate from DS)
+    #
+    # Difference from CHAMP_SCATS_SOLVER: per-cycle solve and a 2 s move cap
+    # (the solver uses a 15 s cadence / 10 s move, which can swing the split and
+    # fight the green wave). This is the "incrementally tuned" arm.
+    {"name": "CHAMP_SCATS_EMU_FULL", "strategy": "GLOBAL_REWARD", "method": "PURE_SCATS",
+     "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {
+        **_PURE_SCATS_GRAD_BASE,
+        # ── splits: DS equalisation, per cycle, 2 s increments ──
+        "DS_PLAN_ADAPT": True, "DS_SOLVE_PER_CYCLE": True,
+        "DS_ADAPT_EVERY_S": 30.0, "DS_ADAPT_STEP_S": 1.0,
+        "DS_SPLIT_PROPORTIONAL": False, "DS_SPLIT_DS_EQUAL": True,
+        "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_SPLIT_MAX_MOVE_FRAC": 0.0,
+        "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+        # ── cycle from critical DS ──
+        "DS_CYCLE_ADAPT": True, "SCATS_CYCLE_LAW": "webster",
+        "DS_CYCLE_TARGET": 0.90, "DS_CYCLE_STEP_S": 5.0,
+        "DS_CYCLE_MIN_RATIO": 0.85, "DS_CYCLE_MAX_RATIO": 1.15,
+        "SCATS_SEQUENCE_BY_Y": True,
+        # ── actuation ──
+        "SCATS_GAP_OUT": True, "SCATS_GAP_MIN_GREEN_S": 10.0,
+        "SCATS_GAP_MAX_OCC_VEH": 1.5, "SCATS_GAP_MAX_FLOW_VPH": 200.0,
+        "SCATS_GAP_NEXT_MIN_Y": 0.02,
+        "SCATS_MAX_OUT": True, "SCATS_MAX_OUT_S": 60.0,
+    "ACTUATED_EXTEND": True, "ACT_EXTEND_STEP_S": 2.0,
+    "ACT_EXTEND_BAND": 0.30, "ACT_EXTEND_ABS_CAP_S": 8.0,
+    "ACT_EXTEND_MIN_OCC_VEH": 2.0, "ACT_EXTEND_MIN_FLOW_VPH": 300.0,
+    # MAIN-PHASE JITTER POLICY (operator, 2026-10-22): extend main if busy,
+    # but NEVER gap-out/max-out it early; side phases remain actuated.
+    "SCATS_GAP_MAIN_PHASE": False, "ACT_EXTEND_MAIN": True,
+        "ACT_EXTEND_DONOR": True, "ACT_EXTEND_DONOR_MAX_FRAC": 0.25,
+        "CYCLE_CAP_ENABLE": True, "CYCLE_CAP_SLACK_S": 4.0,
+        "CYCLE_CAP_SLACK_FRAC": 0.05,
+        "SCATS_LEADLAG": True, "SCATS_LEADLAG_HEAVY_Y": 0.5,
+        "SCATS_CRITICAL_INTERSECTION": True,
+        # ── offsets / master, small steps ──
+        "SCATS_POG_OFFSETS": True, "SCATS_POG_STEP_S": 2.0,
+        "SCATS_POG_EPS": 0.01,
+        "DS_MASTER_CYCLE": True, "DS_MASTER_COMMISSIONED": True,
+        "DS_MASTER_INTERVAL_S": 30.0, "DS_MASTER_MIN_RATIO": 0.85,
+        "DS_MASTER_MAX_RATIO": 1.15, "DS_MASTER_DS_CYCLE": True,
+        "DS_MASTER_DS_WARM_S": 300.0, "DS_MASTER_DS_STEP_S": 3.0,
+        "DS_MASTER_DS_MIN_CRIT": 0.30, "DS_MASTER_SPLITS": True,
+        "DS_MASTER_OFFSETS": True, "DS_OFFSET_TOL_S": 3.0,
+        "DS_OFFSET_MAX_STEP_S": 3.0, "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+        "DS_MARRY_DIVORCE": False,
+     }},
+
+    # ══ PASSENGER-RELATIVE DS + TERM MATRIX (2026-10-21, operator) ═══════════
+    # Test every term on its own axis. All are PURE_SCATS unless stated, and all
+    # use the staged emulation bodies defined above.
+
+    # --- A. PAX-DS applied to the three emulation stages -------------------
+    {"name": "CHAMP_PAXDS_SPLIT", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS}},
+
+    {"name": "CHAMP_PAXDS_CYCLE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_CYCLE, **_PAXDS}},
+
+    {"name": "CHAMP_PAXDS_FULL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_FULL, **_PAXDS}},
+
+    # --- B. PAX-DS + one extra term each --------------------------------
+    {"name": "CHAMP_PAXDS_SELFGATE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          "DS_COST_IN_REWARD": True}},
+
+    {"name": "CHAMP_PAXDS_REL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          "DS_BIAS_CORRECT": True,
+                          "DS_GATE_REQUIRE_RELIABLE": True}},
+
+    {"name": "CHAMP_PAXDS_TP", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS_TP}},
+
+    {"name": "CHAMP_PAXDS_FLEX", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          **_SCATS_FLEX_AGGR}},
+
+    {"name": "CHAMP_PAXDS_POG", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          # _solve_master_offsets() EARLY-RETURNS unless
+                          # DS_MASTER_OFFSETS is on; the POG block lives inside
+                          # it. Enable offsets only (no master cycle/splits) so
+                          # the POG hill-climb actually runs.
+                          "DS_MASTER_OFFSETS": True,
+                          "DS_MASTER_CYCLE": False, "DS_MASTER_SPLITS": False,
+                          "SCATS_POG_OFFSETS": True, "SCATS_POG_STEP_S": 2.0,
+                          "SCATS_POG_EPS": 0.01}},
+
+    {"name": "CHAMP_PAXDS_NOPOGKF", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True, "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_FULL, **_PAXDS,
+                          "POG_KALMAN": False}},
+
+    # --- C. DS DEFINITION variants (pax DS held constant) ----------------
+    {"name": "CHAMP_PAXDS_NOQ", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          "DS_FLOW_QUEUE_AWARE": False}},
+
+    {"name": "CHAMP_PAXDS_Q2", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PURE_SCATS_GRAD_BASE, **_EMU_SPLIT, **_PAXDS,
+                          "DS_QUEUE_SAT_VEH_PER_LANE": 2.0}},
+
+    # --- D. PAX-DS on the TSP-layer arms (does pax DS change the gate?) --
+    {"name": "CHAMP_DSGATE_PAX", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_CELLQ_GATED_BASE, **_WIN_ACTUATION, **_PAXDS,
+                          "BXT_NET_BENEFIT_GATE": False,
+                          "BXT_MAIN_STARVE_GATE": False,
+                          "MODE_NET_BENEFIT_GATE": False,
+                          "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
+
+    {"name": "CHAMP_PBIL_PAX", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_LEARN, **_PAXDS}},
+
+    # ── PBIL PREDICTIVE PRESSURE (2026-10-21) ────────────────────────────────
+    # Same PBIL split learner, but it does not wait for realised pax-delay to
+    # learn. Each generation it ROLLS OUT its candidate gene vectors over the
+    # next PBIL_HORIZON_CYCLES and picks the one whose SUMMED FUTURE PRESSURE is
+    # lowest. Future arrivals are ESTIMATED per phase by an adaptive Kalman
+    # (level+slope) on q_vph and extrapolated cycle by cycle; service is
+    # derated by downstream blockage, and pressure is passenger-weighted.
+    {"name": "CHAMP_PBIL_PRESS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_LEARN,
+                          "PBIL_PRESSURE_MODE": True,
+                          "PBIL_HORIZON_CYCLES": 4, "PBIL_CANDIDATES": 8}},
+
+    {"name": "CHAMP_PBIL_PRESS_PAX", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_LEARN, **_PAXDS,
+                          "PBIL_PRESSURE_MODE": True,
+                          "PBIL_HORIZON_CYCLES": 4, "PBIL_CANDIDATES": 8}},
+
+    # Horizon sensitivity: does looking 8 cycles ahead relieve more pressure
+    # than 4, or does the forecast error make it worse?
+    {"name": "CHAMP_PBIL_PRESS_H8", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PBIL_LEARN,
+                          "PBIL_PRESSURE_MODE": True,
+                          "PBIL_HORIZON_CYCLES": 8, "PBIL_CANDIDATES": 8}},
+
+    # ══ TUNING OFF THE WINNER (CHAMP_PAXDS_SPLIT, 136.3 vs NO_TSP 129.4) ═════
+    # One knob changed per arm off the EXACT winning configuration.
+
+    # Split-servo speed: how much green may move per cycle.
+    {"name": "CHAMP_PAXWIN_M1", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_SPLIT_MAX_MOVE_S": 1.0}},
+
+    {"name": "CHAMP_PAXWIN_M4", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_SPLIT_MAX_MOVE_S": 4.0}},
+
+    # Band around the commissioned split: tighter protects the plan, wider frees
+    # the servo.
+    {"name": "CHAMP_PAXWIN_B08", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_SPLIT_COMMISSIONED_BAND": 0.08}},
+
+    {"name": "CHAMP_PAXWIN_B25", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_SPLIT_COMMISSIONED_BAND": 0.25}},
+
+    # Strength of the passenger weighting.
+    {"name": "CHAMP_PAXWIN_P2", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_PAXF_MAX": 2.0}},
+
+    {"name": "CHAMP_PAXWIN_P6", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN, "DS_PAXF_MAX": 6.0}},
+
+    # Allocation law: proportional vs DS-equalising.
+    {"name": "CHAMP_PAXWIN_PROP", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "DS_SPLIT_DS_EQUAL": False,
+                          "DS_SPLIT_PROPORTIONAL": True}},
+
+    # Winner + discrete SCATS bus priority (JIT extend + early recall).
+    {"name": "CHAMP_PAXWIN_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "SCATS_BUS_PRIORITY": True,
+                          "BUS_PRIO_JIT_ENABLE": True,
+                          "BUS_PRIO_RECALL_ENABLE": True}},
+
+    # Winner + predictive future-pressure PBIL (best horizon from the matrix).
+    {"name": "CHAMP_PAXWIN_PRESS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False, "coordination_algo": "KALMAN",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PBIL_TS_MODE": True, "PBIL_PRESSURE_MODE": True,
+                          "PBIL_HORIZON_CYCLES": 8, "PBIL_CANDIDATES": 8}},
+
+    # Winner + generalised-Nash bus TSP on top.
+    {"name": "CHAMP_PAXWIN_GAME", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # Winner + the SCATS FULL-STATE STARTUP SOLVE (2026-10-22): cycle and
+    # main-stage green share come from the SCATS commissioned plans, the
+    # non-main splits keep the model's relative shares (the RAM export has no
+    # stage->signal-group map). v2 GUARDS (2026-10-22): the startup offset
+    # solve is OFF (it inflated cycles 120->260 s and landed on the wrong
+    # phase), the SCATS cycle is clamped to the model cycle +/-15%, a split is
+    # only accepted when the bus share moves <=25% relative, and DS adaptation
+    # stays ON so cycle recovery can act.
+    {"name": "CHAMP_PAXWIN_SCATS_STATE", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PLAN_OPTIMIZE_OFFSETS": False,
+                          "SCATS_POG_STATE_SOLVE": True,
+                          "SCATS_POG_STATE_SPLITS": True,
+                          "SCATS_POG_STATE_OFFSETS": False,
+                          "SCATS_POG_STATE_HOLD": True,
+                          "SCATS_POG_STATE_HOLD_SPLITS": True,
+                          "SCATS_POG_STATE_CYCLE_BAND": 0.10,
+                          "SCATS_POG_STATE_SPLIT_SHARE_TOL": 0.25,
+                          "SCATS_POG_STATE_BUS_SPEED_MS": 12.0,
+                          "SCATS_POG_STATE_HORIZON_S": 7200.0,
+                          "SCATS_POG_OFFSETS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # ISOLATION (2026-10-22): cycle-inflation clamp ONLY. No SCATS share
+    # rewrite and no startup offsets -- the model plan's SHARES are kept and
+    # merely rescaled to the clamped cycle (model cycle +/-15%). This separates
+    # "we broke the cycle" from "the SCATS splits/offsets are wrong".
+    {"name": "CHAMP_PAXWIN_SCATS_CYCLEFIX", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PLAN_OPTIMIZE_OFFSETS": False,
+                          "SCATS_POG_STATE_SOLVE": True,
+                          "SCATS_POG_STATE_SPLITS": False,
+                          "SCATS_POG_STATE_OFFSETS": False,
+                          "SCATS_POG_STATE_HOLD": True,
+                          "SCATS_POG_STATE_HOLD_SPLITS": True,
+                          "SCATS_POG_STATE_CYCLE_BAND": 0.10,
+                          "SCATS_POG_STATE_SPLIT_SHARE_TOL": 0.25,
+                          "SCATS_POG_STATE_BUS_SPEED_MS": 12.0,
+                          "SCATS_POG_STATE_HORIZON_S": 7200.0,
+                          "SCATS_POG_OFFSETS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0, "NASH_MIN_GAIN_S": 5.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # MODEL PLAN + PBIL PRESSURE LEARNER (2026-10-22 revision). The original
+    # MODELPLAN arm (greedy DS-equal splits + Nash) was horrendous: 1264 h vs
+    # NO_TSP 727 h, natural green 10% vs 86%. This keeps the model plan/offsets
+    # untouched but replaces the greedy 1 s DS-equal walk with the PBIL
+    # predictive-pressure learner: each generation rolls candidate split
+    # multipliers forward over PBIL_HORIZON_CYCLES and keeps the lowest future
+    # pressure. Gentle commissioned band, higher TSP gain gates, and the new
+    # bus-floor + bus-boundary + offset-preserving failsafe.
+    {"name": "CHAMP_PAXWIN_MODELPLAN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PLAN_SCATS_HIST": False,
+                          "PLAN_OPTIMIZE": False,
+                          "PLAN_OPTIMIZE_OFFSETS": False,
+                          "SCATS_POG_STATE_SOLVE": False,
+                          "SCATS_POG_OFFSETS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          # PBIL predictive-pressure split learner
+                          "PBIL_TS_MODE": True, "PBIL_GEN_S": 300.0,
+                          "PBIL_DELTA": 0.25, "PBIL_ALPHA": 0.20,
+                          "PBIL_MIN_P": 0.05, "PBIL_WARM_S": 120.0,
+                          "PBIL_PRESSURE_MODE": True,
+                          "PBIL_HORIZON_CYCLES": 4, "PBIL_CANDIDATES": 8,
+                          # gentle proportional splits (not DS-equal)
+                          "DS_PLAN_ADAPT": True, "DS_ADAPT_EVERY_S": 30.0,
+                          "DS_SPLIT_PROPORTIONAL": True,
+                          "DS_SPLIT_DS_EQUAL": False,
+                          "DS_SPLIT_MAX_MOVE_S": 2.0, "DS_ADAPT_STEP_S": 1.0,
+                          "DS_FLOW_QUEUE_AWARE": True,
+                          "DS_SPLIT_COMMISSIONED_BAND": 0.08,
+                          # fewer / higher-value TSP grants
+                          # no hard bus gates: bus is a high-occupancy
+                          # mechanism, not a priority constraint
+                          "NASH_MIN_BUS_DELAY_S": 0.0,
+                          "NASH_MIN_GAIN_S": 0.0,
+                          "BUS_PAX_WEIGHT": 1.0,
+                          "NASH_MAX_ITER": 5,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # CLEAN BASELINE + NO ONLINE DS SPLIT ADAPTATION (2026-10-22). The
+    # MODELPLAN run proved that DS_PLAN_ADAPT is the killer: it moved green
+    # 1 s at a time from the low-DS main phase to the high-DS side phase and
+    # collapsed the bus phase/cycle (36385 65->15 s / 135->85 s, 39593
+    # 80->8 s / 135->63 s), taking natural green from 86% to 13%. This arm
+    # keeps the model plan untouched and runs the same TSP controller with
+    # splits/cycle adaptation OFF.
+    {"name": "CHAMP_PAXWIN_MODELPLAN_NODS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PLAN_SCATS_HIST": False,
+                          "PLAN_OPTIMIZE": False,
+                          "PLAN_OPTIMIZE_OFFSETS": False,
+                          "SCATS_POG_STATE_SOLVE": False,
+                          "SCATS_POG_OFFSETS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "DS_PLAN_ADAPT": False,
+                          "DS_SOLVE_PER_CYCLE": False,
+                          "DS_CYCLE_ADAPT": False,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 0.0, "NASH_MIN_GAIN_S": 0.0,
+                          "BUS_PAX_WEIGHT": 1.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # JUMP (2026-10-22): model plan untouched + the same TSP controller, but
+    # EMPTY-PHASE SKIPPING ON. A phase with essentially no queue is truncated
+    # (min-green safe) so the plan advances to the bus/service phase sooner --
+    # the "jump around" option, isolated from DS/startup rewrites.
+    {"name": "CHAMP_PAXWIN_MODELPLAN_JUMP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN,
+                          "PLAN_SCATS_HIST": False,
+                          "PLAN_OPTIMIZE": False,
+                          "PLAN_OPTIMIZE_OFFSETS": False,
+                          "SCATS_POG_STATE_SOLVE": False,
+                          "SCATS_POG_OFFSETS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "DS_PLAN_ADAPT": False,
+                          "DS_SOLVE_PER_CYCLE": False,
+                          "DS_CYCLE_ADAPT": False,
+                          "EMPTY_PHASE_SKIP_MODE": True,
+                          "EMPTY_PHASE_QUEUE_EPS_PAX": 1.0,
+                          "EMPTY_PHASE_MIN_TARGET_PAX": 5.0,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True, "NASH_GATE_MODE": False,
+                          "BARGAIN_SPM_MODE": False, "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5, "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5, "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 0.0, "NASH_MIN_GAIN_S": 0.0,
+                          "BUS_PAX_WEIGHT": 1.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # ROLLING CYCLE VARIANTS (2026-10-22). One-cycle observation delay,
+    # all-junction SCATS/PBIL plan, MainPhase protected from early gap-out.
+    {"name": "CHAMP_PAXWIN_CYCLE_PBIL", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE}},
+
+    # Faster reviewer: shorter cadence, smaller moves, more candidates.
+    {"name": "CHAMP_PAXWIN_CYCLE_PBIL_FAST", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+                          "CYCLE_PLANNER_INTERVAL_S": 90.0,
+                          "CYCLE_PLANNER_DELTA": 0.10,
+                          "CYCLE_PLANNER_CANDIDATES": 12}},
+
+    # SCATS seed only: no PBIL gene search, one-cycle-delayed application.
+    {"name": "CHAMP_PAXWIN_CYCLE_SCATS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+                          "CYCLE_PLANNER_PBIL": False}},
+
+    # Main-phase-only variant: PBIL is allowed to move the main share but the
+    # side phases keep their SCATS/model proportions.
+    {"name": "CHAMP_PAXWIN_CYCLE_PBIL_MAIN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+                          "CYCLE_PLANNER_DELTA": 0.20,
+                          "CYCLE_PLANNER_CANDIDATES": 8}},
+
+    # ADAPTIVE AIMSUN-LIKE: 1 s measured state, cycle-level plan library
+    # (live / arrival / SCATS / model), master offsets + link pressure, and
+    # the guarded bus-priority overlay. Closest single arm to an Aimsun
+    # adaptive controller.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+                          "DS_SNAPSHOT_TTL_S": 1.0,
+                          "CYCLE_PLANNER_PLAN_LIBRARY": True,
+                          "CYCLE_PLANNER_ADAPTIVE_WEIGHTS": True,
+                          "ADAPTIVE_WEIGHTS_PATH":
+                              r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\kg\adaptive_weights_adaptive_aimsun.json",
+                          "ADAPTIVE_WEIGHT_LR": 0.02,
+                          "CYCLE_PLANNER_ARRIVAL_TUNE": True,
+                          # Isolate the adaptive plan loop first: no master
+                          # offset transient and no TSP layer yet.
+                          "DS_MASTER_CYCLE": False,
+                          "DS_MASTER_SPLITS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "MASTER_LINK_PRESSURE": False,
+                          "GLOBAL_REWARD_MODE": False,
+                          "NASH_BARGAIN_MODE": False,
+                          "SCATS_GAP_MAIN_PHASE": False,
+                          "ACT_EXTEND_MAIN": True}},
+
+    # SCATS plan loop (main-green protected) + TSP FLAVOUR re-enabled: the Nash
+    # bus-priority decider + JIT green-extension / early-green recall layered ON
+    # TOP of the adaptive plan. This is the "emulate SCATS WITH TSP" arm -- run it
+    # after confirming CHAMP_ADAPTIVE_AIMSUN no longer flattens the main.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_TSP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CYCLE_PLANNER_BASE,
+                          "DS_SNAPSHOT_TTL_S": 1.0,
+                          "CYCLE_PLANNER_PLAN_LIBRARY": True,
+                          "CYCLE_PLANNER_ADAPTIVE_WEIGHTS": True,
+                          "ADAPTIVE_WEIGHTS_PATH":
+                              r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\kg\adaptive_weights_adaptive_aimsun_tsp.json",
+                          "ADAPTIVE_WEIGHT_LR": 0.02,
+                          "CYCLE_PLANNER_ARRIVAL_TUNE": True,
+                          "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90,
+                          "DS_MASTER_CYCLE": False,
+                          "DS_MASTER_SPLITS": False,
+                          "DS_MASTER_OFFSETS": False,
+                          "MASTER_LINK_PRESSURE": False,
+                          # TSP LAYER ON: Nash bus-priority decider + JIT extend +
+                          # early-green recall (rule-based, bounded, gated).
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True,
+                          "SCATS_BUS_PRIORITY": True,
+                          "BUS_PRIO_JIT_ENABLE": True,
+                          "BUS_PRIO_RECALL_ENABLE": True,
+                          "BUS_PRIO_MAX_EXT_S": 10.0,
+                          "BUS_PRIO_MAX_RECALL_S": 8.0,
+                          "BUS_PRIO_COOLDOWN_S": 60.0,
+                          "SCATS_GAP_MAIN_PHASE": False,
+                          "ACT_EXTEND_MAIN": True}},
+
+    # ── DS-DRIVEN ADAPTIVE VARIANTS (2026-10-23, operator request) ────────────
+    # Diagnosis: CHAMP_ADAPTIVE_AIMSUN adapts on a PRESSURE FORECAST (pbil
+    # pressure, weight ~1.0) + service_gap, with measured degree-of-saturation as
+    # only a 0.09-weight feature, and the DS split adapter OFF (plan_adapt=False,
+    # 0 incremental moves) -- so it is not saturation-adaptive in the SCATS sense.
+    # These two arms make SATURATION the basis, two different ways.
+    #
+    # (1) CHAMP_ADAPTIVE_DS: splits driven directly by the measured DS (the real
+    # SCATS law -- queue-aware flow-proportional, equalise DS), nudged within the
+    # commissioned band (+/-6%) with the commissioned OFFSETS held. No pressure-
+    # forecast cycle planner. Same adaptive context (coordinated / shockwave) as
+    # CHAMP_ADAPTIVE_AIMSUN so it is a clean A/B; TSP overlay off to isolate the
+    # plan loop. Reuses the proven _PURE_SCATS_FAITHFUL_BASE machinery.
+    {"name": "CHAMP_ADAPTIVE_DS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PURE_SCATS_FAITHFUL_BASE,
+                          "DS_SNAPSHOT_TTL_S": 1.0,
+                          # DS drives the splits; no pressure-forecast planner.
+                          "CYCLE_PLANNER": False,
+                          # Isolate the plan loop first (no TSP overlay), like
+                          # CHAMP_ADAPTIVE_AIMSUN.
+                          "GLOBAL_REWARD_MODE": False,
+                          "NASH_BARGAIN_MODE": False,
+                          "SCATS_BUS_PRIORITY": False}},
+
+    # (2) CHAMP_ADAPTIVE_AIMSUN_DSW: KEEP the cycle-planner plan-library, but make
+    # its plan CHOICE saturation-dominant. The per-candidate feature that reflects
+    # degree of saturation is service_gap (demand-weighted UNMET service under each
+    # candidate split, using the now-fixed per-turn q_vph); ds_max is a per-STATE
+    # constant and cancels out of the ranking, so cranking IT does nothing -- the
+    # lever is service_gap vs pressure. Seed the adaptive weights with service_gap
+    # dominant and pressure (the progression-blind forecast that broke the wave)
+    # down, and FREEZE them (LR=0, REG=0) so saturation stays the basis.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_DSW", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO}},
+
+    # LOGAN-TUNED DSW (2026-10-29). The 3-seed Logan A/B showed plain AIMSUN_DSW is
+    # +1.3% WORSE than NO_TSP (exit flow -4.1%): the adaptive SPLIT solver moves
+    # -31 s/cycle off the main corridor, 79% of it at junction 17308 -- a 300s-cycle
+    # bottleneck (main 91% green, ~2900-veh queue) whose main it cut 273->248.5s and
+    # handed to a low-demand side phase. Root cause: KG-tuned weights loaded on Logan
+    # (service_gap=3.0 fairness-DOMINANT) force green onto side phases that accrue huge
+    # service-gap in long/heterogeneous cycles. KG survives it (uniform 135s, no such
+    # junction); Logan does not. See [[logan-dsw-main-green-theft]]. Three fixes in one
+    # arm, A/B vs AIMSUN_DSW + NO_TSP: (1) Logan weights file (service_gap 3.0->0.5,
+    # queue 0.3->0.6, ds_max 0.1->0.4, main_share 0.2->0.3 = demand-responsive, not
+    # fairness); (2) MAIN_KEEP_FRAC 0.90->0.97 so the solver can cut main green at most
+    # ~3% (was allowing 10%); (3) FREEZE junction 17308 via active_intersections (all 22
+    # other Logan junctions) -- engine update() returns early for a non-active junction,
+    # so 17308 holds its commissioned fixed-time plan (no engine edit). LOGAN-ONLY arm.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_DSW_LOGAN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "active_intersections": [17249, 17383, 17498, 17628, 17963, 18044, 18942,
+                              19185, 19196, 19363, 19474, 19882, 20270, 20280,
+                              20283, 20844, 21197, 21553, 21847, 21895, 22232,
+                              22603],
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "ADAPTIVE_WEIGHTS_PATH":
+                              r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\logan_road_new\adaptive_weights_adaptive_dsw.json",
+                          "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.97}},
+
+    # DS-FEED FIX A/B (2026-10-28): identical to AIMSUN_DSW but caps the ARRIVAL
+    # demand term at mu*lanes*1.15 (DS_ARRIVAL_SAT_CAP_X), so the adaptive plan
+    # solves on a PHYSICAL degree-of-saturation instead of the inflated feed
+    # (ds_base hit 41167 pre-clamp -> ds_max pinned at the 4.99 order-ceil). The
+    # clean DSW already shows this, so DSW vs DSW_DSCAP = the pure effect of a
+    # physical DS feed on the BASE plan. See ds-demand-inflation.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_DSW_DSCAP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, "DS_ARRIVAL_SAT_CAP_X": 1.15}},
+
+    # (3) HYSTERESIS-GATED DSW variants (2026-10-23). DSW over 5 seeds averaged
+    # -2.8% pax-delay and served >= NO_TSP everywhere, but lost small (+2..+3%) on
+    # 2 seeds -- the adaptive plan occasionally makes a slightly-wrong move. These
+    # make the COMMISSIONED plan the default and only deviate when a candidate beats
+    # it by the margin, bounding the downside. Sweep 10% vs 20% to find the knee.
+    {"name": "CHAMP_ADAPTIVE_DSW_H10", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "CYCLE_PLANNER_SWITCH_MARGIN": 0.10}},
+    {"name": "CHAMP_ADAPTIVE_DSW_H20", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "CYCLE_PLANNER_SWITCH_MARGIN": 0.20}},
+
+    # (4) DS-WEIGHTED PLAN LOOP + TSP OVERLAY (2026-10-23). The rule-based bus-
+    # priority layer (Nash decider + JIT extend + early-green recall) STACKED on the
+    # DSW plan loop. CHAMP_ADAPTIVE_DSW_TSP = base DSW + TSP, so DSW vs DSW_TSP
+    # isolates the TSP layer's effect. CHAMP_ADAPTIVE_DSW_H10_TSP adds the
+    # commissioned-hysteresis gate too = the combined "best" candidate (stable plan
+    # loop + bus priority).
+    {"name": "CHAMP_ADAPTIVE_DSW_TSP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_TSP_LAYER}},
+    {"name": "CHAMP_ADAPTIVE_DSW_H10_TSP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_TSP_LAYER,
+                          "CYCLE_PLANNER_SWITCH_MARGIN": 0.10}},
+
+    # (5) ADAPTIVE-BASE METHOD VARIANTS (2026-10-24). Every thesis method must
+    # sit on the adaptive signal controller (the DSW plan loop), not on the raw
+    # commissioned plan. Each keeps _ADAPTIVE_DSW_RO and adds ONE method layer.
+    # PBIL is already the base plan solver (CYCLE_PLANNER_PBIL=True).
+    {"name": "CHAMP_ADAPTIVE_DSW_PBIL", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "CYCLE_PLANNER_PBIL": True}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_CTM", "strategy": "GLOBAL_REWARD",
+     "method": "ZIGDOG_Q", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "ZIGDOG_Q_MODE": True,
+                          "ZIGDOG_CTM": True,
+                          "ZIGDOG_BUS_W": 0.0,
+                          "MEASURED_STATE_FEED": True,
+                          "MEASURED_QUEUE_FEED": True,
+                          "MEASURED_SIDE_COST": True}},
+
+    # GENUINE MULTI-CELL DAGANZO CTM on the adaptive base (2026-10-24):
+    # CellQLearn head + CELLQ_CTM_REWARD (engine._ctm_cross_cost_paxs), which is
+    # the n-cell sending/receiving chain (CELLQ_CTM_SINGLE_CELL=False), not the
+    # single-cell shockwave used by ZIGDOG_CTM.
+    {"name": "CHAMP_ADAPTIVE_DSW_MULTI_CELL_CTM", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_CELLQ_GATED_BASE,
+                          "BXT_MODE": True,
+                          "BXT_CORRIDOR_MODE": False,
+                          "CELLQ_CTM_REWARD": True,
+                          "CELLQ_CTM_STATE": True,
+                          "CELLQ_CTM_STATE_CELLS": 8,
+                          "CELLQ_CTM_SINGLE_CELL": False,
+                          "CELLQ_CTM_MAX_CELLS": 40,
+                          "CELLQ_CTM_DT_S": 1.0,
+                          "CELLQ_CTM_FREEFLOW_KMH": 50.0,
+                          "CELLQ_CTM_WAVE_KMH": 18.0}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_NASH", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True,
+                          "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5,
+                          "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5,
+                          "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0,
+                          "NASH_MIN_GAIN_S": 5.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_NASH_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True,
+                          "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5,
+                          "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5,
+                          "NASH_MAX_ITER": 10,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0,
+                          "NASH_MIN_GAIN_S": 5.0,
+                          "NASH_THRU_SURPLUS": True,
+                          "THROUGHPUT_REWARD": True,
+                          "W_THROUGHPUT": 1.0,
+                          "W_DELAY_LEDGER": 0.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_NASH_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True,
+                          "NASH_CORRIDOR_MODE": True,
+                          # BUS PRIORITY overlay with the SAME net-pax
+                          # accounting as the base: bus pax has bargaining
+                          # power, but downstream/cross cost is priced and the
+                          # action must clear a net-benefit gate. This is not a
+                          # 3x safety veto; it stops negative-surplus actions.
+                          "NASH_BUS_WEIGHT": 1.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.5,
+                          "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5,
+                          "NASH_MAX_ITER": 5,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": True,
+                          "NASH_MIN_BUS_DELAY_S": 5.0,
+                          "NASH_MIN_GAIN_S": 5.0,
+                          "DECIDER_COST_VETO_RATIO": 1.5,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DECIDER_WARM_S": 420.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},   # no lateness gating (2026-10-29 directive)
+
+    {"name": "CHAMP_ADAPTIVE_DSW_MARL", "strategy": "GLOBAL_REWARD",
+     "method": "DCTSP_MARL", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "CPDQL_MODE": True,
+                          "CPDQL_ALPHA": 0.1,
+                          "CPDQL_GAMMA": 0.9,
+                          "CPDQL_EPSILON": 0.0,
+                          "CPDQL_W_H": 0.5,
+                          "CPDQL_CAR_OCC": 1.2,
+                          "DCTSP_W_H": 0.50,
+                          "DCTSP_CAR_WEIGHT": 1.00,
+                          "DCTSP_GREEN_REALLOC_MODE": False,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "BXT_MODE": False,
+                          "DCTSP_ZIG_MODE": False,
+                          "MP_ECTM_MODE": False,
+                          "BARGAIN_SPM_MODE": False,
+                          "CENTRALIZED_MODE": False}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_MARL_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "DCTSP_MARL", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "CPDQL_MODE": True,
+                          "CPDQL_ALPHA": 0.1,
+                          "CPDQL_GAMMA": 0.9,
+                          "CPDQL_EPSILON": 0.05,
+                          "CPDQL_MIN_GAIN_S": 1.0,
+                          "CPDQL_ENABLE_INS": True,
+                          "CPDQL_SOLVE_DURATION": True,
+                          "CPDQL_GE_MIN_S": 1.0,
+                          "CPDQL_GE_MAX_S": 10.0,
+                          "CPDQL_INS_MIN_S": 1.0,
+                          "CPDQL_INS_MAX_S": 6.0,
+                          "BXT_SOLVER": "de",
+                          "TIMING_DE_CONTINUOUS": True,
+                          "BXT_MAX_INS_S": 6.0,
+                          "CPDQL_W_H": 0.5,
+                          "CPDQL_CAR_OCC": 1.2,
+                          "DCTSP_W_H": 0.50,
+                          "DCTSP_CAR_WEIGHT": 1.00,
+                          "DCTSP_GREEN_REALLOC_MODE": False,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "BXT_MODE": False,
+                          "DCTSP_ZIG_MODE": False,
+                          "MP_ECTM_MODE": False,
+                          "BARGAIN_SPM_MODE": False,
+                          "CENTRALIZED_MODE": False,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DECIDER_WARM_S": 420.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},   # no lateness gating (2026-10-29 directive)
+
+    # PAPER LADDER (2026-10-29): the admission-controlled priority layer the
+    # paper reports. Same DSW base as AIMSUN_DSW, plus the gated CellQLearn
+    # head: the learned Q proposes a BXT action and it is admitted only if its
+    # bus pax-s benefit clears the measured cross cost plus the CTM downstream
+    # cascade (BXT_NET_BENEFIT_GATE + CASCADE_COST_MODE), clamped to recoverable
+    # slack. This is the only acting method that has held a positive mean on KG.
+    {"name": "CHAMP_ADAPTIVE_DSW_CELLQ_GATED", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_CELLQ_GATED_BASE,
+                          # 2026-11-04: DSW split-change damping + tighter main-keep +
+                          # 1s actuation latency (see engine T0030). Damp the DSW solver's
+                          # ~20s/cycle green swing, let it cut main green at most 3%, and
+                          # evaluate the bus at eta-1s (the step the action actually lands).
+                          "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.97,
+                          "DSW_SPLIT_DAMP": True,
+                          "DSW_SPLIT_MAX_DELTA_S": 4.0,
+                          "ACTUATION_LATENCY_S": 1.0,
+                          # LADDER ISOLATION (2026-10-29): the CellQ base carries
+                          # the universal gentle jitter (2 s actuated extend,
+                          # gap-out, donor, cycle cap). Those are a second
+                          # controller, not the CellQ layer, and they are not
+                          # counted as TSP actions -- they were the source of the
+                          # +22% degradation, not the three admitted extensions.
+                          "ACTUATED_EXTEND": False, "SCATS_GAP_OUT": False,
+                          "SCATS_MAX_OUT": False, "ACT_EXTEND_DONOR": False,
+                          "CYCLE_CAP_ENABLE": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False,
+                          "MAX_GE_EXTENSION_S": 6.0,
+                          "BXT_SOLVER": "de",
+                          "TIMING_DE_CONTINUOUS": True,
+                          "BXT_MAX_INS_S": 6.0,
+                          "BXT_EPSILON": 0.0,
+                          "CELLQ_CTM_REWARD": True,
+                          "CELLQ_CTM_STATE": True,
+                          "CELLQ_CTM_STATE_CELLS": 8,
+                          "CELLQ_CTM_SINGLE_CELL": False,
+                          "CELLQ_CTM_MAX_CELLS": 40,
+                          "CELLQ_CTM_DT_S": 1.0,
+                          "CELLQ_CTM_FREEFLOW_KMH": 50.0,
+                          "CELLQ_CTM_WAVE_KMH": 18.0,
+                          # CONNECTOR CELLS (2026-10-30): link cells between
+                          # this junction and the next on the corridor, so the
+                          # learner sees downstream spillback as well as its own
+                          # approach queue. 1 bin = one aggregated link cell.
+                          "CELLQ_CTM_CONNECTOR_STATE": True,
+                          "CELLQ_CTM_CONNECTOR_BINS": 1,
+                          "CELLQ_CTM_CONNECTOR_CAP_FRAC": 0.15,
+                          # DOWNSTREAM RECEIVING + CLEARANCE + COMPACT STATE
+                          # (2026-10-30): q_out=min(sending,receiving) from the
+                          # connector cell; cap green at the queue discharge
+                          # time; learn on 3 derived bins (recv/tail/bind)
+                          # instead of the sparse raw cell tuple.
+                          "CELLQ_CTM_RECEIVING_GATE": True,
+                          "CELLQ_CTM_RECEIVING_W": 1.0,
+                          "CELLQ_CTM_RECEIVING_OCC": 0.75,
+                          # CRITICAL-OCCUPANCY SCALE (2026-10-30): bins and the
+                          # receiving gate are measured in units of
+                          # k_crit/k_jam = w/(v_f+w) = 0.265, not absolute jam
+                          # density. At KG demand the links run at 0.02-0.26 of
+                          # jam, so the old 0.25/0.50/0.75 edges and the 0.75
+                          # gate collapsed every derived dim to one value.
+                          "CELLQ_CTM_CRIT_RELATIVE": True,
+                          "CELLQ_CTM_UNKNOWN_BIN": 4,
+                          "CELLQ_CTM_CLEAR_CAP": True,
+                          "CELLQ_CTM_CLEAR_MIN_S": 1.0,
+                          "CELLQ_CTM_DERIVED_STATE": True,
+                          "CELLQ_CTM_STATE_RAW_CELLS": False,
+                          "CELLQ_CTM_STOPLINE_LAST": True,
+                          "CELLQ_CTM_STATE_DENSITY": True,
+                          "CELLQLEARN_MIN_GAIN_S": 1.0,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "DECIDER_WARM_S": 420.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0,
+                          # DELAY CALIBRATION -> .DTa (2026-10-31, the "real fix"
+                          # for the seed-500 blow-up). Scale the analytic reward
+                          # toward Aimsun's REALISED microscopic delay per approach
+                          # (kappa = measured .DTa / Webster prediction), per
+                          # phase: benefit *= kappa(bus phase), cross cost *=
+                          # kappa(worst conflicting phase). Closes the decide-
+                          # analytic / score-measured gap (delay-mechanism-audit,
+                          # reward-uncalibrated-seed-lottery): where realised delay
+                          # runs above the model (spillback onset), the cross cost
+                          # inflates and the net-benefit gate vetoes the green-take
+                          # BEFORE it cascades. ASYMMETRIC EWMA (fast up / slow
+                          # decay, see engine _update_delay_calibration) so a
+                          # transient registers instead of being smoothed to ~1.0
+                          # (the reason the symmetric version was inert). Scoped to
+                          # THIS arm so MARL/GAME stay comparable; verify via the
+                          # [DELAY_CAL][DIAG] log that kappa_side > 1 during congestion.
+                          "DELAY_CALIBRATION": True,
+                          "DELAY_CAL_REF_S": 15.0,
+                          "DELAY_CAL_ALPHA": 0.1,
+                          "DELAY_CAL_ALPHA_UP": 0.5,
+                          "DELAY_CAL_ALPHA_DOWN": 0.1,
+                          "DELAY_CAL_MIN": 0.25,
+                          "DELAY_CAL_MAX": 6.0}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_BUS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO,
+                          # GAME SELF-GATE FIX (2026-10-30): _ADAPTIVE_GAME_RO sets
+                          # DS_COST_IN_REWARD=True, which adds the convex Webster
+                          # conflict cost to the veto ledger. That term saturates at
+                          # DS_COST_CAP_PAXS=6000, so total_cost = cross + 6000 always
+                          # exceeds bus_benefit and EVERY game action was vetoed
+                          # ([SELFGATE] conflict_cost=6000 cap=6000 -> VETO). The game
+                          # reward already prices the cross cost (cpc), so this gate
+                          # double-counts; disable it and let the arm's own net-benefit
+                          # + NASH_NET_GATE decide.
+                          "DS_COST_IN_REWARD": False,
+                          "NASH_BUS_WEIGHT": 1.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.0,
+                          "NASH_DE_CONTINUOUS": True,
+                          # CTM cost + drop the DS-balance gate: the game's own
+                          # Nash/coop cpc already prices the cross street, and with
+                          # ds_max pinned the DS gate vetoed every action.
+                          "NASH_CTM_COST": True,
+                          "DS_BALANCE_GATE": False,
+                          "BUS_PAX_WEIGHT": 2.0,
+                          "SAT_GAME_SIDE_W": 1.0,
+                          "SAT_GAME_THRU_W": 1.0,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "DCTSP_CONGESTION_GATE": False,
+                          "DECIDER_WARM_S": _GAME_WARM_S,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+
+    # COOPERATIVE (team) GAME (2026-10-30): the grand coalition {bus, cars}
+    # maximises JOINT passenger surplus. This is not the Nash product: no
+    # asymmetric bargaining power. SIDE PAYMENTS (NASH_COOP_*_TOL_FRAC) let one
+    # player accept a bounded predicted loss as long as the coalition surplus is
+    # positive and can compensate them, so the frontier is no longer degenerate
+    # (previously only one action cleared strict individual rationality, making
+    # the cooperative arm byte-identical to Nash). NASH_COOP_FAIR_W adds an
+    # equity penalty on the bus-car gain gap.
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_COOP", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO,
+                          "NASH_COOPERATIVE": True,
+                          # TEAM OBJECTIVE (2026-10-30): NASH WELFARE, u_bus*u_car,
+                          # not the utilitarian sum. argmax(joint surplus) is a
+                          # monotone transform of the Nash-product pick whenever
+                          # one action dominates, which made GAME_COOP reproduce
+                          # GAME_BUS decision-for-decision (11/11 identical
+                          # commits on seed 300). Nash welfare deliberately picks
+                          # the action that SPLITS the surplus between bus and
+                          # cars, so it is behaviourally distinct from both the
+                          # Nash product and the joint-sum rule.
+                          "NASH_COOP_OBJECTIVE": "nash",
+                          "NASH_COOP_BUS_TOL": 0.0,
+                          "NASH_COOP_CAR_TOL": 0.0,
+                          "NASH_COOP_BUS_TOL_FRAC": 0.25,
+                          "NASH_COOP_CAR_TOL_FRAC": 0.25,
+                          "NASH_COOP_FAIR_W": 0.0,
+                          # Same self-gate fix as GAME_BUS: the coop reward already
+                          # includes the cross cost; the capped 6000 conflict term was
+                          # vetoing every action.
+                          "DS_COST_IN_REWARD": False,
+                          "NASH_BUS_WEIGHT": 1.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.0,
+                          "NASH_DE_CONTINUOUS": True,
+                          "NASH_CTM_COST": True,
+                          "DS_BALANCE_GATE": False,
+                          "NASH_MIN_GAIN_S": 1.0,
+                          "NASH_MIN_BUS_DELAY_S": 0.0,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "DECIDER_WARM_S": _GAME_WARM_S,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+
+    # EGALITARIAN (max-min / Rawlsian) COOPERATIVE GAME (2026-10-30): same grand
+    # coalition and side-payment feasibility, but the coalition maximises the
+    # WORST-OFF player's gain, min(u_bus, u_car), instead of the sum. This is the
+    # behaviourally distinct team objective: whenever one action helps the bus
+    # far more than the cars, the joint-sum rule takes it and this rule does not.
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_EGAL", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO,
+                          "NASH_COOPERATIVE": True,
+                          "NASH_COOP_OBJECTIVE": "maxmin",
+                          "NASH_COOP_BUS_TOL": 0.0,
+                          "NASH_COOP_CAR_TOL": 0.0,
+                          "NASH_COOP_BUS_TOL_FRAC": 0.25,
+                          "NASH_COOP_CAR_TOL_FRAC": 0.25,
+                          "NASH_COOP_FAIR_W": 0.0,
+                          # Same self-gate fix as GAME_BUS: the coop reward already
+                          # includes the cross cost; the capped 6000 conflict term was
+                          # vetoing every action.
+                          "DS_COST_IN_REWARD": False,
+                          "NASH_BUS_WEIGHT": 1.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.0,
+                          "NASH_DE_CONTINUOUS": True,
+                          "NASH_CTM_COST": True,
+                          "DS_BALANCE_GATE": False,
+                          "NASH_MIN_GAIN_S": 1.0,
+                          "NASH_MIN_BUS_DELAY_S": 0.0,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "DECIDER_WARM_S": _GAME_WARM_S,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+
+    # ── SCATS-STYLE EXTENSION (2026-10-30) ────────────────────────────────────
+    # The adaptive DSW base only *holds* the commissioned plan: DS_PLAN_ADAPT,
+    # DS_CYCLE_ADAPT and the master cycle/split/offset loop are all OFF, and the
+    # plan is never re-optimised from DS. This arm turns on the SCATS strategic +
+    # tactical machinery that already exists in the engine, which is what "act
+    # more like SCATS" means here:
+    #   strategic : DS-driven cycle / split / offset, proportional (not equalising)
+    #               split, master cycle and link pressure
+    #   tactical  : gap-out, max-out, actuated extend, sequence-by-Y,
+    #               critical-intersection and phase skip
+    # It carries NO TSP layer, so it is the signal-control counterpart of the
+    # priority ladder and can be compared against NO_TSP and AIMSUN_DSW directly.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_DSW_SCATS", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_SCATS_STRATEGIC,
+                          # No priority layer: this arm is the SCATS-style
+                          # signal controller on its own.
+                          "GLOBAL_REWARD_MODE": False,
+                          "NASH_BARGAIN_MODE": False}},
+
+    # SCATS + VIABILITY-COUPLED PRIORITY (2026-10-30): the same SCATS strategic
+    # controller, now coupled to the bus-priority game but ONLY where the signal
+    # state can repay it. DS_VIABILITY_GATE stands the junction down when
+    # ds >= DS_VIABILITY_DS_MAX or the regime is INCR_FAILURE/SPILLBACK, and
+    # SYSTEM_REGIME_IN_STATE gives the policy the operating state as a state
+    # dimension, so it can learn regime-specific behaviour instead of a single
+    # averaged policy. This is the arm that ties the SCATS work to the TSP ladder.
+    {"name": "CHAMP_ADAPTIVE_AIMSUN_DSW_SCATS_VIAB", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_SCATS_GAME_BASE,
+                          # Viability overlay + SELF_GATE_RELIEF come from
+                          # _SCATS_GAME_BASE, so this arm is SCATS + game + the
+                          # DS/regime gate with its own ledger as the judge.
+                          "NASH_COOPERATIVE": False,
+                          "NASH_DE_CONTINUOUS": True,
+                          "NASH_CTM_COST": True,
+                          "DS_COST_IN_REWARD": False,
+                          "DS_BALANCE_GATE": False,
+                          "NASH_BUS_WEIGHT": 1.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_MIN_GAIN_S": 1.0,
+                          "NASH_MIN_BUS_DELAY_S": 0.0,
+                          "DECIDER_WARM_S": _GAME_WARM_S,
+                          "DECIDER_COST_VETO_RATIO": 1.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+
+    # ── PERMISSIVE PROBES (2026-10-29) ───────────────────────────────────────
+    # These release the admission layer to show whether the mechanisms can act
+    # when the cost veto / net gate / epsilon-greedy policy is not suppressing
+    # them. They are diagnostics, not the paper's methods.
+    {"name": "CHAMP_ADAPTIVE_DSW_MARL_OPEN", "strategy": "GLOBAL_REWARD",
+     "method": "DCTSP_MARL", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True, "CPDQL_MODE": True,
+                          "CPDQL_ALPHA": 0.1, "CPDQL_GAMMA": 0.9,
+                          "CPDQL_EPSILON": 0.1, "CPDQL_MIN_GAIN_S": 0.0,
+                          "CPDQL_ENABLE_INS": True,
+                          "CPDQL_SOLVE_DURATION": True,
+                          "CPDQL_GE_MIN_S": 1.0, "CPDQL_GE_MAX_S": 10.0,
+                          "CPDQL_INS_MIN_S": 1.0, "CPDQL_INS_MAX_S": 6.0,
+                          "BXT_SOLVER": "de", "BXT_MAX_INS_S": 6.0,
+                          "CPDQL_W_H": 0.5, "CPDQL_CAR_OCC": 1.2,
+                          "DCTSP_W_H": 0.50, "DCTSP_CAR_WEIGHT": 1.00,
+                          "DCTSP_GREEN_REALLOC_MODE": False,
+                          "BXT_MODE": False, "DCTSP_ZIG_MODE": False,
+                          "MP_ECTM_MODE": False, "BARGAIN_SPM_MODE": False,
+                          "CENTRALIZED_MODE": False,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0e9,
+                          "MODE_DECISION_IS_FINAL": False,
+                          "DECIDER_WARM_S": 120.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+    {"name": "CHAMP_ADAPTIVE_DSW_CELLQ_OPEN", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_CELLQ_GATED_BASE,
+                          "ACTUATED_EXTEND": False, "SCATS_GAP_OUT": False,
+                          "SCATS_MAX_OUT": False, "ACT_EXTEND_DONOR": False,
+                          "CYCLE_CAP_ENABLE": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False,
+                          "BXT_SOLVER": "de", "MAX_GE_EXTENSION_S": 6.0,
+                          "BXT_MAX_INS_S": 6.0, "BXT_EPSILON": 0.1,
+                          "CELLQ_CTM_REWARD": True,
+                          "CELLQ_CTM_STATE": True,
+                          "CELLQ_CTM_STATE_CELLS": 8,
+                          "CELLQ_CTM_SINGLE_CELL": False,
+                          "CELLQ_CTM_MAX_CELLS": 40,
+                          "CELLQ_CTM_DT_S": 1.0,
+                          "CELLQ_CTM_FREEFLOW_KMH": 50.0,
+                          "CELLQ_CTM_WAVE_KMH": 18.0,
+                          "CELLQ_CTM_CONNECTOR_STATE": True,
+                          "CELLQ_CTM_CONNECTOR_BINS": 1,
+                          "CELLQ_CTM_CONNECTOR_CAP_FRAC": 0.15,
+                          "CELLQ_CTM_RECEIVING_GATE": True,
+                          "CELLQ_CTM_RECEIVING_W": 1.0,
+                          "CELLQ_CTM_RECEIVING_OCC": 0.75,
+                          # CRITICAL-OCCUPANCY SCALE (2026-10-30): bins and the
+                          # receiving gate are measured in units of
+                          # k_crit/k_jam = w/(v_f+w) = 0.265, not absolute jam
+                          # density. At KG demand the links run at 0.02-0.26 of
+                          # jam, so the old 0.25/0.50/0.75 edges and the 0.75
+                          # gate collapsed every derived dim to one value.
+                          "CELLQ_CTM_CRIT_RELATIVE": True,
+                          "CELLQ_CTM_UNKNOWN_BIN": 4,
+                          "CELLQ_CTM_CLEAR_CAP": True,
+                          "CELLQ_CTM_CLEAR_MIN_S": 1.0,
+                          "CELLQ_CTM_DERIVED_STATE": True,
+                          "CELLQ_CTM_STATE_RAW_CELLS": False,
+                          "CELLQ_CTM_STOPLINE_LAST": True,
+                          "CELLQ_CTM_STATE_DENSITY": True,
+                          "CELLQLEARN_MIN_GAIN_S": 0.0,
+                          "BXT_NET_BENEFIT_GATE": True,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0e9,
+                          "MODE_DECISION_IS_FINAL": False,
+                          "DECIDER_WARM_S": 120.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_OPEN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO,
+                          "NASH_BUS_WEIGHT": 1.0, "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 1.0,
+                          "NASH_MIN_GAIN_S": 0.0, "NASH_MIN_BUS_DELAY_S": 0.0,
+                          "CASCADE_COST_MODE": True,
+                          "DECIDER_COST_VETO_RATIO": 1.0e9,
+                          "MODE_DECISION_IS_FINAL": False,
+                          "DECIDER_WARM_S": 120.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO,
+                          "SAT_GAME_THRU_W": 2.0,
+                          "SAT_GAME_RELIEF_W": 0.0,
+                          "SAT_GAME_SIDE_W": 1.0,
+                          "THROUGHPUT_REWARD": True,
+                          "W_THROUGHPUT": 1.0,
+                          "W_DELAY_LEDGER": 0.0}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_PHASE_GAME", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "CYCLE_PLANNER": False,
+                          "GLOBAL_REWARD_MODE": False,
+                          "NASH_BARGAIN_MODE": False,
+                          # Phase-level game: green time is the contested
+                          # resource; each phase's utility is the passengers it
+                          # can discharge. No bus-vs-car weights, no corridor
+                          # cascade, no congestion gate, no 3x veto, no
+                          # bus-lateness gate -- only min/max green + cycle.
+                          "MAXPRESSURE_FLEX_MODE": True,
+                          "MAXPRESSURE_CYCLIC": True,
+                          "MP_NASH_ENABLE": True,
+                          "MP_NASH_THRU": True,
+                          "MP_PER_PHASE_PRESSURES": True,
+                          "MAXPRESSURE_G_MIN": 8.0,
+                          "MAXPRESSURE_G_MAX": 40.0,
+                          "MP_EXTEND_ENABLE": True,
+                          "MP_EXTEND_STEP_S": 3.0,
+                          "MP_EXTEND_MAX_S": 12.0,
+                          "MEASURED_QUEUE_FEED": True,
+                          "DECIDER_WARM_S": 0.0,
+                          "DECIDER_MIN_LATENESS_S": 0.0}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_NASH_PLAN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          # LAYERED GAME: the Nash-throughput green split is
+                          # added as a cycle-planner candidate; the DSW plan
+                          # library scores it against live/arrival/SCATS/model.
+                          # If selected, the normal plan apply path installs it.
+                          "CYCLE_PLANNER_NASH_THRU": True,
+                          "CYCLE_PLANNER_SWITCH_MARGIN": 0.0,
+                          "MAXPRESSURE_G_MIN": 6.0,
+                          "MAXPRESSURE_G_MAX": 40.0,
+                          "MP_NASH_THRU": True}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_GAME_TRAIN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_TRAIN_RO}},
+
+    # RESOLVED arms (2026-10-24): same adaptive base, but the method head is
+    # bounded so it cannot retime the plan into the raw-arm collapse.
+    {"name": "CHAMP_ADAPTIVE_DSW_NASH_SAFE", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "NASH_BARGAIN_MODE": True,
+                          "NASH_CORRIDOR_MODE": True,
+                          "NASH_BUS_WEIGHT": 0.0,
+                          "NASH_CROSS_WEIGHT": 1.0,
+                          "NASH_NET_GATE_RATIO": 2.0,
+                          "CASCADE_COST_MODE": True,
+                          "NASH_NEIGHBOR_WEIGHT": 0.5,
+                          "NASH_MAX_ITER": 3,
+                          "NASH_CONVERGENCE_TOL": 0.01,
+                          "NASH_INTEGER_DURATIONS": False,
+                          "NASH_MIN_BUS_DELAY_S": 10.0,
+                          "NASH_MIN_GAIN_S": 10.0,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_MARL_SAFE", "strategy": "GLOBAL_REWARD",
+     "method": "DCTSP_MARL", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "CPDQL_MODE": True,
+                          "CPDQL_ALPHA": 0.1,
+                          "CPDQL_GAMMA": 0.9,
+                          "CPDQL_EPSILON": 0.05,
+                          "CPDQL_MIN_GAIN_S": 5.0,
+                          "CPDQL_W_H": 0.5,
+                          "CPDQL_CAR_OCC": 1.2,
+                          "DCTSP_W_H": 0.50,
+                          "DCTSP_CAR_WEIGHT": 1.00,
+                          "DCTSP_GREEN_REALLOC_MODE": False,
+                          "DECIDER_COST_VETO_RATIO": _SAFE_VETO,
+                          "BXT_MODE": False,
+                          "DCTSP_ZIG_MODE": False,
+                          "MP_ECTM_MODE": False,
+                          "BARGAIN_SPM_MODE": False,
+                          "CENTRALIZED_MODE": False,
+                          "DCTSP_CONGESTION_GATE": True,
+                          "DCTSP_CONGESTION_GATE_FRACTION": 0.70}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_TSP_SAFE", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_TSP_SAFE_LAYER}},
+
+    # BELLMAN THROUGHPUT (2026-10-24): Q(s,a) <- Q(s,a) + alpha * [r + gamma *
+    # max_a' Q(s',a') - Q(s,a)] with r = passengers discharged (THROUGHPUT_REWARD,
+    # W_DELAY_LEDGER=0) and gamma=0.99, so the learned value is FUTURE total
+    # passengers pushed through, not one-step delay. On the adaptive plan base.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_CELLQ_GATED_BASE,
+                          "MODE_NET_BENEFIT_GATE": False,
+                          "BXT_NET_BENEFIT_GATE": False,
+                          "BXT_MAIN_STARVE_GATE": False,
+                          "DS_BALANCE_GATE": False,
+                          "THROUGHPUT_REWARD": True,
+                          "W_THROUGHPUT": 1.0,
+                          "W_DELAY_LEDGER": 0.0,
+                          "BXT_GAMMA": 0.99,
+                          "BXT_ALPHA": 0.2,
+                          "BXT_EPSILON": 0.02,
+                          "CELLQLEARN_MIN_GAIN_S": 0.0,
+                          "DECIDER_COST_VETO_RATIO": 1.0}},
+
+    # MODEL-BASED BELLMAN OVER THE MULTI-CELL CTM (2026-10-24): explicit
+    # finite-horizon recursion V_t(s)=max_a[r+gamma*V_{t+1}(s')] on the
+    # discretised cell state, r = passengers discharged.  This is the explicit
+    # DP version of CHAMP_ADAPTIVE_DSW_BELLMAN_THRU (which is a Q-learner).
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CTM_DP", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0,
+                          "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97,
+                          "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2,
+                          "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.0,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05}},
+
+    # TUNED BELLMAN (2026-10-26): the base DP goes near-inert (0-1 actions/run,
+    # byte-identical on some seeds) because (a) the per-stage bus bonus is tiny
+    # next to car throughput so clearing a 40-pax bus rarely clears MIN_GAIN_PAX,
+    # and (b) MIN_QUEUE_VEH=3 / MIN_GAIN_PAX=10 suppress the rest. This variant
+    # values a serviced bus properly (BUS_W=8) and loosens both gates so the DP
+    # can act when it genuinely helps a bus. A/B vs CHAMP_ADAPTIVE_DSW_BELLMAN_CTM_DP
+    # to see if the DP was right to stay put or was just mis-weighted. Read the new
+    # [BELLMAN_CTM] fields (why=, gain=, vals=) to tell which.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_TUNED", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "GLOBAL_REWARD_MODE": True,
+                          "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0,
+                          "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97,
+                          "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2,
+                          "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.0,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05,
+                          "BELLMAN_CTM_BUS_W": 8.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 1.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0}},
+
+    # ── THROUGHPUT-OPEN family (2026-10-27, operator directive) ──────────────
+    # Push as many passengers through as possible; bus lateness ignored; gates
+    # opened. See _ADAPTIVE_THRU_OPEN. These replace the heavily-gated *_BUS arms
+    # as the bus/RL-on-top experiment: the decider acts on net throughput AND the
+    # bounded bus-priority overlay acts on top of the adaptive plan.
+    {"name": "CHAMP_ADAPTIVE_DSW_THRU_OPEN", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_GAME_RO, **_ADAPTIVE_THRU_OPEN,
+                          "SAT_GAME_THRU_W": 2.0, "SAT_GAME_RELIEF_W": 0.0,
+                          "SAT_GAME_SIDE_W": 1.0, "BUS_PAX_WEIGHT": 2.0}},
+
+    # Multi-cell CTM Bellman DP, opened the same way: throughput value, lateness
+    # gate removed, queue/gain floors dropped so the DP acts whenever the horizon
+    # value says pushing the phase clears more passengers. A/B vs
+    # CHAMP_ADAPTIVE_DSW_BELLMAN_CTM_DP (near-inert) and _BELLMAN_TUNED (loosened
+    # the wrong gates) to isolate the lateness-gate effect. Read [BELLMAN_CTM]
+    # (why=/gain=/vals=) + the reward_cycle `gate` column.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_OPEN", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True,
+                          "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0,
+                          "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97,
+                          "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2,
+                          "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.0,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05,
+                          "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 1.0,
+                          # DOWNSTREAM-AWARE (snapshot): the DP rollout prices the
+                          # green-wave break into its own value, so it declines
+                          # actions that only shove a platoon into a downstream jam
+                          # -- lookahead instead of a myopic veto. [BELLMAN_CTM]
+                          # dblock=.
+                          "BELLMAN_CTM_DOWNSTREAM": True,
+                          "BELLMAN_CTM_DBLOCK_PEN": 1.0}},
+
+    # COUPLED 2-junction rollout: the faithful version. This junction's main
+    # discharge is transported (travel lag) into the NEXT arterial junction's
+    # queue and only what clears the DOWNSTREAM stop line (meets its green) is
+    # rewarded, so the DP learns progression -- holding green pays off iff the
+    # shifted platoon catches the downstream green. Read [BELLMAN_CTM] COUPLED[...].
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_COUPLED", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True,
+                          "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0,
+                          "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97,
+                          "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2,
+                          "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.0,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05,
+                          "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 1.0,
+                          "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0,
+                          # TRUST the coupled DP: carry its throughput gain as the
+                          # committed reward and skip the bus-benefit cost/net-pax/
+                          # Z4 reverts that previously killed 118/120 picks. The
+                          # per-cycle action cap still applies.
+                          "BELLMAN_CTM_TRUST_DP": True}},
+
+    # CONTINUOUS-TIME arm (2026-10-27): identical to BELLMAN_COUPLED but the DP picks
+    # the extension DURATION with a Harmony Search over continuous time instead of
+    # the fixed GE=10/INS=15 integer grid. The grid could only overshoot (a blunt
+    # 10 s chunk that steals green from the cross and breaks the arterial green-wave)
+    # or do nothing; the solver right-sizes each action to the one that maximises the
+    # same coupled DP horizon value. Run alongside COUPLED on the SAME seed to read
+    # the solver's effect in isolation (grid vs harmony, everything else equal).
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_HARMONY", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True,
+                          "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0,
+                          "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97,
+                          "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2,
+                          "BELLMAN_CTM_THRU_W": 1.0,
+                          # 2026-10-28 NET-SHOCKWAVE objective. The 2026-10-27 run
+                          # lost (-13.4% obj, 1/5) because DELAY_W=0 + an always-on
+                          # bus premium made the reward count only cars OUT, never the
+                          # queue left BEHIND -> "more green" was always better, so
+                          # the harmony solver pinned every action at MAX_EXT (GE_20)
+                          # and gains read 100-800 pax (MIN_GAIN=15 could not filter).
+                          # DELAY_W>0 charges the integral of queue over the horizon
+                          # (= the shockwave delay) so the optimum is INTERIOR: push
+                          # just enough cars through to clear them, not so much green
+                          # that the side/upstream queue costs more than the gain.
+                          # BUS_CREDIT_ONCE pays the 40-pax bus bonus once (at the
+                          # bus's clear second), not per green-second, so a single bus
+                          # no longer makes green worth hundreds of pax.
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05,
+                          "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          # gains are now NET (throughput - shockwave delay), so they
+                          # are small; gate just above noise rather than at 15.
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0,
+                          "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0,
+                          "BELLMAN_CTM_TRUST_DP": True,
+                          # continuous-time solver over the extension duration
+                          "BELLMAN_CTM_SOLVER": "harmony",
+                          "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          # cap lowered 20->15: with a real delay cost the solver
+                          # should settle below this; 20 only enabled overshoot.
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0,
+                          "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25,
+                          "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3,
+                          "BELLMAN_CTM_HS_BW": 0.25}},
+
+    # NET-SHOCKWAVE delay_w SWEEP (2026-10-28). Same arm as HARMONY above but with
+    # a lighter / heavier shockwave-delay weight, to locate "the right amount" --
+    # the delay_w at which the solver pushes just enough cars through to clear them
+    # without over-holding green. HARMONY (delay_w=0.2) is the midpoint; run all
+    # three on the SAME seeds. Lighter (0.1) = more aggressive pushes, heavier
+    # (0.4) = more conservative. The winner's delay_w is the calibrated cost.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_HARMONY_DW010", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.1,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_HARMONY_DW040", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.4,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25}},
+
+    # DEEP-HORIZON arms (2026-10-28). The net-shockwave run proved the DP's 2-junction
+    # (chain=1) value is too shallow: it greenlights actions that help locally but
+    # break the arterial green-wave at i+2/i+3, so main delay and even BUS delay get
+    # worse. DOWN_CHAIN models a chain of N downstream junctions, transports the
+    # platoon through their live signals, and -- via DELAY_W on the whole chain --
+    # finally prices the progression break. Same net-shockwave config as HARMONY
+    # (delay_w=0.2, credit-once, max_ext=15, min_gain=3), only the chain depth differs.
+    # CHAIN3 is heavier (3 downstream DP dims); if runs get slow, CHAIN2 is the
+    # cheaper test of whether depth helps at all.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25}},
+
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN3", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25}},
+
+    # COMMITMENT test (2026-10-28): identical to CHAIN2 but TRUST_DP OFF, so the
+    # net-benefit / cost reverts can VETO the DP's corridor-negative actions. CHAIN2
+    # attacked the *valuation* (deeper horizon); this attacks the *commitment*. If
+    # NOTRUST >> CHAIN2, blind commitment is the sink; if ~equal, the DP's own value
+    # is already fine and depth was the lever. See bellman-ctm-inert-diag.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2_NOTRUST", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": False,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25}},
+
+    # DS-FEED FIX A/B on the DP arm (2026-10-28): identical to CHAIN2 (TRUST_DP ON,
+    # the best DP arm) but with the ARRIVAL sat-cap on, so the DP's CTM state is fed
+    # a physical queue instead of the inflated one (the q_main=1458-1620 phantom in
+    # bellman-ctm-inert-diag). CHAIN2 vs CHAIN2_DSCAP = the DS-feed effect on the DP.
+    # NB: the pre-arm is already OFF for all these arms via _ADAPTIVE_THRU_OPEN.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2_DSCAP", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "DS_ARRIVAL_SAT_CAP_X": 1.15}},
+
+    # LEVER 1 -- SLACK-ONLY harmony search (2026-10-28): identical to CHAIN2 but the
+    # solver is restricted to slack-capturing green extensions (INS/GREEN_REALLOC
+    # dropped, GE/ER capped at BELLMAN_CTM_SLACK_EXT_S=8s). On a coordinated corridor
+    # DSW owns the split gain; this tests whether there is bus-friendly SLACK the DP
+    # can capture without breaking the green wave (the win-only actuation idea fused
+    # with the DP). CHAIN2 vs CHAIN2_SLACK = the effect of the slack restriction.
+    # NB: pre-arm already OFF via _ADAPTIVE_THRU_OPEN.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2_SLACK", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0}},
+
+    # BUS GREEN-WAVE on slack (2026-10-28): lever 1 (slack-only) + per-junction bus
+    # credit. The DP spends wasted green to walk the bus through EACH chain junction
+    # (pays the 40-pax premium per crossing, not once at the end) -- "act iteratively
+    # on top of DSW to push bus throughput". CHAIN2_SLACK vs this = the bus-wave effect.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2_SLACK_BUSWAVE",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True}},
+
+    # PASSENGER-WEIGHTED DELAY (2026-10-28): slack + bus-wave + pax-weighted delay. The
+    # queue is priced in PAX and the bus's wait at ~40 pax/s, so the solver trades a
+    # little car delay for a lot of bus-pax-delay reduction -- the direct "buses carry
+    # more people, so cut system passenger delay" lever. Heavier queue penalty also
+    # pushes it to FEWER, bus-targeted actions. BUSWAVE vs this = the pax-delay effect.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_CHAIN2_SLACK_BUSWAVE_PAXDELAY",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 3.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_PAX_DELAY": True}},
+
+    # NASH-vs-DSW (2026-10-28): the structural fix for every arm that lost to DSW.
+    # Treat each DP choice as a 2-player bargain -- the BUS against the corridor CARS
+    # -- with DO-NOTHING (= the DSW plan) as the disagreement point. An action fires
+    # only if it helps the bus AND leaves cars no worse than DSW (CAR_TOL=0 => strict
+    # Pareto floor: by construction this arm can NEVER do worse than DSW). The car
+    # utility = total DP gain minus bus gain, so it carries the full 3-junction
+    # horizon value -- the downstream car cascade that sank the earlier arms is now
+    # priced into the admissibility test. DOWN_CHAIN=3 so the band the bus rides is
+    # actually in view. On KG (buses already ride the wave) this should converge to
+    # ~=DSW with 0 regressions = the safety proof; on Logan (real saturation) the
+    # genuine Pareto bus wins get through. Runs on BOTH corridors (same arm, active
+    # model decides). Pre-arm already OFF via _ADAPTIVE_THRU_OPEN.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_NASH_DSW",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 0.5, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": 0.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0}},
+
+    # ── NASH diagnostics (2026-10-29): the first Nash run landed at 752h, 67h WORSE
+    # than pure DSW (686), with only 5 DP extensions and ZERO bus benefit (16.12 vs
+    # 16.14). The log showed du_bus=155.2 CONSTANT on every commit (= BUS_W 4.0 x
+    # (busocc-carocc) ~155, a flat value once the bus crosses) -> the "bargain"
+    # degenerated to "pick best predicted car gain with du_car>=-tol", and the model
+    # under-priced the realized cascade (predicted du_car>=0 realized car +3.7s). The
+    # steep 0->5-action slope (13h/act, vs 1h/act after) hints the THRU_OPEN decider
+    # context itself carries a fixed cost. These two arms isolate that. ──────────────
+
+    # (A) CONTEXT-COST PROBE: identical to NASH_DSW but MIN_GAIN_PAX huge, so the DP
+    # runs every tick (Nash computed, overlay active) yet commits NOTHING. If this
+    # lands ~=686 the context is free (the leak is the admitted actions -> a stricter
+    # gate fixes it); if ~=752 the THRU_OPEN context (decider-on + bus-prio overlay)
+    # costs the 67h regardless and NO DP gate can floor at DSW.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_NASH_NOACT",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 1.0e9, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": 0.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0}},
+
+    # (B) CLEAN NASH: the actual fix attempt. (1) OVERLAY OFF so the Nash-gated DP is
+    # the ONLY bus-priority mechanism; (2) BUS_W=1.0 so du_bus ~= true bus pax (~39,
+    # not a flat 155) -> the product is a real bus-vs-car trade; (3) CAR_TOL=-8 i.e.
+    # REQUIRE a predicted car SURPLUS of 8 pax, a margin against the model optimism
+    # that leaked +3.7s of realized car delay. Should hold at/under DSW on KG.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_NASH_CLEAN",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 1.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 0.5, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": -8.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0,
+                          "SCATS_BUS_PRIORITY": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False}},
+
+    # NASH-vs-DSW, bus-focused (2026-10-28): same bargain but CAR_TOL>0 lets a large
+    # bus gain BUY a small car cost (transferable-utility lean toward the bus). This
+    # is the variant meant to WIN on a slack corridor (Logan) where strict Pareto is
+    # too conservative -- cars there are hurt a little by any action, but the bus
+    # saving (40 pax) dwarfs it. On KG it should still mostly hold at DSW. NASH_DSW
+    # (strict) vs this = how much the small car tolerance buys.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_NASH_DSW_TOL",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 2, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 0.5, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": 4.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0}},
+
+    # MULTI-CTM + Q-LEARN (2026-10-28): the Bellman DP plans on the multi-cell CTM
+    # MODEL; its known failure is model bias (the 2-3 junction value mis-prices the
+    # realized outcome -- the "reward uncalibrated -> seed lottery" problem). This arm
+    # adds a Dyna-style correction: a per-(junction, coarse-state, action) Q-table
+    # learns the REALIZED net-pax reward (EWMA from the measured feed at the next
+    # decision) and blends the learned advantage into the model values before the
+    # argmax -- model foresight corrected by what actually paid off. Runs on a RICHER
+    # multi-cell state (BINS=3) so the learned state means something. Nash OFF so the
+    # learning effect is isolated. Learns online within one run, so it needs several
+    # seeds / the warm window to show signal; judge on fair_obj + bus_delay/pax and
+    # the action trend. Runs on BOTH corridors. Pre-arm OFF via _ADAPTIVE_THRU_OPEN.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_MULTICTM_QLEARN",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 3, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 2,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 1.0, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_QLEARN": True,
+                          "BELLMAN_CTM_QLEARN_W": 0.3,
+                          "BELLMAN_CTM_QLEARN_ALPHA": 0.3,
+                          "BELLMAN_CTM_QLEARN_CLAMP": 20.0}},
+
+    # MULTI-CTM + Q-LEARN + NASH (2026-10-28): the full stack -- the learned
+    # realized-advantage correction AND the Nash-vs-DSW floor. Qlearn corrects the
+    # model bias; Nash guarantees it can't commit anything that leaves cars worse
+    # than DSW. The combination the operator asked for (multi-CTM on Bellman with
+    # qlearn, fused with the game-theory bus floor). Runs on BOTH corridors.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_MULTICTM_QLEARN_NASH",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 3, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 4.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 0.5, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_QLEARN": True,
+                          "BELLMAN_CTM_QLEARN_W": 0.3,
+                          "BELLMAN_CTM_QLEARN_ALPHA": 0.3,
+                          "BELLMAN_CTM_QLEARN_CLAMP": 20.0,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": 4.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0}},
+
+    # MULTI-CTM + Q-LEARN + NASH, CLEAN (2026-10-29): the Logan A/B showed plain
+    # MULTICTM_QLEARN floods ~243 commits/run (why=dp 304x -- the qlearn residual
+    # inflates the DP's OWN value so NO_ACTION almost never wins) -> +11% delay; and
+    # QLEARN_NASH, though the Nash floor cut it to ~11 commits, still landed +6.4%
+    # because (a) CAR_TOL=+4 is backwards on a lose-lose corridor (Logan buses are
+    # already low-delay 7.66s, cars are saturated -- no bus slack to "buy"), and (b)
+    # the floor checks PREDICTED car gain while the qlearn-inflated model is
+    # optimistic (the same predicted-Pareto leak as KG build 3188). This arm ports
+    # the KG NASH_CLEAN recipe AND damps the residual at source: CAR_TOL=-8 (REQUIRE
+    # a predicted car surplus margin), BUS_W=1 (du_bus = true bus pax, not a flat
+    # 155), overlay OFF (Nash-gated DP is the only bus mechanism), and QLEARN_W
+    # 0.3->0.1 + QLEARN_CLAMP 20->5 so the learned residual can't flip NO_ACTION->act
+    # on noise. Expect it to land at NASH_DSW (~+0.5% = do-no-harm) instead of +6.4%.
+    {"name": "CHAMP_ADAPTIVE_DSW_BELLMAN_MULTICTM_QLEARN_NASH_CLEAN",
+     "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO, **_ADAPTIVE_THRU_OPEN,
+                          "GLOBAL_REWARD_MODE": True, "BELLMAN_CTM_MODE": True,
+                          "BELLMAN_CTM_HORIZON_S": 180.0, "BELLMAN_CTM_STAGE_S": 30.0,
+                          "BELLMAN_CTM_GAMMA": 0.97, "BELLMAN_CTM_CELLS": 10,
+                          "BELLMAN_CTM_BINS": 3, "BELLMAN_CTM_THRU_W": 1.0,
+                          "BELLMAN_CTM_DELAY_W": 0.2,
+                          "BELLMAN_CTM_BUS_CREDIT_ONCE": True,
+                          "BELLMAN_CTM_DOWN_CHAIN": 3,
+                          "BELLMAN_CTM_TERMINAL_W": 0.05, "BELLMAN_CTM_BUS_W": 1.0,
+                          "BELLMAN_CTM_MIN_QUEUE_VEH": 0.0,
+                          "BELLMAN_CTM_MIN_GAIN_PAX": 0.5, "BELLMAN_CTM_COUPLED": True,
+                          "BELLMAN_CTM_DOWN_LAG_S": 0.0, "BELLMAN_CTM_TRUST_DP": True,
+                          "BELLMAN_CTM_SOLVER": "harmony", "BELLMAN_CTM_MIN_EXT_S": 5.0,
+                          "BELLMAN_CTM_MAX_EXT_S": 15.0, "BELLMAN_CTM_HS_MEM": 6,
+                          "BELLMAN_CTM_HS_ITERS": 25, "BELLMAN_CTM_HS_HMCR": 0.9,
+                          "BELLMAN_CTM_HS_PAR": 0.3, "BELLMAN_CTM_HS_BW": 0.25,
+                          "BELLMAN_CTM_SLACK_ONLY": True,
+                          "BELLMAN_CTM_SLACK_EXT_S": 8.0,
+                          "BELLMAN_CTM_BUS_CHAIN_CREDIT": True,
+                          "BELLMAN_CTM_QLEARN": True,
+                          "BELLMAN_CTM_QLEARN_W": 0.1,
+                          "BELLMAN_CTM_QLEARN_ALPHA": 0.3,
+                          "BELLMAN_CTM_QLEARN_CLAMP": 5.0,
+                          "BELLMAN_CTM_NASH_DSW": True,
+                          "BELLMAN_CTM_NASH_CAR_TOL": -8.0,
+                          "BELLMAN_CTM_NASH_BUS_POWER": 2.0,
+                          "SCATS_BUS_PRIORITY": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False}},
+
+    # ISOLATION arm (2026-10-27): adaptive DSW plan + the SAME bounded bus-priority
+    # overlay as the _OPEN/COUPLED arms, but NO decider (no GLOBAL_REWARD, no
+    # BELLMAN). So the 4-rung ladder NO_TSP -> AIMSUN_DSW -> OVERLAY_ONLY ->
+    # BELLMAN_COUPLED isolates: the adaptive solver, then the bus extension on top,
+    # then the coupled-DP decider on top of that. COUPLED - OVERLAY_ONLY = the pure
+    # effect of the coupled Bellman decider.
+    {"name": "CHAMP_ADAPTIVE_DSW_OVERLAY_ONLY", "strategy": "PURE_SCATS",
+     "method": "PURE_SCATS", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "SCATS_BUS_PRIORITY": True,
+                          "BUS_PRIO_JIT_ENABLE": True,
+                          "BUS_PRIO_RECALL_ENABLE": True,
+                          "BUS_PRIO_MAX_EXT_S": 8.0,
+                          "BUS_PRIO_MAX_RECALL_S": 6.0,
+                          "BUS_PRIO_COOLDOWN_S": 60.0}},
+
+    # OPTIONAL: Flow policy on the adaptive base. NOT in the default suite
+    # because kg/flow_policy.json is still the untrained example. Train in
+    # flow_marl/train_marl.py, export with export_flow_policy.py, then add
+    # this arm to ARM_SUITE_ARMS.
+    {"name": "CHAMP_ADAPTIVE_DSW_FLOW", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_ADAPTIVE_DSW_RO,
+                          "CYCLE_ACTION_PBIL": True,
+                          "CYCLE_ACTION_POLICY": "flow",
+                          "CYCLE_ACTION_ALLOW_ER": True,
+                          "CYCLE_ACTION_ALLOW_INS": True,
+                          "CYCLE_ACTION_INTERVAL_S": 120.0,
+                          "CYCLE_ACTION_WARM_S": 420.0,
+                          "ACTUATED_EXTEND": False,
+                          "SCATS_GAP_OUT": False,
+                          "SCATS_MAX_OUT": False,
+                          "SPILLBACK_GATE": False,
+                          "EMPTY_PHASE_SKIP_MODE": False,
+                          "SCATS_BUS_PRIORITY": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False}},
+
+    # FIXED-TIME + PBIL ACTIONS: commissioned plan held; PBIL picks GE only,
+    # then GE+ER, then GE+ER+INS. Three seeds are run by the companion script.
+    {"name": "CHAMP_FIXED_PBIL_GE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_FIXED_ACTION_BASE}},
+
+    {"name": "CHAMP_FIXED_PBIL_GE_ER", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_FIXED_ACTION_BASE,
+                          "CYCLE_ACTION_ALLOW_ER": True}},
+
+    {"name": "CHAMP_FIXED_FLOW_RL", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_FIXED_ACTION_BASE,
+                          "CYCLE_ACTION_POLICY": "flow",
+                          "CYCLE_ACTION_ALLOW_ER": True,
+                          "CYCLE_ACTION_ALLOW_INS": True}},
+
+    {"name": "CHAMP_FIXED_PBIL_GE_ER_INS", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_FIXED_ACTION_BASE,
+                          "CYCLE_ACTION_ALLOW_ER": True,
+                          "CYCLE_ACTION_ALLOW_INS": True}},
+
+    # SATURATION-GAME arms: reward is the degree-of-saturation relief game.
+    {"name": "CHAMP_DS_GAME_BAL", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_DS_GAME_BASE}},
+
+    {"name": "CHAMP_DS_GAME_THRU", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_DS_GAME_BASE,
+                          "SAT_GAME_RELIEF_W": 0.5,
+                          "SAT_GAME_THRU_W": 1.5}},
+
+    {"name": "CHAMP_DS_GAME_RELIEF", "strategy": "GLOBAL_REWARD",
+     "method": "NASH_BARGAIN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_DS_GAME_BASE,
+                          "SAT_GAME_RELIEF_W": 1.5,
+                          "SAT_GAME_THRU_W": 0.5}},
+
+    # SCATS MASTER WITH LINK PRESSURE: commissioned plan + common cycle,
+    # master splits and offsets. The master now adds each link's measured
+    # main-phase queue + downstream DS as an extra travel/offset pressure.
+    {"name": "CHAMP_MASTER_LINK_PRESSURE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": True,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+                          "DS_MASTER_CYCLE": True,
+                          "DS_MASTER_COMMISSIONED": True,
+                          "DS_MASTER_SPLITS": True,
+                          "DS_MASTER_OFFSETS": True,
+                          "DS_OFFSET_TOL_S": 3.0,
+                          "DS_OFFSET_MAX_STEP_S": 4.0,
+                          "DS_OFFSET_MAX_SHIFT_FRAC": 0.20,
+                          "MASTER_LINK_PRESSURE": True,
+                          "MASTER_LINK_PRESSURE_QUEUE_W": 1.0,
+                          "MASTER_LINK_PRESSURE_DS_W": 1.0,
+                          "MASTER_LINK_PRESSURE_CAP": 2.0,
+                          "MASTER_LINK_PRESSURE_CYCLE_FRAC": 0.10,
+                          "SCATS_BUS_PRIORITY": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False}},
+
+    # SAFE SCATS-STATE (2026-10-22): until a plan can be applied with absolute
+    # offset restoration, applying the SCATS share/cycle at t=5 destroys the
+    # model's green wave (natural green 86% -> 7%). This arm keeps the model
+    # plan untouched and disables the online DS split/cycle adaptation that
+    # independently collapsed the main phase (65->15 s, cycle 135->85 s).
+    # It is the performance-safe successor to CHAMP_PAXWIN_SCATS_STATE.
+    {"name": "CHAMP_PAXWIN_SCATS_STATE_SAFE", "strategy": "GLOBAL_REWARD",
+     "method": "PURE_SCATS", "coordinated": False,
+     "coordination_algo": "KALMAN",
+     "reward_overrides": {**_SCATS_INITPLAN_BASE,
+                          "SCATS_BUS_PRIORITY": False,
+                          "BUS_PRIO_JIT_ENABLE": False,
+                          "BUS_PRIO_RECALL_ENABLE": False,
+                          "GLOBAL_REWARD_MODE": False,
+                          "NASH_BARGAIN_MODE": False,
+                          "REWARD_TSP_ENABLE_GE": False,
+                          "REWARD_TSP_ENABLE_INS": False,
+                          "SCATS_GAP_OUT": False, "SCATS_MAX_OUT": False,
+                          "ACTUATED_EXTEND": False, "SPILLBACK_GATE": False}},
+
+    # Winner + DS-gated CellQLearn TSP (BXT decider) with the pax split kept.
+    {"name": "CHAMP_PAXWIN_DSGATE", "strategy": "GLOBAL_REWARD",
+     "method": "CELLQLEARN", "coordinated": True,
+     "coordination_algo": "SHOCKWAVE",
+     "reward_overrides": {**_PAX_SPLIT_WIN, **_CELLQ_GATED_BASE,
+                          "DS_PLAN_ADAPT": True, "DS_SOLVE_PER_CYCLE": True,
+                          "DS_SPLIT_PROPORTIONAL": False,
+                          "DS_SPLIT_DS_EQUAL": True,
+                          "DS_SPLIT_MAX_MOVE_S": 2.0,
+                          "DS_SPLIT_COMMISSIONED_BAND": 0.15,
+                          "DS_PAX_WEIGHTED": True, "DS_PAXF_MAX": 4.0,
+                          "BXT_NET_BENEFIT_GATE": False,
+                          "BXT_MAIN_STARVE_GATE": False,
+                          "MODE_NET_BENEFIT_GATE": False,
+                          "DS_BALANCE_GATE": True, "DS_MAX": 1.70}},
+
     # ── SINGLE-HEURISTIC ABLATIONS (one-seed isolation) ───────────────────────
     # Each spreads _ABL_BASE and turns on EXACTLY ONE new heuristic.
     {"name": "CHAMP_ABL_BASE", "strategy": "GLOBAL_REWARD",
@@ -2803,8 +5553,12 @@ ARMS = [
     {"name": "CHAMP_CTM_MULTI_RELIEF", "strategy": "GLOBAL_REWARD", "method": "CELLQLEARN",
      "coordinated": True, "coordination_algo": "SHOCKWAVE", "reward_overrides": {
         **_CELLQ_GATED_BASE,
+        "BXT_MODE": True,
+        "BXT_CORRIDOR_MODE": False,
         "CELLQ_CTM_REWARD": True,
         "CELLQ_CTM_STATE": True,
+        "CELLQ_CTM_STATE_CELLS": 8,
+        "CELLQ_CTM_MAX_CELLS": 40,
         "BXT_MAIN_STARVE_GATE": True,
         "SAT_RELIEF_BONUS": True}},
 
@@ -2871,7 +5625,7 @@ ARMS = [
         "PURE_STATE_TICK_S": 5.0, "PURE_STATE_MIN_STAGE": "SAT",
         "PURE_STATE_MAX_HORIZON_S": 120.0, "PURE_STATE_REQUIRE_TIMETABLE": True,
         "PURE_STATE_MAX_ACTIONS_PER_TICK": 5,
-        "PURE_STATE_CAR_OCC": 1.5, "PURE_STATE_BUS_OCC": 40.0,
+        "PURE_STATE_CAR_OCC": 1.2, "PURE_STATE_BUS_OCC": 40.0,
         "PURE_STATE_SAT_RAMP": 1.0}},
 
     {"name": "CHAMP_MARL_PURE_STATE", "strategy": "GLOBAL_REWARD", "method": "DCTSP_MARL",
@@ -2961,6 +5715,561 @@ ARMS = [
      "reward_overrides": {**_CELLQ_GATED_BASE, "DISABLE_PREARM": True}},
 
 ]
+
+
+# ---------------------------------------------------------------------------
+# LOGAN-TUNED PRIORITY LADDER (2026-10-31). The plain priority arms
+# (MARL_BUS / CELLQ_GATED / GAME_BUS / GAME_COOP) all sit on the SAME adaptive
+# DSW split base as CHAMP_ADAPTIVE_AIMSUN_DSW. On Logan that base steals
+# -31 s/cycle of main green (79% of it at the 300s-cycle bottleneck 17308) and
+# loses to NO_TSP, so NO bus-priority layer stacked on top can recover a win --
+# this is why the plain Logan ladder underperforms NO_TSP. These siblings
+# re-stack each priority head on the LOGAN-FIXED base, i.e. the three fixes
+# proven out in CHAMP_ADAPTIVE_AIMSUN_DSW_LOGAN: (1) Logan demand-responsive
+# adaptive weights (service_gap 3.0->0.5, queue/ds_max up), (2) MAIN_KEEP_FRAC
+# 0.90->0.97 (cap main-green cut at ~3%), (3) freeze junction 17308 via
+# active_intersections. LOGAN-ONLY arms; harmless on KG (never listed there).
+# See [[logan-dsw-main-green-theft]]. Built by cloning the already-defined base
+# arm so the priority head stays byte-identical to its KG-paper sibling -- only
+# the DSW base underneath changes.
+_LOGAN_ACTIVE_INTS = [17249, 17383, 17498, 17628, 17963, 18044, 18942,
+                      19185, 19196, 19363, 19474, 19882, 20270, 20280,
+                      20283, 20844, 21197, 21553, 21847, 21895, 22232,
+                      22603]
+_LOGAN_FIX_RO = {
+    "ADAPTIVE_WEIGHTS_PATH":
+        r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5\logan_road_new\adaptive_weights_adaptive_dsw.json",
+    "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.97,
+}
+
+
+def _logan_tuned(_base_name, _new_name):
+    """Clone an existing priority arm onto the Logan-fixed DSW base."""
+    for _a in ARMS:
+        if _a.get("name") == _base_name:
+            _b = dict(_a)
+            _b["name"] = _new_name
+            _b["active_intersections"] = list(_LOGAN_ACTIVE_INTS)
+            _b["reward_overrides"] = {**_a.get("reward_overrides", {}),
+                                      **_LOGAN_FIX_RO}
+            return _b
+    raise KeyError("Logan-tuned base arm not found: " + _base_name)
+
+
+ARMS += [
+    _logan_tuned("CHAMP_ADAPTIVE_DSW_MARL_BUS",
+                 "CHAMP_ADAPTIVE_DSW_MARL_BUS_LOGAN"),
+    _logan_tuned("CHAMP_ADAPTIVE_DSW_CELLQ_GATED",
+                 "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_LOGAN"),
+    _logan_tuned("CHAMP_ADAPTIVE_DSW_GAME_BUS",
+                 "CHAMP_ADAPTIVE_DSW_GAME_BUS_LOGAN"),
+    _logan_tuned("CHAMP_ADAPTIVE_DSW_GAME_COOP",
+                 "CHAMP_ADAPTIVE_DSW_GAME_COOP_LOGAN"),
+]
+
+
+# ---------------------------------------------------------------------------
+# CELLQ "ACT MORE" A/B (2026-10-31). On KG the gated CellQ head fires ~1 GE/run:
+# the break-even cost gate pits a PRECISE bus+main benefit against a pessimistic
+# risk-adjusted UPPER-bound cross cost (CAR_COST_UNCERTAINTY_K disagreement +
+# max-of-estimators + main-starvation surcharge), so routine 1 s nudges lose and
+# DeciderCostVeto runs ~13/run. This clones the SAME learner head (byte-identical
+# Q/CTM config) and applies two bounded, reversible relaxations so small actions
+# become common: (1) SMALL_ACTION_RELIEF_S -- GE/EARLY_RED <=1.5 s are judged on
+# the POINT cross cost, not the upper bound (larger moves keep the full risk
+# cost); (2) a looser break-even (NET_GATE_RATIO / DECIDER_COST_VETO_RATIO
+# 1.0->1.3). The concurrent-car credit is kept MEASURED and main-inclusive
+# (DECIDER_VETO_INCLUDE_MAIN + MEASURED_QUEUE_FEED) so the benefit is main-vs-side
+# -- the cars moving WITH the bus phase are credited, not treated as pure cost --
+# and the [COST VETO] log prints main_credit so it is auditable. A/B vs
+# CHAMP_ADAPTIVE_DSW_CELLQ_GATED on KG; the paper champion is UNCHANGED. See
+# [[reward-uncalibrated-seed-lottery]], [[tsp-net-benefit-gate]], [[gate-inert-vs-cascade]].
+def _with_overrides(_base_name, _new_name, _extra):
+    """Clone an existing arm, merging _extra onto its reward_overrides."""
+    for _a in ARMS:
+        if _a.get("name") == _base_name:
+            _b = dict(_a)
+            _b["name"] = _new_name
+            _b["reward_overrides"] = {**_a.get("reward_overrides", {}), **_extra}
+            return _b
+    raise KeyError("ACT base arm not found: " + _base_name)
+
+
+# ---------------------------------------------------------------------------
+# MICRO_QUEUE_MODE A/B (2026-11-02). _zone_queue_count counts EVERY in-zone
+# vehicle by default; with MICRO_QUEUE_MODE on it counts only vehicles at or
+# below MICRO_QUEUE_SPEED_KMH (default 5 km/h), which is Aimsun's own queue
+# definition. "Queue" is therefore a headcount in the zone, not a standing
+# queue, unless this is on.
+#
+# Why A/B it now: the CTM cross-cost seed fix made _n0 live, and _n0 comes
+# straight from _zone_queue_count on the CONFLICTING approach (no detector-feed
+# preference there, unlike _measured_main_queue_veh). So the flag now moves the
+# seed of every CTM chain evaluation. It also moves the _compute_side_delay_penalty
+# turn/fallback paths and the _measured_main_queue_veh live fallback.
+#
+# Clone the published champion with NOTHING else changed so a single-seed run is
+# a clean paired A/B against its own control. GAME_BUS_LOGAN is NOT a learner
+# (not in LEARNING_ARMS), so no train/eval registration is needed here and both
+# arms run the same number of replications.
+ARMS += [
+    _with_overrides(
+        "CHAMP_ADAPTIVE_DSW_GAME_BUS_LOGAN",
+        "CHAMP_ADAPTIVE_DSW_GAME_BUS_LOGAN_MICROQ",
+        {"MICRO_QUEUE_MODE": True}),
+]
+
+
+# CELLQ_ACT (revised 2026-10-31): the earlier cost-veto/relief relaxations were
+# INERT -- the chosen insertions (9-16/seed) are killed by the DeciderCostVeto +
+# NetPaxDelayVeto, and SMALL_ACTION_RELIEF only touched GE/ER, so GATED==ACT byte-
+# identical. The real lever is TSP_RATE_LIMIT_MODE: exempt the FIRST insertion of
+# each cycle from both vetoes (so the overlay acts at all), bounded to 1 INS /
+# intersection / cycle and 1 non-INS action / phase (operator directive). The
+# per-cycle/per-phase caps replace the blanket cooldown as the car-cascade guard.
+# MUST also be in LEARNING_ARMS (below) or it runs as a cold non-learner.
+#
+# SPILLBACK_DIRECT_OCC (added 2026-11-01): the seed-500 collapse (obj -21.6%,
+# main delay +28%) is NOT the overlay -- GATED (unchanged champion) is identical
+# on 500, where the overlay fires 0 INS. It is the DSW split solver bleeding the
+# main because the spillback floor under-reads the main queue at inter 39593
+# (occ 1.8 vs 5.3 true). This flag floors the occupancy with the loop-independent
+# micro-API count and arms the floor per-lane, so the saturated main reads high
+# and keeps its green. Enabled HERE only -> seed 500 is a clean A/B vs GATED
+# (where the rate-limit does nothing), isolating this fix's effect on the base.
+ARMS += [
+    _with_overrides(
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED",
+        "CHAMP_ADAPTIVE_DSW_CELLQ_ACT",
+        {"TSP_RATE_LIMIT_MODE": True,
+         "SMALL_ACTION_RELIEF_S": 1.5,
+         "DECIDER_VETO_INCLUDE_MAIN": True,
+         "SPILLBACK_DIRECT_OCC": True}),
+]
+# Register the ACT variant as a learner (train-then-eval); without this it runs
+# with a cold Q-table and produces byte-identical results to GATED regardless of
+# any override (see the LEARNING_ARMS comment and champion_search.py:187).
+if "CHAMP_ADAPTIVE_DSW_CELLQ_ACT" not in LEARNING_ARMS:
+    LEARNING_ARMS.add("CHAMP_ADAPTIVE_DSW_CELLQ_ACT")
+
+
+# CELLQ_OPEN (2026-11-02): the LOGAN CellQ overlay fires 2 extensions in 5 seeds.
+# [CELLQ_HELD] attributes each refusal; this arm is the "let it act" side of the
+# A/B, and changes ONLY the admission gates -- never the signal safety bounds
+# (min green, intergreen, max extension), which stay enforced downstream.
+#   CELLQLEARN_MIN_GAIN_S 15 -> 5 s : a 6 s grant (MAX_GE_EXTENSION_S) can never
+#       clear a 15 s expected-delay bar, so the gate was unreachable by design.
+#   CELLQLEARN_SAT_VETO 0.85 -> 0.95 : the veto is ABSOLUTE; on a corridor where
+#       a held bus implies a near-jam approach it suppresses every candidate.
+#   DECIDER_COST_VETO_RATIO 1.5 -> 2.5 : allow a 2.5x car cost against bus gain.
+#   BXT_NET_BENEFIT_GATE off : it prices the CTM cascade, which is already ON via
+#       CASCADE_COST_MODE; keeping both double-charges the same downstream effect.
+# No cooldown flag: TSP_COOLDOWN_OVERRIDE_S is already 0.0 for Logan, and the
+# cooldown lives on each controller, so independent junctions already act in the
+# same cycle. TSP_RATE_LIMIT_MODE bounds the rate instead (1 INS per cycle, one
+# action per phase instance), which is what keeps the car cascade in check.
+ARMS += [
+    _with_overrides(
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_LOGAN",
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_LOGAN_OPEN",
+        {"CELLQLEARN_MIN_GAIN_S": 0.5,
+         # 2026-11-02 FIX: champion runs 1.0, so 5.0 was a TIGHTENING not
+         # a relaxation (KG seed-300: min_gain refusals 8 -> 30). 0.5 is
+         # below the champion, as the A/B intended. Not 0.0: 22% of KG
+         # decisions report eff_delay=0.0 and would be admitted at random.
+         "CELLQLEARN_SAT_VETO": 0.95,
+         "DECIDER_COST_VETO_RATIO": 2.5,
+         "BXT_NET_BENEFIT_GATE": False,
+         "TSP_RATE_LIMIT_MODE": True,
+         # 2026-11-02: price an insertion's cross cost on the green it DISPLACES
+         # (a_s + intergreen), not the bus's whole pre-existing wait. Without
+         # this, INS carried ~20-30 s of phantom cross green and committed 0
+         # times in every arm, so GATED vs *_OPEN had nothing to differ on.
+         "CELLQ_INS_MARGINAL_CROSS": True,
+         # 2026-11-02: the seed-500 collapse is the DSW split solver bleeding the
+         # main because the spillback floor under-reads the main queue (inter
+         # 39593: occ 1.8 vs 5.3 true). Floor occupancy with the micro-API count
+         # + arm per-lane so the saturated main keeps its green on this arm too.
+         "SPILLBACK_DIRECT_OCC": True,
+         # 2026-11-02: the raw side_ratio state signal is bimodal (56% ~0, 36%
+         # saturated; o_d to 268282 veh*s), so the learner's demand-regime bin
+         # carries no gradient. Feed the state the BOUNDED shockwave cross cost
+         # instead (arm retrains, so the rescaled key is fine).
+         "CELLQ_STATE_SHOCKWAVE": True,
+         # 2026-11-03: INS was chosen ~42x but committed 0x -- killed by the
+         # side_ratio veto pricing a 1 s insertion at ~2963 pax*s (pessimistic
+         # network amplifiers) against a near-zero approach-cell gain. Re-price
+         # the gate on the bounded marginal displaced green + credit the bus.
+         "CELLQ_SIDE_RATIO_GATE_BOUNDED": True,
+         # 2026-11-03: model the insertion as a truncating, position-aware action
+         # so d_bus credits bringing the bus green forward for the bus AND the
+         # cars queued on its phase; an insertion that fires before the bus can
+         # use it (bus_eta >= remaining_red) is correctly worth ~0.
+         "CELLQ_INS_POSITION_BENEFIT": True,
+         # 2026-11-03: the committed cpc (from _dctsp_eval_action) zeroed two
+         # cost channels on seed-500 blowups -- pred_side=0 (jammed cross queue
+         # reads flow~0) and chain=0 (coordination break unpriced). Floor the
+         # side cost with the standing-vehicle penalty, and charge the offset-
+         # shift progression loss into the reward so the decision trades it off.
+         "CELLQ_SIDE_QUEUE_FLOOR": True,
+         "PROGRESSION_COST_IN_REWARD": True,
+         "CELLQ_HELD_LOG_MAX": 60}),
+]
+if "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_LOGAN_OPEN" not in LEARNING_ARMS:
+    LEARNING_ARMS.add("CHAMP_ADAPTIVE_DSW_CELLQ_GATED_LOGAN_OPEN")
+
+
+# CELLQ_GATED_OPEN on KG (2026-11-02): the LOGAN_OPEN clone above is tied to
+# the Logan champion (Logan junction weights, Logan active_intersections, 135 s
+# cycle override), so it cannot run on KG. This is the same four admission-gate
+# relaxations cloned off the KG paper champion instead, so the ONLY difference
+# from CHAMP_ADAPTIVE_DSW_CELLQ_GATED is when the overlay is allowed to act:
+#   CELLQLEARN_MIN_GAIN_S 15 -> 5 s     a 6 s grant cannot clear a 15 s bar;
+#   CELLQLEARN_SAT_VETO 0.85 -> 0.95    the veto is absolute, not relative;
+#   DECIDER_COST_VETO_RATIO 1.5 -> 2.5  price 2.5x car cost against bus gain;
+#   BXT_NET_BENEFIT_GATE off            the CTM cascade is already priced by
+#                                       CASCADE_COST_MODE (double-charged).
+# TSP_RATE_LIMIT_MODE bounds the rate instead of a cooldown: 1 INS per cycle,
+# one non-INS action per phase instance. Signal safety bounds (min green,
+# intergreen, MAX_GE_EXTENSION_S) are untouched and still enforced downstream.
+# CELLQ_HELD_LOG_MAX=60 is the point of the run: raise the per-junction per-run
+# diagnostic budget so the refusal tally is a distribution, not 8 samples.
+# NOT the same arm as CHAMP_ADAPTIVE_DSW_CELLQ_OPEN (2026-10-29), which is a
+# permissive probe -- veto ratio 1e9, MODE_DECISION_IS_FINAL False -- and so
+# never exercises the cost / net-pax vetoes this run is measuring.
+ARMS += [
+    _with_overrides(
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED",
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_OPEN",
+        {"CELLQLEARN_MIN_GAIN_S": 0.5,
+         # 2026-11-02 FIX: champion runs 1.0, so 5.0 was a TIGHTENING not
+         # a relaxation (KG seed-300: min_gain refusals 8 -> 30). 0.5 is
+         # below the champion, as the A/B intended. Not 0.0: 22% of KG
+         # decisions report eff_delay=0.0 and would be admitted at random.
+         "CELLQLEARN_SAT_VETO": 0.95,
+         "DECIDER_COST_VETO_RATIO": 2.5,
+         "BXT_NET_BENEFIT_GATE": False,
+         "TSP_RATE_LIMIT_MODE": True,
+         # 2026-11-02: price an insertion's cross cost on the green it DISPLACES
+         # (a_s + intergreen), not the bus's whole pre-existing wait. Without
+         # this, INS carried ~20-30 s of phantom cross green and committed 0
+         # times in every arm, so GATED vs *_OPEN had nothing to differ on.
+         "CELLQ_INS_MARGINAL_CROSS": True,
+         # 2026-11-02: the seed-500 collapse is the DSW split solver bleeding the
+         # main because the spillback floor under-reads the main queue (inter
+         # 39593: occ 1.8 vs 5.3 true). Floor occupancy with the micro-API count
+         # + arm per-lane so the saturated main keeps its green on this arm too.
+         "SPILLBACK_DIRECT_OCC": True,
+         # 2026-11-02: the raw side_ratio state signal is bimodal (56% ~0, 36%
+         # saturated; o_d to 268282 veh*s), so the learner's demand-regime bin
+         # carries no gradient. Feed the state the BOUNDED shockwave cross cost
+         # instead (arm retrains, so the rescaled key is fine).
+         "CELLQ_STATE_SHOCKWAVE": True,
+         # 2026-11-03: INS was chosen ~42x but committed 0x -- killed by the
+         # side_ratio veto pricing a 1 s insertion at ~2963 pax*s (pessimistic
+         # network amplifiers) against a near-zero approach-cell gain. Re-price
+         # the gate on the bounded marginal displaced green + credit the bus.
+         "CELLQ_SIDE_RATIO_GATE_BOUNDED": True,
+         # 2026-11-03: model the insertion as a truncating, position-aware action
+         # so d_bus credits bringing the bus green forward for the bus AND the
+         # cars queued on its phase; an insertion that fires before the bus can
+         # use it (bus_eta >= remaining_red) is correctly worth ~0.
+         "CELLQ_INS_POSITION_BENEFIT": True,
+         # 2026-11-03: the committed cpc (from _dctsp_eval_action) zeroed two
+         # cost channels on seed-500 blowups -- pred_side=0 (jammed cross queue
+         # reads flow~0) and chain=0 (coordination break unpriced). Floor the
+         # side cost with the standing-vehicle penalty, and charge the offset-
+         # shift progression loss into the reward so the decision trades it off.
+         "CELLQ_SIDE_QUEUE_FLOOR": True,
+         "PROGRESSION_COST_IN_REWARD": True,
+         # 2026-11-03 (build T2130 diag): seed-500 main-delay blowup is
+         # NOT the decider (it commits 2 tiny net-positive GEs and HOLDS
+         # 181; CASCADE_COST_MODE works -- up to 1451 pax*s, state-dependent,
+         # already in cc_pre). The blowup is the ungated corridor pre-arm
+         # green-wave: [FINISH] CorridorCoordinator shows 81 pre-arms at
+         # adp_lead_avg 38-50s (max 75s) ahead of the bus across 5 junctions,
+         # reserving the bus phase far too early on the saturated network
+         # (NO_TSP fires ZERO pre-arms). Kill the speculative pre-arm here;
+         # the local decider still acts on the live ETA at detection.
+         # Config-only (already True on CHAMP_CELLQ_CLEAN/NOPREARM).
+         "DISABLE_PREARM": True,
+         # 2026-11-04: DSW split-change damping + tighter main-keep +
+         # 1s actuation latency (see engine T0030). Damp the DSW solver's
+         # ~20s/cycle green swing, let it cut main green at most 3%, and
+         # evaluate the bus at eta-1s (the step the action actually lands).
+         "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.97,
+         "DSW_SPLIT_DAMP": True,
+         "DSW_SPLIT_MAX_DELTA_S": 4.0,
+         "ACTUATION_LATENCY_S": 1.0,
+         "CELLQ_HELD_LOG_MAX": 60}),
+]
+if "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_OPEN" not in LEARNING_ARMS:
+    LEARNING_ARMS.add("CHAMP_ADAPTIVE_DSW_CELLQ_GATED_OPEN")
+
+
+# ---------------------------------------------------------------------------
+# PAPER-LADDER x SPILLBACK A/B (2026-11-01). Does the spillback-floor fix
+# (SPILLBACK_DIRECT_OCC -- floor the DS occupancy with the loop-independent
+# micro-API standing count + arm the floor per-lane) help the OTHER KG paper
+# methods, not just CELLQ? The seed-500 collapse was a DSW SPLIT-SOLVER problem
+# (the main's green was bled because the floor under-read inter 39593), so it
+# should touch every DSW-based method. Clone each published paper arm with the
+# flag ON, same name + "_SPILL" and NOTHING else changed, so the arm identity is
+# preserved and run_paper_kg_spillback.py can run the ORIGINAL and the _SPILL
+# version on the SAME build + seeds -- a clean same-build A/B that does not
+# depend on the older published CSV being the same engine build. The rate-limit
+# / small-action-relief knobs are overlay-specific and deliberately NOT included
+# here, so _SPILL isolates the single spillback variable.
+_PAPER_SPILL_BASES = [
+    "CHAMP_ADAPTIVE_AIMSUN_DSW",       # M1 standalone DSW base (most directly affected)
+    "CHAMP_ADAPTIVE_DSW_MARL_BUS",     # M2 DCTSP MARL
+    "CHAMP_ADAPTIVE_DSW_CELLQ_GATED",  # M3 CellQ (learner -> clone must also train)
+    "CHAMP_ADAPTIVE_DSW_GAME_BUS",     # M4 Nash bus game
+    "CHAMP_ADAPTIVE_DSW_GAME_COOP",    # M5 cooperative game
+]
+_existing_arm_names = {a["name"] for a in ARMS}
+for _pb in _PAPER_SPILL_BASES:
+    _sp = _pb + "_SPILL"
+    if _sp not in _existing_arm_names:
+        ARMS.append(_with_overrides(_pb, _sp, {"SPILLBACK_DIRECT_OCC": True}))
+    # A learner clone needs its own train seed, else it runs a cold Q-table and
+    # comes out byte-identical to its base regardless of the flag (see line 187).
+    if _pb in LEARNING_ARMS:
+        LEARNING_ARMS.add(_sp)
+
+
+# ---------------------------------------------------------------------------
+# MARL x GAME INSERTION-COST A/B (2026-11-02). The off-phase insertion overcharge
+# (an INS priced on the bus's whole pre-existing red wait, not the green it
+# DISPLACES) was NOT CellQ-only: the same t_wait+delta pattern lived in the
+# staged DP (_eval_stage_action, the DCTSP_MARL decider) and in dctsp_mp_ectm /
+# dctsp_mp_ectm_dp. CELLQ_INS_MARGINAL_CROSS now gates the marginal fix
+# (a_s + INS_INTERGREEN_S) at ALL FOUR sites. Clone the two non-CellQ paper
+# deciders with ONLY that flag on, same name + "_INSX", nothing else changed, so
+# each isolates the single insertion-pricing variable on its own decider.
+#   MARL (_INSX): DCTSP_MARL -> staged DP _eval_stage_action, which CARRIED the
+#       bug, so the flag is expected to CHANGE this arm's behaviour.
+#   GAME (_INSX): NASH_BARGAIN prices its INS through _dctsp_eval_action, which
+#       was ALREADY marginal (charges the action seconds, not the wait). This arm
+#       is therefore a CONTROL: if the flag is genuinely inert on the game path it
+#       should come out ~identical to CHAMP_ADAPTIVE_DSW_GAME_BUS. Any divergence
+#       means the game path has an insertion cost I have not yet traced.
+_PAPER_INSX_BASES = [
+    # MARL_BUS, not plain MARL: it is the paper M2 champion AND the only MARL arm
+    # that actually inserts (CPDQL_ENABLE_INS, eps=0.05); plain MARL is eps=0 with
+    # INS off, so an insertion-cost flag would be inert on it.
+    "CHAMP_ADAPTIVE_DSW_MARL_BUS",   # staged-DP decider -- exercises the fix
+    "CHAMP_ADAPTIVE_DSW_GAME_BUS",   # Nash game -- control (already marginal)
+]
+_existing_arm_names = {a["name"] for a in ARMS}
+for _pb in _PAPER_INSX_BASES:
+    _ix = _pb + "_INSX"
+    if _ix not in _existing_arm_names:
+        ARMS.append(_with_overrides(_pb, _ix, {"CELLQ_INS_MARGINAL_CROSS": True}))
+    # A learner clone needs its own train seed or it runs a cold Q-table and
+    # comes out byte-identical to its base regardless of the flag.
+    if _pb in LEARNING_ARMS:
+        LEARNING_ARMS.add(_ix)
+
+
+# ---------------------------------------------------------------------------
+# DSW LEVER ISOLATION (2026-11-04). The 2026-11-03 T2300 run established that the
+# KG win = pre-arm suppression ALONE (seed-500 GATED +5.14% / OPEN +4.77%). The
+# T0030 run then STACKED three more levers on top -- DSW split-change damping,
+# CYCLE_PLANNER_MAIN_KEEP_FRAC 0.90->0.97, and a 1 s actuation latency -- and
+# REGRESSED both valid seeds (seed-500 OPEN +4.77% -> -10.58%, main 551.8 ->
+# 671.3; the damping bound 16-23x/sim at alpha 0.43-0.98, capping real 6-9 s
+# solver moves down to 4 s). Suspected Logan medicine (logan-dsw-main-green-theft):
+# the KG solver's larger split moves were not the problem, and over-flooring an
+# un-starved main spills the cross back onto it. Clone the OPEN arm into
+# single-lever isolations, ALL with pre-arm off (inherited), so one 2-seed run
+# attributes the regression to a specific lever:
+#   _CTRL   = OPEN minus all three  (= the T2300 champion config -- the control)
+#   _DAMP   = CTRL + DSW_SPLIT_DAMP only          (cap inherited at 4.0 s)
+#   _KEEP97 = CTRL + CYCLE_PLANNER_MAIN_KEEP_FRAC 0.97 only
+#   _LAT1   = CTRL + ACTUATION_LATENCY_S 1.0 only
+# A lever that lands ~= _CTRL is neutral; one that reproduces the T0030 loss is
+# the culprit. Learner clones, so each is registered in LEARNING_ARMS (else it
+# runs a cold Q-table and comes out byte-identical to its base -- see line 187).
+# Run on seeds 400,500 (300 is the baseline_outlier).
+_DSW_ISO_BASE = "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_OPEN"
+_DSW_ISO_ARMS = [
+    ("CHAMP_DSW_ISO_CTRL",   {"DSW_SPLIT_DAMP": False, "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90, "ACTUATION_LATENCY_S": 0.0}),
+    ("CHAMP_DSW_ISO_DAMP",   {"DSW_SPLIT_DAMP": True,  "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90, "ACTUATION_LATENCY_S": 0.0}),
+    ("CHAMP_DSW_ISO_KEEP97", {"DSW_SPLIT_DAMP": False, "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.97, "ACTUATION_LATENCY_S": 0.0}),
+    ("CHAMP_DSW_ISO_LAT1",   {"DSW_SPLIT_DAMP": False, "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90, "ACTUATION_LATENCY_S": 1.0}),
+]
+_existing_arm_names = {a["name"] for a in ARMS}
+for _nm, _ov in _DSW_ISO_ARMS:
+    if _nm not in _existing_arm_names:
+        ARMS.append(_with_overrides(_DSW_ISO_BASE, _nm, _ov))
+    if _DSW_ISO_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add(_nm)
+
+
+# ---------------------------------------------------------------------------
+# PAPER MODULE ABLATION (2026-11-04). Leave-one-out from the TRUE KG champion so
+# the paper can attribute the gain to each mechanism. The base is NOT the OPEN
+# arm as-defined (that carries the a+b levers the T0030 run showed REGRESS KG) --
+# it is CHAMP_DSW_ISO_CTRL = OPEN with damping off, MAIN_KEEP back to 0.90 and
+# latency 0, i.e. all modules ON, pre-arm OFF, no Logan medicine. CTRL itself is
+# the "full champion" row; each _m_* arm removes exactly ONE module by flipping
+# its flag(s) off. The objective drop (CTRL - _m_X) is module X's contribution;
+# a module whose removal LIFTS the objective is a liability on KG and a paper
+# finding in its own right. Every flag flipped here is present in the champion's
+# resolved overrides (verified against lines 509-525, 4007-4098, 5955-6004), so
+# the override is live, not an orphan (flag-propagation-checker). Learner clones,
+# so each is registered in LEARNING_ARMS or it would run a cold Q-table.
+# RISK: _m_ctm turns off the master CTM state+reward; the many CELLQ_CTM_* sub-
+# flags are left set but gated by those masters -- if the ablation errors or is
+# byte-identical to CTRL, the masters are not the true gate and it needs a
+# wider off-set. Read the [STRATEGY]/[LOAD] lines and the per-arm action counts.
+_ABL_BASE = "CHAMP_DSW_ISO_CTRL"
+_ABL_ARMS = [
+    ("CHAMP_ABL_m_prearmsup", {"DISABLE_PREARM": False}),                       # restore the speculative pre-arm green-wave
+    ("CHAMP_ABL_m_spillback",  {"SPILLBACK_DIRECT_OCC": False}),                # drop the micro-API main-queue occupancy floor
+    ("CHAMP_ABL_m_delaycal",   {"DELAY_CALIBRATION": False}),                   # stop scaling reward toward realised .DTa
+    ("CHAMP_ABL_m_cascade",    {"CASCADE_COST_MODE": False,
+                                "BXT_NET_BENEFIT_GATE": False}),                # remove the downstream cascade cost + net-benefit veto
+    ("CHAMP_ABL_m_ctm",        {"CELLQ_CTM_STATE": False,
+                                "CELLQ_CTM_REWARD": False}),                    # blind the learner to the CTM downstream state/reward
+    ("CHAMP_ABL_m_insmarg",    {"CELLQ_INS_MARGINAL_CROSS": False}),            # price INS on the whole red wait again (phantom cross cost)
+    ("CHAMP_ABL_m_sidegate",   {"CELLQ_SIDE_RATIO_GATE_BOUNDED": False,
+                                "CELLQ_SIDE_QUEUE_FLOOR": False}),              # unbounded side-ratio veto + no standing-queue side floor
+    ("CHAMP_ABL_m_progcost",   {"PROGRESSION_COST_IN_REWARD": False}),          # stop charging the offset-shift progression loss
+    ("CHAMP_ABL_m_shockpos",   {"CELLQ_STATE_SHOCKWAVE": False,
+                                "CELLQ_INS_POSITION_BENEFIT": False}),          # raw side-ratio state + non-position-aware INS credit
+]
+_existing_arm_names = {a["name"] for a in ARMS}
+for _nm, _ov in _ABL_ARMS:
+    if _nm not in _existing_arm_names:
+        ARMS.append(_with_overrides(_ABL_BASE, _nm, _ov))
+    if _ABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add(_nm)
+
+
+# ---------------------------------------------------------------------------
+# GATED MODULE ABLATION (2026-11-04). The OPEN-based ablation above found the
+# reward/gate modules inert -- but partly BECAUSE the OPEN arm already RELAXES
+# the admission gates (its [ARM] banner shows BXTgate=False, VETO=2.5), so the
+# net-benefit-gate ablation on OPEN tested nothing. Re-base on the REAL paper
+# champion M3 = CHAMP_ADAPTIVE_DSW_CELLQ_GATED, where the banner shows
+# BXTgate=True, CASC=True, VETO=1.0. Two corrections vs the OPEN set:
+#   (1) Strip the a+b levers the T0030 run showed regress KG (damping, keep-0.97,
+#       latency) so the base is the paper config, not the regressed one.
+#   (2) Ablate ONLY the modules GATED actually carries. The 7 OPEN-only reward
+#       flags (SPILLBACK_DIRECT_OCC, CELLQ_INS_MARGINAL_CROSS, CELLQ_STATE_
+#       SHOCKWAVE, CELLQ_SIDE_RATIO_GATE_BOUNDED, CELLQ_INS_POSITION_BENEFIT,
+#       CELLQ_SIDE_QUEUE_FLOOR, PROGRESSION_COST_IN_REWARD) are NOT in GATED, so
+#       flipping them is a guaranteed no-op -- omitted here (would just reproduce
+#       the control and burn 28 sims). What IS in GATED and worth isolating:
+#       pre-arm suppression, the net-benefit gate (now meaningfully ON), the CTM
+#       cascade cost, delay calibration, the CTM state/reward, and the decider
+#       cost veto. CHAMP_GATED_CHAMP is the full-champion control row.
+_GABL_BASE = "CHAMP_GATED_CHAMP"
+if _GABL_BASE not in {a["name"] for a in ARMS}:
+    ARMS.append(_with_overrides(
+        "CHAMP_ADAPTIVE_DSW_CELLQ_GATED", _GABL_BASE,
+        {"DSW_SPLIT_DAMP": False, "CYCLE_PLANNER_MAIN_KEEP_FRAC": 0.90,
+         "ACTUATION_LATENCY_S": 0.0}))
+    if "CHAMP_ADAPTIVE_DSW_CELLQ_GATED" in LEARNING_ARMS:
+        LEARNING_ARMS.add(_GABL_BASE)
+_GABL_ARMS = [
+    ("CHAMP_GABL_m_prearmsup", {"DISABLE_PREARM": False}),            # restore the speculative pre-arm
+    ("CHAMP_GABL_m_netgate",   {"BXT_NET_BENEFIT_GATE": False}),      # remove the bus-benefit>cross-cost veto (ON in GATED -> real test)
+    ("CHAMP_GABL_m_cascade",   {"CASCADE_COST_MODE": False}),         # drop the CTM downstream-spillback cost term
+    ("CHAMP_GABL_m_delaycal",  {"DELAY_CALIBRATION": False}),         # stop kappa-scaling reward toward realised .DTa
+    ("CHAMP_GABL_m_ctm",       {"CELLQ_CTM_STATE": False,
+                                "CELLQ_CTM_REWARD": False}),          # blind the learner to the CTM state/reward
+    ("CHAMP_GABL_m_costveto",  {"DECIDER_COST_VETO_RATIO": 10.0}),    # effectively remove the decider cost veto (champ=1.0)
+]
+_existing_arm_names = {a["name"] for a in ARMS}
+for _nm, _ov in _GABL_ARMS:
+    if _nm not in _existing_arm_names:
+        ARMS.append(_with_overrides(_GABL_BASE, _nm, _ov))
+    if _GABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add(_nm)
+
+# -- Delay-only reward arm (2026-11-04) -------------------------------------
+# The paper champion scores actions on net passenger THROUGHPUT
+# (THROUGHPUT_REWARD=True, W_THROUGHPUT=1.0, W_DELAY_LEDGER=0.0). Per operator
+# request and to match the single-metric reward of the source CTM/TSP paper
+# (Qin & Zhang, arXiv:2404.19683, eq.9: the payoff of each agent is its delay,
+# minimised), CHAMP_GATED_DELAYONLY turns the throughput blend OFF so the
+# decision reward reverts to the pure delay ledger R = alpha*bps - beta*cpc
+# (bus passenger-delay saved minus cross+side passenger-delay added; engine.py
+# ~23159). Cloned from the ablation control CHAMP_GATED_CHAMP so the only
+# difference vs that arm is the reward metric. A/B against CHAMP_GATED_CHAMP.
+_DELAYONLY_NAME = "CHAMP_GATED_DELAYONLY"
+if (_GABL_BASE in {a["name"] for a in ARMS}
+        and _DELAYONLY_NAME not in {a["name"] for a in ARMS}):
+    ARMS.append(_with_overrides(
+        _GABL_BASE, _DELAYONLY_NAME,
+        {"THROUGHPUT_REWARD": False, "W_THROUGHPUT": 0.0, "W_DELAY_LEDGER": 1.0}))
+    if _GABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add(_DELAYONLY_NAME)
+
+# -- Shockwave-solved micro-action arms (2026-11-04) ------------------------
+# The committed green extension is produced by the deficit/shockwave solver
+# but was floored to NO_ACTION below 5 s (observed: solver wanted 1.0 s,
+# reward +5520, discarded) and the candidate grid was a coarse 5/10/15.
+# These arms lower the min-action-duration floor and the solver lower bound to
+# 1 s and add a fine GE grid so the committed magnitude is the solved value
+# down to 1 s (per operator: "the action grid should be solved ... so it can
+# be 1 ... based on the outcomes of the shockwave"). MICROACT keeps the
+# throughput reward; DELAY_MICRO pairs micro-actions with the delay-only
+# reward (the full intended design). 2x2 with CHAMP_GATED_CHAMP / _DELAYONLY.
+_MICRO_OV = {"MIN_ACTION_DURATION_S": 1.0, "MIN_GE_EXTENSION_S": 1.0,
+             "GE_DURATIONS_S": [1.0, 2.0, 3.0, 5.0, 8.0, 12.0]}
+for _mnm, _mov in (("CHAMP_GATED_MICROACT", dict(_MICRO_OV)),
+                   ("CHAMP_GATED_DELAY_MICRO",
+                    {**_MICRO_OV, "THROUGHPUT_REWARD": False,
+                     "W_THROUGHPUT": 0.0, "W_DELAY_LEDGER": 1.0})):
+    if (_GABL_BASE in {a["name"] for a in ARMS}
+            and _mnm not in {a["name"] for a in ARMS}):
+        ARMS.append(_with_overrides(_GABL_BASE, _mnm, _mov))
+        if _GABL_BASE in LEARNING_ARMS:
+            LEARNING_ARMS.add(_mnm)
+
+# -- CBQL_SHAPLEY observe-only arm (2026-11-04) -----------------------------
+# First wiring increment of the phase-selection cooperative-game controller
+# (cbql_shapley.py). CBQL_SHAPLEY_MODE=True makes the engine derive each
+# junction's phase structure from live data and run the Shapley learner in
+# OBSERVE-ONLY mode (logs [CBQL] lines; does NOT override the signal plan yet),
+# so this arm behaves like its base but lets us verify the derivation + learner
+# on real KG/Logan junctions before phase execution is wired.
+if (_GABL_BASE in {a["name"] for a in ARMS}
+        and "CBQL_SHAPLEY_KG" not in {a["name"] for a in ARMS}):
+    ARMS.append(_with_overrides(_GABL_BASE, "CBQL_SHAPLEY_KG",
+                                {"CBQL_SHAPLEY_MODE": True}))
+    if _GABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add("CBQL_SHAPLEY_KG")
+
+# -- CBQL_SHAPLEY EXECUTION arm (2026-11-04) --------------------------------
+# Phase-selection EXECUTION: the Shapley agent FORCES its chosen next phase at
+# each decision point (CBQL_EXECUTE=True, on top of CBQL_SHAPLEY_MODE). Bounded
+# by CBQL_MIN_GREEN_S / CBQL_MAX_GREEN_S + a decision cooldown; applied via a
+# clearance transition on top of the commissioned plan. A/B vs CBQL_SHAPLEY_KG
+# (observe-only, same learner) and the base isolates the effect of acting.
+if (_GABL_BASE in {a["name"] for a in ARMS}
+        and "CBQL_SHAPLEY_EXEC_KG" not in {a["name"] for a in ARMS}):
+    ARMS.append(_with_overrides(_GABL_BASE, "CBQL_SHAPLEY_EXEC_KG",
+                                {"CBQL_SHAPLEY_MODE": True,
+                                 "CBQL_EXECUTE": True}))
+    if _GABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add("CBQL_SHAPLEY_EXEC_KG")
+
+# -- CELL-STATE BACK-PRESSURE arm (2026-11-04) ------------------------------
+# Store-and-forward / max-pressure release off the CTM cell state (queue x
+# downstream free space) with a spillback gate -- drains saturated approaches
+# without the broken arrival-flow DS. Pairs with the _detector_flow_vph fix
+# (which un-inflates DS). A/B vs base and NO_TSP on KG.
+if (_GABL_BASE in {a["name"] for a in ARMS}
+        and "CELL_BP_KG" not in {a["name"] for a in ARMS}):
+    ARMS.append(_with_overrides(_GABL_BASE, "CELL_BP_KG",
+                                {"CELL_BACKPRESSURE": True}))
+    if _GABL_BASE in LEARNING_ARMS:
+        LEARNING_ARMS.add("CELL_BP_KG")
 
 
 def _obj_ok(m):
@@ -3256,6 +6565,42 @@ _EXPECTED_ACTIVE_MODE = {
     "CHAMP_ST_MASTER_ZIG": "ZIG",
     "CHAMP_MP_NASH_SCATS": "NASH_BARGAIN", "CHAMP_MP_GAME_SCATS": "NASH_BARGAIN",
     "CHAMP_PBIL_GAME": "NASH_BARGAIN",
+    "CHAMP_DSGATE_AGR": "BXT",
+    "CHAMP_SCATS_EMU_SPLIT": "GENERIC",
+    "CHAMP_SCATS_EMU_CYCLE": "GENERIC",
+    "CHAMP_SCATS_EMU_FULL": "GENERIC",
+    "CHAMP_PAXDS_SPLIT": "GENERIC",
+    "CHAMP_PAXDS_CYCLE": "GENERIC",
+    "CHAMP_PAXDS_FULL": "GENERIC",
+    "CHAMP_PAXDS_SELFGATE": "GENERIC",
+    "CHAMP_PAXDS_REL": "GENERIC",
+    "CHAMP_PAXDS_TP": "GENERIC",
+    "CHAMP_PAXDS_FLEX": "GENERIC",
+    "CHAMP_PAXDS_POG": "GENERIC",
+    "CHAMP_PAXDS_NOPOGKF": "GENERIC",
+    "CHAMP_PAXDS_NOQ": "GENERIC",
+    "CHAMP_PAXDS_Q2": "GENERIC",
+    "CHAMP_DSGATE_PAX": "BXT",
+    "CHAMP_PBIL_PAX": "GENERIC",
+    "CHAMP_PBIL_PRESS": "GENERIC",
+    "CHAMP_PBIL_PRESS_PAX": "GENERIC",
+    "CHAMP_PBIL_PRESS_H8": "GENERIC",
+    "CHAMP_PAXWIN_M1": "GENERIC",
+    "CHAMP_PAXWIN_M4": "GENERIC",
+    "CHAMP_PAXWIN_B08": "GENERIC",
+    "CHAMP_PAXWIN_B25": "GENERIC",
+    "CHAMP_PAXWIN_P2": "GENERIC",
+    "CHAMP_PAXWIN_P6": "GENERIC",
+    "CHAMP_PAXWIN_PROP": "GENERIC",
+    "CHAMP_PAXWIN_BUS": "GENERIC",
+    "CHAMP_PAXWIN_PRESS": "GENERIC",
+    "CHAMP_PAXWIN_GAME": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_SCATS_STATE": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_SCATS_CYCLEFIX": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_MODELPLAN": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_MODELPLAN_NODS": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_SCATS_STATE_SAFE": "NASH_BARGAIN",
+    "CHAMP_PAXWIN_DSGATE": "BXT",
     "CHAMP_SCATS_DSGATE": "BXT",
     "CHAMP_SCATS_DSGATE_TIGHT": "BXT",
     "CHAMP_SCATS_DSGATE_LOOSE": "BXT",
@@ -3443,6 +6788,32 @@ def _mode_dispatch_problem(name, m):
     return None
 
 
+def _plot_true_states_after_run(m):
+    """Generate <run>/true_states + true_states_akiest after a run (best effort).
+
+    The plot is a separate process so a matplotlib/pandas problem can never
+    break the simulation. Set TRUE_STATE_PLOTS=False to disable, or
+    TRUE_STATE_PYTHON=<interpreter> if Aimsun's Python lacks matplotlib.
+    """
+    try:
+        if not m or not bool(globals().get('TRUE_STATE_PLOTS', True)):
+            return
+        folder = str(m.get("stats_results_folder") or "")
+        if not folder or not os.path.isdir(folder):
+            return
+        import subprocess
+        import sys
+        hook = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "plot_true_states_hook.py")
+        if not os.path.isfile(hook):
+            return
+        py = os.environ.get("TRUE_STATE_PYTHON") or sys.executable
+        subprocess.run([py, hook, "--run-dir", folder], check=False,
+                       capture_output=True, text=True, timeout=300)
+    except Exception:
+        pass
+
+
 def _run_and_collect(_br, rep, name, strategy, seed, scalar, coordinated, coord_algo,
                      global_reward, reward_cfg, bus_pred, CONTROLLER_PATH,
                      RUN_CONFIG_PATH, PROJECT_DIR, RESULTS_CSV, log,
@@ -3518,6 +6889,7 @@ def _run_and_collect(_br, rep, name, strategy, seed, scalar, coordinated, coord_
             except Exception as e:
                 log(f"  metrics FAIL: {e}"); m = None
             if m is not None and _obj_ok(m):
+                _plot_true_states_after_run(m)
                 return m
             if w:
                 log(f"  blank stats — re-collecting after {w}s wait")
@@ -3528,6 +6900,7 @@ def _run_and_collect(_br, rep, name, strategy, seed, scalar, coordinated, coord_
             continue
         log(f"  WARNING: {name} seed={seed} produced no objective after {attempt} rerun(s); "
             f"keeping best-effort row")
+        _plot_true_states_after_run(m)
         return m   # may be blank; ranker drops it
 
 
@@ -3597,6 +6970,131 @@ def _preflight_engine_import():
             % (_f, _exp))
     _br.log("[PREFLIGHT] engine import OK (%s) %s"
             % (getattr(_eng, "ENGINE_BUILD", "?"), _f))
+    # STALE-MODULE GUARD (2026-10-22): Aimsun caches the engine module for the
+    # life of the process, so a previous run's code can be served even after
+    # engine.py is edited on disk (observed: log showed
+    # ENGINE_BUILD=...-stats-probe while disk had ...-plan-evo; the new
+    # AAPIFinish code never ran and plan_evolution_*.png silently vanished).
+    # Compare the LOADED build with the one on disk and abort rather than burn
+    # a multi-hour batch on stale code.
+    try:
+        import re as _re
+        with open(_eng_py, "r", encoding="utf-8", errors="replace") as _fh:
+            _disk_src = _fh.read()
+        _m = _re.search(r'^ENGINE_BUILD\s*=\s*["\']([^"\']+)',
+                        _disk_src, _re.M)
+        _disk_build = (_m.group(1) if _m else "?")
+        _loaded_build = str(getattr(_eng, "ENGINE_BUILD", "?"))
+        if _m and _disk_build != _loaded_build:
+            raise RuntimeError(
+                "[PREFLIGHT] FATAL: STALE ENGINE MODULE. Loaded build %r but "
+                "disk has %r. Aimsun caches shared_tsp_engine.engine for the "
+                "process lifetime -- a reload is NOT enough. Fully quit and "
+                "restart Aimsun, reopen the model, then re-run."
+                % (_loaded_build, _disk_build))
+        _br.log("[PREFLIGHT] engine build matches disk (%s)" % _disk_build)
+    except RuntimeError:
+        raise
+    except Exception as _be:
+        _br.log("[PREFLIGHT] WARNING: stale-build check inconclusive: %r"
+                % (_be,))
+    # CONTENT-HASH GUARD (2026-10-30): the ENGINE_BUILD string above is only
+    # checked when it is hand-bumped, so editing engine.py or specialized_modes.py
+    # without bumping it silently re-runs the CACHED code -- a whole probe was
+    # lost this way (no [CTM_CONN]/[NASH_CTM] lines, CELLQ reproduced 796.0522
+    # exactly). Compare the hash each module captured AT IMPORT against the file
+    # on disk, for BOTH modules, with no manual step.
+    try:
+        import hashlib as _hl
+        _mods = [("engine", _eng_py, _eng)]
+        _spm_py = _os.path.join(_ROOT, "shared_tsp_engine", "specialized_modes.py")
+        _spm_mod = None
+        try:
+            _spm_mod = importlib.import_module("shared_tsp_engine.specialized_modes")
+        except Exception as _ie:
+            _br.log("[PREFLIGHT] WARNING: specialized_modes import failed: %r"
+                    % (_ie,))
+        if _spm_mod is not None:
+            _mods.append(("specialized_modes", _spm_py, _spm_mod))
+        for _nm, _path, _mod in _mods:
+            if not _os.path.isfile(_path):
+                continue
+            with open(_path, "rb") as _fh3:
+                _disk_hash = _hl.sha1(_fh3.read()).hexdigest()[:12]
+            _loaded_hash = str(getattr(_mod, "SOURCE_HASH", "?"))
+            if _loaded_hash not in ("?", _disk_hash):
+                raise RuntimeError(
+                    "[PREFLIGHT] FATAL: STALE %s MODULE. Loaded content %r but "
+                    "disk has %r (%s). Aimsun caches the module for the process "
+                    "lifetime -- quit and restart Aimsun completely, reopen the "
+                    "model, then re-run."
+                    % (_nm, _loaded_hash, _disk_hash, _path))
+            _br.log("[PREFLIGHT] %s content %s (loaded == disk)"
+                    % (_nm, _disk_hash))
+    except RuntimeError:
+        raise
+    except Exception as _he:
+        _br.log("[PREFLIGHT] WARNING: content-hash check inconclusive: %r"
+                % (_he,))
+    # Same guard for the corridor's Simulation_Stats.py (also session-cached;
+    # the 2026-10-22 accounting fixes live there). Compare the loaded
+    # STATS_BUILD (if the module is already in sys.modules) with disk.
+    try:
+        import re as _re2
+        _sm_py = _os.path.join(_ROOT, CORRIDOR, "Simulation_Stats.py")
+        with open(_sm_py, "r", encoding="utf-8", errors="replace") as _fh2:
+            _sm_src = _fh2.read()
+        _m2 = _re2.search(r'^STATS_BUILD\s*=\s*["\']([^"\']+)',
+                          _sm_src, _re2.M)
+        _sm_disk = (_m2.group(1) if _m2 else "?")
+        _sm_mod = _sys.modules.get("Simulation_Stats")
+        _sm_loaded = getattr(_sm_mod, "STATS_BUILD", None)
+        if _sm_mod is not None and _m2 and _sm_loaded != _sm_disk:
+            raise RuntimeError(
+                "[PREFLIGHT] FATAL: STALE Simulation_Stats MODULE. Loaded "
+                "build %r but disk has %r (%s). Fully quit and restart Aimsun, "
+                "reopen the model, then re-run."
+                % (_sm_loaded, _sm_disk, _sm_py))
+        _br.log("[PREFLIGHT] Simulation_Stats build %s (%s)"
+                % (_sm_disk, "loaded OK" if _sm_mod is not None
+                   else "not loaded yet"))
+    except RuntimeError:
+        raise
+    except Exception as _se:
+        _br.log("[PREFLIGHT] WARNING: stats stale-build check inconclusive: %r"
+                % (_se,))
+
+
+# ── POST-RUN BUILD GATE (opt-in, 2026-11-02) ────────────────────────────────
+# The preflight above proves the modules were fresh when the sweep STARTED. It
+# cannot prove the first run actually EXECUTED those bytes: a foreign engine on
+# sys.path, or a preflight that ended "inconclusive", both let a sweep begin on
+# code nobody intended. On a 25-run KG ladder that is ~3 h of plausible-looking
+# rows. With CHAMPION_POSTRUN_BUILD_CHECK=1 (run_ladder_nashheld_kg.py sets it),
+# the first COMPLETED run is checked against engine.py / specialized_modes.py on
+# disk and a mismatch aborts the sweep before run 2. Unset -> no behaviour change
+# for every other launcher.
+_POSTRUN_GATE = [False]
+_POSTRUN_GATE_T0 = _time.time()   # module import precedes the sweep
+
+
+def _postrun_build_gate(logs_dir, log):
+    """Abort the sweep if the run that just finished did not use the disk build."""
+    _vp = _os.path.join(_ROOT, "verify_kg_build.py")
+    if not _os.path.isfile(_vp):
+        log("[POSTRUN] verify_kg_build.py not found (%s) -- build gate SKIPPED"
+            % _vp)
+        return
+    try:
+        _vspec = _ilu.spec_from_file_location("_verify_kg_build", _vp)
+        _vmod = _ilu.module_from_spec(_vspec)
+        _vspec.loader.exec_module(_vmod)
+        _vmod.check_or_raise(logs_dir, since=_POSTRUN_GATE_T0, log=log)
+    except RuntimeError:
+        raise
+    except Exception as _ve:
+        # A CHECKER MUST NEVER BE THE THING THAT KILLS A BATCH -- report and go on.
+        log("[POSTRUN] WARNING: build gate could not run (%r) -- SKIPPED" % (_ve,))
 
 
 def main(arms=None, results_csv=None, resume=False):
@@ -3807,6 +7305,13 @@ def main(arms=None, results_csv=None, resume=False):
                                 _br._CONSUMED_RESULT_FOLDERS.add(str(_fld))
                         except Exception:
                             pass
+                        # ── [POSTRUN] build-identity gate (first run only) ──
+                        # Stops the sweep here rather than spending the remaining
+                        # runs on a stale module. Opt-in: see _postrun_build_gate.
+                        if (_os.environ.get("CHAMPION_POSTRUN_BUILD_CHECK", "")
+                                .strip() not in ("", "0") and not _POSTRUN_GATE[0]):
+                            _POSTRUN_GATE[0] = True
+                            _postrun_build_gate(_os.path.join(CORR_DIR, "logs"), log)
                         if (USE_TOPUP_SEEDS and is_learner
                                 and seed == GATE_SEED):
                             _check_september_gate(name, m, log)

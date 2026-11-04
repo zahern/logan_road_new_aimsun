@@ -18,8 +18,8 @@ import os
 import math
 BXT_FREEZE_ON_EVAL = True
 BXT_TRAIN_EPSILON = 0.3
-BXT_EVAL_SEEDS = [200, 300, 400, 500, 600]
-BXT_TRAIN_SEEDS = [700, 800]
+BXT_EVAL_SEEDS = []
+BXT_TRAIN_SEEDS = []
 CPDQL_MODE = False
 CPDQL_TRAIN_EPSILON = 0.3
 CPDQL_EVAL_SEEDS = []
@@ -98,7 +98,7 @@ LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to en
 #     to see coloured dots exactly where each bus was first detected.
 # Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
 MARK_DETECTION_POINTS: bool = False
-TRACK_BUS_POSITIONS: bool = False
+TRACK_BUS_POSITIONS: bool = True
 BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 
 # =============================================================================
@@ -575,7 +575,7 @@ else:
         "logan_south": [19196, 19363, 19474, 19882, 21895],
     }
 
-TSP_ACTIVE_INTERSECTIONS = None
+TSP_ACTIVE_INTERSECTIONS = [17249, 17383, 17498, 17628, 17963, 18044, 18942, 19185, 19196, 19363, 19474, 19882, 20270, 20280, 20283, 20844, 21197, 21553, 21847, 21895, 22232, 22603]
 _bus_type_needs_recheck = False   # set True at AAPIInit when bus_pos unresolved
 
 # DynaROPAC optimizer — imported lazily so controller loads even without it.

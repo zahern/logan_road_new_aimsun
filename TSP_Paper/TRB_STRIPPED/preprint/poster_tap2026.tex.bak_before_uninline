@@ -1,0 +1,935 @@
+% ==============================================================================
+% Transport Academic Partnership (TAP) Poster Showcase 2026
+% A1 portrait, tikzposter. QUT brand colours.
+% Compile: pdflatex poster_tap2026.tex  (twice)
+%
+% Diagrams are the standalone figures in for_poster/, compiled to PDF:
+%   agent_environment.tex        -> for_poster/agent_environment.pdf
+%   multi_agent.tex              -> for_poster/multi_agent.pdf
+%   green_extension_stages.tex   -> for_poster/green_extension_stages.pdf
+%   red_truncation_stages.tex    -> for_poster/red_truncation_stages.pdf
+% Results panels are the PNGs also in for_poster/.
+% ==============================================================================
+\documentclass[25pt, a1paper, portrait, blockverticalspace=3mm]{tikzposter}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning, shapes.geometric, arrows.meta, fit, calc, backgrounds}
+\usepackage{cleveref}
+
+% ---- QUT brand palette --------------------------------------------------------
+\definecolor{QUTBlue}{HTML}{003B71}
+\definecolor{QUTAccent}{HTML}{0092BD}
+\definecolor{QUTHighlight}{HTML}{580F8B}
+\definecolor{busred}{RGB}{200,40,40}
+\definecolor{carblue}{RGB}{40,80,180}
+\definecolor{corridorgreen}{RGB}{40,150,80}
+\definecolor{grviol}{RGB}{120,80,180}
+\definecolor{busopp}{RGB}{210,110,0}
+\definecolor{teal}{RGB}{0,128,128}
+\definecolor{busblue}{RGB}{30,90,180}
+\definecolor{busyellow}{RGB}{255,205,60}
+\definecolor{amber}{RGB}{230,160,30}
+\definecolor{crossgrey}{RGB}{214,214,214}
+
+
+% ---- poster theme ------------------------------------------------------------
+\usetheme{Default}
+\usecolorstyle{Default}
+\colorlet{backgroundcolor}{white}
+\colorlet{framecolor}{QUTBlue}
+\colorlet{titlefgcolor}{white}
+\colorlet{titlebgcolor}{QUTBlue}
+\colorlet{blocktitlefgcolor}{white}
+\colorlet{blocktitlebgcolor}{QUTAccent}
+\colorlet{blockbodyfgcolor}{black}
+\colorlet{blockbodybgcolor}{white}
+\colorlet{innerblocktitlefgcolor}{white}
+\colorlet{innerblocktitlebgcolor}{QUTHighlight}
+\colorlet{innerblockbodybgcolor}{gray!5}
+
+% tikzposter has \settitle only (it REPLACES the whole title template, so all
+% of \@title/\@author/\@institute/\@titlegraphic must be typeset here). There
+% is no \setsubtitle -- the showcase line is typeset literally instead.
+% Compact title style: less dead space above/below the title bar.
+\definetitlestyle{TAPcompact}{
+  width=720mm, roundedcorners=30, linewidth=0.4cm, innersep=0.6cm,
+  titletotopverticalspace=5mm, titletoblockverticalspace=6mm,
+  titlegraphictotitledistance=10pt, titletextscale=1
+}{
+    \begin{scope}[line width=\titlelinewidth, rounded corners=\titleroundedcorners]
+        \draw[color=framecolor, fill=titlebgcolor]%
+        (\titleposleft,\titleposbottom) rectangle (\titleposright,\titlepostop);
+    \end{scope}
+}
+\usetitlestyle{TAPcompact}
+
+% Compact blocks: the class default spends 1 cm of padding on every side of every
+% title bar and body, which dominated the poster's white space.
+\defineblockstyle{TAPtight}{
+  titlewidthscale=1, bodywidthscale=1, titlecenter,
+  titleoffsetx=0pt, titleoffsety=0pt, bodyoffsetx=0pt, bodyoffsety=0pt,
+  bodyverticalshift=0pt, roundedcorners=20, linewidth=0.28cm,
+  titleinnersep=0.55cm, bodyinnersep=0.55cm
+}{
+  \begin{scope}[line width=\blocklinewidth, rounded corners=\blockroundedcorners]
+    \ifBlockHasTitle
+      \draw[color=blocktitlebgcolor, fill=blocktitlebgcolor] (blockbody.south west) rectangle (blocktitle.north east);
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \else
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \fi
+  \end{scope}
+}
+\useblockstyle{TAPtight}
+% Remove the class's "LaTeX TikZposter" corner watermark for the final print.
+\tikzposterlatexaffectionproofoff
+% The class default wraps \title content in an unbreakable \scalebox, making a
+% long one-line title overflow the title parbox; use wrappable text instead.
+\makeatletter
+\def\title#1{\gdef\@title{#1}}
+\makeatother
+\settitle{
+  \centering\vbox{
+    \color{titlefgcolor}\bfseries
+    {\LARGE \@title\par}
+    \vspace*{0.3em}
+    {\large\itshape Transport Academic Partnership (TAP) Poster Showcase 2026\par}
+    \vspace*{0.5em}
+    {\large \@author\par}
+    \vspace*{0.2em}
+    {\normalsize \@institute\par}
+  }
+}
+
+% ---- helpers ----------------------------------------------------------------
+\newcommand{\QUTlogo}{%
+  % Official QUT brand kit mark: preprint\QUT\QUT_idbrgHklVA_0.png (820x285,
+  % transparent). pdfLaTeX includes PNG natively (the kit's SVG needs an SVG
+  % router MiKTeX lacks). The full-colour wordmark sits on a white plate per QUT
+  % brand rules; in the footer it is scaled for the bottom of the panel.
+  \IfFileExists{QUT/QUT_idbrgHklVA_0.png}{%
+    \fcolorbox{white}{white}{\includegraphics[height=1.2cm]{QUT/QUT_idbrgHklVA_0.png}}%
+  }{%
+    \tikz{\node[fill=QUTBlue, text=white, font=\Huge\bfseries, inner sep=8pt,
+               rounded corners=4pt] {QUT};}%
+  }%
+}
+
+\title{Alternatives to Provide Transit Signal Priority and Improve Travel Time Reliability}
+\author{Zeke Ahern, Aitan Militao, Ashish Bhaskar \& Alexander Paz}
+\institute{Queensland University of Technology (QUT), Brisbane, QLD, Australia}
+
+\begin{document}
+\maketitle[width=0.96\textwidth]
+
+% ==============================================================================
+% 1. THE AGENT (universal)
+% ==============================================================================
+\block{State Space Environment}{
+\centering
+\hfill
+\begin{minipage}[c]{0.43\linewidth}
+  \resizebox{\linewidth}{!}{
+\begin{tikzpicture}[>=Stealth, font=\small, line join=round]
+
+%====================================================
+% VEHICLES
+%====================================================
+\newcommand{\aeBus}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=busyellow, draw=black, rounded corners=2pt] (-0.55,-0.24) rectangle (0.55,0.24);
+\fill[busblue, rounded corners=1.5pt] (-0.50,-0.19) rectangle (0.50,0.19);
+\fill[white, rounded corners=1pt] (-0.34,-0.11) rectangle (0.34,0.11);
+\fill (-0.38,-0.26) circle (0.04); \fill (-0.38,0.26) circle (0.04);
+\fill (0.38,-0.26) circle (0.04); \fill (0.38,0.26) circle (0.04);
+\end{scope}}
+
+\newcommand{\aeCar}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=carblue!45, draw=black, rounded corners=1pt] (-0.26,-0.12) rectangle (0.26,0.12);
+\fill (-0.17,-0.145) circle (0.03); \fill (0.17,-0.145) circle (0.03);
+\fill (-0.17,0.145) circle (0.03); \fill (0.17,0.145) circle (0.03);
+\end{scope}}
+
+\newcommand{\aeCarV}[2]{%
+\begin{scope}[shift={(#1,#2)}, rotate=90]
+\draw[fill=carblue!45, draw=black, rounded corners=1pt] (-0.26,-0.12) rectangle (0.26,0.12);
+\fill (-0.17,-0.145) circle (0.03); \fill (0.17,-0.145) circle (0.03);
+\fill (-0.17,0.145) circle (0.03); \fill (0.17,0.145) circle (0.03);
+\end{scope}}
+
+% small three-lamp signal heads; red lights the TOP lamp, green the BOTTOM lamp
+\newcommand{\aeSigRed}[2]{%
+\draw[fill=black!85, rounded corners=1.2pt] (#1-0.12,#2-0.35) rectangle (#1+0.12,#2+0.35);
+\fill[red!85] (#1,#2+0.18) circle (0.075);
+\fill[gray!40] (#1,#2) circle (0.075);
+\fill[gray!40] (#1,#2-0.18) circle (0.075);
+}
+\newcommand{\aeSigGreen}[2]{%
+\draw[fill=black!85, rounded corners=1.2pt] (#1-0.12,#2-0.35) rectangle (#1+0.12,#2+0.35);
+\fill[gray!40] (#1,#2+0.18) circle (0.075);
+\fill[gray!40] (#1,#2) circle (0.075);
+\fill[green!65!black] (#1,#2-0.18) circle (0.075);
+}
+
+%====================================================
+% TITLE
+%====================================================
+\node[font=\Large\bfseries] at (8.6,9.55)
+  {State Space};
+
+%====================================================
+% AGENT
+%====================================================
+\draw[fill=gray!8, rounded corners=4pt] (6.9,7.5) rectangle (10.3,8.9);
+% robot glyph
+\draw (7.485,8.52) -- (7.485,8.66);
+\fill[black!75] (7.485,8.66) circle (0.03);
+\draw[fill=white, rounded corners=2pt] (7.35,8.25) rectangle (7.62,8.52);
+\fill[black!75] (7.44,8.39) circle (0.018); \fill[black!75] (7.53,8.39) circle (0.018);
+\draw[fill=white, rounded corners=1.5pt] (7.38,7.98) rectangle (7.59,8.2);
+\node[font=\small\bfseries] at (9.05,8.2) {TSP agent};
+
+%====================================================
+% ACTION SHOWCASE: what the agent can command
+%====================================================
+\foreach \cx in {3.95, 6.25, 8.55, 10.85, 13.15} {
+  \draw[rounded corners=3pt, fill=gray!6, draw=black!35, line width=0.5pt]
+    (\cx-1.05,6.42) rectangle (\cx+1.05,7.37);
+}
+% green extension: green bar + lime stub appended   (card at x=3.95)
+\fill[corridorgreen!70] (3.40,7.10) rectangle (4.00,7.22);
+\fill[green!45!yellow!65!black] (4.00,7.10) rectangle (4.25,7.22);
+\node[font=\tiny\bfseries] at (3.95,6.70) {green extension};
+% red truncation: green bar cut short by a red tick, ghost shows the old end   (card at 6.25)
+\fill[corridorgreen!70] (5.70,7.10) rectangle (6.37,7.22);
+\fill[red!75!black] (6.37,7.06) rectangle (6.49,7.26);
+\draw[gray!50, dashed, line width=1.3pt] (6.54,7.16) -- (6.89,7.16);
+\node[font=\tiny\bfseries] at (6.25,6.70) {red truncation};
+% early green: ghost = nominal slot, solid green = shifted earlier   (card at 8.55)
+\draw[gray!50, dashed, line width=1.3pt] (8.60,7.24) -- (9.10,7.24);
+\fill[corridorgreen!70] (8.00,7.10) rectangle (8.55,7.22);
+\node[font=\tiny\bfseries] at (8.55,6.70) {early green};
+% phase insertion: normal sequence with an inserted bus-only phase   (card at 10.85)
+\fill[corridorgreen!70] (10.30,7.10) rectangle (10.67,7.22);
+\fill[violet!60] (10.71,7.10) rectangle (10.99,7.22);
+\fill[corridorgreen!70] (11.03,7.10) rectangle (11.40,7.22);
+\node[font=\tiny\bfseries] at (10.85,6.70) {phase insertion};
+% offset correction: two green bands pulled closer together   (card at 13.15)
+\fill[corridorgreen!70] (12.60,7.24) rectangle (13.25,7.34);
+\fill[corridorgreen!70] (12.85,7.06) rectangle (13.50,7.16);
+\node[font=\tiny\bfseries] at (13.15,6.70) {offset correction};
+
+%====================================================
+% ENVIRONMENT
+%====================================================
+\draw[gray!70, dashed, line width=0.9pt, rounded corners=8pt] (4.6,0.6) rectangle (13.4,6.2);
+\node[font=\tiny, text=gray, anchor=west] at (4.8,0.8) {environment};
+
+% roads
+\fill[gray!25] (5.2,2.8) rectangle (11.6,4.4);
+\fill[gray!25] (7.6,0.9) rectangle (9.2,5.6);
+\draw[white, dashed, thick] (5.2,3.6) -- (7.6,3.6);
+\draw[white, dashed, thick] (9.2,3.6) -- (11.6,3.6);
+\draw[white, dashed, thick] (8.4,0.9) -- (8.4,2.8);
+\draw[white, dashed, thick] (8.4,4.4) -- (8.4,5.6);
+
+% stop bars (main street red, side street green)
+\fill[busred] (7.5,3.78) rectangle (7.62,4.25);
+\fill[busred] (9.08,2.95) rectangle (9.2,3.42);
+\fill[corridorgreen!80] (8.55,4.28) rectangle (9.02,4.4);
+\fill[corridorgreen!80] (7.78,2.68) rectangle (8.25,2.8);
+
+% signal heads
+\aeSigRed{7.0}{4.85}
+\aeSigRed{10.6}{2.1}
+\aeSigGreen{7.0}{1.5}
+\aeSigGreen{9.45}{4.85}
+
+% traffic
+\aeBus{6.4}{4.0}
+\aeCar{5.30}{4.0}
+\aeCar{10.9}{3.2}
+\aeCarV{8.0}{1.35}
+\aeCarV{8.8}{4.95}
+
+% street labels
+\node[font=\tiny, text=gray!60!black, anchor=west] at (5.3,4.55) {Main St.};
+\node[font=\tiny, text=gray!60!black, anchor=west] at (9.75,5.45) {Side St.};
+
+%====================================================
+% LOOPS:  state + reward into agent, action into environment
+%====================================================
+\draw[-Stealth, line width=1.0pt] (4.6,5.3) -| (2.6,7.9) -- (6.9,7.9);
+\node[font=\tiny, text=gray, anchor=south] at (3.6,5.42) {$s_{t+1}$};
+\node[font=\tiny, anchor=south west] at (2.75,7.98) {state $s_t$: ETA, queues, phase};
+
+\draw[-Stealth, line width=1.0pt] (4.6,4.6) -| (1.7,8.35) -- (6.9,8.35);
+\node[font=\tiny, text=gray, anchor=south] at (3.15,4.72) {$r_{t+1}$};
+\node[font=\tiny, anchor=west] at (2.0,8.52) {reward $r_t$: bus delay saved $-$ car delay};
+
+\draw[-Stealth, line width=1.0pt] (10.3,8.2) -- (16.2,8.2) -- (16.2,3.4) -- (13.4,3.4);
+\node[font=\scriptsize\bfseries, anchor=south] at (13.2,8.38) {action $a_t$};
+\node[font=\tiny, text=gray, rotate=90, anchor=north] at (16.45,5.8)
+  {command to the signal controllers};
+
+%====================================================
+% CAPTION
+%====================================================
+\end{tikzpicture}
+}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.43\linewidth}
+  \resizebox{\linewidth}{!}{
+\begin{tikzpicture}[>=Stealth, font=\small, line join=round]
+
+%====================================================
+% VEHICLES
+%====================================================
+\newcommand{\maBus}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=busyellow, draw=black, rounded corners=2pt] (-0.55,-0.24) rectangle (0.55,0.24);
+\fill[busblue, rounded corners=1.5pt] (-0.50,-0.19) rectangle (0.50,0.19);
+\fill[white, rounded corners=1pt] (-0.34,-0.11) rectangle (0.34,0.11);
+\fill (-0.38,-0.26) circle (0.04); \fill (-0.38,0.26) circle (0.04);
+\fill (0.38,-0.26) circle (0.04); \fill (0.38,0.26) circle (0.04);
+\end{scope}}
+
+\newcommand{\maCar}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=carblue!45, draw=black, rounded corners=1pt] (-0.26,-0.12) rectangle (0.26,0.12);
+\fill (-0.17,-0.145) circle (0.03); \fill (0.17,-0.145) circle (0.03);
+\fill (-0.17,0.145) circle (0.03); \fill (0.17,0.145) circle (0.03);
+\end{scope}}
+
+\newcommand{\maCarV}[2]{%
+\begin{scope}[shift={(#1,#2)}, rotate=90]
+\draw[fill=carblue!45, draw=black, rounded corners=1pt] (-0.26,-0.12) rectangle (0.26,0.12);
+\fill (-0.17,-0.145) circle (0.03); \fill (0.17,-0.145) circle (0.03);
+\fill (-0.17,0.145) circle (0.03); \fill (0.17,0.145) circle (0.03);
+\end{scope}}
+
+% small three-lamp heads; red lights the TOP lamp, green the BOTTOM lamp
+\newcommand{\maSigRed}[2]{%
+\draw[fill=black!85, rounded corners=1.2pt] (#1-0.12,#2-0.35) rectangle (#1+0.12,#2+0.35);
+\fill[red!85] (#1,#2+0.18) circle (0.075);
+\fill[gray!40] (#1,#2) circle (0.075);
+\fill[gray!40] (#1,#2-0.18) circle (0.075);
+}
+\newcommand{\maSigGreen}[2]{%
+\draw[fill=black!85, rounded corners=1.2pt] (#1-0.12,#2-0.35) rectangle (#1+0.12,#2+0.35);
+\fill[gray!40] (#1,#2+0.18) circle (0.075);
+\fill[gray!40] (#1,#2) circle (0.075);
+\fill[green!65!black] (#1,#2-0.18) circle (0.075);
+}
+
+%====================================================
+% TITLE
+%====================================================
+\node[font=\Large\bfseries] at (9.75,9.55)
+  {Multi-agent control of a TSP corridor};
+
+%====================================================
+% AGENT ABSTRACT
+%====================================================
+\newcommand{\agentbox}[2]{%
+\begin{scope}
+\draw[fill=gray!8, rounded corners=4pt] ({#1-1.5},7.6) rectangle ({#1+1.5},9.0);
+% robot glyph
+\draw ({#1-1.15},8.62) -- ({#1-1.15},8.74);
+\fill[black!75] ({#1-1.15},8.74) circle (0.028);
+\draw[fill=white, rounded corners=2pt] ({#1-1.28},8.36) rectangle ({#1-1.02},8.60);
+\fill[black!75] ({#1-1.205},8.47) circle (0.017);
+\fill[black!75] ({#1-1.095},8.47) circle (0.017);
+\draw[fill=white, rounded corners=1.5pt] ({#1-1.24},8.10) rectangle ({#1-1.06},8.31);
+\node[font=\small\bfseries] at ({#1+0.35},8.38) {TSP agent #2};
+\node[font=\tiny, text=gray!30!black] at ({#1+0.35},8.04) {controls Int\ #2};
+\end{scope}}
+
+\agentbox{5.0}{1}
+\agentbox{9.7}{2}
+\agentbox{14.4}{3}
+
+% communication: neighbouring agents exchange local information
+\draw[Stealth-Stealth, line width=1.0pt, carblue, dashed] (6.55,8.3) -- (8.2,8.3);
+\node[font=\tiny, text=carblue!80!black, anchor=south] at (7.38,8.42) {share local info};
+\draw[Stealth-Stealth, line width=1.0pt, carblue, dashed] (11.25,8.3) -- (12.9,8.3);
+\node[font=\tiny, text=carblue!80!black, anchor=south] at (12.08,8.42) {share local info};
+
+%====================================================
+% ENVIRONMENT LOOP (per agent: action down, next state + reward up)
+%====================================================
+\draw[-Stealth, line width=1.0pt] (4.25,7.6) -- (4.25,5.5);
+\node[font=\tiny, anchor=east] at (4.17,6.55) {$a_t^{(1)}$};
+\draw[-Stealth, line width=1.0pt] (5.75,5.5) -- (5.75,7.6);
+\node[font=\tiny, anchor=west] at (5.83,6.55) {$s_{t+1}^{(1)},\, r_{t+1}^{(1)}$};
+
+\draw[-Stealth, line width=1.0pt] (8.95,7.6) -- (8.95,5.5);
+\node[font=\tiny, anchor=east] at (8.87,6.55) {$a_t^{(2)}$};
+\draw[-Stealth, line width=1.0pt] (10.45,5.5) -- (10.45,7.6);
+\node[font=\tiny, anchor=west] at (10.53,6.55) {$s_{t+1}^{(2)},\, r_{t+1}^{(2)}$};
+
+\draw[-Stealth, line width=1.0pt] (13.65,7.6) -- (13.65,5.5);
+\node[font=\tiny, anchor=east] at (13.57,6.55) {$a_t^{(3)}$};
+\draw[-Stealth, line width=1.0pt] (15.15,5.5) -- (15.15,7.6);
+\node[font=\tiny, anchor=west] at (15.23,6.55) {$s_{t+1}^{(3)},\, r_{t+1}^{(3)}$};
+
+%====================================================
+% ENVIRONMENT: the corridor
+%====================================================
+\draw[gray!70, dashed, line width=0.9pt, rounded corners=8pt] (2.6,0.9) rectangle (17.0,5.5);
+\node[font=\tiny, text=gray, anchor=west] at (2.8,1.1) {environment};
+
+% roads
+\fill[gray!25] (3.4,2.5) rectangle (16.0,4.1);
+\fill[gray!25] (4.5,1.3) rectangle (5.5,5.0);
+\fill[gray!25] (9.2,1.3) rectangle (10.2,5.0);
+\fill[gray!25] (13.9,1.3) rectangle (14.9,5.0);
+\draw[white, dashed, thick] (3.4,3.3) -- (4.5,3.3);
+\draw[white, dashed, thick] (5.5,3.3) -- (9.2,3.3);
+\draw[white, dashed, thick] (10.2,3.3) -- (13.9,3.3);
+\draw[white, dashed, thick] (14.9,3.3) -- (16.0,3.3);
+\draw[white, dashed, thick] (5.0,1.3) -- (5.0,2.5);
+\draw[white, dashed, thick] (5.0,4.1) -- (5.0,5.0);
+\draw[white, dashed, thick] (9.7,1.3) -- (9.7,2.5);
+\draw[white, dashed, thick] (9.7,4.1) -- (9.7,5.0);
+\draw[white, dashed, thick] (14.4,1.3) -- (14.4,2.5);
+\draw[white, dashed, thick] (14.4,4.1) -- (14.4,5.0);
+
+% signal heads: Int 1 green, Int 2 red (bus approaching), Int 3 green
+\maSigGreen{3.9}{4.6}
+\maSigRed{8.6}{4.6}
+\maSigGreen{13.3}{4.6}
+
+% traffic
+\maBus{7.4}{3.7}
+\maCar{6.4}{3.7}
+\maCar{11.6}{2.9}
+\maCarV{5.0}{4.45}
+\maCarV{9.7}{1.75}
+\maCarV{14.4}{4.45}
+
+% intersection labels
+\foreach \xi/\i in {5.0/1, 9.7/2, 14.4/3} {
+  \node[font=\tiny, text=gray!50!black] at (\xi,1.05) {Int\ \i};
+}
+
+%====================================================
+% CAPTION
+%====================================================
+\end{tikzpicture}
+}
+\end{minipage}\hfill
+}
+
+% ==============================================================================
+% 2. THE TWO ACTIONS (universal)
+% ==============================================================================
+\block{Actions}{
+\centering
+\begin{minipage}[c]{0.27\linewidth}
+  \resizebox{\linewidth}{!}{
+\begin{tikzpicture}[>=Stealth]
+
+%====================================================
+% VEHICLE ICONS
+%====================================================
+\newcommand{\geBus}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=busyellow, draw=black, rounded corners=2pt] (-0.45,-0.21) rectangle (0.45,0.21);
+\fill[busblue, rounded corners=1.5pt] (-0.40,-0.16) rectangle (0.40,0.16);
+\fill[white, rounded corners=1pt] (-0.28,-0.09) rectangle (0.28,0.09);
+\fill (-0.30,-0.24) circle (0.03); \fill (-0.30,0.24) circle (0.03);
+\fill (0.30,-0.24) circle (0.03); \fill (0.30,0.24) circle (0.03);
+\end{scope}}
+\newcommand{\geCar}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=blue!35, draw=black, rounded corners=0.5pt] (-0.18,-0.08) rectangle (0.18,0.08);
+\fill (-0.12,-0.10) circle (0.025); \fill ( 0.12,-0.10) circle (0.025);
+\fill (-0.12, 0.10) circle (0.025); \fill ( 0.12, 0.10) circle (0.025);
+\end{scope}}
+\newcommand{\geCarV}[2]{%
+\begin{scope}[shift={(#1,#2)},rotate=90]
+\draw[fill=blue!35, draw=black, rounded corners=0.5pt] (-0.18,-0.08) rectangle (0.18,0.08);
+\fill (-0.12,-0.10) circle (0.025); \fill ( 0.12,-0.10) circle (0.025);
+\fill (-0.12, 0.10) circle (0.025); \fill ( 0.12, 0.10) circle (0.025);
+\end{scope}}
+
+%====================================================
+% PARAMETERS
+%====================================================
+% left-hand traffic: eastbound (bus) uses the upper lane y=5.97, westbound the lower lane y=5.33
+\def\SYtwo{-4.85}
+\def\SYthree{-9.70}
+
+%----------------------------------------------- traffic light heads (3 lamps, one lit)
+\newcommand{\geSigRed}[2]{%
+\draw[rounded corners=1.5pt, fill=black!75, draw=black, line width=0.4pt] ({#1-0.09},{#2-0.24}) rectangle ({#1+0.09},{#2+0.24});
+\fill[red!75!black] ({#1},{#2+0.15}) circle (0.055);
+\fill[gray!40]      ({#1},{#2})      circle (0.055);
+\fill[gray!40]      ({#1},{#2-0.15}) circle (0.055);}
+\newcommand{\geSigGreen}[2]{%
+\draw[rounded corners=1.5pt, fill=black!75, draw=black, line width=0.4pt] ({#1-0.09},{#2-0.24}) rectangle ({#1+0.09},{#2+0.24});
+\fill[gray!40]        ({#1},{#2+0.15}) circle (0.055);
+\fill[gray!40]        ({#1},{#2})      circle (0.055);
+\fill[green!60!black] ({#1},{#2-0.15}) circle (0.055);}
+\newcommand{\geSigAmber}[2]{%
+\draw[rounded corners=1.5pt, fill=black!75, draw=black, line width=0.4pt] ({#1-0.09},{#2-0.24}) rectangle ({#1+0.09},{#2+0.24});
+\fill[gray!40]        ({#1},{#2+0.15}) circle (0.055);
+\fill[amber]          ({#1},{#2})      circle (0.055);
+\fill[gray!40]        ({#1},{#2-0.15}) circle (0.055);}
+% lime ring marking an extended green
+\newcommand{\geExtRing}[2]{%
+\draw[lime!60!black, line width=1.1pt, rounded corners=1.5pt] ({#1-0.13},{#2-0.28}) rectangle ({#1+0.13},{#2+0.28});}
+
+%====================================================
+% TITLE
+%====================================================
+\node[font=\Large\bfseries, align=center] at (3.32,8.90)
+  {Green Extension};
+
+%====================== stage 1 =======
+\begin{scope}
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Bus approaches a green that will end soon\\[-1pt]{\scriptsize\mdseries }};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\geCar{-3.2}{5.97}\geCar{-2.2}{5.97}\geCar{-1.2}{5.97}
+\geCar{7.2}{5.33}\geCar{8.7}{5.33}\geCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: main street open, side street held
+\fill[green!65!black, opacity=0.11] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[red!80!black, opacity=0.06] (2.90,3.30) rectangle (3.60,7.35);
+% signals: main street green (shortly to end), side street red
+\draw[green!65!black, line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[green!65!black, line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[red!80!black,   line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[red!80!black,   line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\geSigGreen{2.10}{6.75}
+\geSigGreen{4.30}{4.60}
+\geSigRed{2.62}{4.10}
+\geSigRed{3.88}{7.10}
+% vehicles: bus + car ahead advancing on the ending green; WB car arriving; side queues waiting
+\geCar{3.30}{5.97}
+\geBus{1.15}{5.97}
+\geCar{5.45}{5.33}
+\geCarV{3.05}{3.95}
+\geCarV{3.45}{7.13}
+% signal controller (stand-alone box, not yet connected)
+\draw[rounded corners=2pt, fill=gray!25, draw=black!60] (0.60,3.70) rectangle (1.65,4.30);
+\node[font=\tiny\bfseries, text=black!70, align=center] at (1.125,4.00) {signal\\[-1pt]controller};
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================== stage 2 =======
+\begin{scope}[shift={(0,\SYtwo)}]
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Bus Detected: extend the green to ensure it makes it\\[-1pt]{\scriptsize\mdseries the bus would arrive just $\sim$2\,s after the normal green ends, the $+4$\,s stretch catches it}};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\geCar{-3.2}{5.97}\geCar{-2.2}{5.97}\geCar{-1.2}{5.97}
+\geCar{7.2}{5.33}\geCar{8.7}{5.33}\geCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: extended main green (lime), side street held
+\fill[lime!60!black, opacity=0.11] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[red!80!black, opacity=0.06] (2.90,3.30) rectangle (3.60,7.35);
+% signals: main street green extended; side street keeps waiting
+\draw[lime!70!black, line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[lime!70!black, line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[red!80!black,  line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[red!80!black,  line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\geSigGreen{2.10}{6.75}
+\geExtRing{2.10}{6.75}
+\geSigGreen{4.30}{4.60}
+\geExtRing{4.30}{4.60}
+\geSigRed{2.62}{4.10}
+\geSigRed{3.88}{7.10}
+% extension marker on the approach bar
+\draw[lime!60!black, line width=2.5pt] (2.40,5.80)--(2.72,5.80);
+\node[font=\tiny\bfseries, text=lime!55!black, anchor=west] at (2.78,5.80) {$+4$\,s};
+% near-miss cue: the untreated green would end $\sim$2\,s ahead of the bus
+\draw[red!75!black, dashed, line width=0.8pt, -{Stealth}] (2.95,6.60)--(2.76,6.16);
+\node[font=\tiny\bfseries, text=red!75!black, anchor=west, fill=white, inner sep=1.5pt] at (2.98,6.72) {the bus would arrive $\sim$2\,s after this green};
+% vehicles: car ahead crosses on the extended green, bus follows; WB car advances; side queue creeps + grows
+\geCar{3.30}{5.97}
+\geBus{1.55}{5.97}
+\geCar{4.45}{5.33}
+\geCarV{3.05}{3.95}
+\geCarV{3.05}{3.50}
+\geCarV{3.45}{7.13}
+% controller box with AVL detection link to the bus
+\draw[rounded corners=2pt, fill=gray!25, draw=black!60] (0.60,3.70) rectangle (1.65,4.30);
+\node[font=\tiny\bfseries, text=black!70, align=center] at (1.125,4.00) {signal\\[-1pt]controller};
+\draw[lime!60!black, dashed, line width=0.8pt, -{Stealth}] (1.08,4.30)--(1.50,5.76);
+\node[font=\tiny\bfseries, text=lime!55!black, anchor=west] at (1.56,4.90) {detects bus};
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================== stage 3 =======
+\begin{scope}[shift={(0,\SYthree)}]
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Bus proceeds on the extended green\\[-1pt]{\scriptsize\mdseries the green is only stretched as much as the bus needs}};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\geCar{-3.2}{5.97}\geCar{-2.2}{5.97}\geCar{-1.2}{5.97}
+\geCar{7.2}{5.33}\geCar{8.7}{5.33}\geCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: the extended green has just dropped to amber, side street held
+\fill[amber, opacity=0.13] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[red!80!black, opacity=0.06] (2.90,3.30) rectangle (3.60,7.35);
+% signals: amber the instant the bus is clear; side street red
+\draw[amber, line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[amber, line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[red!80!black,  line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[red!80!black,  line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\geSigAmber{2.10}{6.75}
+\geExtRing{2.10}{6.75}
+\geSigAmber{4.30}{4.60}
+\geExtRing{4.30}{4.60}
+\geSigRed{2.62}{4.10}
+\geSigRed{3.88}{7.10}
+% vehicles: bus clear of the stop line; its follower still approaching on the amber
+\geCar{2.05}{5.97}
+\geBus{4.10}{5.97}
+\geCar{3.40}{5.33}
+\geCarV{3.05}{3.95}
+\geCarV{3.05}{3.50}
+\geCarV{3.45}{7.13}
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================================================
+% CAPTION
+%====================================================
+\end{tikzpicture}
+}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.225\linewidth}
+  \resizebox{\linewidth}{!}{
+\begin{tikzpicture}[>=Stealth]
+
+%====================================================
+% VEHICLE ICONS
+%====================================================
+\newcommand{\rtBus}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=busyellow, draw=black, rounded corners=2pt] (-0.45,-0.21) rectangle (0.45,0.21);
+\fill[busblue, rounded corners=1.5pt] (-0.40,-0.16) rectangle (0.40,0.16);
+\fill[white, rounded corners=1pt] (-0.28,-0.09) rectangle (0.28,0.09);
+\fill (-0.30,-0.24) circle (0.03); \fill (-0.30,0.24) circle (0.03);
+\fill (0.30,-0.24) circle (0.03); \fill (0.30,0.24) circle (0.03);
+\end{scope}}
+\newcommand{\rtCar}[2]{%
+\begin{scope}[shift={(#1,#2)}]
+\draw[fill=blue!35, draw=black, rounded corners=0.5pt] (-0.18,-0.08) rectangle (0.18,0.08);
+\fill (-0.12,-0.10) circle (0.025); \fill ( 0.12,-0.10) circle (0.025);
+\fill (-0.12, 0.10) circle (0.025); \fill ( 0.12, 0.10) circle (0.025);
+\end{scope}}
+\newcommand{\rtCarV}[2]{%
+\begin{scope}[shift={(#1,#2)},rotate=90]
+\draw[fill=blue!35, draw=black, rounded corners=0.5pt] (-0.18,-0.08) rectangle (0.18,0.08);
+\fill (-0.12,-0.10) circle (0.025); \fill ( 0.12,-0.10) circle (0.025);
+\fill (-0.12, 0.10) circle (0.025); \fill ( 0.12, 0.10) circle (0.025);
+\end{scope}}
+
+%====================================================
+% PARAMETERS
+%====================================================
+% left-hand traffic: eastbound (bus) uses the upper lane y=5.97, westbound the lower lane y=5.33
+\def\SYtwo{-4.85}
+\def\SYthree{-9.70}
+
+%----------------------------------------------- traffic light heads (3 lamps, one lit)
+\newcommand{\rtSigRed}[2]{%
+\draw[rounded corners=1.5pt, fill=black!75, draw=black, line width=0.4pt] ({#1-0.09},{#2-0.24}) rectangle ({#1+0.09},{#2+0.24});
+\fill[red!75!black] ({#1},{#2+0.15}) circle (0.055);
+\fill[gray!40]      ({#1},{#2})      circle (0.055);
+\fill[gray!40]      ({#1},{#2-0.15}) circle (0.055);}
+\newcommand{\rtSigGreen}[2]{%
+\draw[rounded corners=1.5pt, fill=black!75, draw=black, line width=0.4pt] ({#1-0.09},{#2-0.24}) rectangle ({#1+0.09},{#2+0.24});
+\fill[gray!40]        ({#1},{#2+0.15}) circle (0.055);
+\fill[gray!40]        ({#1},{#2})      circle (0.055);
+\fill[green!60!black] ({#1},{#2-0.15}) circle (0.055);}
+
+%====================================================
+% TITLE
+%====================================================
+\node[font=\Large\bfseries, align=center] at (3.32,8.90)
+  {Red Truncation};
+
+%====================== stage 1 =======
+\begin{scope}
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Bus approaches a red signal\\[-1pt]{\scriptsize\mdseries the side street's green is still running}};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\rtCar{-3.2}{5.97}\rtCar{-2.2}{5.97}\rtCar{-1.2}{5.97}
+\rtCar{7.2}{5.33}\rtCar{8.7}{5.33}\rtCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: main street red, side street open
+\fill[red!80!black, opacity=0.06] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[green!65!black, opacity=0.11] (2.90,3.30) rectangle (3.60,7.35);
+% signals: main street red, side street green
+\draw[red!80!black,    line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[red!80!black,    line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[green!65!black,  line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[green!65!black,  line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\rtSigRed{2.10}{6.75}
+\rtSigRed{4.30}{4.60}
+\rtSigGreen{2.62}{4.10}
+\rtSigGreen{3.88}{7.10}
+% vehicles: side street discharging (SB + NB crossing on green); EB bus queued behind a car; WB car waiting
+\rtCar{2.45}{5.97}
+\rtBus{1.20}{5.97}
+\rtCar{4.35}{5.33}
+\rtCarV{3.45}{6.00}
+\rtCarV{3.05}{4.72}
+\rtCarV{3.05}{3.95}
+\rtCarV{3.45}{7.13}
+% signal controller (stand-alone box, not yet connected)
+\draw[rounded corners=2pt, fill=gray!25, draw=black!60] (0.60,3.70) rectangle (1.65,4.30);
+\node[font=\tiny\bfseries, text=black!70, align=center] at (1.125,4.00) {signal\\[-1pt]controller};
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================== stage 2 =======
+\begin{scope}[shift={(0,\SYtwo)}]
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Controller detects the bus: cut the side green early\\[-1pt]{\scriptsize\mdseries the emptied side green ends 6\,s ahead of schedule}};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\rtCar{-3.2}{5.97}\rtCar{-2.2}{5.97}\rtCar{-1.2}{5.97}
+\rtCar{7.2}{5.33}\rtCar{8.7}{5.33}\rtCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: all red just after the cut
+\fill[red!80!black, opacity=0.06] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[red!80!black, opacity=0.06] (2.90,3.30) rectangle (3.60,7.35);
+% signals: side street green truncated to red early; main street still red
+\draw[red!80!black, line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[red!80!black, line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[red!80!black, line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[red!80!black, line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\rtSigRed{2.10}{6.75}
+\rtSigRed{4.30}{4.60}
+\rtSigRed{2.62}{4.10}
+\rtSigRed{3.88}{7.10}
+% early-red cut marker on the side street's bar
+\draw[red!75!black, line width=1.2pt] (3.02,4.12)--(3.02,3.98);
+\node[font=\tiny\bfseries, text=red!75!black, anchor=west] at (3.07,4.05) {cut $-6$\,s};
+% vehicles: side street cleared (exiters heading out); queues build on red (EB grows, WB second car arrives)
+\rtCar{1.05}{5.97}
+\rtBus{1.80}{5.97}
+\rtCar{2.50}{5.97}
+\rtCar{4.35}{5.33}
+\rtCar{4.95}{5.33}
+\rtCarV{3.45}{4.60}
+\rtCarV{3.05}{5.75}
+\rtCarV{3.05}{6.62}
+\rtCarV{3.05}{3.90}
+% controller box with AVL detection link to the bus
+\draw[rounded corners=2pt, fill=gray!25, draw=black!60] (0.60,3.70) rectangle (1.65,4.30);
+\node[font=\tiny\bfseries, text=black!70, align=center] at (1.125,4.00) {signal\\[-1pt]controller};
+\draw[red!65!black, dashed, line width=0.8pt, -{Stealth}] (1.08,4.30)--(1.38,5.76);
+\node[font=\tiny\bfseries, text=red!75!black, anchor=west] at (1.44,4.90) {detects bus};
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================== stage 3 =======
+\begin{scope}[shift={(0,\SYthree)}]
+\node[font=\bfseries\small, align=center] at (3.22,7.85)
+  {Bus proceeds on green\\[-1pt]{\scriptsize\mdseries its main-street green starts 6\,s early}};
+
+\begin{scope}
+\fill[gray!22] (-4.0,4.90) rectangle (12.0,6.50);
+% background traffic along the widened road
+\rtCar{-3.2}{5.97}\rtCar{-2.2}{5.97}\rtCar{-1.2}{5.97}
+\rtCar{7.2}{5.33}\rtCar{8.7}{5.33}\rtCar{10.2}{5.33}
+\fill[gray!22] (2.90,3.30) rectangle (3.60,7.35);
+\draw[gray!45, dashed, line width=0.5pt] (-4.0,5.65)--(2.30,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (4.10,5.65)--(12.0,5.65);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,3.30)--(3.20,4.85);
+\draw[gray!45, dashed, line width=0.5pt] (3.20,6.55)--(3.20,7.35);
+% phase shading: main street open, side street held
+\fill[green!65!black, opacity=0.11] (-4.0,4.90) rectangle (12.0,6.50);
+\fill[red!80!black, opacity=0.06] (2.90,3.30) rectangle (3.60,7.35);
+% signals: main street green for the bus; side street red with queues
+\draw[green!65!black, line width=9pt, line cap=butt] (2.40,5.97)--(2.72,5.97);
+\draw[green!65!black, line width=9pt, line cap=butt] (3.68,5.33)--(4.00,5.33);
+\draw[red!80!black,   line width=9pt, line cap=butt] (3.05,4.20)--(3.05,4.50);
+\draw[red!80!black,   line width=9pt, line cap=butt] (3.45,6.80)--(3.45,7.10);
+\rtSigGreen{2.10}{6.75}
+\rtSigGreen{4.30}{4.60}
+\rtSigRed{2.62}{4.10}
+\rtSigRed{3.88}{7.10}
+% vehicles: bus + followers flow through on the early green; WB discharges too; side street re-queues on red
+\rtCar{1.05}{5.97}
+\rtCar{3.75}{5.97}
+\rtBus{2.75}{5.97}
+\rtCar{1.75}{5.97}
+\rtCar{3.40}{5.33}
+\rtCar{4.15}{5.33}
+\rtCarV{3.05}{3.90}
+\rtCarV{3.45}{7.13}
+% labels
+\node[font=\scriptsize, text=gray] at (1.00,6.72) {Main St.};
+\node[font=\scriptsize, text=gray, anchor=west] at (4.15,7.10) {Side St.};
+\end{scope}
+\end{scope}
+
+%====================================================
+% CAPTION
+%====================================================
+\end{tikzpicture}
+}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.44\linewidth}
+  \centering
+  {\small\bfseries Offset correction builds the green wave}\\[2pt]
+  \resizebox{\linewidth}{!}{
+\begin{tikzpicture}[>=Stealth, font=\small, x=0.19cm, y=1.55cm]
+
+% ---- rows (5 intersections) ----------------------------------------------
+\foreach \y/\lab in {0/1, 1.7/2, 3.4/3, 5.1/4, 6.8/5}{
+  \fill[crossgrey] (0,\y-0.32) rectangle (92,\y+0.32);
+  \node[anchor=east, font=\small\bfseries] at (-2.5,\y) {Int \lab};
+}
+
+% ---- main-street greens, 10 s offsets (translucent) ----------------------
+\begin{scope}[opacity=0.55]
+  \fill[corridorgreen] (5,-0.32)  rectangle (30,0.32);
+  \fill[corridorgreen] (15,1.38)  rectangle (40,2.02);
+  \fill[corridorgreen] (35,4.78)  rectangle (60,5.42);
+  \fill[corridorgreen] (45,6.48)  rectangle (70,7.12);
+\end{scope}
+% Int 3: before (ghost) and after (solid, translucent)
+\fill[corridorgreen!35, opacity=0.45] (35,3.08) rectangle (60,3.72);
+\draw[corridorgreen!70, dashed, line width=1.1pt] (35,3.08) rectangle (60,3.72);
+\fill[corridorgreen, opacity=0.60] (25,3.08) rectangle (50,3.72);
+
+% ---- offset-correction arrow at Int 3 ------------------------------------
+\draw[->, line width=1.1pt, black!75] (36,4.02) -- (26,4.02)
+  node[midway, above, font=\scriptsize\bfseries] {OC $-10$\,s};
+
+% ---- bus WITH offset correction: continuous through green ----------------
+\draw[busred, line width=2.0pt, ->] (4,-0.95) -- (54,7.55);
+\foreach \x/\y in {10/0, 20/1.7, 30/3.4, 40/5.1, 50/6.8}{
+  \fill[busred] (\x,\y) circle (2.1pt);
+}
+
+% ---- bus WITHOUT correction: waits 5 s at Int 3, then continues ----------
+\draw[gray!65, dashed, line width=1.7pt, ->]
+  (10,0) -- (20,1.7) -- (30,3.4) -- (35,3.4) -- (45,5.1) -- (55,6.8);
+\draw[busred!55, line width=2.6pt] (30,3.4) -- (35,3.4);
+\node[font=\scriptsize, text=gray!60!black, anchor=north] at (32.5,3.25)
+  {waits 5\,s};
+
+% ---- labels ---------------------------------------------------------------
+\node[font=\scriptsize, anchor=south, text=corridorgreen!65!black]
+  at (17.5,0.36) {main green};
+\node[font=\scriptsize, anchor=north, text=corridorgreen!65!black]
+  at (57.5,3.04) {after OC};
+\node[font=\scriptsize, anchor=north, text=corridorgreen!55]
+  at (52,3.04) {before};
+\node[font=\scriptsize, text=busred, anchor=west] at (46,6.9)
+  {with OC: no stop};
+\node[font=\scriptsize, text=gray!60!black, anchor=west] at (46,5.25)
+  {without OC};
+
+% ---- time axis ------------------------------------------------------------
+\draw[->, gray!75] (0,-0.85) -- (95,-0.85);
+\foreach \t in {0,10,20,30,40,50,60,70,80,90}{
+  \draw[gray!70] (\t,-0.80) -- (\t,-0.92);
+  \node[below, font=\scriptsize] at (\t,-0.94) {\t};
+}
+\node[font=\scriptsize, anchor=west] at (95,-0.85) {time (s)};
+
+\end{tikzpicture}
+}
+\end{minipage}
+}
+
+% ==============================================================================
+% 3. RESULTS, SPLIT BY CORRIDOR
+% ==============================================================================
+\block{Results by Corridor}{
+\centering
+% ---------------- Kelvin Grove ----------------
+\begin{minipage}[c]{0.46\linewidth}
+  \centering
+  {\large\bfseries\color{QUTBlue}KELVIN GROVE ROAD}\\[-2pt]
+  {\footnotesize 12 signals}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/KG_kpi_poster.png}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/KG_fig_03_who_gains_alt.png}\\[2pt]
+  {\footnotesize Person delay $-25.5\%$; bus passengers $-12.7\%$;
+   queue $-27\%$; density $-17\%$; speed $+14\%$.}
+\end{minipage}\hfill
+% ---------------- Logan Road ----------------
+\begin{minipage}[c]{0.46\linewidth}
+  \centering
+  {\large\bfseries\color{QUTBlue}LOGAN ROAD}\\[-2pt]
+  {\footnotesize 23 signals}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/LR_kpi_poster.png}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/LR_fig_u03_who_gains_alt.png}\\[2pt]
+  {\footnotesize Person delay $-22.5\%$; bus passengers $-11.5\%$;
+   queue $-27\%$; density $-17\%$; speed $+14\%$; vehicles waiting $-66\%$.}
+\end{minipage}
+}
+
+% ---- FOOTER: QUT identity + contact -------------------------------------------
+\block{}{
+  \centering
+  \QUTlogo\\[2pt]
+  {\footnotesize \textbf{Zeke Ahern} --- \texttt{z.ahern@qut.edu.au}\quad
+   \textbf{Aitan Militao} --- \texttt{aitan.militao@qut.edu.au}\quad
+   TAP Poster Showcase, Wed 4 Nov 2026, 10:00--12:00, 61 Mary Street, Brisbane.}
+}
+
+\end{document}

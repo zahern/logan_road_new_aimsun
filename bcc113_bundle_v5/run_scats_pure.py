@@ -1,17 +1,22 @@
 """
-run_scats_pure.py -- focused test of ONE arm: CHAMP_SCATS_PURE_PAX vs NO_TSP.
+run_scats_pure.py -- curated sweep: the arms that WORK, plus tuning off the winner.
 
-This is run_scats_compare.py trimmed to a single experimental arm, so the
-pure-SCATS (bus-pax-weighted saturation, NO TSP action family) behaviour can be
-inspected on its own without the other 23 arms in the CSV.
+The 2026-10-22 31-arm sweep separated signal-tuning mechanisms cleanly:
+  * WINNER: CHAMP_PAXDS_SPLIT (pax-relative DS + DS-equalising split, 2 s/cycle,
+    +/-15% band, commissioned cycle/offsets/actuation untouched) = 136.3 vs
+    NO_TSP 129.4 (+5.3%).
+  * Everything that changed the CYCLE / master cycle / sequence / persistent
+    flex collapsed (51-77), and the MP family (no split adaptation) sat at 52-55.
+Those are dropped from this roster (definitions kept in champion_search).
+See RETIRED below.
 
-Edit ROSTER / seeds below to taste, then, with the KG model open and AFTER A FULL
-Aimsun RESTART (engine.py + specialized_modes.py are module-cached):
+With the KG model open and AFTER A FULL Aimsun RESTART (engine.py +
+specialized_modes.py are module-cached):
 
     import run_scats_pure
 
 Writes a corridor-specific CSV next to champion_search.py:
-  kg              -> test_scats_pure_kg.csv
+  kg              -> test_5seed_kg.csv
   logan_road_new  -> test_scats_pure_logan.csv
 """
 import os as _os
@@ -43,39 +48,56 @@ if _HERE and _HERE not in _sys.path:
 
 import champion_search as _cs
 
-# ── ROSTER -- the arm under test (+ its paired NO_TSP baseline) ───────────────
-# NO_TSP is REQUIRED for a meaningful result (same-seed, same-demand, same-build
-# comparison -- RULE 3) and is run TWICE (see ARMS below).
-# FOCUSED ROSTER (2026-10-21): lean into what performed best on the 1-seed run and
-# combine the winning mechanisms. The three best arms all HOLD the commissioned
-# cycle + offsets and differ only in add-ons; the losers (SCATS_FAITHFUL/ADAPTIVE/
-# POG adapt the cycle -> break coordination; MAXPRESSURE/MP_NASH deadlock) are
-# PARKED (just dropped from this roster -- their defs stay in champion_search).
-# ROSTER (2026-10-21): the goal is to BEAT NO_TSP. The PURE_SCATS re-timing arms
-# can't on the design hour (best, PBIL, = 748 vs 638). The arms that DID beat it
-# (2026-10-16: -4% delay, +1.9% served) were the DS-GATE family -- they KEEP the
-# commissioned plan and fire DS-GATED bus TSP (veto a priority action when the
-# conflicting approach is too saturated), so they add transit benefit WITHOUT
-# re-timing / breaking coordination. Un-parked + swept here. CHAMP_INITPLAN dropped
-# (byte-identical to NO_TSP -- no information). PBIL + NASH kept as references.
-# SINGLE-SEED SEARCH ROSTER (2026-10-21): find an arm that beats NO_TSP, then
-# re-validate the winner on 5 seeds. Core idea = faithful gradual SCATS solver +
-# bus-TSP flavours fired only when DS/net-benefit/JIT gates pass.
+# ── ROSTER -- winners + tuning off the winner (+ paired NO_TSP baseline) ──────
+# NO_TSP is REQUIRED for a meaningful result (same seed, same demand, same build)
+# and is run TWICE (warm-up + clean scored run, see ARMS below).
+#
+# RESULTS FROM THE 31-ARM SWEEP (2026-10-22, seed 300, NO_TSP = 129.4):
+#   CHAMP_PAXDS_SPLIT      136.3   <- WINNER (kept + tuned below)
+#   CHAMP_PAXDS_Q2         132.6
+#   CHAMP_SCATS_EMU_SPLIT  129.4    (neutral control)
+#   CHAMP_PBIL_GAME        126.3
+#   CHAMP_PBIL_PRESS_H8    124.9
+#   CHAMP_PBIL_PAX         122.8
+#   CHAMP_PBIL_PRESS_PAX   122.5
+#   CHAMP_PBIL             120.8
+#   CHAMP_PBIL_PRESS        121.2
+#
+# RETIRED from this roster (still defined; restore by adding the name back):
+#   cycle-changing / all-in  : EMU_CYCLE 61.9, EMU_FULL 51.6, PAXDS_CYCLE 121.6,
+#                              PAXDS_FULL 51.4, PAXDS_NOPOGKF 51.4
+#   persistent flex          : DSGATE_AGR 66.8, PAXDS_FLEX 76.3
+#   MP family (no split)     : MP_SCATS 54.6, MP_NASH 54.1, MP_GAME 52.3
+#   below NO_TSP / inert     : NASH 112.7, DSGATE 120.7, DSGATE_REL 120.7,
+#                              DSGATE_PAX 107.9, ST_DSGATE 103.5, PAXDS_NOQ 104.9,
+#                              PAXDS_REL 125.1, PAXDS_SELFGATE (byte-identical
+#                              to the winner: no TSP actions to price)
+#   needs verification       : PAXDS_POG (POG sampler/master-offset gate fixed
+#                              after that sweep; re-test it in isolation first)
 ROSTER = [
     # ── references ──
-    "CHAMP_PBIL",                # best PURE_SCATS split arm (748)
-    "CHAMP_PBIL_GAME",           # CHAMP_PBIL baseline + generalised-Nash bus TSP
-    "NASH_BARGAIN",              # plan untouched + discrete bus TSP (837)
-    "CHAMP_SCATS_DSGATE",        # proven DS-gate winner (CELLQLEARN, DS_MAX=1.70)
-    "CHAMP_SCATS_DSGATE_REL",    # DS-gate, adaptive scale-free ceiling
-    "CHAMP_ST_DSGATE",           # SCATS solver + DS-gated GE/INS (BXT)
-    # ── MAXPRESSURE emulating SCATS (pressure-proportional splits, banded) ──
-    "CHAMP_MP_SCATS",            # MP FIX: split commissioned cycle ~ pressure,
-                                 # green phases only, +/-25% commissioned band
-    # ── MP-SCATS + GAME-THEORY TSP OVERRIDE ──
-    "CHAMP_MP_NASH_SCATS",       # MP-SCATS splits + NASH bargaining bus TSP override
-    "CHAMP_MP_GAME_SCATS",       # MP-SCATS splits + THROUGHPUT game (maximise system
-                                 # net-passenger reward) + bus TSP override
+    "CHAMP_PBIL",                # plain split learner (120.8)
+    "CHAMP_SCATS_EMU_SPLIT",     # SCATS strategic splits only (neutral control)
+    "CHAMP_PAXDS_SPLIT",         # WINNER: pax DS + DS-equalising split
+    "CHAMP_PAXDS_Q2",            # runner-up: more sensitive queue term
+    "CHAMP_PBIL_GAME",           # PBIL + generalised-Nash bus TSP
+    "CHAMP_PBIL_PAX",            # PBIL + pax DS
+    "CHAMP_PBIL_PRESS",          # PBIL + predictive pressure (H=4)
+    "CHAMP_PBIL_PRESS_PAX",      # predictive pressure + pax DS
+    "CHAMP_PBIL_PRESS_H8",       # predictive pressure, 8-cycle horizon
+
+    # ── TUNING OFF THE WINNER (CHAMP_PAXDS_SPLIT) -- one knob each ──
+    "CHAMP_PAXWIN_M1",           # split move 1 s/cycle
+    "CHAMP_PAXWIN_M4",           # split move 4 s/cycle
+    "CHAMP_PAXWIN_B08",          # tighter +/-8% band
+    "CHAMP_PAXWIN_B25",          # wider +/-25% band
+    "CHAMP_PAXWIN_P2",           # pax cap 2.0 (weaker passenger weight)
+    "CHAMP_PAXWIN_P6",           # pax cap 6.0 (stronger)
+    "CHAMP_PAXWIN_PROP",         # proportional allocation
+    "CHAMP_PAXWIN_BUS",          # winner + JIT extend + early recall
+    "CHAMP_PAXWIN_PRESS",        # winner + predictive pressure (H=8)
+    "CHAMP_PAXWIN_GAME",         # winner + Nash bus TSP
+    "CHAMP_PAXWIN_DSGATE",       # winner + DS-gated CellQLearn TSP
 ]
 
 _ARM_BY_NAME = {a["name"]: a for a in _cs.ARMS}
@@ -101,10 +123,9 @@ if EXPECT_CORRIDOR and _cs.CORRIDOR != EXPECT_CORRIDOR:
         "and re-run." % (_cs.CORRIDOR, EXPECT_CORRIDOR, EXPECT_CORRIDOR))
 
 # ── Seeds / demand ────────────────────────────────────────────────────────────
-# SINGLE SEED (2026-10-21): fast iteration to FIND an arm that beats NO_TSP, then
-# re-validate the winner on the 5-seed set (RULE 3) before trusting it. The
-# NO_TSP_WARMUP throwaway still runs ONCE first to warm the passage counters, so
-# the scored seed is clean. Seed 300 = the design seed.
+# DESIGN SEED sweep: re-run the curated winners + the winner-tuning matrix on
+# seed 300 (fast attribution). The 5-seed A/B for the game arm lives in
+# run_paxwin_game_vs_notsp.py (RULE 3: never compare across seeds).
 _cs.EVAL_SEEDS = [300]
 _cs.TRAIN_SEEDS = []
 _cs.SCORED_SEEDS = list(_cs.EVAL_SEEDS)
@@ -119,8 +140,7 @@ _OUT_NAME = {
 OUT_CSV = _os.path.join(_cs._ROOT, _OUT_NAME)
 
 print("=" * 70)
-print("PURE-SCATS / PURE-SCOOT (bus-free, NO TSP actions) vs NO_TSP -- corridor=%s"
-      % _cs.CORRIDOR)
+print("WINNERS + WINNER-TUNING vs NO_TSP -- corridor=%s" % _cs.CORRIDOR)
 print("  %d arms x %d scored seeds %s" % (len(ARMS), len(_cs.EVAL_SEEDS),
                                           _cs.EVAL_SEEDS))
 print("  -> %s" % OUT_CSV)

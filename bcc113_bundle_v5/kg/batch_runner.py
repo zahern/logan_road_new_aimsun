@@ -3273,7 +3273,29 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         # seconds per run at high event counts.
         "SKIP_PER_RUN_PLOTS = True\n"
     )
-    for k, v in (reward_cfg or {}).items():
+    # MODE-LEAK FIX (2026-10-31): the SCATS / DS-adaptation toggles must be written
+    # EXPLICITLY every run (default False), or a flag turned True by one arm (the
+    # SCATS arm's DS_PLAN_ADAPT / DS_CYCLE_ADAPT / tactical switches) persists in the
+    # engine for every LATER arm that does not set it -- so the whole priority ladder
+    # inherits the DS re-solve storm and gridlocks (~1300h, byte-identical arms). See
+    # ladder-scats-ds-flag-leak. Writing them here makes run_config a COMPLETE spec.
+    # Booleans only; the companion floats (DS_ADAPT_EVERY_S, DS_SPLIT_MAX_MOVE_S, ...)
+    # are inert once DS_PLAN_ADAPT is False, and are still written by the loop below.
+    _DS_SCATS_TOGGLES = (
+        'DS_PLAN_ADAPT', 'DS_SOLVE_PER_CYCLE', 'DS_CYCLE_ADAPT',
+        'DS_MASTER_CYCLE', 'DS_MASTER_SPLITS', 'DS_MASTER_OFFSETS',
+        'MASTER_LINK_PRESSURE', 'DS_SPLIT_DS_EQUAL', 'DS_SPLIT_PROPORTIONAL',
+        'DS_BALANCE_GATE', 'SCATS_GAP_OUT', 'SCATS_MAX_OUT', 'ACTUATED_EXTEND',
+        'SCATS_SEQUENCE_BY_Y', 'SCATS_CRITICAL_INTERSECTION', 'SCATS_PHASE_SKIP',
+    )
+    _rc_src = reward_cfg or {}
+    _ds_written = set()
+    for _tog in _DS_SCATS_TOGGLES:
+        content += f"{_tog} = {repr(bool(_rc_src.get(_tog, False)))}\n"
+        _ds_written.add(_tog)
+    for k, v in _rc_src.items():
+        if k in _ds_written:
+            continue   # already written explicitly above (complete-spec guard)
         content += f"{k} = {repr(v)}\n"
     with open(run_config_path, 'w', encoding='utf-8') as f:
         f.write(content)
@@ -4640,8 +4662,21 @@ def run_replication(rep):
         log(f"  [TIMING] SET EXEC_BUSY_START_WINDOW_S ~= {1.5 * _init_s:.0f}s "
             f"(1.5 x this init) if re-issues keep firing early")
     else:
-        log(f"  [TIMING] run_replication total {_tot:.0f}s "
-            f"(init UNKNOWN -- no [LOAD] marker seen; sim+teardown {waited:.0f}s)")
+        # executeAction can BLOCK for the whole simulation (observed 2026-10-21:
+        # 160 s inside the call, so this loop's first status check already sees
+        # the run finished and breaks on [SIM_END]/result-folder BEFORE the
+        # new-log branch can read [LOAD]). Init time is then genuinely not
+        # measurable from this call -- report it as an estimate from the last
+        # healthy init instead of the misleading "UNKNOWN".
+        _est = float(_LAST_INIT_S[0] or 0.0)
+        if _est > 0.0:
+            log(f"  [TIMING] run_replication total {_tot:.0f}s "
+                f"(init ~{_est:.0f}s ESTIMATE from last run -- [LOAD] raced the "
+                f"blocking executeAction; sim+teardown {waited:.0f}s)")
+        else:
+            log(f"  [TIMING] run_replication total {_tot:.0f}s "
+                f"(init n/a -- executeAction blocked past [LOAD]; "
+                f"sim+teardown {waited:.0f}s)")
     _RUN_REPL_LAST_DONE[0] = _time.time()
     # Cache this seed's computed route forest (first time) for same-seed reuse.
     try:
@@ -5767,6 +5802,11 @@ def append_master_csv(master_path, row_dict):
     """
     # Deterministic priority column order — appears left-to-right in the CSV.
     #
+    # PROVENANCE + SCOPE (2026-10-30): stamp every row before it is written so a
+    # reader can tell which seed produced it (the Aimsun Experiment/Scenario/
+    # Replication ids are MODEL-level and therefore constant across arms), and so
+    # a dead network-scope collector is recorded as NaN + a flag instead of a
+    # fabricated 0.0. See provenance.py for the rules.
     # PRIMARY COMPARISON METRICS (density-robust):
     #   stats_AvgBusTT_s          — average bus travel time per trip (lower=better)
     #                               Independent of how many buses are in the network.
@@ -5858,6 +5898,33 @@ def append_master_csv(master_path, row_dict):
         "stats_results_folder",
     ]
     priority_set = set(priority_keys)
+
+    # PROVENANCE + SCOPE STAMP (2026-10-30): apply to the row before any header
+    # union work, so the new columns exist on the very first write and a dead
+    # collector cannot masquerade as a measured zero.
+    try:
+        import sys as _sys_p
+        _root_p = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _root_p not in _sys_p.path:
+            _sys_p.path.insert(0, _root_p)
+        from provenance import stamp_row, scope_warning
+        row_dict = stamp_row(row_dict)
+        _warn = scope_warning(row_dict)
+        if _warn:
+            try:
+                log(_warn)
+            except Exception:
+                pass
+        for _k in ("run_utc", "run_seed_applied", "stats_IdScope",
+                   "stats_NetScope_ok", "aimsun_scope_ok"):
+            if _k not in priority_set:
+                priority_keys.append(_k)
+                priority_set.add(_k)
+    except Exception as _pe:
+        try:
+            log("WARNING: provenance stamp failed: %r" % (_pe,))
+        except Exception:
+            pass
 
     try:
         file_exists = _os.path.isfile(master_path)

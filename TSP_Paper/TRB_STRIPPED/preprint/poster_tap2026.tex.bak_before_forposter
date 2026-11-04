@@ -1,0 +1,491 @@
+% ==============================================================================
+% Transport Academic Partnership (TAP) Poster Showcase 2026
+% A1 portrait, tikzposter. QUT brand colours.
+% Compile: pdflatex poster_tap2026.tex  (twice)
+% ==============================================================================
+\documentclass[25pt, a1paper, portrait, blockverticalspace=6mm]{tikzposter}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning, shapes.geometric, arrows.meta, fit, calc, backgrounds}
+\usepackage{cleveref}
+
+% ---- QUT brand palette --------------------------------------------------------
+\definecolor{QUTBlue}{HTML}{003B71}
+\definecolor{QUTAccent}{HTML}{0092BD}
+\definecolor{QUTHighlight}{HTML}{580F8B}
+\definecolor{busred}{RGB}{200,40,40}
+\definecolor{carblue}{RGB}{40,80,180}
+\definecolor{corridorgreen}{RGB}{40,150,80}
+\definecolor{grviol}{RGB}{120,80,180}
+\definecolor{busopp}{RGB}{210,110,0}
+\definecolor{teal}{RGB}{0,128,128}
+
+% ---- poster theme ------------------------------------------------------------
+\usetheme{Default}
+\usecolorstyle{Default}
+\colorlet{backgroundcolor}{white}
+\colorlet{framecolor}{QUTBlue}
+\colorlet{titlefgcolor}{white}
+\colorlet{titlebgcolor}{QUTBlue}
+\colorlet{blocktitlefgcolor}{white}
+\colorlet{blocktitlebgcolor}{QUTAccent}
+\colorlet{blockbodyfgcolor}{black}
+\colorlet{blockbodybgcolor}{white}
+\colorlet{innerblocktitlefgcolor}{white}
+\colorlet{innerblocktitlebgcolor}{QUTHighlight}
+\colorlet{innerblockbodybgcolor}{gray!5}
+
+% tikzposter has \settitle only (it REPLACES the whole title template, so all
+% of \@title/\@author/\@institute/\@titlegraphic must be typeset here). There
+% is no \setsubtitle -- the showcase line is typeset literally instead.
+% Compact title style: less dead space above/below the title bar.
+\definetitlestyle{TAPcompact}{
+  width=720mm, roundedcorners=30, linewidth=0.4cm, innersep=1cm,
+  titletotopverticalspace=7mm, titletoblockverticalspace=9mm,
+  titlegraphictotitledistance=10pt, titletextscale=1
+}{
+    \begin{scope}[line width=\titlelinewidth, rounded corners=\titleroundedcorners]
+        \draw[color=framecolor, fill=titlebgcolor]%
+        (\titleposleft,\titleposbottom) rectangle (\titleposright,\titlepostop);
+    \end{scope}
+}
+\usetitlestyle{TAPcompact}
+
+% Compact blocks: the class default spends 1 cm of padding on every side of every
+% title bar and body, which dominated the poster's white space.
+\defineblockstyle{TAPtight}{
+  titlewidthscale=1, bodywidthscale=1, titlecenter,
+  titleoffsetx=0pt, titleoffsety=0pt, bodyoffsetx=0pt, bodyoffsety=0pt,
+  bodyverticalshift=0pt, roundedcorners=20, linewidth=0.28cm,
+  titleinnersep=0.55cm, bodyinnersep=0.55cm
+}{
+  \begin{scope}[line width=\blocklinewidth, rounded corners=\blockroundedcorners]
+    \ifBlockHasTitle
+      \draw[color=blocktitlebgcolor, fill=blocktitlebgcolor] (blockbody.south west) rectangle (blocktitle.north east);
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \else
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \fi
+  \end{scope}
+}
+\useblockstyle{TAPtight}
+% The class default wraps \title content in an unbreakable \scalebox, making a
+% long one-line title overflow the title parbox; use wrappable text instead.
+\makeatletter
+\def\title#1{\gdef\@title{#1}}
+\makeatother
+\settitle{
+  \centering\vbox{
+    \color{titlefgcolor}\bfseries
+    {\Huge \@title\par}
+    \vspace*{0.3em}
+    {\Large\itshape Transport Academic Partnership (TAP) Poster Showcase 2026\par}
+    \vspace*{0.5em}
+    {\Large \@author\par}
+    \vspace*{0.2em}
+    {\large \@institute\par}
+  }
+}
+
+% ---- helpers ----------------------------------------------------------------
+\newcommand{\QUTlogo}{%
+  % Official QUT brand kit mark: preprint\QUT\QUT_idbrgHklVA_0.png (820x285,
+  % transparent). pdfLaTeX includes PNG natively (the kit's SVG needs an SVG
+  % router MiKTeX lacks). The full-colour wordmark sits on a white plate per QUT
+  % brand rules; in the footer it is scaled for the bottom of the panel.
+  \IfFileExists{QUT/QUT_idbrgHklVA_0.png}{%
+    \fcolorbox{white}{white}{\includegraphics[height=2.0cm]{QUT/QUT_idbrgHklVA_0.png}}%
+  }{%
+    \tikz{\node[fill=QUTBlue, text=white, font=\Huge\bfseries, inner sep=8pt,
+               rounded corners=4pt] {QUT};}%
+  }%
+}
+
+\title{Coordinated Multi-Objective Transit Signal Priority on the Kelvin Grove Corridor}
+\author{Zeke Ahern, Aitan Militao, Ashish Bhaskar \& Alexander Paz}
+\institute{Queensland University of Technology (QUT), Brisbane, QLD, Australia}
+
+\begin{document}
+\maketitle[width=0.96\textwidth]
+
+% ==============================================================================
+% FULL-WIDTH HERO: the two figures span the whole poster, columns come below.
+\block{How Each TSP Action Works )}{
+  % ---------- embedded from main.tex fig:action_mech ----------
+  \begin{tikzpicture}[scale=1.60, transform shape,
+    tspRoad/.style={draw=gray!30, line width=4.2pt, line cap=butt},
+    tspRoadX/.style={draw=gray!30, line width=3pt, line cap=butt},
+    tspDir/.style={-{Stealth[length=1.2mm]}, draw=black!30, line width=0.5pt},
+    tspCar/.style={draw=carblue!80!black, fill=carblue!55, line width=0.4pt,
+                   minimum width=0.23cm, minimum height=0.15cm, inner sep=0pt},
+    tspCarH/.style={tspCar, fill=carblue!22, draw=carblue!62, dashed},
+    tspBus/.style={draw=busred!85!black, fill=busred!65, line width=0.5pt,
+                   minimum width=0.50cm, minimum height=0.17cm, inner sep=0pt,
+                   rounded corners=1pt},
+    tspBusH/.style={tspBus, fill=busred!20, draw=busred!62, dashed},
+    tspStop/.style={draw=black!60, line width=0.5pt, dash pattern=on 1pt off 1pt},
+    tspGrn/.style={draw=corridorgreen!80!black, fill=corridorgreen!65, line width=0.6pt, minimum size=0.19cm, inner sep=0pt},
+    tspRed/.style={draw=busred!80!black, fill=busred!60, line width=0.6pt, minimum size=0.19cm, inner sep=0pt},
+    tspBlk/.style={draw=black!55, line width=0.5pt, minimum width=0.50cm,
+                   minimum height=0.24cm, inner sep=0pt, font=\tiny\bfseries},
+    tspNew/.style={tspBlk, draw=busred!85!black, line width=0.9pt, text=busred!85!black},
+    tspTit/.style={font=\fontsize{9}{11}\selectfont\bfseries, text=black!85,
+                 align=center, text width=3.2cm},
+    tspSub/.style={font=\fontsize{7.5}{9}\selectfont, text=black!70},
+    tspAnn/.style={font=\fontsize{8.5}{10.5}\selectfont\itshape, text=QUTHighlight,
+                 align=left, text width=3.10cm},
+    tspLg/.style={font=\fontsize{8}{10}\selectfont, text=black!70},
+  ]
+  % (a) reference
+  \begin{scope}[shift={(0,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(a) reference: no action};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBusH] at (1.16,1.05) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{no action:} bus stops \emph{for the full red}; queue grows.};
+    \node[tspRed] at (2.30,1.62) {}; \node[tspGrn] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (b) GE
+  \begin{scope}[shift={(3.6,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(b) GE -- Extend Green};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBusH] at (1.16,1.05) {};
+    \foreach \x in {1.80,2.08,2.36} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.74,1.05) {};
+    \draw[-{Stealth[length=1.3mm]},corridorgreen!75!black,line width=0.7pt] (1.72,1.24) -- (2.55,1.24);
+    \node[tspSub,text=corridorgreen!75!black,anchor=west] at (2.60,1.24) {$+\delta$};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} main green $+\delta$\,s.\\ \textbf{win:} bus \emph{never stops} --- biggest saving.};
+    \node[tspGrn] at (2.30,1.62) {}; \node[tspRed] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (c) GR
+  \begin{scope}[shift={(7.2,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(c) GR -- Reallocate Green};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBusH] at (1.16,1.05) {};
+    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.62,1.05) {};
+    \draw[corridorgreen!70!black, line width=3pt, line cap=butt] (1.65,1.18) -- (1.65,1.50);
+    \draw[busred!85!black, line width=0.7pt] (1.51,1.78) -- (1.79,1.50);
+    \draw[busred!85!black, line width=0.7pt] (1.79,1.78) -- (1.51,1.50);
+    \node[tspSub,text=busred!80!black,anchor=west] at (1.98,1.64) {$-\delta$};
+    \draw[corridorgreen!75!black, line width=2.2pt, line cap=butt] (1.55,0.90) -- (2.42,0.90);
+    \draw[-{Stealth[length=1.3mm]},corridorgreen!75!black,line width=0.7pt] (2.45,1.24) -- (1.78,1.24);
+    \node[tspSub,text=corridorgreen!75!black,anchor=west] at (2.50,1.24) {sooner};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} move $\delta$\,s: cross $\rightarrow$ main.\\ \textbf{win:} bus waits less; \emph{cycle unchanged}.};
+    \node[tspRed] at (2.30,1.62) {}; \node[tspGrn] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (d) INS
+  \begin{scope}[shift={(10.8,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(d) INS \\ -- Add a Bus Phase};
+    \node[tspBlk,fill=corridorgreen!55] at (0.80,2.10) {M};
+    \node[tspBlk,fill=gray!45] at (1.36,2.10) {X};
+    \node[tspNew,fill=busred!58] at (1.92,2.10) {+B};
+    \node[tspBlk,fill=corridorgreen!55] at (2.48,2.10) {M};
+    \node[tspSub,text=busred!80!black,anchor=north] at (1.92,1.94) {added};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBusH] at (1.16,1.05) {};
+    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.62,1.05) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} add a bus phase NOW.\\ \textbf{win:} serve the bus \emph{this pass} --- saves 30--60\,s.};
+    \node[tspGrn] at (2.30,1.62) {}; \node[tspRed] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (e) ER
+  \begin{scope}[shift={(14.4,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(e) ER -- Early Red};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+    \foreach \x in {1.80,2.08,2.36} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.74,1.05) {};
+    \node[tspCar,rotate=90] at (1.65,1.50) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} bus green ends when queue clears.\\ \textbf{win:} cross street served \emph{sooner}.};
+    \node[tspGrn] at (2.30,1.62) {}; \node[tspRed] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (f) VP
+  \begin{scope}[shift={(18.0,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(f) VP -- Skip Phase};
+    \node[tspBlk,fill=corridorgreen!55] at (0.80,2.10) {M};
+    \node[tspBlk,fill=gray!45] at (1.36,2.10) {X};
+    \draw[busred!85!black,line width=0.9pt] (1.10,1.94) -- (1.62,2.26);
+    \node[tspBlk,fill=corridorgreen!55] at (1.92,2.10) {M};
+    \node[tspBlk,fill=busred!58] at (2.48,2.10) {B};
+    \node[tspSub,text=busred!80!black,anchor=north] at (1.36,1.92) {skipped};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.62,1.05) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} delete an empty phase.\\ \textbf{win:} two reds vanish --- \emph{shorter cycle} for all.};
+    \node[tspGrn] at (2.30,1.62) {}; \node[tspRed] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (g) PT
+  \begin{scope}[shift={(21.6,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(g) PT -- Rotate Phases};
+    \node[tspBlk,fill=gray!45] at (0.40,2.10) {X};
+    \node[tspBlk,fill=gray!45] at (0.96,2.10) {M};
+    \draw[-{Stealth[length=1.3mm]},black!55,line width=0.6pt] (1.28,2.10) -- (1.60,2.10);
+    \node[tspBlk,fill=busred!58] at (1.92,2.10) {B};
+    \node[tspBlk,fill=gray!45] at (2.48,2.10) {X};
+    \node[tspBlk,fill=corridorgreen!55] at (3.04,2.10) {M};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBusH] at (1.16,1.05) {};
+    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+    \node[tspBus] at (2.62,1.05) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} bus slot ordered \emph{first}.\\ \textbf{win:} served this pass; no green stolen.};
+    \node[tspGrn] at (2.30,1.62) {}; \node[tspRed] at (2.58,1.62) {};
+    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+  \end{scope}
+  % (h) OC
+  \begin{scope}[shift={(25.2,0)}]
+    \node[tspTit,anchor=south] at (1.62,2.46) {(h) OC -- Shift Offset};
+    \draw[corridorgreen!30, line width=2.4pt, line cap=butt, dash pattern=on 2pt off 1.4pt] (1.62,1.52) -- (3.28,1.52);
+    \draw[corridorgreen!75!black, line width=2.4pt, line cap=butt] (0.95,1.24) -- (2.61,1.24);
+    \draw[-{Stealth[length=1.3mm]},black!60,line width=0.6pt] (2.98,1.24) -- (2.98,1.52);
+    \node[tspSub,text=black!60,anchor=west] at (3.03,1.38) {$\Delta$};
+    \node[tspSub,text=black!55,anchor=east] at (1.55,1.66) {before};
+    \node[tspSub,text=corridorgreen!75!black,anchor=east] at (0.88,1.31) {after};
+    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+    \node[tspBus] at (1.34,1.05) {};
+    \node[tspAnn,anchor=north west] at (0.06,0.74) {\textbf{does:} upstream window $\pm\Delta$.\\ \textbf{win:} bus arrives \emph{on green} --- wave aligned.};
+    \node[tspGrn] at (2.30,1.86) {}; \node[tspRed] at (2.58,1.86) {};
+    \node[tspSub,anchor=center] at (2.44,1.68) {main\quad cross};
+  \end{scope}
+  % legend
+  \node[tspLg,anchor=north west,align=left,text width=29cm] at (-0.08,-1.30) {%
+    \textbf{Reading the panels:} hollow vehicles = traffic \textit{at the decision instant}; solid vehicles = the \textit{same approach after} the action fires; the small light/dark squares beside the road = signal aspect (green vs red) for the \textbf{main} vs \textbf{cross} street. \\[1pt]
+    Signal ring code: \tikz[baseline=-1.75ex]{\node[tspBlk,fill=corridorgreen!55]{M};}\,=\, arterial green \quad\quad \tikz[baseline=-1.75ex]{\node[tspBlk,fill=gray!45]{X};}\,=\, cross street \quad\quad \tikz[baseline=-1.75ex]{\node[tspBlk,fill=busred!58]{B};}\,=\, bus priority phase.};
+  \end{tikzpicture}
+}
+
+% ---------- paper Fig. 3 (fig:sched): schedule that forms + repairs the wave ---
+% verbatim from main.tex fig:sched; x rescaled for the poster hero column and
+% >=stealth upgraded to >=Stealth (arrows.meta).
+\block{How the Corridor Green Wave Holds When Actions Fire}{
+\begin{tikzpicture}[
+  x=0.170cm, y=0.460cm,
+  crossgrn/.style={fill=gray!28, draw=gray!45, line width=0.3pt},
+  busgrn/.style={fill=corridorgreen, draw=corridorgreen!70!black, line width=0.3pt},
+  insertph/.style={fill=carblue, draw=carblue!70!black, line width=0.3pt},
+  extph/.style={fill=corridorgreen, draw=corridorgreen!70!black, densely dashed, line width=0.9pt},
+    grph/.style={fill=grviol!65, draw=grviol!85!black, line width=0.9pt},
+    rotph/.style={fill=corridorgreen!72!black, draw=corridorgreen!80!black, line width=1.0pt},
+    traj/.style={busred, line width=1.6pt, ->, >=Stealth},
+    traj2/.style={busopp, line width=1.6pt, ->, >=Stealth},
+    schd/.style={circle, draw=black, fill=white, inner sep=1.6pt, line width=0.8pt},
+    cal/.style={circle, draw=black!70, fill=white, inner sep=0.7pt, line width=0.5pt,
+                font=\tiny\bfseries, text=black},
+    ann/.style={font=\scriptsize, align=left},
+    halo/.style={fill=white, rounded corners=2pt, inner sep=1.5pt},
+  gridln/.style={gray!35, line width=0.4pt, densely dotted},
+]
+  % --- light vertical gridlines every 60 s (reading aid) ---
+  \foreach \t in {0,60,120,180,240} {
+    \draw[gridln] (\t,0.5) -- (\t,12.5);
+  }
+  % --- baseline cyclic settings per intersection (80 s cycle, 35 s bus green) ---
+  \foreach \i in {1,...,12} {
+    \pgfmathtruncatemacro{\off}{mod((\i-1)*10, 80)}
+    \fill[crossgrn] (0,\i-0.36) rectangle (245,\i+0.36);
+    \foreach \c in {0,80,160} {
+      \pgfmathtruncatemacro{\gstart}{\c+\off}
+      \pgfmathtruncatemacro{\gend}{min(\c+\off+35,245)}
+      \fill[busgrn] (\gstart,\i-0.36) rectangle (\gend,\i+0.36);
+    }
+  }
+  % --- settings changes enacted by the schedule ---
+  % Green Extension at intersection 3: bus green 20-55 extended to 65
+  \fill[extph] (55,2.66) rectangle (65,3.34);
+  % Phase Insertion at intersection 7: extra bus-priority phase 80-95
+  \fill[insertph] (80,6.64) rectangle (95,7.36);
+  % Early Red at intersection 10: next bus green pulled 10 s earlier (170 -> 160)
+  \fill[busgrn] (160,9.64) rectangle (170,10.36);
+  \draw[busred, densely dashed, line width=0.9pt] (160,9.55) -- (160,10.45);
+  % Green Reallocation at intersection 5: bus green starts 10 s earlier (110
+  % instead of 120), donor cross phase shortened by the same 10 s (net 0)
+  \fill[grph] (110,4.64) rectangle (120,5.36);
+  % Offset Correction at intersection 11: downstream green start shifts 5 s
+  % earlier to restore progression after the upstream holds
+  \draw[busopp, densely dashed, line width=1.0pt, ->, >=Stealth] (140,11) -- (134,11);
+  % Phase Rotation for the opposing bus: the bus approach takes the
+  % cross-street slot (order swapped) and the cross phase is deferred
+  \fill[rotph] (135,9.64) rectangle (170,10.36);
+  \fill[rotph] (180,6.64) rectangle (215,7.36);
+  \fill[rotph] (190,5.64) rectangle (210,6.36);
+  \fill[rotph] (225,2.64) rectangle (245,3.36);
+  % Callouts last: drawn after the ROT fills, which otherwise covered 3.
+  \node[cal] at (60,3) {1};
+  \node[cal] at (87.5,7) {2};
+  \node[cal] at (160,10) {3};
+  \node[cal] at (115,5) {4};
+  \node[cal] at (145,11) {5};
+  % --- bus trajectory: actual (solid) vs timetable (open circles) ---
+  \draw[traj] (12,1) -- (22,2) -- (32,3) -- (42,4) -- (67,5) -- (77,6)
+    -- (82,7) -- (92,8) -- (102,9) -- (112,10) -- (122,11) -- (132,12);
+  % Queued behind the red at intersection 4.
+  \node[ann, halo, text=black!70, anchor=west] at (-16,-2.15)
+    {red bus: $+25$\,s queue delay at intersection 4, then steered back onto the timetable};
+  % --- opposing-direction bus, recovered by the rotation strategy ---
+  \draw[traj2] (115,12) -- (125,11) -- (135,10) -- (138,10) -- (148,9)
+    -- (160,9) -- (170,8) -- (180,7) -- (183,7) -- (193,6) -- (196,6)
+    -- (206,5) -- (216,4) -- (226,3) -- (229,3) -- (239,2) -- (243,2);
+  \draw[traj2, dotted] (243,2) -- (250,1.78);
+  % --- counterfactual without rotation: held at rows 10 and 8 (75 s) ---
+  \draw[gray!70, dashed, line width=1.0pt] (135,10) -- (170,10) -- (180,9) -- (190,8) -- (230,8) -- (240,7);
+  \node[text=white, font=\scriptsize\bfseries] at (152,10) {ROT};
+  \node[text=white, font=\scriptsize\bfseries] at (197,7) {ROT};
+  \node[text=white, font=\scriptsize\bfseries] at (200,6) {ROT};
+  \node[text=white, font=\scriptsize\bfseries] at (235,3) {ROT};
+  \node[ann, halo, text=busopp, anchor=west] at (184,11.3) {opposing bus (ROT)};
+  \node[ann, halo, text=gray, anchor=west] at (196,8.62) {without ROT: 75\,s at reds};
+  % timetable markers (drawn last: on top of bars and trajectory)
+  \foreach \t/\i in {12/1,22/2,32/3,42/4,62/5,72/6,82/7,92/8,102/9,112/10,122/11,132/12}
+    \node[schd] at (\t,\i) {};
+  % --- axes ---
+  \draw[->, gray!80, line width=0.7pt] (0,0.4) -- (250,0.4);
+  \foreach \t in {0,60,120,180,240}
+    \draw[gray!80, line width=0.7pt] (\t,0.32) -- (\t,0.48) node[below, font=\scriptsize\bfseries, black] {\t};
+  \node[font=\scriptsize\bfseries, black] at (125,-0.62) {time (s)};
+  \foreach \i in {1,...,12}
+    \node[anchor=east, font=\scriptsize\bfseries] at (-3,\i) {\i};
+  \node[anchor=east, font=\scriptsize\bfseries, rotate=90] at (-15,6.5) {intersection};
+  % --- callout key ---
+  \node[ann, anchor=west, text width=40cm]
+    at (-16,-1.45) {%
+    \tikz[baseline=-0.55ex]\node[cal] {1};\,\texttt{GE} $+10$\,s at i.~3\quad
+    \tikz[baseline=-0.55ex]\node[cal] {2};\,\texttt{INS} $+15$\,s at i.~7\quad
+    \tikz[baseline=-0.55ex]\node[cal] {3};\,\texttt{ER} $-10$\,s at i.~10\quad
+    \tikz[baseline=-0.55ex]\node[cal] {4};\,\texttt{GR} $\pm10$\,s at i.~5\quad
+    \tikz[baseline=-0.55ex]\node[cal] {5};\,\texttt{OC} $-5$\,s at i.~11};
+  % --- legend (framed) ---
+  \begin{scope}[shift={(0,-2.70)}, y=0.460cm]
+    \node[draw=gray!50, rounded corners=3pt, fill=gray!5, inner sep=4pt, anchor=north west] at (-16,-0.4) {
+      \begin{tikzpicture}[font=\scriptsize,
+        swb/.style={fill=corridorgreen, draw=corridorgreen!70!black, line width=0.4pt},
+        swo/.style={fill=gray!28, draw=gray!45, line width=0.4pt},
+        swi/.style={fill=carblue, draw=carblue!70!black, line width=0.4pt},
+      ]
+        \fill[swb] (0,0) rectangle +(12,0.55); \node[anchor=west] at (15,0.28) {bus-phase green};
+        \fill[swo] (85,0) rectangle +(12,0.55); \node[anchor=west] at (100,0.28) {other phases};
+        \fill[swi] (160,0) rectangle +(12,0.55); \node[anchor=west] at (175,0.28) {inserted phase};
+        \draw[traj] (0,-1.2) -- +(14,0); \node[anchor=west] at (17,-1.2) {bus trajectory};
+        \draw[traj2] (0,-3.05) -- +(14,0); \node[anchor=west] at (17,-3.05) {opposing bus (ROT recovered)};
+        \node[schd] at (91,-1.2) {}; \node[anchor=west] at (96,-1.2) {timetable arrival};
+        \draw[busred, densely dashed, line width=0.9pt] (166,-0.95) -- (166,-1.45);
+        \node[anchor=west] at (171,-1.2) {settings change};
+        \filldraw[fill=grviol!65, draw=grviol!80!black, line width=0.4pt] (0,-2.15) rectangle +(12,0.55); \node[anchor=west] at (15,-1.87) {reallocated green (GR, net 0)};
+        \draw[busopp, densely dashed, line width=1.0pt, ->, >=Stealth] (95,-1.95) -- +(14,0); \node[anchor=west] at (112,-1.95) {offset correction};
+        \fill[rotph] (0,-4.05) rectangle +(12,0.55);
+        \node[text=white, font=\scriptsize\bfseries] at (6,-3.77) {ROT};
+        \node[anchor=west] at (15,-3.77) {rotated bus window (order swapped);};
+      \end{tikzpicture}
+    };
+  \end{scope}
+\end{tikzpicture}
+}
+
+
+% ==============================================================================
+% COLUMNS UNDER THE FULL-WIDTH FIGURES
+% ==============================================================================
+\begin{columns}
+
+% ---- COLUMN 1 ----------------------------------------------------------------
+\column{0.30}
+
+\block{Aim}{
+  At every bus detection the controller picks \textbf{one action} --- extend, truncate, insert, skip, rotate, or re-align an upstream offset.\\[3pt]
+  \textbf{Goal:} keep buses on schedule \emph{and} keep the arterial green wave flowing.\\[3pt]
+  Eight online logics are compared on the corridor in Aimsun Next microsimulation, against an exact optimisation reference.
+}
+
+\block{Corridor \& Trial}{
+  \textbf{Corridor:} Kelvin Grove Road, Brisbane\\
+  \textbf{Signals:} 12 junctions, 3.2\,km\\
+  \textbf{Bus:} route 345, $\sim$10\,min headways\\
+  \textbf{Trial:} Aimsun Next, 5 seeds, 1.25\,h peak\\
+  \textbf{Yardstick:} exact optimisation reference
+}
+
+% ---- COLUMN 2 ----------------------------------------------------------------
+\column{0.38}
+
+\block{How to Read the Figures}{
+  \textbf{Action panels:} hollow vehicles = traffic \textit{at the decision instant}; solid = \textit{after} the action; the light/dark squares = signal aspect (green/red) for \textbf{main} vs \textbf{cross} street.\\[2pt]
+  \textbf{Schedule:} each band = one signal's green through time; each tilted line = a bus riding the staggered greens --- the \emph{green wave}. Numbered marks = the actions firing.
+}
+
+\block{Outcomes / Findings}{
+  \begin{itemize}
+    \item \textbf{One action logic improved:} passenger delay $-5.5\%$ (5 seeds); buses 8.4\% faster, cars 4.8\%.
+    \item Runner-up (multi-agent heuristic): $-1.7\%$ total (buses $-19.9\%$).
+    \item \textbf{13 of 15 logics harmful} on this well-timed, car-dominated corridor --- actions must respect the wave.
+    \item What works: late-bus-only priority, person-delay gates, corridor coordination.
+  \end{itemize}
+}
+
+% ---- COLUMN 3 ----------------------------------------------------------------
+\column{0.32}
+
+\block{Next Steps}{
+  \begin{itemize}
+    \item Calibration against the exact reference.
+    \item Logan Road corridor (23 signals).
+    \item Adaptive bus-arrival prediction.
+    \item Field trial with TMR / Brisbane City Council.
+  \end{itemize}
+}
+
+\block{Contact \& Event}{
+  \textbf{Zeke Ahern}\\
+  Queensland University of Technology, Brisbane, QLD\\
+  {\small\texttt{z.ahern@qut.edu.au}}\\[3pt]
+  \textbf{TAP Poster Showcase:} Wednesday 4 Nov 2026,\\
+  10:00\,am -- 12:00\,pm, 61 Mary Street, Brisbane\\[3pt]
+  {\footnotesize\textit{Submit electronically to \texttt{Transport\_\allowbreak Academic\_\allowbreak Partnerships@\allowbreak tmr.qld.gov.au} by 26 Oct 2026.}}\\[2pt]
+  {\footnotesize Support: TAP (QUT--TMR) and Brisbane City Council. Simulation: Aimsun Next.}
+}
+
+\end{columns}
+
+% ---- FOOTER: QUT identity ------------------------------------------------------
+\block{}{
+  \centering \QUTlogo\par
+}
+
+\end{document}

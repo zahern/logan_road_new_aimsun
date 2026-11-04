@@ -37,6 +37,11 @@ import os
 import time
 import numpy as np
 
+# Build stamp (2026-10-22). Aimsun caches this module for the process lifetime,
+# so after editing it a FULL restart is required; champion_search's preflight
+# compares this value with the file on disk and aborts on a stale module.
+STATS_BUILD = "2026-10-22T1300-stats-fix"
+
 # Output folder — resolved relative to this file's directory on startup.
 # Falls back to a hardcoded D: path if __file__ is unavailable (e.g., some
 # Aimsun versions don't set __file__ for injected scripts).
@@ -134,6 +139,27 @@ class SimulationStats:
             self.WOBJ_W_Z3    = float(_ns.get('WOBJ_W_Z3', 0.1))
             self.WOBJ_W_Z4    = float(_ns.get('WOBJ_W_Z4', 0.0))
             self.WOBJ_Z4_REF_S = float(_ns.get('WOBJ_Z4_REF_S', 0.0))
+            # DELAY SCOPE (2026-10-22): which total is the headline
+            # TotalPassDelay_hrs. 'corridor' (default) keeps it on the SAME
+            # per-junction basis as MainPassDelay/SidePassDelay, so
+            # main+side <= total (they previously could EXCEED it because the
+            # headline silently switched to a network-wide estimate while the
+            # split stayed corridor-only). 'network' restores the old override.
+            self.OBJECTIVE_DELAY_SCOPE = str(
+                _ns.get('OBJECTIVE_DELAY_SCOPE', 'corridor') or 'corridor').strip().lower()
+            # Bus-delay source for the objective. 'section' = the section-based
+            # delay accumulated on every approach (available for EVERY arm,
+            # including NO_TSP, which has no TSP detections and therefore no
+            # trajectory pairs). 'trajectory' keeps the richer call->exit
+            # measurement but only exists when detections fire, so mixing it
+            # across arms made NO_TSP and TSP arms incomparable. Default section.
+            self.OBJECTIVE_BUS_DELAY_SOURCE = str(
+                _ns.get('OBJECTIVE_BUS_DELAY_SOURCE', 'section') or 'section').strip().lower()
+            # Per-record schedule-deviation cap used for the Z3 penalty. A bus
+            # more than a headway off timetable is one MISSED RUN, not a
+            # continuously-growing lateness; the uncapped sum reached ~250M
+            # pax-s (~70,000 h) on the 2026-10-22 KG run.
+            self.SCHED_DEV_CLAMP_S = float(_ns.get('SCHED_DEV_CLAMP_S', 900.0))
         except Exception:
             pass   # run_config absent (manual run) — use the passed-in value
 
@@ -284,9 +310,13 @@ class SimulationStats:
             if length_m <= 0.0:
                 self._section_geom_cache[sec_id] = None
                 return None
+            _n_named = max(
+                int(getattr(sec_info, 'NumberLanes', 0) or 0),
+                int(getattr(sec_info, 'numberLanes', 0) or 0))
             lane_count = max(
                 int(getattr(sec_info, 'nbCentralLanes', 0) or 0)
                 + int(getattr(sec_info, 'nbSideLanes', 0) or 0),
+                _n_named,
                 1,
             )
             geom = {
@@ -1419,7 +1449,9 @@ class SimulationStats:
         _traj_delay = d.get('traj_bus_delay', 0.0)
         _traj_pax   = d.get('traj_bus_passengers', 0.0)
         _traj_veh   = d.get('traj_bus_veh_passages', 0)
-        if _traj_delay > d['delay_bus'] and _traj_pax > 0:
+        _bus_src = str(getattr(self, 'OBJECTIVE_BUS_DELAY_SOURCE', 'section')
+                       or 'section').strip().lower()
+        if _bus_src == 'trajectory' and _traj_delay > d['delay_bus'] and _traj_pax > 0:
             # Trajectory measurement is richer — use it with its own denominator
             eff_bus_delay = _traj_delay
             eff_bus_passengers   = _traj_pax
@@ -1825,10 +1857,18 @@ class SimulationStats:
                     return
 
     def add_schedule_dev(self, line_id, dev_s, bus_occ=40.0, veh_id=None,
-                         observed_time_s=None, intended_time_s=None):
+                         observed_time_s=None, intended_time_s=None,
+                         headway_s=None):
         """Headway/schedule deviation for one line arrival. dev>0 = late
         (passengers at stops wait longer); dev<0 = early (bunching risk).
-        Penalty: late full-weight, early half-weight -- both hurt fidelity."""
+        Penalty: late full-weight, early half-weight -- both hurt fidelity.
+
+        The RAW deviation is kept in the CSV, but the Z3 PENALTY is capped at
+        min(SCHED_DEV_CLAMP_S, max(300 s, the line headway)): a bus more than
+        one run off timetable has missed a departure, it is not continuously
+        accumulating lateness. Without the cap a bad nearest-departure match
+        produced ~250M pax-s (~70,000 h) on the 2026-10-22 KG run and dominated
+        Z3."""
         # 2026-10-03: ONE record per bus per line per replication. The capture
         # path is a per-tick enumeration; without this guard the same physical
         # bus was re-recorded (~20x: n=11,295 for a ~516-bus run), multiplying
@@ -1848,8 +1888,23 @@ class SimulationStats:
         if lst is None:
             lst = self._sched_devs = []
             self._sched_pen_pax = 0.0
+            self._sched_pen_raw_pax = 0.0
+            self._sched_pen_clamped = 0
         dev_s = float(dev_s)
-        lst.append(dev_s)
+        raw_dev_s = dev_s
+        # Penalty cap: one headway (floored at 300 s), never above
+        # SCHED_DEV_CLAMP_S.
+        _cap = float(getattr(self, "SCHED_DEV_CLAMP_S", 900.0) or 900.0)
+        try:
+            if headway_s is not None and float(headway_s) > 30.0:
+                _cap = min(_cap, max(300.0, float(headway_s)))
+        except Exception:
+            pass
+        dev_s = max(-_cap, min(dev_s, _cap))
+        if abs(raw_dev_s) > _cap:
+            self._sched_pen_clamped = int(
+                getattr(self, "_sched_pen_clamped", 0) or 0) + 1
+        lst.append(raw_dev_s)
         records = getattr(self, "_schedule_records", None)
         if records is None:
             records = self._schedule_records = []
@@ -1858,12 +1913,17 @@ class SimulationStats:
             "bus_id": "" if veh_id is None else int(veh_id),
             "observed_time_s": "" if observed_time_s is None else round(float(observed_time_s), 3),
             "intended_time_s": "" if intended_time_s is None else round(float(intended_time_s), 3),
-            "deviation_s": round(dev_s, 3),
-            "abs_deviation_s": round(abs(dev_s), 3),
+            "deviation_s": round(raw_dev_s, 3),
+            "abs_deviation_s": round(abs(raw_dev_s), 3),
+            "penalty_deviation_s": round(dev_s, 3),
+            "penalty_clamped": 1 if abs(raw_dev_s) > _cap else 0,
         })
         pen = dev_s if dev_s > 0 else 0.5 * abs(dev_s)
+        raw_pen = raw_dev_s if raw_dev_s > 0 else 0.5 * abs(raw_dev_s)
         self._sched_pen_pax = getattr(self, "_sched_pen_pax", 0.0) \
             + max(pen, 0.0) * float(bus_occ)
+        self._sched_pen_raw_pax = getattr(self, "_sched_pen_raw_pax", 0.0) \
+            + max(raw_pen, 0.0) * float(bus_occ)
 
     def schedule_kpis(self):
         lst = getattr(self, "_sched_devs", None) or []
@@ -1873,7 +1933,12 @@ class SimulationStats:
                     "total_deviation_s": 0.0,
                     "total_abs_deviation_s": 0.0,
                     "average_deviation_s": 0.0,
-                    "average_abs_deviation_s": 0.0}
+                    "average_abs_deviation_s": 0.0,
+                    "total_pen_pax": 0.0,
+                    "total_pen_pax_raw": 0.0,
+                    "n_pen_clamped": 0,
+                    "dev_clamp_s": float(getattr(self, "SCHED_DEV_CLAMP_S",
+                                                900.0) or 900.0)}
         late = [d for d in lst if d > 0]
         early = [d for d in lst if d < -15]
         total_dev = sum(lst)
@@ -1887,7 +1952,13 @@ class SimulationStats:
                 "mean_late_dev": round(sum(late) / len(late), 1) if late else 0.0,
                 "pct_late": round(100.0 * len(late) / n, 1),
                 "pct_bunched": round(100.0 * len(early) / n, 1),
-                "total_pen_pax": round(getattr(self, "_sched_pen_pax", 0.0), 1)}
+                "total_pen_pax": round(getattr(self, "_sched_pen_pax", 0.0), 1),
+                "total_pen_pax_raw": round(
+                    getattr(self, "_sched_pen_raw_pax", 0.0), 1),
+                "n_pen_clamped": int(
+                    getattr(self, "_sched_pen_clamped", 0) or 0),
+                "dev_clamp_s": float(getattr(self, "SCHED_DEV_CLAMP_S",
+                                            900.0) or 900.0)}
 
     def add_bus_signal_wait(self, veh_id, junction_id, wait_s, bus_occ=40.0):
         """Pure signal delay for one bus: seconds held while its phase was red
@@ -2092,11 +2163,20 @@ class SimulationStats:
         #   Result: TSP strategies can show HIGHER s/km delay but LOWER pax·s —
         #   this is correct physics, not a calculation error.
         #
-        #   Path chosen: 'network' when _net_total > corridor; else 'corridor'.
+        # SCOPE FIX (2026-10-22): the per-junction sum (main+side+other corridor
+        # approaches) is the CORRIDOR total and is what the main/side split is
+        # measured on. Keep it verbatim so the headline and the split share one
+        # basis. The network estimate is exported separately
+        # (net_pass_delay_hrs); selecting it is opt-in via OBJECTIVE_DELAY_SCOPE.
+        _corridor_total_paxs = float(sim_total_delay)
+        _scope = str(getattr(self, 'OBJECTIVE_DELAY_SCOPE', 'corridor')
+                     or 'corridor').lower()
+        _use_net = bool(_scope == 'network'
+                        and _net_total_pax_delay_pax_s > 0.0)
         _net_path_reason = (
-            f"net={_net_total_pax_delay_pax_s:.0f}pax·s > corr={sim_total_delay:.0f}pax·s → using network"
-            if _net_total_pax_delay_pax_s > sim_total_delay
-            else f"net={_net_total_pax_delay_pax_s:.0f}pax·s ≤ corr={sim_total_delay:.0f}pax·s → using corridor"
+            f"net={_net_total_pax_delay_pax_s:.0f}pax-s, corr={_corridor_total_paxs:.0f}pax-s "
+            f"-> using {'network' if _use_net else 'corridor'} "
+            f"(OBJECTIVE_DELAY_SCOPE={_scope})"
         )
         self._print(
             f"[NET_PAX_AUDIT] bus: delay={_net_bus_delay_s:.1f}s/km dist={_net_bus_dist_km:.1f}veh·km"
@@ -2105,9 +2185,9 @@ class SimulationStats:
             f" → {_net_pax_delay_car_pax_s:.0f}pax·s | {_net_path_reason}"
         )
 
-        # Prefer network-level pax delay when available (non-zero and larger than
-        # corridor-only accumulation); fall back to corridor accumulation.
-        if _net_total_pax_delay_pax_s > sim_total_delay:
+        # Headline total follows OBJECTIVE_DELAY_SCOPE ('corridor' default: same
+        # basis as main/side; 'network': legacy network-wide override).
+        if _use_net:
             sim_total_delay = _net_total_pax_delay_pax_s
             sim_bus_delay   = _net_pax_delay_bus_pax_s
             sim_car_delay   = _net_pax_delay_car_pax_s + _net_pax_delay_hov_pax_s
@@ -2165,6 +2245,13 @@ class SimulationStats:
             _old_bus = sim_bus_delay
             _new_bus = float(_swk["total_pax_wait_s"])
             sim_total_delay += (_new_bus - _old_bus)
+            # Keep the corridor total (the main/side basis) on the SAME
+            # definition. Without this, the exported corridor total and the
+            # headline would use different bus-delay definitions.
+            try:
+                _corridor_total_paxs += (_new_bus - _old_bus)
+            except Exception:
+                pass
             sim_bus_delay = _new_bus
             if bus_passengers > 0:
                 avg_bus_pass_delay_s = sim_bus_delay / bus_passengers
@@ -2199,15 +2286,19 @@ class SimulationStats:
                 avg_pass_delay_s = sim_total_delay / total_passengers
                 avg_obj_delay = avg_pass_delay_s
             print("[SCHED-OBJ][DIAG] approaches=%d mean|dev|=%.1fs mean_late=%.1fs "
-                  "late=%.1f%% bunched=%.1f%% penalty=%.0f pax-s -- DIAGNOSTIC ONLY: "
-                  "EXCLUDED from the PaxPerDelayHr champion objective (folded into "
-                  "the raw total then subtracted back out, net zero). NOTE dev is "
-                  "per-bus timetable matching (observed entry minus nearest "
-                  "scheduled departure; early negative, late positive) with "
-                  "pre-existing warm-up buses excluded; interval lines and "
-                  "unresolvable walls fall back to headway differencing."
+                  "late=%.1f%% bunched=%.1f%% penalty=%.0f pax-s (raw %.0f, "
+                  "%d record(s) clamped at %.0fs) -- DIAGNOSTIC ONLY: EXCLUDED "
+                  "from the PaxPerDelayHr champion objective (folded into the raw "
+                  "total then subtracted back out, net zero). NOTE dev is per-bus "
+                  "timetable matching (observed entry minus nearest scheduled "
+                  "departure; early negative, late positive) with pre-existing "
+                  "warm-up buses excluded; interval lines and unresolvable walls "
+                  "fall back to headway differencing."
                   % (_sk["n"], _sk["mean_abs_dev"], _sk["mean_late_dev"],
-                     _sk.get("pct_late", 0), _sk.get("pct_bunched", 0), _pen))
+                     _sk.get("pct_late", 0), _sk.get("pct_bunched", 0), _pen,
+                     float(_sk.get("total_pen_pax_raw", _pen) or _pen),
+                     int(_sk.get("n_pen_clamped", 0) or 0),
+                     float(_sk.get("dev_clamp_s", 0.0) or 0.0)))
         # ALWAYS write schedule artifacts (empty if no data) so health check passes
         try:
             import json as _json
@@ -2230,6 +2321,38 @@ class SimulationStats:
         if total_passengers > 0:
             avg_pass_delay_s = _clean_total_paxs / total_passengers
             avg_obj_delay = avg_pass_delay_s
+
+        # Scope + penalty audit (2026-10-22). The headline and the main/side
+        # split now share ONE basis, so a reader can never see main+side exceed
+        # the total. The network estimate is reported alongside, never mixed in
+        # silently.
+        _scope_used = 'network' if _use_net else 'corridor'
+        try:
+            self._delay_scope_used = _scope_used
+            _ms_hrs = (float(total_main_delay) + float(total_side_delay))
+            self._print(
+                "[DELAY-SCOPE] headline=%s total=%.1f h | corridor(sum per junction)"
+                "=%.1f h | network=%.1f h | main=%.1f h side=%.1f h "
+                "(main+side=%.1f h, corridor-scoped)"
+                % (_scope_used, total_pass_delay,
+                   _corridor_total_paxs / 3600.0,
+                   _net_total_pax_delay_pax_s / 3600.0,
+                   float(total_main_delay), float(total_side_delay), _ms_hrs))
+        except Exception:
+            pass
+        _raw_pen = float(_sk.get('total_pen_pax_raw', _pen_paxs) or _pen_paxs)
+        if _pen_paxs > max(1.0, 0.5 * max(_corridor_total_paxs, 1.0)):
+            try:
+                self._print(
+                    "[SCHED-OBJ][AUDIT] WARNING: clamped penalty %.0f pax-s is "
+                    ">50%% of corridor delay %.0f pax-s (raw %.0f, clamped records "
+                    "%d, cap %.0fs). Penalty is EXCLUDED from TotalPassDelay_hrs "
+                    "and exported separately as Obj_Z3."
+                    % (_pen_paxs, _corridor_total_paxs, _raw_pen,
+                       int(_sk.get('n_pen_clamped', 0) or 0),
+                       float(_sk.get('dev_clamp_s', 0.0) or 0.0)))
+            except Exception:
+                pass
 
         # ── CHEAT-PROOF metric: avg delay INCLUDING virtual-queue wait (2026-10-05) ─
         # The objective above counts only IN-NETWORK (section) delay over SERVED
@@ -2342,8 +2465,16 @@ class SimulationStats:
             'avg_bus_tt_s':              avg_bus_tt_s,
             'std_bus_tt_s':              std_bus_tt_s,
             'total_pass_delay_hrs':      total_pass_delay,  # VEHICLE delay only
+            'delay_scope':               _scope_used,
+            'corridor_pass_delay_hrs':   _corridor_total_paxs / 3600.0,
+            'net_pass_delay_hrs':        _net_total_pax_delay_pax_s / 3600.0,
+            'main_plus_side_pass_delay_hrs': (float(total_main_delay)
+                                              + float(total_side_delay)),
             'schedule_penalty_pax_s':    float(_pen_paxs),
             'schedule_penalty_hrs':      float(_pen_paxs) / 3600.0,
+            'schedule_penalty_raw_pax_s': float(_raw_pen),
+            'schedule_penalty_clamped_n': int(_sk.get('n_pen_clamped', 0) or 0),
+            'schedule_dev_clamp_s':      float(_sk.get('dev_clamp_s', 0.0) or 0.0),
             'total_pass_delay_incl_sched_hrs': float(sim_total_delay) / 3600.0,  # legacy definition
             'main_pass_delay_hrs':           total_main_delay,
             'side_pass_delay_hrs':           total_side_delay,
@@ -2636,7 +2767,8 @@ class SimulationStats:
         Also populates per-section accumulators in self._section_dsf so a
         corridor-level per-section CSV can be written at save time.
         """
-        INTERVAL_S = 30.0
+        INTERVAL_S = float(os.environ.get(
+            "STATS_SECTION_INTERVAL_S", 30.0) or 30.0)
         if time - self._section_dsf_last_t < INTERVAL_S:
             return
         self._section_dsf_last_t = time
@@ -4769,7 +4901,8 @@ class SimulationStats:
                     _fh,
                     fieldnames=["line_id", "bus_id", "observed_time_s",
                                 "intended_time_s", "deviation_s",
-                                "abs_deviation_s"])
+                                "abs_deviation_s", "penalty_deviation_s",
+                                "penalty_clamped"])
                 _writer.writeheader()
                 _writer.writerows(_schedule_records)
         except Exception as _schedule_csv_err:
@@ -4786,7 +4919,11 @@ class SimulationStats:
                 "AvgBusTT_s",
                 "StdBusTT_s",
                 "TotalPassDelay_hrs", "SidePassDelay_hrs", "MainPassDelay_hrs",
+                "DelayScope", "CorridorPassDelay_hrs", "NetPassDelay_hrs",
+                "MainPlusSidePassDelay_hrs",
                 "SchedulePenalty_pax_s", "SchedulePenalty_hrs",
+                "SchedulePenaltyRaw_pax_s", "SchedulePenaltyClamped_n",
+                "ScheduleDevClamp_s",
                 "TotalPassDelayInclSched_hrs",
                 "AvgMainPassDelay_pax_h_per_sim_h", "AvgSidePassDelay_pax_h_per_sim_h",
                 "AvgTotalPassDelay_pax_h_per_sim_h", "SimDuration_hrs",
@@ -4912,8 +5049,15 @@ class SimulationStats:
                 self._safe_round(g.get('total_pass_delay_hrs', 0), 4),
                 self._safe_round(g.get('side_pass_delay_hrs', 0), 4),
                 self._safe_round(g.get('main_pass_delay_hrs', 0), 4),
+                g.get('delay_scope', ''),
+                self._safe_round(g.get('corridor_pass_delay_hrs', 0), 4),
+                self._safe_round(g.get('net_pass_delay_hrs', 0), 4),
+                self._safe_round(g.get('main_plus_side_pass_delay_hrs', 0), 4),
                 self._safe_round(g.get('schedule_penalty_pax_s', 0), 1),
                 self._safe_round(g.get('schedule_penalty_hrs', 0), 4),
+                self._safe_round(g.get('schedule_penalty_raw_pax_s', 0), 1),
+                int(g.get('schedule_penalty_clamped_n', 0) or 0),
+                self._safe_round(g.get('schedule_dev_clamp_s', 0), 1),
                 self._safe_round(g.get('total_pass_delay_incl_sched_hrs', 0), 4),
                 self._safe_round(g.get('avg_main_pass_delay_per_hr', 0),  4),
                 self._safe_round(g.get('avg_side_pass_delay_per_hr', 0),  4),

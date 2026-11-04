@@ -19,15 +19,29 @@ Writes a summary to scats_personalities_summary.txt next to this script and prin
 """
 import os
 import re
+import sys
 import glob
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The share sits beside the bundle: ...\github_for_aimsun\iMove SCATS File Share
-_ROOT_GUESSES = [
-    os.path.join(os.path.dirname(HERE), "iMove SCATS File Share", "Personalities", "North"),
-    r"C:\Users\ahernz\github_for_aimsun\iMove SCATS File Share\Personalities\North",
-]
-NORTH = next((p for p in _ROOT_GUESSES if os.path.isdir(p)), None)
+# REGION selects which corridor's personalities to read: North=KG (default,
+# unchanged so KG's collection is untouched), South=Logan Road. Override with
+# argv[1] or env SCATS_REGION.
+REGION = (sys.argv[1] if len(sys.argv) > 1
+          else os.environ.get("SCATS_REGION", "North")).strip() or "North"
+
+
+def _region_root(region):
+    for base in (os.path.join(os.path.dirname(HERE), "iMove SCATS File Share",
+                              "Personalities", region),
+                 r"C:\Users\ahernz\github_for_aimsun\iMove SCATS File Share"
+                 r"\Personalities\%s" % region):
+        if os.path.isdir(base):
+            return base
+    return None
+
+
+NORTH = _region_root(REGION)   # name kept for back-compat; holds the chosen region
 
 
 def _read(path):
@@ -115,8 +129,9 @@ def parse_tim(txt):
 
 def main():
     if not NORTH:
-        print("Could not find Personalities/North. Edit _ROOT_GUESSES.")
+        print("Could not find Personalities/%s. Check the share path." % REGION)
         return
+    print("REGION = %s  (%s)" % (REGION, NORTH))
     lines = []
     for site in sorted(os.listdir(NORTH)):
         sdir = os.path.join(NORTH, site)
@@ -144,10 +159,10 @@ def main():
     out = "\n".join(lines)
     print(out)
     try:
-        with open(os.path.join(HERE, "scats_personalities_summary.txt"), "w",
-                  encoding="utf-8") as fh:
+        _fn = "scats_personalities_summary_%s.txt" % REGION.lower()
+        with open(os.path.join(HERE, _fn), "w", encoding="utf-8") as fh:
             fh.write(out + "\n")
-        print("\n[written] scats_personalities_summary.txt")
+        print("\n[written] %s" % _fn)
     except Exception as e:
         print("write failed: %r" % e)
 

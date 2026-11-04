@@ -1,0 +1,191 @@
+% ==============================================================================
+% Transport Academic Partnership (TAP) Poster Showcase 2026
+% A1 portrait, tikzposter. QUT brand colours.
+% Compile: pdflatex poster_tap2026.tex  (twice)
+%
+% Diagrams are the standalone figures in for_poster/, compiled to PDF:
+%   agent_environment.tex        -> for_poster/agent_environment.pdf
+%   multi_agent.tex              -> for_poster/multi_agent.pdf
+%   green_extension_stages.tex   -> for_poster/green_extension_stages.pdf
+%   red_truncation_stages.tex    -> for_poster/red_truncation_stages.pdf
+% Results panels are the PNGs also in for_poster/.
+% ==============================================================================
+\documentclass[25pt, a1paper, portrait, blockverticalspace=3mm]{tikzposter}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning, shapes.geometric, arrows.meta, fit, calc, backgrounds}
+\usepackage{cleveref}
+
+% ---- QUT brand palette --------------------------------------------------------
+\definecolor{QUTBlue}{HTML}{003B71}
+\definecolor{QUTAccent}{HTML}{0092BD}
+\definecolor{QUTHighlight}{HTML}{580F8B}
+\definecolor{busred}{RGB}{200,40,40}
+\definecolor{carblue}{RGB}{40,80,180}
+\definecolor{corridorgreen}{RGB}{40,150,80}
+\definecolor{grviol}{RGB}{120,80,180}
+\definecolor{busopp}{RGB}{210,110,0}
+\definecolor{teal}{RGB}{0,128,128}
+
+% ---- poster theme ------------------------------------------------------------
+\usetheme{Default}
+\usecolorstyle{Default}
+\colorlet{backgroundcolor}{white}
+\colorlet{framecolor}{QUTBlue}
+\colorlet{titlefgcolor}{white}
+\colorlet{titlebgcolor}{QUTBlue}
+\colorlet{blocktitlefgcolor}{white}
+\colorlet{blocktitlebgcolor}{QUTAccent}
+\colorlet{blockbodyfgcolor}{black}
+\colorlet{blockbodybgcolor}{white}
+\colorlet{innerblocktitlefgcolor}{white}
+\colorlet{innerblocktitlebgcolor}{QUTHighlight}
+\colorlet{innerblockbodybgcolor}{gray!5}
+
+% tikzposter has \settitle only (it REPLACES the whole title template, so all
+% of \@title/\@author/\@institute/\@titlegraphic must be typeset here). There
+% is no \setsubtitle -- the showcase line is typeset literally instead.
+% Compact title style: less dead space above/below the title bar.
+\definetitlestyle{TAPcompact}{
+  width=720mm, roundedcorners=30, linewidth=0.4cm, innersep=0.6cm,
+  titletotopverticalspace=5mm, titletoblockverticalspace=6mm,
+  titlegraphictotitledistance=10pt, titletextscale=1
+}{
+    \begin{scope}[line width=\titlelinewidth, rounded corners=\titleroundedcorners]
+        \draw[color=framecolor, fill=titlebgcolor]%
+        (\titleposleft,\titleposbottom) rectangle (\titleposright,\titlepostop);
+    \end{scope}
+}
+\usetitlestyle{TAPcompact}
+
+% Compact blocks: the class default spends 1 cm of padding on every side of every
+% title bar and body, which dominated the poster's white space.
+\defineblockstyle{TAPtight}{
+  titlewidthscale=1, bodywidthscale=1, titlecenter,
+  titleoffsetx=0pt, titleoffsety=0pt, bodyoffsetx=0pt, bodyoffsety=0pt,
+  bodyverticalshift=0pt, roundedcorners=20, linewidth=0.28cm,
+  titleinnersep=0.55cm, bodyinnersep=0.55cm
+}{
+  \begin{scope}[line width=\blocklinewidth, rounded corners=\blockroundedcorners]
+    \ifBlockHasTitle
+      \draw[color=blocktitlebgcolor, fill=blocktitlebgcolor] (blockbody.south west) rectangle (blocktitle.north east);
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \else
+      \draw[color=blocktitlebgcolor, fill=blockbodybgcolor] (blockbody.south west) rectangle (blockbody.north east);
+    \fi
+  \end{scope}
+}
+\useblockstyle{TAPtight}
+% Remove the class's "LaTeX TikZposter" corner watermark for the final print.
+\tikzposterlatexaffectionproofoff
+% The class default wraps \title content in an unbreakable \scalebox, making a
+% long one-line title overflow the title parbox; use wrappable text instead.
+\makeatletter
+\def\title#1{\gdef\@title{#1}}
+\makeatother
+\settitle{
+  \centering\vbox{
+    \color{titlefgcolor}\bfseries
+    {\LARGE \@title\par}
+    \vspace*{0.3em}
+    {\large\itshape Transport Academic Partnership (TAP) Poster Showcase 2026\par}
+    \vspace*{0.5em}
+    {\large \@author\par}
+    \vspace*{0.2em}
+    {\normalsize \@institute\par}
+  }
+}
+
+% ---- helpers ----------------------------------------------------------------
+\newcommand{\QUTlogo}{%
+  % Official QUT brand kit mark: preprint\QUT\QUT_idbrgHklVA_0.png (820x285,
+  % transparent). pdfLaTeX includes PNG natively (the kit's SVG needs an SVG
+  % router MiKTeX lacks). The full-colour wordmark sits on a white plate per QUT
+  % brand rules; in the footer it is scaled for the bottom of the panel.
+  \IfFileExists{QUT/QUT_idbrgHklVA_0.png}{%
+    \fcolorbox{white}{white}{\includegraphics[height=1.2cm]{QUT/QUT_idbrgHklVA_0.png}}%
+  }{%
+    \tikz{\node[fill=QUTBlue, text=white, font=\Huge\bfseries, inner sep=8pt,
+               rounded corners=4pt] {QUT};}%
+  }%
+}
+
+\title{Alternatives to Provide Transit Signal Priority and Improve Travel Time Reliability}
+\author{Zeke Ahern, Aitan Militao, Ashish Bhaskar \& Alexander Paz}
+\institute{Queensland University of Technology (QUT), Brisbane, QLD, Australia}
+
+\begin{document}
+\maketitle[width=0.96\textwidth]
+
+% ==============================================================================
+% 1. THE AGENT (universal)
+% ==============================================================================
+\block{State Space Environment}{
+\centering
+\hfill
+\begin{minipage}[c]{0.43\linewidth}
+  \includegraphics[width=\linewidth]{for_poster/agent_environment.pdf}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.43\linewidth}
+  \includegraphics[width=\linewidth]{for_poster/multi_agent.pdf}
+\end{minipage}\hfill
+}
+
+% ==============================================================================
+% 2. THE TWO ACTIONS (universal)
+% ==============================================================================
+\block{Actions}{
+\centering
+\begin{minipage}[c]{0.27\linewidth}
+  \includegraphics[height=160mm]{for_poster/green_extension_stages.pdf}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.225\linewidth}
+  \includegraphics[height=160mm]{for_poster/red_truncation_stages.pdf}
+\end{minipage}\hfill
+\begin{minipage}[c]{0.44\linewidth}
+  \centering
+  {\small\bfseries Offset correction builds the green wave}\\[2pt]
+  \includegraphics[width=\linewidth]{for_poster/green_wave_3int.pdf}
+\end{minipage}
+}
+
+% ==============================================================================
+% 3. RESULTS, SPLIT BY CORRIDOR
+% ==============================================================================
+\block{Results by Corridor}{
+\centering
+% ---------------- Kelvin Grove ----------------
+\begin{minipage}[c]{0.46\linewidth}
+  \centering
+  {\large\bfseries\color{QUTBlue}KELVIN GROVE ROAD}\\[-2pt]
+  {\footnotesize 12 signals}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/KG_kpi_poster.png}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/KG_fig_03_who_gains_alt.png}\\[2pt]
+  {\footnotesize Person delay $-25.5\%$; bus passengers $-12.7\%$;
+   queue $-27\%$; density $-17\%$; speed $+14\%$.}
+\end{minipage}\hfill
+% ---------------- Logan Road ----------------
+\begin{minipage}[c]{0.46\linewidth}
+  \centering
+  {\large\bfseries\color{QUTBlue}LOGAN ROAD}\\[-2pt]
+  {\footnotesize 23 signals}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/LR_kpi_poster.png}\\[3pt]
+  \includegraphics[width=0.78\linewidth]{for_poster/LR_fig_u03_who_gains_alt.png}\\[2pt]
+  {\footnotesize Person delay $-22.5\%$; bus passengers $-11.5\%$;
+   queue $-27\%$; density $-17\%$; speed $+14\%$; vehicles waiting $-66\%$.}
+\end{minipage}
+}
+
+% ---- FOOTER: QUT identity + contact -------------------------------------------
+\block{}{
+  \centering
+  \QUTlogo\\[2pt]
+  {\footnotesize \textbf{Zeke Ahern} --- \texttt{z.ahern@qut.edu.au}\quad
+   \textbf{Aitan Militao} --- \texttt{aitan.militao@qut.edu.au}\quad
+   TAP Poster Showcase, Wed 4 Nov 2026, 10:00--12:00, 61 Mary Street, Brisbane.}
+}
+
+\end{document}

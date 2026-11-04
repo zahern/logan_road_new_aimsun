@@ -2857,6 +2857,15 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         'REWARD_SELFORG_MODE', 'REWARD_INV_DELAY_MODE', 'REWARD_V2X_MODE',
         'CENTRALIZED_MODE',
         # DCTSP_GREEN_REALLOC_MODE / BARGAIN_SPM_MODE already written above.
+        # MODE-LEAK FIX (2026-10-31): SCATS / DS-adaptation toggles -- a flag turned
+        # True by the SCATS arm (DS_PLAN_ADAPT etc.) otherwise persists into every
+        # later arm that does not set it, so the priority ladder inherits the DS
+        # re-solve storm and gridlocks. See ladder-scats-ds-flag-leak.
+        'DS_PLAN_ADAPT', 'DS_SOLVE_PER_CYCLE', 'DS_CYCLE_ADAPT',
+        'DS_MASTER_CYCLE', 'DS_MASTER_SPLITS', 'DS_MASTER_OFFSETS',
+        'MASTER_LINK_PRESSURE', 'DS_SPLIT_DS_EQUAL', 'DS_SPLIT_PROPORTIONAL',
+        'DS_BALANCE_GATE', 'SCATS_GAP_OUT', 'SCATS_MAX_OUT', 'ACTUATED_EXTEND',
+        'SCATS_SEQUENCE_BY_Y', 'SCATS_CRITICAL_INTERSECTION', 'SCATS_PHASE_SKIP',
     )
     _rc = reward_cfg or {}
     _already_written = {'BARGAIN_SPM_MODE', 'DCTSP_GREEN_REALLOC_MODE',
@@ -5244,6 +5253,34 @@ def append_master_csv(master_path, row_dict):
         "stats_results_folder",
     ]
     priority_set = set(priority_keys)
+
+    # PROVENANCE + SCOPE STAMP (2026-10-30): same rules as kg/batch_runner.py.
+    # The Aimsun Experiment/Scenario/Replication ids are MODEL-level (constant
+    # across arms/seeds), so stamp the run instead; and a dead network-scope
+    # collector is written as NaN + a flag rather than a fabricated 0.0.
+    try:
+        import sys as _sys_p
+        _root_p = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        if _root_p not in _sys_p.path:
+            _sys_p.path.insert(0, _root_p)
+        from provenance import stamp_row, scope_warning
+        row_dict = stamp_row(row_dict)
+        _warn = scope_warning(row_dict)
+        if _warn:
+            try:
+                log(_warn)
+            except Exception:
+                pass
+        for _k in ("run_utc", "run_seed_applied", "stats_IdScope",
+                   "stats_NetScope_ok", "aimsun_scope_ok"):
+            if _k not in priority_set:
+                priority_keys.append(_k)
+                priority_set.add(_k)
+    except Exception as _pe:
+        try:
+            log("WARNING: provenance stamp failed: %r" % (_pe,))
+        except Exception:
+            pass
 
     try:
         file_exists = _os.path.isfile(master_path)

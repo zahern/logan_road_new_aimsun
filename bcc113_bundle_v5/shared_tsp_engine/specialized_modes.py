@@ -2,7 +2,7 @@
 Specialized TSP action-selection modes for IntersectionController.
 
 The reference controller is kg/intersection_controller.py (shim) + the shared
-engine — NOT kg/intersection_controller_lean.py.  The reference lineage never
+engine ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â NOT kg/intersection_controller_lean.py.  The reference lineage never
 implemented these specialized modes, so the ZIG / MP-ECTM / BXT / BARGAIN
 generators here were ported from the lean file (the only implementation in the
 repo); where their behavior conflicts with the engine's own GE/INS reward
@@ -14,7 +14,29 @@ sys.path.insert(0, r"C:\AimsunPackages")
 import math
 import numpy as np
 
-# ── Default constants (overridden by run_config.py / batch_runner) ────────────
+
+# CONTENT STAMP (2026-10-30): Aimsun caches imported modules for the process
+# lifetime, so editing this file has NO effect until a full quit+reopen. That
+# failure is silent: the run simply reproduces the previous numbers. The engine
+# preflight compares this hash against the file on disk and aborts on a mismatch
+# instead of burning a batch (and a whole probe was lost to exactly this on
+# 2026-10-30: [CTM_CONN]/[NASH_CTM]/recv_bind never appeared, CELLQ reproduced
+# 796.0522 to 4 decimals).
+def _source_hash():
+    try:
+        import hashlib
+        import os as _os_h
+        _p = _os_h.path.abspath(__file__)
+        with open(_p, "rb") as _fh:
+            return hashlib.sha1(_fh.read()).hexdigest()[:12]
+    except Exception:
+        return "?"
+
+
+SPECIALIZED_MODES_BUILD = "2026-10-30T1720-ds-queue-recal"
+SOURCE_HASH = _source_hash()
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Default constants (overridden by run_config.py / batch_runner) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 DCTSP_ZIG_MODE     = False
 DCTSP_MIN_INS_DURATION_S = 10.0
@@ -43,19 +65,19 @@ MP_ECTM_MIN_EXT_S = 3.0
 MP_ECTM_MAX_EXT_S = 8.0
 MP_ECTM_BALANCE_FACTOR = 1.0
 MP_ECTM_GE_BALANCE_FACTOR = 2.0
-MP_ECTM_CAR_OCC   = 1.6
+MP_ECTM_CAR_OCC   = 1.2
 
-# ── MP_ECTM_DP: CTMGS grid search + downstream DP look-ahead ─────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MP_ECTM_DP: CTMGS grid search + downstream DP look-ahead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Hybrid Method III: keeps CTMGS' exhaustive grid sweep over [MIN_EXT, MAX_EXT]
-# but scores every candidate with a CELLQLEARN-style DP coordination penalty —
-# projected downstream-junction delay over the bus trajectory horizon — so the
+# but scores every candidate with a CELLQLEARN-style DP coordination penalty ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+# projected downstream-junction delay over the bus trajectory horizon ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so the
 # grid stops being myopic about corridor-wide cross-traffic harm.
 MP_ECTM_DP_MODE      = False
 MP_ECTM_DP_HORIZON_S = 90.0
 MP_ECTM_DP_STAGE_S   = 15.0
 MP_ECTM_DP_COORD_WEIGHT = 0.40
 
-# ── BXT: CTM-based multiagent Q-learning TSP (Chanloha et al. 2014) ───────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ BXT: CTM-based multiagent Q-learning TSP (Chanloha et al. 2014) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 BXT_MODE           = False
 # Calibrated state-bin edges (2026-09-30): same 4 bins per dimension (128
 # states, no growth), but edges configurable so a quantile calibration can
@@ -120,8 +142,53 @@ BXT_ENABLE_GE = True   # green extension (timing)
 BXT_ENABLE_INS = True  # green insertion / phase advance (order/swap)
 BXT_ENABLE_GR = True   # green reallocation (timing)
 BXT_ENABLE_ER = True   # early red (order/swap)
+# 2026-11-02: right-phase EARLY_RED gives its truncated seconds to the OFF
+# phases. Until this flag the reward priced that gain at 0.0 and the decider
+# vetoed the action outright, so ER could never fire. False restores the old
+# build exactly (zero credit + unconditional suppression).
+BXT_ER_OFFPHASE_CREDIT = True
+# Scale on the priced off-phase gain.
+#
+# THIS MUST STAY AT 1.0. Both sides are pax*s delay, and
+# stats_Objective_PaxPerDelayHr reports a pax*s objective -- a weight here
+# would mean the decider optimises something other than the number the paper
+# reports. (An earlier revision of this patch shipped 6.0 to make ER fire;
+# that was a fudge and has been reverted.)
+#
+# Known consequence: at 1.0 ER wins 0/12 states on the current model, i.e. it
+# does not fire. That is the model disagreeing with itself, not a verdict on
+# ER, and the disagreement is two asymmetries between the credit and the harm:
+#
+#  (A) OCCUPANCY. FIXED 2026-11-02. _cell_occ charged the subject bus at
+#      BusOcc=40 whether or not it could use the green being priced, lifting
+#      the blended occupancy at n0=8 from 1.2 to 6.05 pax/veh (~5x). It now
+#      counts the bus only when the bus phase is running and
+#      bus_eta_s <= green_left -- or when the bus is held on the wrong phase,
+#      where its green is still to come. See
+#      BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING.
+#
+#  (B) MULTIPLIER. FIXED 2026-11-02. The credit applies NETWORK_FACTOR *
+#      CROSS_TRAFFIC_COST_MULTIPLIER (=2.0), the same scaling
+#      _dctsp_cross_traffic_delay_s puts on its own cost, so the two sides
+#      are on one basis and directly subtractable.
+#
+# With both fixed ER is SELF-GATING at weight 1.0, no fudge needed -- see
+# _check_er_fires_now.py:
+#   * bus ARRIVING inside the green -> ER wins 0/12 states. Shortening that
+#     green really would cost the bus, and the decider refuses.
+#   * bus REMOTE (eta beyond the green)  -> ER wins 7/12 states. The bus
+#     cannot use the seconds being given away, so only queued cars pay, and
+#     where the off-phase saving beats that car cost ER now wins.
+# Do not raise this weight to force the other 5: those are exactly the states
+# where the honest pax*s comparison says the trade is bad.
+BXT_ER_OFFPHASE_GAIN_WEIGHT = 1.0
+# 2026-11-02: charge the subject bus into the approach cell's blended
+# occupancy only when it can use the green being priced. False = the old
+# behaviour (always charge it at BusOcc), which made every green-shortening
+# action pay for a bus that may not have arrived yet.
+BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING = True
 BXT_ENABLE_OC = True   # offset correction (solved bus-phase alignment, 2026-09-22)
-# ── MEASURED side (cross) cost ────────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MEASURED side (cross) cost ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The shockwave/CTM side-delay estimate ignores how FULL the cross approach
 # already is, so it badly UNDER-prices holding a near-jammed cross street on red
 # (spillback) -- the miscalibrated term behind the seed-lottery car cascades
@@ -137,7 +204,7 @@ BXT_ENABLE_OC = True   # offset correction (solved bus-phase alignment, 2026-09-
 MEASURED_SIDE_COST       = True
 MEASURED_SIDE_SPILL_GAIN = 3.0    # spillback severity gain: cost *= 1 + gain*sat/(1-sat)
 MEASURED_SIDE_FRESH_S    = 90.0   # max age (s) of a latest_section measurement to trust
-MEAS_MIN_SECTION_M       = 25.0   # min section length for a count×speed flow estimate (shorter = connector stub -> unmeasurable)
+MEAS_MIN_SECTION_M       = 25.0   # min section length for a countÃƒÆ’Ã¢â‚¬â€speed flow estimate (shorter = connector stub -> unmeasurable)
 # DELAY CALIBRATION (default OFF): scale the analytic reward toward Aimsun's realised
 # .DTa delay, per approach (kappa=EWMA(measured_delay_per_veh/REF)), so the decision
 # tracks the microscopic delay it is scored on. Closes the decide-analytic/score-
@@ -150,15 +217,22 @@ DELAY_CALIBRATION        = False  # 2026-10-12: back OFF by default (KG-clean). 
                                   # per-corridor only once the inertness is fixed + A/B'd.
 DELAY_CAL_REF_S          = 15.0   # reference delay/veh: kappa=1 at this measured delay
 DELAY_CAL_ALPHA          = 0.1    # EWMA smoothing of the calibration factor
+DELAY_CAL_ALPHA_UP       = 0.5    # 2026-10-31: fast rise when realised .DTa runs
+                                  # ABOVE the model (spillback onset) -- the fix
+                                  # for the inert symmetric EWMA (kappa~1.0). Falls
+                                  # back to DELAY_CAL_ALPHA when unset.
+DELAY_CAL_ALPHA_DOWN     = 0.1    # slow decay when congestion relaxes
 DELAY_CAL_MIN            = 0.25   # clamp on kappa
 DELAY_CAL_MAX            = 4.0
+DELAY_CAL_DIAG           = True   # 2026-10-31: [DELAY_CAL][DIAG] per-junction kappa trace
+DELAY_CAL_DIAG_PERIOD_S  = 60.0   # throttle for the diag line
 # MICROSCOPIC QUEUE (default OFF): count a vehicle as queuing only when its speed is
 # below the threshold (Aimsun's own queue definition), instead of every in-zone
 # vehicle -- aligns the measured queue with the plant so predictions match.
 MICRO_QUEUE_MODE         = False
 MICRO_QUEUE_SPEED_KMH    = 5.0
 MEASURED_SIDE_COST_DIAG  = False  # log [MEAS_SIDE] per junction: does the measured cross cost engage?
-# ── Decision diagnostics (2026-09-25) ─────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Decision diagnostics (2026-09-25) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # DIAG_FLOW_STAGE: one compact [FLOW_STAGE] line per junction every 60 s
 # (throttled with [SIDE_SCAN]): the flow REGIME the controller sees --
 # stage FREE/SAT/OVER/JAM from main x + queue + armed, with main/side flows.
@@ -172,7 +246,7 @@ MEASURED_SIDE_COST_DIAG  = False  # log [MEAS_SIDE] per junction: does the measu
 # actions that made a run worse than NO_TSP and trace their cascade.
 DIAG_FLOW_STAGE = True
 DIAG_DECISION   = True
-# ── Recoverability (offset-preservation) gate (2026-09-23) ────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Recoverability (offset-preservation) gate (2026-09-23) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # A cycle-lengthening action (GE/INS/VP/PT) is FEASIBLE only if the time it
 # borrows can be trimmed back from the upcoming cross phases THIS cycle (slack
 # above min-green). Otherwise the offset drifts and the green wave breaks
@@ -266,11 +340,11 @@ BXT_GE_BALANCE_FACTOR = 2.0
 # absolute cross-street load so ONE policy conditions on real-time demand level.
 # Off by default (keeps the 4-tuple state + existing Q-tables valid); enable it
 # WITH multi-regime training (BXT_TRAIN_DEMAND_SCALARS) or the extra dimension is
-# just sample-starved. Thresholds in pax·s (calibrate from a run's [BXT] side_p).
+# just sample-starved. Thresholds in paxÃƒâ€šÃ‚Â·s (calibrate from a run's [BXT] side_p).
 BXT_DEMAND_STATE       = False
 BXT_DEMAND_BIN_LO_PAXS = 300.0
 BXT_DEMAND_BIN_HI_PAXS = 1500.0
-# ── SCATS Degree-of-Saturation feed + balance gate + plan adapt (2026-10-14) ──
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATS Degree-of-Saturation feed + balance gate + plan adapt (2026-10-14) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # These test the SCATS mechanism DIRECTLY -- balance every approach's measured
 # degree of saturation -- instead of the analytic-delay ledger. All default OFF
 # (inert until an arm enables them). See engine._approach_ds_snapshot /
@@ -284,6 +358,15 @@ DS_CLAMP_MAX      = 2.0     # clamp on reported DS (oversaturation headroom).
 # whose density x speed hits the saturation cap could otherwise report DS~167
 # ([DS CYCLE] DSmax=167.47) and drive the cycle off a meaningless value.
 DS_RAW_CLAMP_MAX  = 5.0
+# DS_ARRIVAL_SAT_CAP_X (2026-10-28): cap the ARRIVAL-flow demand term _q at
+# mu*lanes*X before it becomes ds_base = q/cap. _smoothed_section_flow_vph can
+# return millions of veh/h when the detector/virtual-loop tier over-counts, so
+# ds_base hit 41167 pre-clamp and pinned ds_max at the 4.99 order-ceil (no
+# magnitude left to size a split). The DISCHARGE and LANE demand terms already
+# cap at mu*lanes*1.15; the arrival term was the one hole. 0.0 = OFF
+# (byte-identical); 1.15 = SCATS-standard. The queue/spillback floors still carry
+# the TRUE oversaturation signal, so this loses only the artefact. See ds-demand-inflation.
+DS_ARRIVAL_SAT_CAP_X = 0.0
 # FLOW_DET_LANE_SCALE: the GKDetectors are lane-specific and not every lane is
 # instrumented, so a detector loop count is scaled to the full approach by
 # lanes/loops. Off => use the raw summed count.
@@ -312,7 +395,7 @@ DS_CAP_FLOOR_GREEN_S = 7.0
 # (~135 s), which made the plan barely move. 15 s lets the split/cycle review run
 # ~9x per cycle; the per-interval MOVE is still bounded by the step flags.
 DS_ADAPT_EVERY_S  = 15.0
-# ── ORDER-PRESERVING DS COMPRESSION (2026-10-20) ──────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ORDER-PRESERVING DS COMPRESSION (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The HARD clamp (DS_CLAMP_MAX=2.0 reported / DS_RAW_CLAMP_MAX=5.0 raw) flattens
 # every oversaturated phase to the SAME number, so the split/cycle law cannot
 # tell WHICH saturated phase is worse: greens tie-bounce instead of converging
@@ -327,7 +410,7 @@ DS_ORDER_PRESERVE = True    # ON (2026-10-20): hard clamp at 2.0 flattened every
                             # resolved. Compress above 2.0 instead (monotone ->
                             # DS_ORDER_CEIL) so ds_max reflects true severity.
 DS_ORDER_CEIL     = 5.0
-# ── CYCLE-TIED SOLVE (2026-10-20) ─────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CYCLE-TIED SOLVE (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Real SCATS re-constitutes the split plan EVERY cycle from the last cycle's
 # measured DS, and the per-cycle adjustment is a FRACTION OF THE CYCLE, not a
 # fixed 5 s trickle. These two flags make the solve loop faithful:
@@ -342,13 +425,23 @@ DS_SOLVE_PER_CYCLE   = False
 DS_SPLIT_MAX_MOVE_FRAC = 0.0
 DS_IN_LEARNER_STATE = False # append a DS-regime bin to the BXT learner state.
 DS_STATE_EDGES    = None    # edges for the DS-regime bin (None => [0.6,0.85,1.0]).
+# SYSTEM REGIME (2026-10-30): SCATS-style discrete operating state
+# (FREE / RISING / SATURATED / INCR_FAILURE / SPILLBACK) derived from DS, the
+# standing queue and the connector occupancy. SYSTEM_REGIME_LOG emits [REGIME]
+# on every change so the run shows which state the controller believes it is in;
+# SYSTEM_REGIME_IN_STATE appends it as ONE extra discrete state dimension so the
+# policy can learn regime-specific actions.
+SYSTEM_REGIME_LOG       = True
+SYSTEM_REGIME_IN_STATE  = False
+REGIME_QUEUE_MIN_VEH    = 3.0   # standing queue that counts as "queued"
+REGIME_INCR_CYCLES      = 1.0   # cycles of DS>=1 + queue before INCR_FAILURE
 LOG_DS_ADAPT      = True     # per-move [DS ADAPT] log line (silenced in batches).
 # SELF-GATING (no external veto): fold the convex conflicting-approach Webster
 # delay into the action's OWN cross_cost so a bad action scores below NO_ACTION
 # on its merits. The 1/(1-x) convexity is the gate. Preferred over DS_BALANCE_GATE.
 DS_COST_IN_REWARD = False   # add the SCATS self-gating cost to the action reward.
-DS_COST_CAP_PAXS  = 6000.0  # bound on the self-gating cost (pax·s).
-# ── Transit-aware degree of saturation (2026-10-19) ───────────────────────────
+DS_COST_CAP_PAXS  = 6000.0  # bound on the self-gating cost (paxÃƒâ€šÃ‚Â·s).
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Transit-aware degree of saturation (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # A bus carries BusOcc passengers vs CarOcc in a car, so an approach serving
 # buses carries MORE people per vehicle-second than its raw veh/h flow shows.
 # When DS_PAX_WEIGHTED the measured phase demand is scaled by the passenger-
@@ -358,7 +451,7 @@ DS_COST_CAP_PAXS  = 6000.0  # bound on the self-gating cost (pax·s).
 # Default OFF + weight 1.0 => every other arm's DS stays raw SCATS veh/h.
 DS_PAX_WEIGHTED   = False
 DS_BUS_PAX_WEIGHT = 1.0
-# ── SCATS TRANSIT PRIORITY (graded levels, 2026-10-19) ────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATS TRANSIT PRIORITY (graded levels, 2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS public-transport priority runs at graded levels. When SCATS_TRANSIT_PRIORITY
 # is on, a detected bus raises its phase's DS (bus pax-weight set by the level), so
 # the SCATS split law STRETCHES the transit phase's green -- the real SCATS
@@ -368,7 +461,7 @@ DS_BUS_PAX_WEIGHT = 1.0
 SCATS_TRANSIT_PRIORITY = False
 SCATS_TP_LEVEL         = 'medium'
 SCATS_TP_WEIGHT        = 0.0
-# ── DS-driven CYCLE-LENGTH adapt (2026-10-19) ─────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DS-driven CYCLE-LENGTH adapt (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS cycle selection: grow the cycle when the BUSIEST approach's DS exceeds
 # DS_CYCLE_TARGET (more capacity for the critical approach), shrink it when every
 # approach is slack (less delay at low demand). Green time is scaled
@@ -387,7 +480,7 @@ DS_CYCLE_MAX_RATIO = 1.5
 # Absolute-second fallback ONLY when the commissioned cycle cannot be read.
 DS_CYCLE_MIN_S    = 0.0
 DS_CYCLE_MAX_S    = 0.0
-# ── MASTER (regional) COMMON-CYCLE planner (2026-10-19) ───────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MASTER (regional) COMMON-CYCLE planner (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS is TWO-LEVEL: the LOCAL controller runs the DS split/cycle logic per
 # junction (the tactical half), and a MASTER (regional) planner embeds the
 # strategic decision -- ONE common cycle for the whole subsystem, solved from the
@@ -434,7 +527,7 @@ DS_SPLIT_PROPORTIONAL = False
 # g_p = (C-L) * y_p / sum(y). Replaces the floor+proportional form, which did NOT
 # equalise DS. Off => the old floor + free*(w/sum w) allocation.
 DS_SPLIT_DS_EQUAL = True
-# ── REAL-TIME CYCLE / SEQUENCE HEURISTICS (2026-10-20) ────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ REAL-TIME CYCLE / SEQUENCE HEURISTICS (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS_CYCLE_LAW selects how the target cycle is solved each interval:
 #   "ds_curve" (SCATS DS->C calibration curve), "webster" (real-time Webster
 #   optimal C = (1.5L+5)/(1-Y) from the measured critical flow ratio Y), or
@@ -444,7 +537,7 @@ SCATS_CYCLE_LADDER_S = 5.0
 # SCATS_SEQUENCE_BY_Y: order the phase ring by the measured critical flow ratio
 # y_p (busiest first) each adaptation, i.e. a real-time phase-SEQUENCE solve.
 SCATS_SEQUENCE_BY_Y  = False
-# ── ACTUATED GAP-OUT (2026-10-20) ─────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ACTUATED GAP-OUT (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # "Switch to service when cleared": end the current phase early once its queue is
 # GONE and arrivals have dried up, and move to the next phase that HAS demand.
 # Guards protect future vehicles: never before the min green, never while a queue
@@ -485,7 +578,7 @@ SCATS_MAX_OUT_GRACE_S      = 5.0
 # instead of trusted. Costs one cached snapshot read per junction per interval.
 DS_TRUTH_CHECK             = True
 DS_TRUTH_INTERVAL_S        = 30.0
-# ── CYCLE CAP (2026-10-21) ───────────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CYCLE CAP (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The precondition for enabling SCATS_MAX_OUT_PLAN_AWARE. Actuated extend (+ any
 # GE/INS debt the cycle recovery could not trim) may add at most
 # max(CYCLE_CAP_SLACK_S, CYCLE_CAP_SLACK_FRAC * commissioned_cycle) seconds per
@@ -496,7 +589,29 @@ DS_TRUTH_INTERVAL_S        = 30.0
 CYCLE_CAP_ENABLE      = False
 CYCLE_CAP_SLACK_S     = 4.0
 CYCLE_CAP_SLACK_FRAC  = 0.05
-# ── DS BIAS / RELIABILITY (2026-10-21) ───────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATS FLEXIBLE PROFILE (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# An explicitly AGGRESSIVE, SCATS-shaped actuation profile. When enabled:
+#   * min green = SCATS_FLEX_MIN_GREEN_S (6 s), not the 10 s gap-out floor;
+#   * max green is PER PHASE = min(SCATS_FLEX_MAX_GREEN_S,
+#     commissioned*(1+SCATS_FLEX_MAX_BAND), commissioned+SCATS_FLEX_MAX_ABS_S)
+#     instead of the flat 50 s / +8 s ceiling;
+#   * the phase stays green while the arrival GAP is <= SCATS_FLEX_GAP_S
+#     (a real gap timer: 3.5 s ~ 1029 veh/h), not a fixed flow floor;
+#   * SCATS_FLEX_PERSIST keeps the adapted duration as the next cycle's
+#     reference (SCATS increments the plan, it does not reset it every cycle),
+#     bounded by the immutable commissioned snapshot and by the ABSOLUTE cycle
+#     band SCATS_FLEX_CYCLE_BAND (% of the commissioned cycle).
+# Default OFF. Enable WITH CYCLE_CAP_ENABLE; persist mode uses the absolute
+# cycle band instead of the per-cycle slack, so the two are complementary.
+SCATS_FLEX_PROFILE    = False
+SCATS_FLEX_PERSIST    = False
+SCATS_FLEX_CYCLE_BAND = 0.15
+SCATS_FLEX_MIN_GREEN_S = 6.0
+SCATS_FLEX_GAP_S       = 3.5
+SCATS_FLEX_MAX_GREEN_S = 60.0
+SCATS_FLEX_MAX_BAND    = 0.50
+SCATS_FLEX_MAX_ABS_S   = 15.0
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DS BIAS / RELIABILITY (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # _finalize_ds_truth_check writes LOG_DIR/ds_bias_calibration.json every run.
 # With DS_BIAS_CORRECT the per-(junction,phase) measured queue bias is subtracted
 # from the standing-queue term before it feeds DS. With DS_GATE_REQUIRE_RELIABLE
@@ -510,7 +625,25 @@ DS_GATE_REQUIRE_RELIABLE   = False
 DS_CALIB_MIN_N             = 50
 DS_CALIB_MAX_MAE_VEH       = 6.0
 DS_CALIB_MIN_CORR          = 0.25
-# ── SPILLBACK GATE (2026-10-20) ───────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DETECTION COVERAGE (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# TSP_Detections used to be written ONLY from the TSP decision tree, so a bus
+# that passed a junction without reaching a decision path was never counted
+# (~40% of N_BusTrips on the 2026-10-21 runs). With DETECT_AT_ZONE_ENTRY the
+# position tracker records one detection per (junction, bus) ZONE ENTRY, for
+# every junction, independent of the decision tree. Deduped per (junction, bus)
+# with the controller's re-arm window, so a decision-path detection on the same
+# approach does not double-count. Turn off to restore decision-only counting.
+DETECT_AT_ZONE_ENTRY       = True
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ TUNING GATE (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# Emits one unconditional PASS/FAIL block at AAPIFinish covering: detection
+# coverage (detections vs bus passages), detector-stat gathering, turning-stat
+# availability, position tracking, and whether the DS split loop actually moved
+# green this run. It is the "are we really tuning?" tripwire.
+TUNING_GATE_ENABLE         = True
+DET_COVERAGE_MIN           = 0.75
+# Initial-vs-final plan capture + cycle/Purdue figures at AAPIFinish.
+PLOT_PLAN_EVOLUTION        = True
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SPILLBACK GATE (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # WIN-ONLY actuation that preserves the commissioned backbone: if the CURRENT
 # phase's downstream receiving link is >= SPILLBACK_GATE_FRAC full, continuing its
 # green only pumps vehicles into a standing queue (the cascade that collapses
@@ -536,7 +669,7 @@ SCATS_PHASE_ORIGIN_FALLBACK = False
 # (>= SPILLBACK_GATE_FRAC), the queue is downstream-limited -> more green is thrown
 # away and starves a phase that CAN discharge, so suppress the queue boost there.
 RELIEF_NEEDS_DOWNSTREAM = False
-# ── ACTUATED EXTEND (2026-10-21) ──────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ACTUATED EXTEND (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Companion to gap-out: while the CURRENT phase is still BUSY (standing queue OR
 # arrivals above a floor) and its downstream has room, stretch its green by
 # ACT_EXTEND_STEP_S once per step, up to ACT_EXTEND_MAX_GREEN_S. With gap-out
@@ -553,6 +686,14 @@ ACT_EXTEND_ABS_CAP_S   = 8.0    # ... and never more than +8s absolute
 ACT_EXTEND_MIN_OCC_VEH = 2.0    # busy if standing queue >= this ...
 ACT_EXTEND_MIN_FLOW_VPH = 300.0 # ... OR live arrivals >= this
 ACT_EXTEND_BUS_PHASE   = False  # leave the bus phase to the bus-priority module
+# DONOR REDUCTION (2026-10-21): an extension must be PAID FOR. When enabled, the
+# seconds added to the current phase are taken from the following phase(s) in
+# ring order (floored at min green, never the bus phase, never a ped/clearance
+# phase). None = follow SCATS_FLEX_PROFILE (on for the flex profile, off for
+# legacy arms). ACT_EXTEND_DONOR_MAX_FRAC caps how much of any one donor's green
+# may be taken per extension.
+ACT_EXTEND_DONOR           = None
+ACT_EXTEND_DONOR_MAX_FRAC  = 0.25
 # LEAD/LAG left-turn ordering: heavy through (y >= SCATS_LEADLAG_HEAVY_Y) -> the
 # turn LAGS behind it; light through -> the turn LEADS. Applied via _plan_sequence.
 SCATS_LEADLAG          = False
@@ -567,7 +708,57 @@ SCATS_PLAN_LIBRARY = False
 # that raised arrivals-on-green; reverse when POG falls (derivative-free).
 SCATS_POG_OFFSETS  = False
 SCATS_POG_STEP_S   = 3.0
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ POG ADAPTIVE KALMAN (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# The Purdue arrivals-on-green fraction and the main-approach flow feeding it
+# are each filtered by a 2-state (level, slope) Kalman whose measurement noise
+# is re-estimated online. The offset hill-climb then acts on the filtered TREND
+# (slope vs its own sd) and scales the step by that confidence, instead of
+# comparing two noisy EWMA values. POG_KF_FULL_FLOW_VPH is the flow at which a
+# POG sample is fully trusted (thinner samples are smoothed harder).
+POG_KALMAN             = True
+POG_KF_R0              = 0.05
+POG_KF_Q_LEVEL         = 0.001
+POG_KF_Q_SLOPE         = 1e-6
+POG_KF_FULL_FLOW_VPH   = 600.0
+POG_KF_TREND_K         = 1.5
+POG_KF_MAX_STEP_S      = 4.0
+# POG sampling cadence (s). POG must be sampled even when the arm fires no TSP
+# actions, otherwise the offset hill-climb sees a frozen value and the Kalman
+# flag is unobservable (two arms become byte-identical).
+POG_SAMPLE_S           = 10.0
 SCATS_POG_EPS      = 0.01
+# ---------------------------------- SCATS STATE SOLVE (2026-10-22) ----------
+# Sanctioned variant: at startup, solve the WHOLE coordinated state from the
+# SCATS commissioned plans and the bus timetable, instead of crawling offsets
+# online. Cycle comes from the site's PDnCL; the main/bus stage green share
+# comes from the SCATS stage ends (stage composition is not carried by the RAM
+# export, so the non-main splits keep the model's commissioned proportions);
+# OFFSETS are solved exactly (1 s exhaustive circular search) to maximise the
+# TIMETABLE-predicted Purdue arrivals-on-green (POG). Applied once, then the
+# online POG/master offset crawls are held off so the state is not perturbed.
+SCATS_POG_STATE_SOLVE       = False
+SCATS_POG_STATE_START_S     = 5.0      # first post-manage tick to solve (s)
+SCATS_POG_STATE_SPLITS      = True     # rewrite splits from the SCATS state
+SCATS_POG_STATE_OFFSETS     = True     # apply the solved offsets
+SCATS_POG_STATE_HOLD        = True     # hold offsets: disable online crawls
+SCATS_POG_STATE_HOLD_SPLITS = False    # also freeze DS split adaptation
+SCATS_POG_STATE_BUS_SPEED_MS = 12.0    # timetable arrival prediction speed
+SCATS_POG_STATE_DWELL_S     = 0.0      # per-junction dwell added to arrivals
+# GUARDS (2026-10-22 v2): the first run forced every site to the SCATS cycle
+# (150 s) and accepted any largest-stage share, which inflated cycles and
+# starved the main. Clamp the cycle to the MODEL's commissioned cycle and only
+# switch a split when the bus-phase share change is modest.
+SCATS_POG_STATE_CYCLE_BAND  = 0.15     # +/- fraction of the model cycle
+SCATS_POG_STATE_SPLIT_SHARE_TOL = 0.25 # max relative bus-share change to accept
+# Safe default: do NOT deliver an offset as a raw current-phase extension.
+# That primitive does not conserve the cycle (observed 120->260 s) and lands
+# on whichever phase happens to be current. Only opt in once the offset is
+# applied with an explicit compensating trim.
+SCATS_POG_STATE_ALLOW_CYCLE_SHIFT = False
+SCATS_POG_STATE_HORIZON_S   = 7200.0   # timetable horizon to sample
+SCATS_POG_STATE_FALLBACK_HEADWAY_S = 600.0   # if a line has no timetable
+SCATS_POG_STATE_MAX_SHIFT_FRAC = 1.0   # 1.0 = solve the full offset in one go
+SCATS_POG_STATE_MIN_GAIN    = 0.0      # only apply offsets that raise POG by this
 # Small-increment damping for the proportional split: move each phase at most this
 # many seconds per cycle toward the flow-ratio target (SCATS reviews/modifies the
 # plan "in small increments, almost cycle-by-cycle"). 0 disables the damping.
@@ -583,7 +774,7 @@ DS_SPLIT_CRITICAL_LANE = False
 # junction's commissioned cycle exceeds this factor x the running minimum, so a
 # 60 s site is never dragged onto a 120-135 s common cycle.
 DS_MASTER_SUBSYS_SPREAD = 1.6
-# ── DYNAMIC SUBSYSTEM MARRIAGE / DIVORCE (2026-10-19) ─────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DYNAMIC SUBSYSTEM MARRIAGE / DIVORCE (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS links (marries) adjacent subsystems onto one common cycle while their
 # REQUIRED cycles are compatible and splits them (divorces) when demand pushes a
 # junction's required cycle away from its neighbours'. When DS_MARRY_DIVORCE is on,
@@ -614,7 +805,7 @@ SCATS_SIDE_MONITOR = True
 # starves the main approach). Lets every SCATS/SCOOT arm run PLAN_OPTIMIZE=True
 # (the plan is still logged/applied/reasserted) without the misleading prior.
 PLAN_MEASURED = False
-# ── PLAN_SCATS_HIST (2026-10-20): seed the startup plan from the junction's
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PLAN_SCATS_HIST (2026-10-20): seed the startup plan from the junction's
 # REAL SCATS commissioned plan (see engine._plan_opt_scats_hist). Source: the
 # iMove SCATS File Share region RAM export (the Central Manager .bak is a SQL
 # Server backup, unreadable without a restore). Loader: scats_hist_plan.py.
@@ -625,7 +816,7 @@ PLAN_SCATS_HIST = False
 SCATS_HIST_SHARE = r'C:\Users\ahernz\github_for_aimsun\iMove SCATS File Share'
 SCATS_HIST_DAYTYPE = 8
 SCATS_HIST_TOD_MIN = 480.0
-# ── VIRTUAL INDUCTIVE LOOP (2026-10-19) ───────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ VIRTUAL INDUCTIVE LOOP (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Aimsun's own loop-like count (all-type partial statistics) returns report != 0
 # for EVERY KG modeled/virtual section (verified: 0 of 53 live readings landed on
 # tier=partial), so the controller was running off a density x speed SNAPSHOT and
@@ -649,7 +840,7 @@ VLOOP_MIN_WINDOW_S = 10.0
 #   at the clamp and produced garbage splits/cycle/offsets).
 VLOOP_VISIT_GAP_S  = 10.0
 VLOOP_SANE_FACTOR  = 1.15
-# ── OCCUPANCY / SPILLBACK PRESENCE (2026-10-19) ───────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ OCCUPANCY / SPILLBACK PRESENCE (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # A crossing counter misses a vehicle that crosses the loop then STOPS: it ages
 # out of the window and flow reads 0 while the queue still stands, so the phase
 # looks idle and gets starved (-> spillback). The loop also tracks STANDING
@@ -661,12 +852,29 @@ VLOOP_SANE_FACTOR  = 1.15
 VLOOP_OCC_SPILLBACK = True
 VLOOP_STOP_KPH      = 3.0
 VLOOP_OCC_ALPHA     = 0.3
+# (2026-10-23) Prime the virtual loop on the DS-measured sections inside the DS
+# snapshot, so stopped-occupancy + discharge are populated for EVERY junction's
+# resolved approach, not only those the MAIN/SIDE scan happens to cover. Without
+# this, junctions whose resolved upstream approach was never scanned read
+# per_occ=0.0 (and discharge=0) despite a standing queue.
+DS_PRIME_VLOOP      = True
 # VLOOP_OCC_MIN_VEH raised 2 -> 6 (2026-10-19): a 2-vehicle standing queue was
 # arming the spillback floor and pinning DS at 1.0 corridor-wide ([SPILLBACK]
 # occ=2.0 veh ... DS floored 1.00, 249x/run). A real spillback is a queue that
 # cannot clear, not two cars waiting at a red.
 VLOOP_OCC_MIN_VEH   = 6.0
 VLOOP_SPILL_DIS_FRAC = 0.5
+# SPILLBACK FLOOR ROOT FIX (2026-11-01). On KG's short approach sections the
+# virtual-loop stopped EWMA under-reads a standing queue (DS truth check: inter
+# 39593 read occ 1.8 veh vs 5.3 true, corr 0.09), so the spillback floor never
+# armed and the DSW split solver bled the saturated main of its green (seed-500
+# main delay +28%, obj -21.6%). When on: (1) floor _occ_veh with the loop-
+# independent micro-API slow-vehicle count so it tracks the real queue, and (2)
+# arm the floor on a PER-LANE threshold (VLOOP_OCC_MIN_VEH_PER_LANE * lanes)
+# instead of the flat 6-veh count, which sits above 39593's true main queue.
+# Off by default -> paper champions byte-identical; enabled on the ACT A/B arm.
+SPILLBACK_DIRECT_OCC = False
+VLOOP_OCC_MIN_VEH_PER_LANE = 1.5
 # SCATS measured-only side flow: when on, the side/cross shockwave flow uses the
 # virtual loop (0 on an empty approach) instead of the OD demand seed -- SCATS is
 # measured-detector, not demand-prior. Off by default (TSP arms keep the seed to
@@ -710,6 +918,34 @@ DS_PER_TURN_FLOW = False
 # it (cuts the main arterial's 81s band to ~19s) and gridlocks the corridor. 0 =
 # off (unbounded, old behaviour). 0.35 = adapt within +/-35% of commissioned.
 DS_SPLIT_COMMISSIONED_BAND = 0.0
+# HARD BUS/MAIN FLOOR under DS adaptation: never let the bus phase fall below
+# this fraction of its COMMISSIONED green (or the model-plan green captured at
+# startup). DS adapt was walking the main from 65 s to 15 s and the cycle from
+# 135 s to 85 s; this floor + the offset-preserving writer stop that.
+DS_BUS_FLOOR_FRAC = 0.85
+# Apply a plan-duration rewrite only at a BUS-PHASE BOUNDARY (current phase is
+# the bus phase, or the bus phase is next). Mid-cycle rewrites cannot preserve
+# the offset and were the source of most [PLAN FAILSAFE] `current phase
+# infeasible` skips. The target is kept in _plan_target_greens and applied at
+# the next boundary.
+PLAN_OFFSET_BUS_BOUNDARY_ONLY = True
+# (2026-10-23) Offset-hold bypass. When True (default) a split rewrite pins the
+# ABSOLUTE model bus-green start (t_bus) so the coordinated offset is preserved
+# exactly -- correct for arms that re-derive offsets, but when the adaptive
+# planner is also changing cycle/splits the required current-phase green keeps
+# exceeding its max -> the "current phase infeasible"/fallback storm, and the
+# gentle adaptation never lands. Set False on arms that simply HOLD the
+# commissioned offset and nudge splits within a band: the rewrite then applies
+# the target durations directly (the small split delta drifts the wave only
+# slightly) with no infeasible churn.
+PLAN_OFFSET_PRESERVE = True
+# (2026-10-23) Re-apply deadband for the offset-hold path (PLAN_OFFSET_PRESERVE
+# False). Applying durations directly slides the green wave a little each time, and
+# the cycle planner's per-solve split hunts ~+/-4s, so re-applying every cycle
+# drifts the coordinated offset and wrecks main progression. Skip the re-apply when
+# the new plan is within this many seconds of the last-applied one on every phase:
+# the first demand-responsive adaptation still lands; per-cycle noise does not.
+PLAN_REAPPLY_DEADBAND_S = 4.0
 # DEMAND-WEIGHTED BAND EXCEPTION (2026-10-20): the commissioned band can
 # PERMANENTLY starve a phase the commissioned plan itself under-serves (39590:
 # the 4-lane main got a ~6s commissioned green; 1.3x of 6s is 7.8s -- the
@@ -720,7 +956,7 @@ DS_SPLIT_COMMISSIONED_BAND = 0.0
 DS_BAND_DEMAND_ENABLE = False
 DS_BAND_DEMAND_DS     = 3.0
 DS_BAND_DEMAND_MULT   = 3.0
-# ── SCATS BUS PRIORITY JIT GATE (2026-10-20) ─────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATS BUS PRIORITY JIT GATE (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Naive grant = +green whenever a bus sits on the bus-phase approach, even if
 # the bus would CLEAR the natural green anyway (pure donor loss) or is so far
 # out that the boost is spent before it arrives. With BUS_PRIO_JIT_ENABLE the
@@ -737,7 +973,7 @@ BUS_PRIO_JIT_STRIKE_S = 30.0
 # non-pedestrian phase (after its min-green) and bring the bus green forward. Bounded
 # by the bus-prio cooldown; never skips a pedestrian phase.
 BUS_PRIO_RECALL_ENABLE = False
-# ── QUEUE SERVE FLOOR (2026-10-20) ──────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ QUEUE SERVE FLOOR (2026-10-20) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # "All queued vehicles can at least make it through": a phase whose MEASURED
 # standing queue needs longer to discharge than its split floor gets the
 # queue-discharge time as a floor, capped at QUEUE_SERVE_CAP_S and at
@@ -745,7 +981,7 @@ BUS_PRIO_RECALL_ENABLE = False
 QUEUE_SERVE_FLOOR     = False
 QUEUE_SERVE_CAP_S     = 20.0
 QUEUE_SERVE_MAX_FRAC  = 0.35
-# ── QUEUE RELEASE DIAG (2026-10-20, zero-behaviour) ─────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ QUEUE RELEASE DIAG (2026-10-20, zero-behaviour) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Per-phase standing queue at green start vs green end -> how much each green
 # actually discharged. One [QUEUE REL] summary per junction per period.
 QUEUE_RELEASE_DIAG    = True
@@ -761,7 +997,19 @@ BUS_PRIO_COOLDOWN_S  = 60.0
 # Reference standing queue (stopped veh per lane) at which the queue-aware split
 # weight reaches ~1.0 (= a saturated flow ratio). Smaller => a queue dominates the
 # split sooner / harder (serves the backlog more aggressively).
-DS_QUEUE_SAT_VEH_PER_LANE = 3.0
+#
+# RECALIBRATED 2026-10-30: was 3.0, which made 15 stopped veh/lane read DS 5.0 --
+# the DS_RAW_CLAMP_MAX ceiling -- so EVERY phase of every junction reported ~4.5
+# and the split law lost all discrimination ([DS_TERMS] DS mean=4.49 max=5.00 over
+# 10,008 snapshots). 10 veh/lane is a realistic per-lane queue at capacity
+# (10 x ~7 m = 70 m, ~2.5 s of discharge at 1800 veh/h/lane), so DS 1.0 now means
+# a genuinely saturated queue rather than a medium one.
+DS_QUEUE_SAT_VEH_PER_LANE = 10.0
+# Hard cap on the queue-derived DS term. One measurement (a long approach with
+# several lanes of standing vehicles) must never be able to pin the clamp on its
+# own: above this the flow ratio decides, so oversaturation still orders phases
+# instead of flattening them all to 5.0. 0 disables the cap.
+DS_QUEUE_TERM_CAP = 3.0
 # NO-SHUTDOWN GUARD: never let a phase with ANY detected demand (arrivals or a
 # standing/stopped queue -- both measurable WITHOUT green) be skipped or folded.
 # A discharge-based DS reads 0 for a phase with no green, so without this guard
@@ -770,7 +1018,7 @@ DS_QUEUE_SAT_VEH_PER_LANE = 3.0
 # thresholds. PHASE_PRESENCE_FLOOR is the floored weight. Monitored as [STARVE_GUARD].
 PHASE_STARVE_GUARD   = True
 PHASE_PRESENCE_FLOOR = 0.12
-# ── SCATS CYCLE CALIBRATION CURVE (2026-10-19) ────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCATS CYCLE CALIBRATION CURVE (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS derives the cycle length from the critical DS via an operator CALIBRATION
 # CURVE (two factors), not a fixed threshold step. When on, the DS-cycle law sets
 # C = c0 * (1 + K1 * (ds_crit - DS_CYCLE_TARGET)**K2) clamped to the range, then
@@ -787,7 +1035,7 @@ SCATS_CYCLE_K2     = 1.0
 DS_MASTER_DS_CYCLE = True
 DS_MASTER_DS_WARM_S = 120.0
 DS_MASTER_DS_STEP_S = 5.0
-# ── PER-LANE DS / WORST LANE (2026-10-19) ─────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PER-LANE DS / WORST LANE (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # SCATS measures DS per LANE and takes the WORST lane of the movement. The virtual
 # loop tags every crossing with the vehicle's lane (InfVeh.numberLane) and the
 # turning it serves (InfVeh.idSectionTo); the phase DS is then max over the lanes
@@ -795,13 +1043,13 @@ DS_MASTER_DS_STEP_S = 5.0
 # whose signal group carries that movement instead of being averaged away by the
 # summed q/(mu*lanes*g/C).
 DS_LANE_WORST      = True
-# ── MASTER BROADCASTS SPLITS (2026-10-19) ─────────────────────────────────────
-# The master computes each member's split plan on the common cycle (green ∝
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MASTER BROADCASTS SPLITS (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# The master computes each member's split plan on the common cycle (green ÃƒÂ¢Ã‹â€ Ã‚Â
 # worst-lane flow ratio) and parks it on the member's _master_split_targets, which
 # the local DS adapt adopts as its base -- so the subsystem shares a coherent SPLIT
 # plan, not just a common cycle + offsets.
 DS_MASTER_SPLITS   = True
-# ── PHASE REDUCTION (2026-10-19) ──────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PHASE REDUCTION (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # At a multi-phase site, fold a phase whose measured demand is negligible and that
 # shares an approach with a busier phase INTO the busier phase, and reduce the
 # enforced phase sequence accordingly -- the SCATS behaviour of servicing fewer
@@ -809,7 +1057,7 @@ DS_MASTER_SPLITS   = True
 # which a non-bus phase is foldable. Makes >RESTRUCTURE_MAX_PHASES sites eligible.
 RESTRUCTURE_MERGE_SAME = False
 RESTRUCTURE_MERGE_DS   = 0.10
-# ── SCOOT-RS (2026-10-19): the TRL-SCOOT control law ──────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ SCOOT-RS (2026-10-19): the TRL-SCOOT control law ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # A distinct adaptive law from SCATS, ported from the SCOOT reference (scoot-ai):
 #   CYCLE (regional)  -- the MASTER grows the common cycle when the subsystem's
 #     CRITICAL (busiest) degree of saturation exceeds SCOOT_RS_TARGET_DS and
@@ -830,12 +1078,12 @@ SCOOT_RS_MIN_RATIO    = 0.5    # common cycle >= MIN_RATIO x group commissioned
 SCOOT_RS_MAX_RATIO    = 1.5    # common cycle <= MAX_RATIO x group commissioned
 SCOOT_RS_WARMUP_S     = 300.0  # use the demand (Webster) plan until flows warm up
 SCOOT_RS_OFFSETS      = True   # regional green-wave offsets (PLAN_OPTIMIZE_OFFSETS)
-# ── NET PASSENGER THROUGHPUT objective (2026-10-14) ───────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ NET PASSENGER THROUGHPUT objective (2026-10-14) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Make the reward the people PUT THROUGH the system (net of switching capacity
 # loss) instead of a delay ledger -- ungameable by starvation. See
 # engine._net_pax_throughput_delta. Blend the old ledger back via W_DELAY_LEDGER.
 THROUGHPUT_REWARD = False   # net-throughput IS the objective when True.
-W_THROUGHPUT      = 1.0     # weight on the net-throughput term (pax·s).
+W_THROUGHPUT      = 1.0     # weight on the net-throughput term (paxÃƒâ€šÃ‚Â·s).
 W_DELAY_LEDGER    = 0.0     # weight on the legacy delay ledger (0 => pure throughput).
 THRU_STARTUP_LOST_S = 2.0   # per-phase startup lost time in the capacity model.
 # Multi-head Q: separate Q-head per objective (bus-priority vs net-throughput),
@@ -845,7 +1093,7 @@ MULTIHEAD_ACTION_FAMILY = False   # deliberate redesign: throughput head keys di
                                   # action family so the two heads can choose differently.
 MULTIHEAD_W_NET   = 1.0     # base weight of the network (throughput) head.
 MULTIHEAD_NET_GATE_DSMIN = 0.60  # DS below which the net head is idle (free flow).
-# ── Flags that WERE orphans (2026-10-15 flag-propagation audit) ───────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Flags that WERE orphans (2026-10-15 flag-propagation audit) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # These were read only via globals().get(...) with an inline default and were in
 # NEITHER the engine propagation whitelist NOR MODE_FLAGS -> an arm's override
 # never took AND (for engine-read ones) could carry over between arms. Declaring
@@ -854,7 +1102,7 @@ MULTIHEAD_NET_GATE_DSMIN = 0.60  # DS below which the net head is idle (free flo
 MODE_NET_BENEFIT_GATE = True   # engine commit-veto clamp enable (SCATS/THRU arms
                                 # set this False to run ungated).
 NET_GATE_RATIO        = 1.0    # break-even ratio the clamp targets.
-# ── Global-delay break-even + main-corridor floor (2026-10-17) ─────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Global-delay break-even + main-corridor floor (2026-10-17) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The scored objective is PaxEquivPassages / TotalPassDelay_hrs (network-wide),
 # but every guard above is per-junction and the DS/bargain arms switch
 # MODE_NET_BENEFIT_GATE off -- so nothing stopped a locally-"cheap" action from
@@ -871,12 +1119,59 @@ BXT_WARMSTART_FROM_SHARED = False  # pool early experience across signals (CELLQ
 # Minimum effective bus delay required before BXT may choose a TSP action.
 # A positive experiment override replaces SELFORG_MIN_BUS_DELAY_S.
 CELLQLEARN_MIN_GAIN_S = 0.0
+# 2026-11-02 FIX: gate the side_ratio veto (below) on the MARGINAL pax*s
+# trade-off -- bus pax*s saved vs cross-traffic pax*s paid -- instead of the
+# old aggregate-vs-single ratio, which latched the gate shut. False restores
+# the old ratio so published runs stay reproducible.
+CELLQ_SIDE_RATIO_MARGINAL = True
+# 2026-11-03: re-price the side_ratio veto on the BOUNDED marginal displaced
+# green (drops the oversaturation residual / multi-cycle / measured-v/c / cascade
+# amplifiers) and credit the bus pax*s the action targets, so a small insertion
+# is no longer vetoed by a thousands-of-pax*s pessimistic upper bound. Default
+# False -> gate unchanged, published runs reproducible. ON for the _OPEN arm.
+CELLQ_SIDE_RATIO_GATE_BOUNDED = False
+# 2026-11-03: model an insertion as a TRUNCATING, position-aware action -- the
+# bus approach waits only to the bus's arrival (bus_eta) or one intergreen, not
+# the full remaining red + a transition. Brings the bus green forward, crediting
+# the bus AND the cars queued on its phase (the approach cell). Default False ->
+# the old (pessimistic) INS timing, published runs reproducible. ON for _OPEN.
+CELLQ_INS_POSITION_BENEFIT = False
+# 2026-11-03: the committed cpc comes from _dctsp_eval_action, whose cross cost
+# is _dctsp_cross_traffic_delay_s (side FLOW). A JAMMED cross queue crosses no
+# loop -> flow~0 -> priced ~0 (seed-500 KG: pred_other=22 beside a 50-veh cross
+# queue). The standing-vehicle side floor (_compute_side_delay_penalty, engine
+# ~13013) already exists but only fires under LIVE_COST_ALWAYS (which ALSO floors
+# the main queue). This flag applies ONLY the side floor, so a jammed cross
+# street can't price 0, independent of LIVE_COST_ALWAYS. Default False ->
+# published runs reproducible. ON for the _OPEN arm.
+CELLQ_SIDE_QUEUE_FLOOR = False
+# 2026-11-03: charge the COORDINATION-break (offset-shift) cost into the committed
+# cpc for GE/GREEN_REALLOC. _progression_cost prices the main coordinated platoon
+# an extension pushes off green (POG-weighted, both bands). It was only in the
+# GATE (_bxt_reward_for, BXT_POG_REWARD) and the PROGRESSION_GATE veto, never in
+# the committed cost -- so the decision itself (seed-500 KG: chain=0) could pick a
+# locally net-positive GE that broke the green wave downstream (+134 pax*h on the
+# main). When on, the reward ITSELF trades off the progression loss. Weight is
+# BXT_POG_WEIGHT. Default False -> published runs reproducible. ON for _OPEN.
+PROGRESSION_COST_IN_REWARD = False
+# Absolute main-approach saturation above which CellQ refuses to extend into
+# a jam (measured max approach density / JamDensity). 0.85 default; the OPEN
+# arm relaxes it to 0.95. MUST be listed in MODE_FLAGS or an arm override is
+# dropped by the engine propagation loop and the gate silently uses this value.
+CELLQLEARN_SAT_VETO = 0.85
+# [CELLQ_HELD] (2026-11-02): the CellQ decider's six vetoes all force
+# NO_ACTION silently, so a run with few extensions cannot say which gate
+# refused. One line per rejected decision, naming the gate and its margin.
+# Counted on the CONTROLLER (per run), never in a module global: a global
+# survives across the seeds of one Aimsun process and silences the rest.
+CELLQ_HELD_LOG_MAX   = 8     # rejected decisions logged per junction per RUN
+CELLQ_ADMIT_LOG_MAX = 400   # admitted actions logged per junction per RUN
 # Cap on a BXT phase-insertion duration (s).  Long insertions truncate the
 # current main-street green and are the most disruptive BXT action, so clamp
 # them instead of committing the full 15-20 s candidate (mode-commits-own-
 # action bypasses the standard BP_upper_bound clamp).
 BXT_MAX_INS_S = 12.0
-# ── Timing solver: differential evolution on the integer lattice ─────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Timing solver: differential evolution on the integer lattice ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # BXT_SOLVER='de' routes every committed timing magnitude (GE via
 # solve_green_extension, BP/insertion via solve_bus_phase_green, plus the two
 # legacy direct harmony_search call sites now dispatched through
@@ -888,6 +1183,12 @@ TIMING_DE_GENS = 6
 TIMING_DE_F = 0.7
 TIMING_DE_CR = 0.9
 TIMING_DE_SEED = 12345
+# CONTINUOUS DE (2026-10-30): when True, _solve_timing_min's 'de' solver keeps
+# the population in continuous seconds and returns a float; callers round only
+# at commit. Module-level defaults so reset_mode_flags() clears any arm that
+# enabled it. NASH_DE_CONTINUOUS is the same switch for _nash_duration_search.
+TIMING_DE_CONTINUOUS = False
+NASH_DE_CONTINUOUS = False
 # REWARD_GE_SOLVER: how the GENERIC-pool GE magnitude is chosen. 'grid'
 # (legacy) args-maxes over REWARD_GE_CANDIDATES; 'de' runs DE on the DECISION
 # reward itself; 'exact' exhaustively arg-maxes the reward over the integer
@@ -942,7 +1243,7 @@ MULTIBUS_JOINT = False
 # False = per-junction selection only.
 MULTIBUS_NETWORK = False
 
-# ── Extended learner state (2026-09-28) ────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Extended learner state (2026-09-28) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The BXT/CellQLearn state is a 4-tuple (bus-queue, side-ratio, phase-match,
 # eta). These append richer OBSERVED state so the policy conditions on the
 # network, not just the bus:
@@ -1002,7 +1303,7 @@ PROGRESSION_BIDIRECTIONAL = True
 # seconds/cycle -- the honest A/B. 0 = legacy plan.
 HEADROOM_RESERVE_S = 0.0
 
-# ── Offline-retiming load-back (retime/*.csv) ─────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Offline-retiming load-back (retime/*.csv) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # RETIME_APPLY: at each junction's first tick, load RETIME_CSV (absolute path;
 # falls back to <bundle>/retime/retime_v1.csv) and set the listed stage-green
 # durations via ECI (splits only, v1). Phase starts shift by construction, so
@@ -1013,7 +1314,7 @@ HEADROOM_RESERVE_S = 0.0
 RETIME_APPLY = False
 RETIME_CSV = ''
 
-# ── CPD-QL: tabular Q-learning per junction (paper Method I) ───────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CPD-QL: tabular Q-learning per junction (paper Method I) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # DCTSP_MARL as a REAL learner: each junction is an independent agent with its
 # OWN Q-table over the paper's 54-state space (3 headway-deviation x 3 bus-ETA
 # x 3 estimated-delay x 2 phase-match bins), acting epsilon-greedy over the
@@ -1032,10 +1333,10 @@ CPDQL_TRAIN_EPSILON  = 0.3   # exploration during TRAIN seeds (eval uses 0)
 CPDQL_LEARN          = True  # close the Q-learning loop (realized reward credit)
 CPDQL_PHASE          = "per_seed"  # set per replication by AAPIInit
 CPDQL_W_H            = 0.5   # headway-vs-delay weight in the paper reward
-CPDQL_CAR_OCC        = 1.5   # paper rho_car
+CPDQL_CAR_OCC        = 1.2   # paper rho_car
 CPDQL_MIN_GAIN_S     = 0.0   # act only when no_act_delay clears this (0 = off)
 
-# ── v7 bus-equity & corridor-reward tuning ────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ v7 bus-equity & corridor-reward tuning ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # BUS_PAX_WEIGHT: equity multiplier applied to bus pax-s wherever it is weighed
 # against car pax-s (decision-time benefit rows, the decider cost veto, and the
 # realized-delay learning reward).  Buses are rare but carry ~27x a car's
@@ -1068,7 +1369,7 @@ GREEN_KEEP_CREDIT_S = 3.0
 # costs (the coordination reward the user asked for).
 CORRIDOR_REWARD_NEIGHBOR_W = 0.5
 
-# ── CELLQLEARN_DP: CellQ-Learn with Dynamic Programming ───────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CELLQLEARN_DP: CellQ-Learn with Dynamic Programming ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # V2X-coordinated TSP using queue-length prediction + DP backward recursion.
 # Reference: Huang H.-K. & Hsu Y.-T. (2025), "Coordinated transit signal priority
 # control with queue length prediction in V2X environments",
@@ -1082,7 +1383,177 @@ CELLQLEARN_DP_CAR_OCC   = 1.2
 CELLQLEARN_DP_BALANCE_FACTOR = 1.0
 CELLQLEARN_DP_GE_BALANCE_FACTOR = 2.0
 
-# ── BARGAIN_SPM: Nash bargaining game TSP (AnsariEsfeh & Kattan 2025) ─────────
+# --- BELLMAN_CTM: finite-horizon DP over the multi-cell CTM (2026-10-24) ---
+# V_t(s) = max_a [ r_t(s,a) + gamma * V_{t+1}(s') ]
+# r = passengers discharged (bus + car) - delay_w * queued pax
+# s = (side cell occupancies, main queue, phase, remaining green)
+BELLMAN_CTM_MODE        = False
+BELLMAN_CTM_HORIZON_S   = 180.0
+BELLMAN_CTM_STAGE_S     = 30.0
+BELLMAN_CTM_GAMMA       = 0.97
+BELLMAN_CTM_CELLS       = 3
+BELLMAN_CTM_BINS        = 2
+BELLMAN_CTM_THRU_W      = 1.0
+BELLMAN_CTM_DELAY_W     = 0.0
+BELLMAN_CTM_TERMINAL_W  = 0.05
+BELLMAN_CTM_CAR_OCC     = 1.2
+BELLMAN_CTM_TTL_S       = 10.0
+BELLMAN_CTM_MIN_QUEUE_VEH = 3.0
+BELLMAN_CTM_MIN_GAIN_PAX  = 10.0
+BELLMAN_CTM_BUS_W         = 1.0   # weight on the bus-throughput bonus in the DP
+# DOWNSTREAM-AWARE rollout (2026-10-27). The base DP counts every vehicle it
+# discharges as "pushed through" and then forgets it -- the outflow never enters a
+# downstream junction's state, so the value function is blind to the green-wave
+# break (serving a platoon into a standing downstream queue). This replaces the
+# myopic commit cost-VETO with a model lookahead: when BELLMAN_CTM_DOWNSTREAM is
+# on, the main/bus discharge in _step is credited only by the SPARE downstream
+# capacity (1 - block) and debited by BELLMAN_CTM_DBLOCK_PEN * block * out, where
+# `block` = _phase_downstream_block(BusPhase) (live receiving-link fill 0..1). So
+# the DP's own argmax declines an action that only moves the jam, and takes it
+# when the downstream is clear -- the cascade is PRICED INTO the decision term,
+# not blocked after the fact. Off by default (base arms byte-identical).
+BELLMAN_CTM_DOWNSTREAM    = False
+BELLMAN_CTM_DBLOCK_PEN    = 1.0   # penalty weight on vehicles dumped into a jam
+# COUPLED 2-junction rollout (2026-10-27). The faithful version of the above: this
+# junction's main discharge is TRANSPORTED (travel lag) into the next arterial
+# junction's main queue, which is served only when the DOWNSTREAM signal is green
+# (its live cycle/green/offset). Reward counts passengers that clear the DOWNSTREAM
+# stop line (true corridor throughput), terminal penalty includes the leftover
+# downstream queue. So holding green here pays off ONLY when the shifted platoon
+# meets the downstream green (progression) and is penalised when it fills a
+# downstream red. Supersedes the snapshot dblock pricing when on. Adds ONE DP state
+# dim (the downstream queue); the downstream green is a deterministic clock
+# function so it needs no state. Off by default (base arms byte-identical).
+BELLMAN_CTM_COUPLED       = False
+BELLMAN_CTM_DOWN_LAG_S    = 0.0   # 0 => auto (downstream link length / freeflow)
+# TRUST-THE-DP (2026-10-27). Diagnosis: the DP decides on THROUGHPUT (its value V)
+# but the engine's commit funnel judged the action by the BUS-BENEFIT ledger
+# R = bus_pax_saved - cross_cost, which is ~negative for a throughput action, so
+# 118/120 DP picks were reverted to NO_ACTION ("cost to others outweighs bus
+# benefit"). With BELLMAN_CTM_TRUST_DP the DP's own net THROUGHPUT GAIN is carried
+# as the committed reward (benefit=gain, cost=0 -- the cost is already inside the
+# coupled value) AND the engine exempts the committed DP action from the
+# bus-benefit cost/net-pax/Z4 reverts (like the MaxPressure exemption). The
+# per-cycle action cap still applies. Off by default (unchanged behaviour).
+BELLMAN_CTM_TRUST_DP      = False
+
+# CONTINUOUS-TIME SOLVER (2026-10-27). The DP action menu was a FIXED integer grid
+# (GE=10, INS=15, ER=10, REALLOC=10): the DURATION was never optimised, so the DP
+# could only overshoot (a blunt 10 s chunk when 3 s was right, stealing green from
+# the cross/side and breaking the arterial green-wave) or do nothing. With
+# BELLMAN_CTM_SOLVER='harmony' the DP runs a Harmony Search over the CONTINUOUS
+# extension duration for each action type, scored by the SAME DP horizon value
+# (_rw + gamma*V, downstream cost already netted inside it), and returns the best
+# (type, duration). The continuous search can shrink an action toward its
+# min-gain-justified size instead of always spending 10 s. 'grid' (default) keeps
+# the fixed menu => base/other arms stay byte-identical. The same min_gain gate and
+# the per-cycle action cap still apply on top.
+BELLMAN_CTM_SOLVER        = 'grid'   # 'grid' | 'harmony'
+BELLMAN_CTM_MIN_EXT_S     = 5.0      # smallest duration the solver may propose (s);
+                                     # matches the engine's 5 s min-viable floor so
+                                     # the solver never wastes candidates on sub-5 s
+                                     # durations the executor would discard to NO_ACTION
+BELLMAN_CTM_MAX_EXT_S     = 20.0     # largest extension / insertion / realloc (s)
+BELLMAN_CTM_HS_MEM        = 6        # harmony memory size
+BELLMAN_CTM_HS_ITERS      = 25       # improvisations per action type
+BELLMAN_CTM_HS_HMCR       = 0.9      # harmony-memory consideration rate
+BELLMAN_CTM_HS_PAR        = 0.3      # pitch-adjustment rate
+BELLMAN_CTM_HS_BW         = 0.25     # pitch bandwidth (fraction of the range)
+# SLACK-ONLY (lever 1, 2026-10-28): restrict the harmony search to slack-capturing
+# green EXTENSIONS. On a coordinated corridor DSW already owns the split gain; the
+# only bus gain that doesn't break the green wave is a short extension into time the
+# main would otherwise waste. INS/GREEN_REALLOC lengthen the cycle + shift downstream
+# offsets (the 41-48 insertions that sank CHAIN2), so when SLACK_ONLY is on the solver
+# searches GE + recoverable ER only, with the extension capped at SLACK_EXT_S (the
+# recoverable-headroom proxy). OFF (default) = current 4-action menu, byte-identical.
+BELLMAN_CTM_SLACK_ONLY    = False
+BELLMAN_CTM_SLACK_EXT_S   = 8.0      # max slack extension (s) when SLACK_ONLY on
+# BUS GREEN-WAVE (2026-10-28): pay the bus premium at EACH chain junction the bus
+# clears on green (this junction + every downstream chain junction), not once at the
+# final stop line. Makes the DP value walking the bus through the whole corridor --
+# the metric counts passenger-weighted junction-crossings and a bus ~= 40. Pairs with
+# SLACK_ONLY so the green-wave is built from wasted green. OFF = single-credit, byte-id.
+BELLMAN_CTM_BUS_CHAIN_CREDIT = False
+# PASSENGER-WEIGHTED DELAY (2026-10-28): price the shockwave queue in PAX (x car_occ,
+# apples-to-apples with the pax throughput credit) and charge the BUS's wait at
+# (bus_occ-car_occ)/s until it clears. A held bus delays ~40 people, so the solver
+# values clearing it fast -- the direct way to cut system PASSENGER delay. Also makes
+# the queue penalty heavier, so it tends to pick FEWER, bus-targeted actions. OFF=byte-id.
+BELLMAN_CTM_PAX_DELAY     = False
+# NASH-vs-DSW GATE (2026-10-28). Treat the DP choice as a 2-player bargain -- the
+# BUS against the corridor CARS -- with the DO-NOTHING (DSW) outcome as the
+# disagreement point d. An action is admissible only if it helps the bus
+# (du_bus>0) AND leaves cars no worse than DSW beyond CAR_TOL (du_car>=-CAR_TOL),
+# where du_car = (total DP gain) - (bus gain) carries the FULL horizon value, so
+# the downstream car cascade is priced. Among admissible actions, pick the one
+# maximising the asymmetric Nash product  du_bus^BUS_POWER * (du_car+CAR_TOL).
+# CAR_TOL=0 => STRICT PARETO FLOOR: the arm can never do worse than DSW (the
+# structural fix for every arm that lost by committing an action DSW declined).
+# CAR_TOL>0 leans bus-focused -- lets a big bus gain buy a little car cost, for a
+# corridor with real slack (Logan). OFF (default) => unchanged, byte-identical.
+BELLMAN_CTM_NASH_DSW       = False
+BELLMAN_CTM_NASH_CAR_TOL   = 0.0     # pax cars may worsen vs DSW (0 = strict floor)
+BELLMAN_CTM_NASH_BUS_POWER = 2.0     # asymmetric-Nash exponent on the bus gain
+# MULTI-CTM + Q-LEARN hybrid (2026-10-28). The Bellman DP plans on a MODEL (the
+# multi-cell CTM); its known weakness is model bias -- the 2-3 junction value
+# mis-prices the realized outcome ("reward uncalibrated -> seed lottery"). QLEARN
+# adds a Dyna-style correction: a per-(junction, coarse-state, action) Q-table
+# learns the REALIZED net-pax reward (EWMA from the measured feed at the NEXT
+# decision, the same realized-advantage trick as CPDQL), and the learned advantage
+# Q[s,a]-Q[s,NO_ACTION] is blended (weight QLEARN_W, clamped QLEARN_CLAMP) into the
+# model values BEFORE the argmax. So the DP keeps the model's foresight but is
+# nudged by what actually paid off in this sim. Pair with a richer multi-cell state
+# (more CELLS/BINS) so the learned state is meaningful. OFF (default) = byte-id.
+BELLMAN_CTM_QLEARN         = False
+BELLMAN_CTM_QLEARN_W       = 0.3     # weight on the learned realized-advantage (pax)
+BELLMAN_CTM_QLEARN_ALPHA   = 0.3     # EWMA learning rate for the Q-table
+BELLMAN_CTM_QLEARN_CLAMP   = 20.0    # max |blended residual| (pax) -- a nudge, not a takeover
+
+# Net-shockwave objective (2026-10-28). The CTM _step already simulates the
+# shockwave (cell send/receive with the backward wave _w_ratio); these make the
+# REWARD net so the solver finds the INTERIOR optimum -- push just enough cars
+# through to clear them, not so much green that the side/upstream queue it builds
+# costs more delay than the throughput gained. Default off => byte-identical.
+#   * BELLMAN_CTM_DELAY_W > 0  charges accumulated queue every simulated second
+#     (= integral of queue over the horizon = the shockwave delay). This is the
+#     term that makes "more green" stop being free. (flag already exists; was 0.)
+#   * BUS_CREDIT_ONCE pays the bus-occupancy premium only in the single second the
+#     bus is expected to clear (bus_eta_s), not on EVERY green-discharge second --
+#     without it each green-second reads ~bus_w*(bus_occ-car_occ) "pax", which is
+#     what inflated gains to 100-800 and pinned the solver at MAX_EXT.
+# Turn DELAY_W on together with BUS_CREDIT_ONCE: the first makes extending cost
+# something, the second stops a single bus from making green worth hundreds of pax.
+BELLMAN_CTM_BUS_CREDIT_ONCE = False  # pay bus premium once (at bus_eta_s), not /sec
+
+# Deeper coupled horizon (2026-10-28). COUPLED resolves ONE junction downstream and
+# can't see the arterial green-wave break at i+2, i+3... The 5-seed net-shockwave run
+# proved locally-net-positive actions are still corridor-NEGATIVE for exactly this
+# reason. DOWN_CHAIN>1 resolves a CHAIN of N downstream junctions, transports the
+# platoon junction-to-junction through their live signal clocks, rewards what clears
+# the FINAL stop line (did the platoon progress all the way), and -- crucially --
+# the DELAY_W term now penalises queue built at EVERY junction in the chain, so an
+# action that breaks progression two or three junctions down is finally priced in.
+# DOWN_CHAIN=1 (default) == the old 2-junction rollout, byte-identical. Each extra
+# junction adds one DP state dimension, so 3 is heavier (watch run time).
+BELLMAN_CTM_DOWN_CHAIN    = 1        # downstream junctions modelled (1 = today)
+
+# Global TSP-decider gates (2026-10-25). The 2026-10-24 suite showed every
+# overlay destroyed the DSW plan while the base (no decider) won: the deciders
+# fired at t=60, BEFORE the first adaptive plan apply at t=420, and for buses
+# that were on schedule (sigma_in=0). These gates keep a method on top of the
+# plan without letting it rewrite the plan's startup/on-time buses.
+#
+# LATENESS DIRECTIVE (2026-10-29): decisions must NOT be gated on lateness --
+# the objective is to push as many vehicles through as possible. A bus running
+# behind schedule gets only a small, BOUNDED reward bonus (the WOBJ_GAMMA
+# lateness term in _dctsp_eval_action / dctsp_*), never a hard skip. Hence the
+# default min-lateness is 0 (was 30.0, which silently made every decider arm
+# near-inert for on-time buses: engine.py 22128-22146 `continue`). The warm-up
+# stays: it exists to protect the plan's startup, not to rank buses.
+DECIDER_WARM_S          = 420.0
+DECIDER_MIN_LATENESS_S  = 0.0
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ BARGAIN_SPM: Nash bargaining game TSP (AnsariEsfeh & Kattan 2025) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 BARGAIN_SPM_MODE   = False
 NASH_GATE_MODE     = False
 BG_DET_LVL_IMM_S   = 4.0
@@ -1096,12 +1567,12 @@ BG_SPM_RISK_WEIGHT = 1.8
 BG_MIN_BUS_DELAY_S = 5.0
 BG_MIN_GAIN_S      = 5.0
 BG_CASCADE_MULT    = 2.0
-BG_NO_ACTION_BONUS_S = 20.0   # pax·s inertia bonus for NO_ACTION
+BG_NO_ACTION_BONUS_S = 20.0   # paxÃƒâ€šÃ‚Â·s inertia bonus for NO_ACTION
 
 DCTSP_GREEN_REALLOC_MODE = False
 GREEN_REALLOC_RECOVER_FRACTION = 1.0
 
-# ── GLOBAL_REWARD aggregation (DCTSP_MARL lineage) ──────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ GLOBAL_REWARD aggregation (DCTSP_MARL lineage) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # When True, the common selection layer scores each candidate on corridor-
 # global net passenger impact (local net + downstream-chain bus effect)
 # instead of this-junction-local net. Default False = legacy local scoring.
@@ -1121,13 +1592,13 @@ MILP_MIN_GREEN_S = 5.0
 MILP_MAX_GREEN_S = 60.0
 MILP_CYCLE_S = 135.0
 
-# ── CENTRALISED: perfect-information corridor controller (Method 0 in the paper) ──
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CENTRALISED: perfect-information corridor controller (Method 0 in the paper) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 CENTRALIZED_MODE = False
 CENTRALIZED_INTERVAL_S = 1.0          # documented per-second evaluation cadence
 CENTRALISED_MIN_BUS_DELAY_S = 5.0     # only intervene for a genuinely-delayed bus
 CENTRALISED_REACH_MARGIN_S = 5.0      # bus must be reachable within cycle + margin
 
-# ── NASH_BARGAIN: real (generalized) Nash bargaining TSP ─────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ NASH_BARGAIN: real (generalized) Nash bargaining TSP ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Two-player cooperative game per bus-detection: Transit (T) vs Cross-street (C).
 # Gains are measured over a DISAGREEMENT/THREAT point: T's threat = no priority
 # (0 gain); C's threat = the worst (most disruptive) candidate action's cross
@@ -1137,6 +1608,32 @@ CENTRALISED_REACH_MARGIN_S = 5.0      # bus must be reachable within cycle + mar
 # product does -> an interior compromise action). Tier 2 (NASH_CORRIDOR_MODE)
 # couples junctions along the bus route into a corridor best-response game.
 NASH_BARGAIN_MODE   = False
+# COOPERATIVE (team) GAME (2026-10-30): grand coalition {bus, cars} maximises
+# JOINT passenger surplus instead of the Nash product, with a coalition-budget
+# feasibility test. Module-level defaults here so reset_mode_flags() restores
+# them between arms (otherwise NASH_COOPERATIVE=True would leak from a coop arm
+# into the next Nash arm).
+NASH_COOPERATIVE        = False
+# NASH_CTM_COST (2026-10-30): price the Nash/coop cross cost with the same
+# n-cell Daganzo CTM used by CellQ (`_ctm_cross_cost_paxs`) instead of only the
+# analytic shockwave/cascade cpc. The game then sees downstream cell storage and
+# backward-wave spillback. cpc = max(analytic, CTM) so the CTM acts as a floor
+# and cannot hide a cost the analytic term already priced.
+NASH_CTM_COST           = False
+# NASH_UB_SHOCKWAVE_CAP (2026-10-30): when the recoverable-headroom cap cannot
+# support a real duration range (it excludes the bus phase and the current phase,
+# so a 2-phase main+bus junction returns 0 -> a 1 s cap -> an inert game arm), use
+# the junction's shockwave/cycle bound (_junction_ge_ub) and let cpc price the
+# cross-street loss instead of hard-capping the action. Inserts/early-red always
+# use the shockwave cap because the donor green is the current phase itself.
+NASH_UB_SHOCKWAVE_CAP   = True
+NASH_UB_MIN_SPAN_S      = 2.0    # below this the recoverable cap is "degenerate"
+NASH_COOP_BUS_TOL       = 0.0    # absolute bus-loss tolerance (pax·s)
+NASH_COOP_CAR_TOL       = 0.0    # absolute car-loss tolerance (pax·s)
+NASH_COOP_BUS_TOL_FRAC  = 0.0    # bus may lose up to this fraction of joint surplus
+NASH_COOP_CAR_TOL_FRAC  = 0.0    # car may lose up to this fraction of joint surplus
+NASH_COOP_FAIR_W        = 0.0    # equity penalty on |u_bus - u_car|
+NASH_COOP_OBJECTIVE     = 'joint'  # joint | maxmin | nash
 # NASH_MEASURED_STATE: price the bargaining payoffs from the live MEASURED
 # detector state -- the mainline through-benefit is bounded by the measured main-
 # approach queue (not a constant saturation assumption), and the cross cost uses
@@ -1156,8 +1653,8 @@ NASH_MIN_GAIN_S      = 5.0   # gate 2: min transit gain (s) * bus_occ to act
 # This is the principled 'vary the threat, not the weights' mechanism (weights are
 # policy preference; demand is already in bps; signal timing is already in cpc).
 NASH_STATE_THREAT      = False
-NASH_THREAT_CROSS_GAIN = 20.0  # pax·s of transit gain required per unit cross saturation
-# Tier 2 — corridor Nash equilibrium (best-response over the bus route):
+NASH_THREAT_CROSS_GAIN = 20.0  # paxÃƒâ€šÃ‚Â·s of transit gain required per unit cross saturation
+# Tier 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â corridor Nash equilibrium (best-response over the bus route):
 # Continuous play: run the SAME bargain on the traffic state every monitor tick
 # even with no bus present (through-traffic vs cross-street). Only takes effect
 # when CONTINUOUS_MONITOR_MODE is on (that path is what invokes the no-bus eval).
@@ -1182,7 +1679,7 @@ CORRIDOR_COUPLE_BIDIRECTIONAL  = True
 # tick its Q argmaxes NO_ACTION (nothing to serve), so route that tick through the
 # shared continuous state bargain. The learner still decides bus-PRESENT ticks.
 BXT_CONTINUOUS_MODE = True
-# ── Controller-timing rules (2026-09-24) ─────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Controller-timing rules (2026-09-24) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # MIN_PHASE_ACTIVE_S: once a phase starts, the controller must run it at least
 # this long before ANOTHER TSP action is considered (stops re-actioning a just-
 # started green). 0 = off (default; set per-arm, e.g. 5.0, for the continuous
@@ -1213,9 +1710,9 @@ QUEUE_DISCHARGE_S_PER_VEH = 2.0
 EMPTY_PHASE_SKIP_MODE       = False
 EMPTY_PHASE_QUEUE_EPS_PAX   = 1.0
 EMPTY_PHASE_MIN_TARGET_PAX  = 5.0
-# ── CELLQLEARN reward via the Purdue Coordination Diagram (POG) ───────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CELLQLEARN reward via the Purdue Coordination Diagram (POG) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # When on, each offset-shifting BXT action (GE/INS/GREEN_REALLOC) is penalised in
-# the LEARNER's reward by BXT_POG_WEIGHT × _progression_cost(shift) — the pax·s of
+# the LEARNER's reward by BXT_POG_WEIGHT ÃƒÆ’Ã¢â‚¬â€ _progression_cost(shift) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the paxÃƒâ€šÃ‚Â·s of
 # the main platoon pushed off green (Percent-on-Green damage). So the learner
 # LEARNS to prefer coordination-preserving actions, not just get vetoed by the
 # progression gate after the fact. Default OFF. (2026-09-24)
@@ -1246,7 +1743,7 @@ POG_DECISION_WEIGHT = 1.0
 # split/cycle move by (1 - POG): a healthy coordinated wave (high POG) is barely
 # disturbed, a broken one (low POG) is repaired at full rate. Used by the POG arm.
 POG_ADAPT_GATE      = False
-# ── OFFLINE WARM-START PLAN OPTIMISATION (PLAN_OPTIMIZE, default OFF) ───────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ OFFLINE WARM-START PLAN OPTIMISATION (PLAN_OPTIMIZE, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # At startup, solve each junction's cycle + phase splits (Webster) from the OD
 # demand, transit-weighting the bus phase by the timetable intensity, and apply as
 # the base fixed-time plan; the online methods then correct stochastic progression.
@@ -1262,7 +1759,7 @@ PLAN_NOMINAL_HEADWAY_S = 600.0  # timetable-intensity proxy when live headway ab
 PLAN_OPTIMIZE_OFFSETS = True    # also seed corridor green-wave offsets (Eq. plan_offset)
 PLAN_BUS_SPEED_MS     = 11.0    # corridor bus speed (~40 km/h) for offset travel times
 
-# ── WHOLE-SIGNAL RESTRUCTURE (PLAN_RESTRUCTURE, default OFF) ───────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ WHOLE-SIGNAL RESTRUCTURE (PLAN_RESTRUCTURE, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The SCATS PLAN-GENERATION half: instead of only retiming the CURRENT phase list
 # (DS_PLAN_ADAPT moves green between existing phases; PLAN_OPTIMIZE sets Webster
 # cycle+splits on the given sequence), this REWRITES the junction's plan -- it may
@@ -1278,7 +1775,7 @@ RESTRUCTURE_ORDER      = True   # allow re-sequencing phases (bus phase earlier)
 RESTRUCTURE_GROUP      = True   # allow conflict-free movement re-grouping
 RESTRUCTURE_MAX_PHASES = 8      # cap on phases considered (topology scan bound)
 
-# ── GROUP-BASED CONTROL (GROUP_BASED_CONTROL, default OFF) ─────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ GROUP-BASED CONTROL (GROUP_BASED_CONTROL, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Instantiate the per-junction group-based controller (ctrl.gb) and drive signal
 # groups DIRECTLY (ECIChangeSignalGroupState with GREEN/RED) instead of only
 # selecting configured phases. Requires control_type in {2,3} (External control);
@@ -1288,7 +1785,7 @@ RESTRUCTURE_MAX_PHASES = 8      # cap on phases considered (topology scan bound)
 GROUP_BASED_CONTROL    = False  # enable ctrl.gb + direct signal-group steering
 RESTRUCTURE_HOLD_S     = 0.0    # 0 -> hold a regrouped set for its phase's green
 
-# ── OPTIMISED CORRIDOR OFFSET PUSH (BXT_OPT_OFFSET_PUSH, default OFF) ───────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ OPTIMISED CORRIDOR OFFSET PUSH (BXT_OPT_OFFSET_PUSH, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The OFFSET half of plan retiming, exposed as an ONLINE action. Deliberately
 # NOT the split half: the A/B of 2026-09-28 (retime/apply_retime.py:184) found
 # automated Webster shares starve a main-saturated corridor -- Aimsun -46%,
@@ -1307,7 +1804,7 @@ BXT_OPT_PUSH_MIN_S    = 3.0     # min |delta| worth committing (same as OC)
 BXT_OPT_PUSH_MAX_S    = 12.0    # max single push; the remainder re-aims next cycle
 BXT_OPT_PUSH_SAT_VETO = 0.90    # skip when main x/capacity exceeds this (refuted-split guard)
 BXT_OPT_PUSH_REQUIRE_BEFORE_BUS = True  # only push while the bus phase has yet to run
-# ── CELLQLEARN-v2: corridor-demand controller on the cell-transition model ─────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CELLQLEARN-v2: corridor-demand controller on the cell-transition model ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Reframes CELLQLEARN from bus-triggered (sparse, degenerate state between buses)
 # to a CORRIDOR-DEMAND controller that changes the CURRENT phase on the CTM. Dense
 # CTM-cell state, small action set {HOLD, EXTEND, END_EARLY} (+ corridor CHANGE_
@@ -1319,7 +1816,7 @@ BXT_CORRIDOR_MODE = False
 # reward + gamma*maxQ future); False = the stage-1 CTM-greedy heuristic. Reuses
 # BXT_ALPHA/GAMMA/EPSILON.
 CELLQ_CORRIDOR_LEARN = False
-# ── ZIGDOG (2026-10-02): per-cycle receding-horizon AOG optimizer ──────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ZIGDOG (2026-10-02): per-cycle receding-horizon AOG optimizer ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Schedule-driven: every cycle the junction re-solves the NEXT cycle's phase
 # service to maximise the expected arrivals-on-green of the buses predicted
 # to reach it, using the timetable ETAs + live schedule deviation and the
@@ -1373,7 +1870,7 @@ ZIGDOG_ER_CLEAR_Q_VEH = 1.0
 # must not be rewarded).
 ZIGDOG_Q_FAIL_PENALTY = 50.0
 ZIGDOG_Q_SERVED_MIN_GAIN = 0.0
-# ── ZIGDOG performance knobs (2026-10-12) ─────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ZIGDOG performance knobs (2026-10-12) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # These cap the per-solve cost (fleet forecast + seed scan) that made ZIGDOG run
 # near real-time on the heavy Logan corridor. DEFAULT OFF (0) = full-resolution,
 # exact prior behaviour ("KG-clean") -- so results stay comparable to older runs.
@@ -1394,14 +1891,14 @@ ZIGDOG_SHOCKWAVE_VFREEM_S = 11.0
 # CellQLearn-corridor decider prices with: sending=min(sat,n/dt), jam receiving,
 # multi-hop cascade) instead of the analytic Webster/shockwave term.
 ZIGDOG_CTM = True
-# ── State space (2026-10-02) ──────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ State space (2026-10-02) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # 'phase' (default): the state is ONLY which phases are green at this
 # junction -- one bit per phase. 4 phases -> 4 states per junction (48 across
 # a 12-signal corridor). The per-cycle plan cache is keyed by (cycle, state),
 # so each cycle re-optimises each phase-state once. 'composite' restores the
 # old (bus, phase) key for A/B.
 ZIGDOG_STATE_MODE = 'phase'
-# ── ZIGDOG-Q (2026-10-02): plain tabular Q-learner on the SAME phase-binary
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ZIGDOG-Q (2026-10-02): plain tabular Q-learner on the SAME phase-binary
 # state space (one bit per green phase; 4 phases -> 4 states/junction). 3
 # actions {HOLD, GE-best, ER-best}; TD(0), epsilon-greedy, optimistic
 # heuristic-seeded init (an untrained state acts like ZIGDOG). In-memory per
@@ -1465,7 +1962,7 @@ ZIGDOG_HORIZON_S = 180.0
 # only above ZIGDOG_MEASURED_CROSS_ARRIVAL_VPH -- below it, queue-only.
 ZIGDOG_MEASURED_CROSS = True
 ZIGDOG_MEASURED_CROSS_ARRIVAL_VPH = 150.0
-# ── Cycle constraints (2026-10-03) ──────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Cycle constraints (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Actions only shift SECONDS; they never skip a phase -- the plan's phase
 # order is preserved so every phase is still served once per cycle. Guard:
 #   * projected cycle stays within [MIN, MAX] (0 -> 0.85C / 1.15C)
@@ -1476,7 +1973,7 @@ ZIGDOG_MIN_CYCLE_S = 0.0
 ZIGDOG_MAX_CYCLE_S = 0.0
 ZIGDOG_MAX_ER_PER_CYCLE = 1
 ZIGDOG_MIN_PHASE_GREEN_S = 6.0
-# ── Chain rollout (2026-10-03) ──────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Chain rollout (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Instead of scoring an action only against the CURRENT green window, score
 # its effect on the REST of the cycle: an Early Red advances every later
 # phase (and the bus phase's return) by ~param, so buses arriving later this
@@ -1485,7 +1982,7 @@ ZIGDOG_MIN_PHASE_GREEN_S = 6.0
 # only ER shifts the tail. ZIGDOG_CHAIN_TAIL_W weights the tail AOG.
 ZIGDOG_CHAIN_PLAN = True
 ZIGDOG_CHAIN_TAIL_W = 1.0
-# ── INS / GREEN_REALLOC mainline-coordination constraint (2026-10-03) ───────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ INS / GREEN_REALLOC mainline-coordination constraint (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Those two actions serve the controller's BusPhase.  They are permitted ONLY
 # when BusPhase IS the junction's COORDINATED mainline phase -- the one aligned
 # with the UPSTREAM/DOWNSTREAM signals' progression band (engine
@@ -1512,6 +2009,11 @@ CELLQ_CORRIDOR_BUS_CHAIN = False
 # (SaturationFlow, JamDensity, measured arrivals, micro-queue), instead of the
 # Webster/shockwave overflow term. Makes CELLQLEARN's reward actually CTM. Default OFF.
 CELLQ_CTM_REWARD   = False
+# CELLQ_CTM_LOG: emit a [CTM] diagnostic per BXT decision with the raw per-cell
+# occupancy, connector, derived bins, receiving capacity and the CTM reward of
+# the chosen action vs NO_ACTION. The raw cell tuple is off the LEARNING key, so
+# without this line the CTM is invisible in the log.
+CELLQ_CTM_LOG        = True
 CELLQ_CTM_DT_S     = 1.0     # CTM discrete time step (s)
 CELLQ_CTM_HORIZON_S = 0.0    # 0 => auto (ONE signal cycle); >0 overrides (seconds)
 # CELLQ_STATE_NEIGHBOUR: include the corridor NEIGHBOUR junctions' state in the
@@ -1531,7 +2033,110 @@ CELLQ_CTM_STATE_CELLS = 4    # fixed number of CTM occupancy bins appended (subs
 CELLQ_CTM_FREEFLOW_KMH = 50.0   # free-flow speed -> cell length L=v_f*dt (per-section speedLimit overrides)
 CELLQ_CTM_WAVE_KMH     = 18.0   # backward congestion-wave speed w (receiving R=min(Q,(w/v_f)*(N-n)))
 CELLQ_CTM_MAX_CELLS    = 10     # cap on cells per approach (bounds compute)
-# ── Coordinated-actuated BASE layer (layer 2) ─────────────────────────────────
+# CELLQ_CTM_CONNECTOR_STATE: append the CONNECTOR-CELL bins -- the link cells
+# BETWEEN this junction and the next junction on the corridor. A multi-cell CTM
+# needs both the local approach cells (UpFlowList, stop line back to the entry)
+# and the downstream link cells; without them the learner cannot tell whether
+# the link it is about to discharge into is free-flowing or already spilling
+# back, which is exactly the failure mode that made early extensions gridlock.
+# The connector occupancy is reconstructed from the DOWNSTREAM junction's
+# incoming/main sections (measured queue via stats.latest_section, falling back
+# to its UpDenList/UpFlowList) and normalised by that link's jam storage.
+# Off by default: with it off the state keeps its previous shape.
+CELLQ_CTM_CONNECTOR_STATE     = False
+CELLQ_CTM_CONNECTOR_BINS      = 1     # number of connector bins appended (1 = single link bin)
+CELLQ_CTM_CONNECTOR_CAP_FRAC  = 0.15  # link storage cap as a fraction of k_jam (same as approach cells)
+CELLQ_CTM_CONNECTOR_EDGES     = [0.25, 0.50, 0.75]  # occupancy -> 4-level bin edges
+
+# GROUP-BOUNDARY CONNECTOR FIX (2026-11-01). A corridor coordinator's route
+# stops at the last junction of its group, so the connector cell (the link to
+# the next signal) was missing exactly at the group boundary. On KG that is
+# 39593 -> 39576 (J5 -> J6) -- the junction where most of the corridor delay is
+# won; on Logan it is 18942 -> 19185 and 21895 -> 22232. Junction ids are
+# model-unique, so one map serves both corridors. Used by
+# _ctm_connector_cell() when the route index has no successor.
+CTM_CONN_BOUNDARY_NEXT = {39593: 39576, 18942: 19185, 21895: 22232}
+# CELLQ_CTM_RECEIVING_GATE (2026-10-30): enforce the CTM RECEIVING constraint at
+# the bus stop line. The lumped bus-approach cell currently discharges at
+# min(q_sat, n/dt) regardless of whether the downstream link can accept it. When
+# the connector cell is near jam, the true discharge is
+#     q_out = min(q_sat, CELLQ_CTM_RECEIVING_W * (w/v_f) * (N_conn - n_conn)/dt)
+# exactly the `R` the engine's cross-street CTM already uses. Extending green
+# into a full link then earns ~zero bus benefit, so the action is priced out
+# instead of being committed and gridlocking the next junction.
+CELLQ_CTM_RECEIVING_GATE   = False
+CELLQ_CTM_RECEIVING_W      = 1.0    # relaxation on the receiving flow (1 = exact CTM)
+CELLQ_CTM_RECEIVING_OCC    = 0.75   # only evaluate receiving above this connector fill
+# CELLQ_CTM_CRIT_RELATIVE (2026-10-30): the connector/approach thresholds above
+# are fractions of JAM density, and on the paper corridors the links run at
+# 0.02-0.26 of jam, so an absolute 0.25/0.50/0.75 edge set collapses every bin to
+# "free flow" and every derived dim to a constant. The physically meaningful
+# scale is the CRITICAL occupancy k_crit/k_jam = w/(v_f + w) (18/(50+18) = 0.265
+# at the defaults): below it the link discharges freely, above it it queues.
+# With this on, the derived bins and the receiving gate are measured in units of
+# that critical occupancy, so the state actually discriminates at free-flow
+# demand. Set False to restore the old absolute-jam thresholds.
+CELLQ_CTM_CRIT_RELATIVE   = True
+CELLQ_CTM_CRIT_OCC        = 0.0    # 0 = derive from w/(v_f+w); else explicit override
+# CELLQ_CTM_UNKNOWN_BIN: derived `recv` bin used when the connector could not be
+# RESOLVED (topology/data failure). Distinct from 3 ("downstream free") so a data
+# failure can never masquerade as an empty link and feed the learner a false
+# "go" signal.
+CELLQ_CTM_UNKNOWN_BIN     = 4
+# CELLQ_CTM_CLEAR_CAP (2026-10-30): never extend GE / GREEN_REALLOC / INS past
+# the time the standing queue can actually discharge (n0 / q_sat). Prevents the
+# "GE_15 for a 3-car queue" over-extension that pays full cross cost for green
+# that serves nobody. Floor keeps the grant at least one effective second.
+CELLQ_CTM_CLEAR_CAP        = False
+CELLQ_CTM_CLEAR_MIN_S      = 1.0
+# CELLQ_CTM_DERIVED_STATE (2026-10-30): replace the raw per-cell tuple in the
+# LEARNING KEY with three physically meaningful derived bins:
+#   recv : downstream storage headroom (1 - connector occupancy)
+#   tail : spatial queue extent (share of approach cells above the low edge)
+#   bind : binding-constraint class 0 stop-line / 1 upstream / 2 downstream / 3 free
+# This keeps the state learnable (4^3 instead of 4^N) while preserving the
+# information the raw profile encoded. Raw cells remain available as a
+# diagnostic via CELLQ_CTM_STATE_RAW_CELLS.
+CELLQ_CTM_DERIVED_STATE    = False
+CELLQ_CTM_STATE_RAW_CELLS  = True   # keep appending the raw cell tuple (diagnostic)
+CELLQ_CTM_STOPLINE_LAST    = True   # last cell_occ element is the stop-line cell
+# Spillback / cannot-discharge guards (2026-10-31): veto green-taking when the
+# junction's own stop-line is loaded and the grant cannot discharge. See the
+# SPILLGUARD block in the CTM decision path. Both default ON.
+CELLQ_TERMINAL_SPILL_GUARD = True   # terminal (no-downstream) junction: own occ alone
+CELLQ_SPILL_GUARD_ALL      = True   # every junction: own occ AND downstream binding
+CELLQ_TERMINAL_STOP_OCC    = 0.60   # stop-line occupancy threshold for the veto
+# SMALL_ACTION_RELIEF_S (2026-10-31): GE/EARLY_RED actions no larger than this
+# are judged against the POINT cross-cost estimate, not the pessimistic risk-
+# adjusted UPPER bound (CAR_COST_UNCERTAINTY_K disagreement + max-of-estimators).
+# That upper bound was meant to guard large risky grants; on well-timed KG it
+# vetoed the routine 1 s nudges the operator expects (DeciderCostVeto ~13/run).
+# 0.0 = off (no change to existing arms); the ACT arm sets ~1.5.
+SMALL_ACTION_RELIEF_S      = 0.0
+# TSP_RATE_LIMIT_MODE (2026-10-31): bound how often the learned overlay may
+# re-act so an UNBLOCKED insertion cannot spam a corridor (the car-side cascade
+# the cost / net-pax vetoes historically guarded against). When on:
+#   * ONE phase insertion per intersection per CYCLE -- the first INS of a cycle
+#     is exempted from the cost/net-pax break-even vetoes (so it can fire at all
+#     on a coordinated main); a 2nd INS the same cycle is NOT exempt -> vetoed.
+#   * every other action (GE/ER/GR/OC/...) at most ONCE per PHASE instance -- the
+#     controller must wait for the NEXT phase to act again (the blanket per-cycle
+#     cooldown / grant-hold is replaced by a phase-instance lock for this arm).
+# Default False (no change to existing arms). See [[cellq-act-more-and-concurrent-credit]].
+TSP_RATE_LIMIT_MODE        = False
+CELLQ_CTM_STATE_DENSITY    = False  # build the cell vector from UpDenList/k_jam
+                                    # (true occupancy) instead of UpFlow/saturation
+CELLQ_CTM_BIND_DOWN_OCC    = 0.75   # connector occupancy above this => downstream-bound
+CELLQ_CTM_BIND_TAIL_FRAC   = 0.60   # share of occupied cells above this => upstream-bound
+
+# Engine corridor-coordinator registry (2026-10-30): the BXT/CellQ decider does
+# not always run on the same controller object the coordinator wired its
+# back-reference into, so `self._corridor_coord` was None and every [BXT] line
+# showed conn=n/a (the connector cell never resolved). CorridorCoordinator
+# appends itself here; _ctm_connector_occ_raw falls back to the coordinator whose
+# route index contains this junction.
+_CORRIDOR_COORDS = []
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Coordinated-actuated BASE layer (layer 2) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The Aimsun plans are FIXED-TIME (no gap-out/max-out/force-off). This adds an
 # online demand-responsive base that runs UNDER the TSP algorithms: gap-out an
 # empty non-coordinated phase, max-out a long one, and PROTECT the coordinated
@@ -1556,12 +2161,22 @@ ACTUATED_DRIFT_TOL_S      = 5.0
 ACTUATED_DRIFT_MAX        = 3
 NASH_CORRIDOR_MODE   = False # couple route junctions via downstream projection
 NASH_NEIGHBOR_WEIGHT = 0.5   # weight on the downstream green-wave coupling term
+# [NASH_HELD] (2026-11-02): a HELD decision used to log only the generic reward, so
+# a refusal carried no explanation at all. _nash_bargain_pick now records, for every
+# candidate it skips, the quantities it tested and the FIRST constraint that failed;
+# these two constants bound how much of that reaches the log. 0 disables the line.
+NASH_HELD_LOG_MAX    = 8     # held decisions logged per junction per RUN
+NASH_HELD_MAX_CANDS  = 8     # rejected candidates printed per logged decision
+# Two INDEPENDENT budgets at each junction: 'main' for holds that had a candidate
+# frontier (gate / min-gain), 'pre' for the gates that fire before any candidate is
+# built. Shared, a chatty pre-candidate gate would spend the whole budget early and
+# the frontier holds -- the ones with the margins -- would never be logged.
 NASH_MAX_ITER        = 10    # max Gauss-Seidel best-response sweeps
-NASH_CONVERGENCE_TOL = 0.01  # stop when max |Δbus_saved_s| across route < tol
+NASH_CONVERGENCE_TOL = 0.01  # stop when max |ÃƒÅ½Ã¢â‚¬Âbus_saved_s| across route < tol
 # Bargain over the action DURATION at integer-second resolution (coarse-to-fine
 # search per action type) instead of the naive coarse {5,10,15} grid.
 NASH_INTEGER_DURATIONS = False
-# ── Two-way through-band floors (paper Eqs prog_in/band_*) ───────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Two-way through-band floors (paper Eqs prog_in/band_*) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Mirrored here so the engine's per-arm propagation AND reset_mode_flags cover
 # them: without module defaults, an arm enabling the band leaked the flag into
 # every later arm (batch runs share one Aimsun session). The engine reads the
@@ -1575,6 +2190,33 @@ TWOWAY_GREEN_S   = 35.0
 DECIDER_COST_VETO_RATIO = 1.0
 
 INS_INTERGREEN_S  = 5.0
+# 2026-11-02 FIX: price an insertion's cross cost on the green it actually
+# DISPLACES (inserted bus green + one extra intergreen), not on (remaining_red +
+# intergreen + a_s). remaining_red is the bus's OWN pre-existing wait, which the
+# cross phases do not pay for; folding it into the green-taken argument charged
+# every insertion ~20-30 s of PHANTOM cross green (KG: o_d=0 standing cross yet
+# side cost ~99 pax*s), so INS lost to NO_ACTION in the reward and tripped the
+# side-ratio gate every time -> 0 insertions ever committed in any arm. GE
+# already prices only its marginal a_s; this makes INS commensurate (it still
+# pays the extra INS_INTERGREEN_S, so it stays dearer than an equivalent GE).
+# Off by default -> paper champions byte-identical; on for the OPEN A/B arm.
+# CROSS-DECIDER (2026-11-02): the same off-phase overcharge existed in every CTM
+# sweep, not just CellQ -- dctsp_mp_ectm / dctsp_mp_ectm_dp (INS_POST) and the
+# staged DP _eval_stage_action (INS) all charged t_wait+delta. This ONE flag now
+# gates the marginal treatment at ALL of them, so the MP_ECTM / MARL / DP models
+# price an off-phase insertion the same bounded way CellQ does. (The shared
+# Pareto reward _dctsp_eval_action was already marginal -- it charges `param`.)
+# On-phase GE/extension in every model was already marginal and is untouched.
+CELLQ_INS_MARGINAL_CROSS = False
+# 2026-11-02: feed the learner's demand-regime STATE bin the BOUNDED marginal
+# shockwave cross delay instead of the raw unbounded sum(OtherDelay)/bus-wait
+# ratio, which was bimodal (56% ~0, 36% saturated; o_d to 268282 veh*s). Only
+# the state key changes; the gate + logs keep the raw ratio. REF_S = the
+# reference green the shockwave cost is evaluated at; BUS_FLOOR_PAXS floors the
+# denominator so eff_delay~0 can't blow it up. Off by default; on for OPEN arms.
+CELLQ_STATE_SHOCKWAVE = False
+CELLQ_STATE_SHOCKWAVE_REF_S = 10.0
+CELLQ_STATE_BUS_FLOOR_PAXS = 50.0
 SELFORG_MIN_BUS_DELAY_S = 10.0
 NETWORK_FACTOR    = 1.0
 CROSS_TRAFFIC_COST_MULTIPLIER = 2.0
@@ -1584,15 +2226,15 @@ DCTSP_MULTI_CYCLE_X_FLOOR = 0.10   # caps the 1/(1-x) multi-cycle amplifier at 4
                                    # (was 0.02 -> 50x, a major contributor to the
                                    #  1e9 pax-s side-cost blowup)
 
-# ── Future-horizon penalty: each action's cross-traffic cost is scaled by the
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Future-horizon penalty: each action's cross-traffic cost is scaled by the
 # fraction of a cycle it disturbs, projected forward over the lookahead window.
-# This makes action rewards horizon-aware — a small GE on a short cycle has less
+# This makes action rewards horizon-aware ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a small GE on a short cycle has less
 # future echo than a long insertion on a long cycle. Tune per-experiment via
 # run_config / batch_runner.
-# ── MaxPressure (Varaiya 2013) — fixed & flexible cycle ─────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MaxPressure (Varaiya 2013) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â fixed & flexible cycle ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Ported from sumoITScontrol (DerKevinRiehl, ETHZ, GPL-3.0) into the Aimsun
-# shared engine.  Pressure per phase = Σ upstream queue – Σ downstream queue
-# (pax-weighted so a queued bus counts ~27× a car).  Fix recomputes a
+# shared engine.  Pressure per phase = ÃƒÅ½Ã‚Â£ upstream queue ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ ÃƒÅ½Ã‚Â£ downstream queue
+# (pax-weighted so a queued bus counts ~27ÃƒÆ’Ã¢â‚¬â€ a car).  Fix recomputes a
 # proportional green split at each cycle boundary; Flex re-evaluates every T_A.
 MAXPRESSURE_FIX_MODE  = False
 MAXPRESSURE_FLEX_MODE = False
@@ -1622,7 +2264,7 @@ MP_DIRECT_TRANSITION   = True
 # (their delay can never collapse to the disagreement point). Falls open to
 # pure argmax pressure when demand is unmeasurable.
 MP_NASH_ENABLE         = False
-# ── PBIL TIMING LEARNER (2026-10-21) ──────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PBIL TIMING LEARNER (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Population-Based Incremental Learning over per-phase timing genes, per
 # intersection (upper-level learner of the PBIL/Max-Pressure framework,
 # Ahmed-Liu-Gayah 2024; the lower level here is the existing measured split
@@ -1639,8 +2281,25 @@ PBIL_GEN_S             = 300.0
 PBIL_DELTA             = 0.25
 PBIL_ALPHA             = 0.20
 PBIL_MIN_P             = 0.05
-PBIL_WARM_S            = 120.0   # no changes until the network warm-up is over
-# ── JALLURI HEURISTIC ADAPTIVE CONTROL (Jalluri et al., OCIT 2025) ────────────
+PBIL_WARM_S       = 120.0  # no changes until the network warm-up is over
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PBIL PREDICTIVE PRESSURE (2026-10-21) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+# Instead of sampling a gene and waiting a generation for realised pax-delay,
+# roll every candidate split forward PBIL_HORIZON_CYCLES and pick the one whose
+# SUMMED FUTURE PRESSURE is lowest:
+#   q[k+1] = max(0, q[k] + (lambda_hat[k] - mu*g/C*(1-block)) * C)
+#   pressure = sum_k sum_p paxf * q * (1 + q/QCAP)
+# lambda_hat[k] is ESTIMATED: per-phase adaptive Kalman on q_vph (level+slope),
+# extrapolated cycle by cycle; service is derated by the downstream blockage so
+# green spent into a jam cannot look like relief.
+PBIL_PRESSURE_MODE    = False
+PBIL_HORIZON_CYCLES   = 4
+PBIL_CANDIDATES       = 8
+PBIL_PRESSURE_QCAP    = 60.0
+PBIL_PRESSURE_PAX     = True
+PBIL_FORECAST_KALMAN  = True
+PBIL_FORECAST_TREND   = True
+PBIL_DOWNSTREAM_BLOCK = True
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ JALLURI HEURISTIC ADAPTIVE CONTROL (Jalluri et al., OCIT 2025) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Phase prioritisation by a weighted score of max-wait + stopped-count + an
 # aging bonus; dynamic green = clearance demand x Factor / (Lanes + 1), clamped
 # to [Gmin, Gmax]. See engine._jalluri_tick_one.
@@ -1682,7 +2341,7 @@ GLOBAL_OCC_RATIO_WARN  = 0.3
 MAXPRESSURE_T_A       = 5      # re-check interval for Flex
 MAXPRESSURE_MEAS_PERIOD = 4    # steps to average queue before deciding (1/step=1s)
 
-# ── MP-TSP-LB: corridor MaxPressure + transit priority + LANE-BLOCKAGE ────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MP-TSP-LB: corridor MaxPressure + transit priority + LANE-BLOCKAGE ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Kobeissi, Li, Mahmassani & Chen (2026), "Max-Pressure Signal Control with
 # Transit Priority and Lane Blockage Mitigation" (MP-TSP-LB, TRR
 # doi:10.1177/03611981261444712).  Extends the plain pax-weighted MaxPressure
@@ -1829,7 +2488,7 @@ def _shockwave_optimal_green_s(self, min_s: float = 5.0, max_s: float = 20.0) ->
 
 
 def _mainline_pax_saved_for_green(self, green_s):
-    """Estimate mainline-car passenger-delay saved (pax·s) when `green_s`
+    """Estimate mainline-car passenger-delay saved (paxÃƒâ€šÃ‚Â·s) when `green_s`
     seconds of extra bus-phase green are provided.
 
     The bus phase serves every mainline vehicle on that approach, not just the
@@ -1968,8 +2627,8 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         reward = -(bus_pax + car_pax)
         return (reward, sigma_out, t_poz, 0.0, 0.0, no_strategy_delay, strategy_delay)
     param = float(param)
-    # _dctsp_cross_traffic_delay_s already returns pax·s (CarOcc and
-    # NETWORK_FACTOR are applied inside it) — do NOT multiply again here.
+    # _dctsp_cross_traffic_delay_s already returns paxÃƒâ€šÃ‚Â·s (CarOcc and
+    # NETWORK_FACTOR are applied inside it) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â do NOT multiply again here.
     cross_cost = float(self._dctsp_cross_traffic_delay_s(param))
     # LIVE_COST_ALWAYS: floor the returned cost with the MEASURED main + side
     # congestion so the specialised deciders (NASH/CELLQ/...) price the queues
@@ -1991,6 +2650,86 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
                 cross_cost = max(cross_cost, float(_lc_mq) * max(0.0, param) * _lc_occ)
         except Exception:
             pass
+    # 2026-11-03 Fix #1 CELLQ_SIDE_QUEUE_FLOOR: the committed cpc is set HERE, and
+    # _dctsp_cross_traffic_delay_s reads side FLOW, so a jammed cross queue (flow~0)
+    # prices ~0. Floor it with the standing-vehicle side penalty -- the SAME quantity
+    # the LIVE_COST_ALWAYS branch above uses, but applied on its own so it binds
+    # even when the main-queue floor is not wanted. Skip when LIVE_COST_ALWAYS
+    # already ran it (no double work). Default off -> byte-identical.
+    # 2026-11-03 DIAG SQPROG: byte-identical T1100 vs T1500 says these two
+    # fixes added 0 on every candidate. Capture pre-cost, the computed floor /
+    # progression value, and any swallowed exception so ONE run shows whether
+    # the block ran and whether it bound. floor/prog == -1.0 => block skipped.
+    _sqprog_pre = float(cross_cost)
+    _sqprog_floor = -1.0
+    _sqprog_exc = ''
+    if (bool(globals().get('CELLQ_SIDE_QUEUE_FLOOR', False))
+            and not bool(globals().get('LIVE_COST_ALWAYS', False))):
+        try:
+            _sq_occ = max(safe_float(getattr(self, 'CarOcc', 1.6)), 1.0)
+            _sq_sd, _ = self._compute_side_delay_penalty(
+                max(0.0, param), _suppress_log=True)
+            _sqprog_floor = max(0.0, float(_sq_sd)) * _sq_occ
+            cross_cost = max(cross_cost, _sqprog_floor)
+        except Exception as _sqe:
+            _sqprog_exc = 'SQ:' + repr(_sqe)[:80]
+    # 2026-11-03 Fix #2 PROGRESSION_COST_IN_REWARD: an offset-shifting GE/GREEN_
+    # REALLOC displaces the coordinated main platoon off green; _progression_cost
+    # prices that (POG-weighted, both bands). Charge it into the committed cpc so
+    # the decision trades it off -- not only the PROGRESSION_GATE veto / the
+    # _bxt_reward_for gate. POG is sampled upstream in the decider (dctsp_bxt);
+    # _progression_cost defaults POG=1.0 (protect) if unsampled. Default off ->
+    # byte-identical.
+    _prog_val = -1.0
+    if (bool(globals().get('PROGRESSION_COST_IN_REWARD', False))
+            and action_type in ('GE', 'GREEN_REALLOC')):
+        try:
+            _pw = float(globals().get('BXT_POG_WEIGHT', 1.0))
+            _prog_val = _pw * float(self._progression_cost(abs(float(param))))
+            if _prog_val > 0.0:
+                cross_cost += _prog_val
+        except Exception as _pce:
+            _sqprog_exc = (_sqprog_exc + ' PROG:' + repr(_pce)[:80]).strip()
+    # DIAG SQPROG emit: rate-limited, GE/GREEN_REALLOC only, fires when a flag is
+    # on. sidefloor/prog == -1 => that block did not run; a value <= cc_pre means
+    # it ran but did not bind (max no-op); exc shows a swallowed throw.
+    if (action_type in ('GE', 'GREEN_REALLOC')
+            and (bool(globals().get('CELLQ_SIDE_QUEUE_FLOOR', False))
+                 or bool(globals().get('PROGRESSION_COST_IN_REWARD', False)))):
+        try:
+            _dn = int(globals().get('_SQPROG_DIAG_N', 0))
+            if _dn < int(globals().get('SQPROG_DIAG_MAX', 60)):
+                globals()['_SQPROG_DIAG_N'] = _dn + 1
+                # Directly probe the real multi-cell cascade cost + whether a
+                # corridor-coord object is attached, independent of the engine-
+                # side [CASCADE] diag gate (which logs nothing on this arm).
+                _casc = -1.0
+                _casc_exc = ''
+                try:
+                    _casc = float(self._cascade_spillback_paxs(abs(float(param))))
+                except Exception as _ce:
+                    _casc_exc = repr(_ce)[:60]
+                _hascoord = int(getattr(self, '_corridor_coord', None) is not None)
+                _onroute = -1
+                try:
+                    _cc = getattr(self, '_corridor_coord', None)
+                    if _cc is not None:
+                        _ri = getattr(_cc, '_route_index', {}) or {}
+                        _onroute = int(int(getattr(self, 'id', -1)) in _ri)
+                except Exception:
+                    pass
+                _log_func(self, (
+                    "[SQPROG] inter=%s act=%s param=%.1f cc_pre=%.1f "
+                    "sidefloor=%.1f prog=%.1f casc=%.1f coord=%d onroute=%d "
+                    "cc_post=%.1f exc=%s%s" % (
+                        getattr(self, 'id', '?'), action_type, float(param),
+                        _sqprog_pre, _sqprog_floor, _prog_val, _casc,
+                        _hascoord, _onroute, float(cross_cost),
+                        (_sqprog_exc or 'none'),
+                        (' casc_exc=' + _casc_exc if _casc_exc else ''))),
+                    force=True)
+        except Exception:
+            pass
     if action_type in ('GE', 'GREEN_REALLOC'):
         if not bool(wrong_phase):
             if remaining_green_s is not None:
@@ -1999,14 +2738,14 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
                 # current green to `remaining_green_s + param`. The bus arrives at
                 # `bus_eta_s`; it MISSES the un-extended green by
                 # `_miss_by = bus_eta_s - remaining_green_s`.
-                #  • _miss_by <= 0  -> the bus already makes the green; GE adds 0.
-                #  • 0 < _miss_by <= param -> the extension SERVES the bus, which
+                #  ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ _miss_by <= 0  -> the bus already makes the green; GE adds 0.
+                #  ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ 0 < _miss_by <= param -> the extension SERVES the bus, which
                 #    avoids its no-action wait. This benefit does NOT grow with
                 #    param, so (since cost does) the CTM picks the SMALLEST
                 #    sufficient extension instead of always GE_15 -- killing the
                 #    old min(no_act_delay,param) phantom that credited 200/400/600
                 #    for GE_5/10/15 and a bus 50 s away.
-                #  • _miss_by > param -> the extension is too short to reach the
+                #  ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ _miss_by > param -> the extension is too short to reach the
                 #    bus (a far bus would need a huge, coordination-wrecking
                 #    extension) -> 0.
                 _miss_by = float(bus_eta_s) - float(remaining_green_s)
@@ -2047,8 +2786,8 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         eff_green = max(0.0, param - overhead)
         # The bus can only catch the inserted green window if it reaches the
         # stopline before that window closes.  A bus still `bus_eta_s` away
-        # gets no benefit from an insertion that ends first — without this
-        # ETA gate, INS_PRETERM_3 claimed bus_saved up to 54 500 pax·s (a
+        # gets no benefit from an insertion that ends first ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â without this
+        # ETA gate, INS_PRETERM_3 claimed bus_saved up to 54 500 paxÃƒâ€šÃ‚Â·s (a
         # phantom ~1 300 s of delay from a 3 s action).
         if float(bus_eta_s) > (max(0.0, float(param)) + float(overhead)):
             bus_saved_s = 0.0
@@ -2061,12 +2800,12 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         t_poz = 0.0
     elif action_type == 'EARLY_RED':
         # ER truncates the CURRENT phase by `param`.  On the active bus phase
-        # (bus already cleared) it simply returns green to cross traffic — the
+        # (bus already cleared) it simply returns green to cross traffic ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
         # bus is not waiting, so there is no bus benefit and cross traffic is
         # HELPED (no extra red).  Only a wrong-phase ER (bus genuinely held on
         # a non-bus red) saves bus delay, and then only up to the actual
         # truncation `param`.  Previously `bus_saved_s = remaining_red * 0.5`
-        # credited phantom savings (ER_5 showed bus_saved 460–1 113 pax·s)
+        # credited phantom savings (ER_5 showed bus_saved 460ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“1 113 paxÃƒâ€šÃ‚Â·s)
         # that made the action look free and fired ~109 ER/run.
         if not bool(wrong_phase):
             bus_saved_s = 0.0
@@ -2126,7 +2865,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         cross_cost += float(self._dctsp_cross_traffic_delay_s(abs(float(param))))
     elif action_type in ('PHASE_SKIP', 'PHASE_ROTATION',
                          'PLAN_RESEQUENCE', 'PLAN_REGROUP'):
-        # ── Re-timing actions: DERIVED scaling (2026-10-19) ──────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Re-timing actions: DERIVED scaling (2026-10-19) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Each of these used an arbitrary multiplier on `param` (PS 0.8; PR
         # 0.6 / 0.7; SEQ 0.6 / 0.7; RG 0.7 / 0.7) with no physical basis, so
         # they were mis-priced against GE/INS/OC and rarely won. Derive BOTH
@@ -2156,17 +2895,17 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
     else:
         mainline_pax_saved = 0.0
 
-    # ── Side-cost fallback (minimal configs with empty shockwave arrays) ──────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Side-cost fallback (minimal configs with empty shockwave arrays) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # _dctsp_cross_traffic_delay_s returns 0 when UpFlowList is unpopulated (the
     # Logan minimal config), so EVERY phase-modifying action (PT/OC/GR/VP/ER/
-    # INS_PRETERM/…) came out with cross_cost=0.  The weight-free Pareto layer
+    # INS_PRETERM/ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦) came out with cross_cost=0.  The weight-free Pareto layer
     # then fired hundreds of them "for free" (589 phase rotations/early-reds per
     # run), disrupting the fixed-time plan and making buses SLOWER than NO_TSP.
     # Any action that saves bus time does so by taking green from cross traffic,
     # so it must carry a cost: estimate it from live side-section vehicle counts,
     # the same mechanism GE/INS use in _reward_evaluate_ge/_reward_evaluate_insertion.
     # The gate was `cross_cost < 1.0`, but the analytic path routinely returns
-    # a small non-zero value (e.g. 13 pax·s) that masked the fact the real side
+    # a small non-zero value (e.g. 13 paxÃƒâ€šÃ‚Â·s) that masked the fact the real side
     # cost is ~0, so the live-count fallback never fired and ER_5 was priced
     # at ~free.  Apply it whenever an action claims a bus benefit: take the
     # MAX so the measured side cost always binds (never less than analytic).
@@ -2204,7 +2943,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
             cross_cost = max(cross_cost, max(0.0, float(_sd)))
         except Exception:
             pass
-        # ── Opposite-direction mainline cost (2026-09-26) ────────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Opposite-direction mainline cost (2026-09-26) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # A green-shifting action takes time from the OTHER main direction as
         # well as the cross street, but the mainline benefit above credits only
         # the SERVED direction. Price the measured opposite-approach queue like
@@ -2217,7 +2956,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
             _opp_cost = 0.0
         if _opp_cost > 0.0:
             cross_cost = max(0.0, float(cross_cost)) + _opp_cost
-        # ── Current-flow DISRUPTION cost (2026-10-10) ─────────────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Current-flow DISRUPTION cost (2026-10-10) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # An action that CUTS a running green or REORDERS phases stops the
         # platoon that was flowing mid-stream -- those vehicles must re-accelerate
         # (startup lost time) and the plant loses the intergreen seconds of main
@@ -2227,7 +2966,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         # the mode deciders over-fired on saturated Logan. Charge the MAIN
         # direction the simulator-accurate intergreen lost-time of saturated
         # discharge, BOUNDED by FLOW_DISRUPTION_CAP_PAXS so it can never explode
-        # (a ~5s*sat*lanes*occ term, ~8-30 pax·s -- NOT a runaway ramp). Only the
+        # (a ~5s*sat*lanes*occ term, ~8-30 paxÃƒâ€šÃ‚Â·s -- NOT a runaway ramp). Only the
         # cut/reorder actions pay it; GE (which keeps the main flowing) does not.
         # Toggle PRICE_FLOW_DISRUPTION (default on).
         if (bool(globals().get('PRICE_FLOW_DISRUPTION', True))
@@ -2253,7 +2992,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
                 _disrupt = min(_disrupt, _dcap)
                 if _disrupt > 0.0:
                     cross_cost = max(0.0, float(cross_cost)) + _disrupt
-                # ── MAIN-STARVATION served-passenger penalty (2026-10-12) ─────
+                # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MAIN-STARVATION served-passenger penalty (2026-10-12) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
                 # On a SATURATED main, cutting `param` s of green DENIES service
                 # to the vehicles that green would have discharged -- they wait
                 # ~a cycle for the next green. This is the KG starvation (bus
@@ -2311,12 +3050,12 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
 
     no_strategy_delay = max(0.0, float(no_act_delay)) * _occ
     strategy_delay = max(0.0, no_strategy_delay - bus_pax_saved)
-    # Weighted-objective reward: Z1 (delay) · Z2 (progression) · Z3 (headway)
+    # Weighted-objective reward: Z1 (delay) Ãƒâ€šÃ‚Â· Z2 (progression) Ãƒâ€šÃ‚Â· Z3 (headway)
     _walpha = float(globals().get('WOBJ_ALPHA', 1.0))
     _wbeta  = float(globals().get('WOBJ_BETA', 0.0))
     _wgamma = float(globals().get('WOBJ_GAMMA', 0.0))
     # CPD-QL / MARL blend (backwards-compatible): DCTSP_W_H is the headway
-    # share — pax-delay weight = (1 - W_H), headway weight = W_H on top of the
+    # share ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pax-delay weight = (1 - W_H), headway weight = W_H on top of the
     # WOBJ_GAMMA lateness term.  DCTSP_CAR_WEIGHT scales the cross-traffic
     # cost.  Absent keys (None) fall back to pure WOBJ_* behaviour.
     _wh = globals().get('DCTSP_W_H')
@@ -2345,21 +3084,23 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
     # Saturation-relief credit (opt-in, default OFF): benefit-side counterpart to
     # the main-starvation cost. Rewards actions that relieve a saturated main
     # approach, ramping from SAT_RELIEF_MIN_X to full at SAT_RELIEF_MAX_X.
-    _relief = _sm_sat_relief_paxs(self, float(param))
-    # ── NET PASSENGER THROUGHPUT component (2026-10-14) ───────────────────────
+    _relief = _sm_sat_relief_paxs(self, float(param), action_type,
+                                  wrong_phase)
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ NET PASSENGER THROUGHPUT component (2026-10-14) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The objective the operator specified: maximise the people PUT THROUGH the
     # system, NET of the capacity switching destroys -- not a delay ledger (which
     # a controller games by starving). _net_pax_throughput_delta returns dPhi, the
     # change in passengers discharged per cycle (demand-vs-capacity per phase),
-    # minus the intergreen/startup an INS/reorder/cut burns. Converted to pax·s
+    # minus the intergreen/startup an INS/reorder/cut burns. Converted to paxÃƒâ€šÃ‚Â·s
     # (x cycle C) so it is commensurate with the delay-ledger reward, and the
     # served bus folds in as its own delay saved. Ungameable by starvation: taking
     # green from a SATURATED competitor drops its throughput, so dPhi<0 and the
     # action self-gates. Computed only when a THROUGHPUT/DS/MULTIHEAD flag is on.
-    _thru_paxs = 0.0   # net throughput improvement in pax·s (signed)
+    _thru_paxs = 0.0   # net throughput improvement in paxÃƒâ€šÃ‚Â·s (signed)
     if (action_type != 'NO_ACTION'
             and (bool(globals().get('THROUGHPUT_REWARD', False))
                  or bool(globals().get('DS_COST_IN_REWARD', False))
+                 or bool(globals().get('SAT_GAME_REWARD', False))
                  or bool(globals().get('MULTIHEAD_Q', False)))):
         try:
             _served_ph = int(_eci_call('ECIGetCurrentPhase', 
@@ -2370,7 +3111,7 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
             _cyc = float(self._signal_cycle_s() or 120.0)
             _dphi = float(self._net_pax_throughput_delta(
                 action_type, abs(float(param)), _served_ph, 0.0))  # pax/cycle
-            # dPhi (pax/cycle) x C (s) = pax·s of delay avoided (a passenger not
+            # dPhi (pax/cycle) x C (s) = paxÃƒâ€šÃ‚Â·s of delay avoided (a passenger not
             # put through this cycle waits ~one cycle more); + the bus's own saved
             # passenger-seconds. One commensurate currency with the delay ledger.
             _thru_paxs = _dphi * _cyc + float(bus_pax_saved)
@@ -2386,7 +3127,14 @@ def _dctsp_eval_action(self, action_type, param, sigma_in, no_act_delay,
         pass
     _ledger = (_eff_bus_w * (bus_pax_saved + mainline_pax_saved + _relief)
                - _eff_cross_w * cross_cost)
-    if bool(globals().get('THROUGHPUT_REWARD', False)):
+    if bool(globals().get('SAT_GAME_REWARD', False)):
+        # Degree-of-saturation game: relief of a saturated main + net people
+        # throughput - saturation cost imposed on the side/cross approaches.
+        _rw = float(globals().get('SAT_GAME_RELIEF_W', 1.0) or 0.0)
+        _sw = float(globals().get('SAT_GAME_SIDE_W', 1.0) or 0.0)
+        _tw = float(globals().get('SAT_GAME_THRU_W', 1.0) or 0.0)
+        reward = _rw * float(_relief) + _tw * float(_thru_paxs) - _sw * float(cross_cost)
+    elif bool(globals().get('THROUGHPUT_REWARD', False)):
         _wthru = float(globals().get('W_THROUGHPUT', 1.0) or 1.0)
         _wled = float(globals().get('W_DELAY_LEDGER', 0.0) or 0.0)
         reward = _wthru * _thru_paxs + _wled * _ledger
@@ -2589,7 +3337,7 @@ def dctsp_milp_tsp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
             chosen_score - rows[0][3], sigma_out, t_poz, public_rows)
 
 
-# ── Estimated-state projections (paper: the unbinned Xt is three projections)
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Estimated-state projections (paper: the unbinned Xt is three projections)
 # Parity marker for the Aimsun-vs-SUMO audit (check_sumo_parity.py).
 # Every decider receives the same estimator tuple, but each may read ONLY its
 # own projection: centralised = net-pax tradeoff fields, Nash = fairness
@@ -2683,19 +3431,19 @@ def dctsp_centralised(self, time, timeSta, acycle, bus_eta_s, veh_id, current_ph
     The perfect-information baseline.  Unlike the decentralised learners /
     bargainers, this controller assumes it knows the exact bus positions/ETAs
     (read from the Aimsun PT trackers, no prediction uncertainty) and optimises
-    the CORRIDOR passenger objective — the delay of the triggering bus AND every
-    other oncoming bus this action would also serve — choosing DETERMINISTICALLY
+    the CORRIDOR passenger objective ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the delay of the triggering bus AND every
+    other oncoming bus this action would also serve ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â choosing DETERMINISTICALLY
     (no learning, no exploration, no epsilon).  Decision structure per the paper:
 
-      * NO_ACTION  — the bus is not meaningfully delayed, or is unreachable this
+      * NO_ACTION  ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the bus is not meaningfully delayed, or is unreachable this
                      cycle (outside cycle + margin).
-      * HOLD       — bus is running WITH the green: extend it (GE / GREEN_REALLOC)
+      * HOLD       ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â bus is running WITH the green: extend it (GE / GREEN_REALLOC)
                      so the corridor platoon clears.
-      * TRANSITION — bus is held on red: advance the bus phase (INS_POST /
+      * TRANSITION ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â bus is held on red: advance the bus phase (INS_POST /
                      INS_PRETERM / EARLY_RED) to bring the green forward.
 
     The cross-street cost is priced directly from the shockwave side model and
-    traded off pax·s-for-pax·s.  With perfect information there is no learned Q to
+    traded off paxÃƒâ€šÃ‚Â·s-for-paxÃƒâ€šÃ‚Â·s.  With perfect information there is no learned Q to
     veto, so the corridor benefit (summed over all served buses) minus the cross
     cost is the objective and the argmax is taken directly.
     """
@@ -2708,14 +3456,14 @@ def dctsp_centralised(self, time, timeSta, acycle, bus_eta_s, veh_id, current_ph
     _cycle_s = _proj['cycle_s']
     _margin = _proj['margin_s']
 
-    # ── NO_ACTION baseline row ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ NO_ACTION baseline row ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     (_r_na, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na) = _dctsp_eval_action(
         self, 'NO_ACTION', 0.0, sigma_in, no_act_delay, bus_eta_s,
         wrong_phase=wrong_phase, remaining_red_s=remaining_red_s)
     rows = [('NO_ACTION', 0.0, 0.0, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na)]
 
-    # ── Corridor multi-bus factor: perfect knowledge of every oncoming bus this
-    #    junction will serve within the reachable window (>=1.0). ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Corridor multi-bus factor: perfect knowledge of every oncoming bus this
+    #    junction will serve within the reachable window (>=1.0). ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _mb = 1.0
     try:
         _cc = getattr(self, '_corridor_coord', None)
@@ -2727,13 +3475,13 @@ def dctsp_centralised(self, time, timeSta, acycle, bus_eta_s, veh_id, current_ph
     except Exception:
         _mb = 1.0
 
-    # ── Rule gate: only intervene for a genuinely-delayed, reachable bus ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Rule gate: only intervene for a genuinely-delayed, reachable bus ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _min_delay = _proj['min_delay_s']
     _reachable = _proj['reachable']
     if eff_delay < _min_delay or not _reachable:
         return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
 
-    # ── Candidate actions per phase state (HOLD vs TRANSITION) ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Candidate actions per phase state (HOLD vs TRANSITION) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if wrong_phase:
         candidates = [('INS_POST', d) for d in (10.0, 15.0, 20.0)]
         candidates += [('INS_PRETERM', d) for d in (10.0, 15.0, 20.0)]
@@ -2755,8 +3503,8 @@ def dctsp_centralised(self, time, timeSta, acycle, bus_eta_s, veh_id, current_ph
             continue
         bus_saved = max(0.0, float(bus_saved))
         cross_cost = max(0.0, float(cross_cost))
-        # Corridor objective: bus pax·s saved (summed over the oncoming platoon)
-        # minus the cross-street pax·s cost.  Perfect info -> direct trade-off.
+        # Corridor objective: bus paxÃƒâ€šÃ‚Â·s saved (summed over the oncoming platoon)
+        # minus the cross-street paxÃƒâ€šÃ‚Â·s cost.  Perfect info -> direct trade-off.
         score = _mb * bus_saved - cross_cost
         rows.append((action_label(atype, param), param, score, sigma_out, t_poz,
                      bus_saved, cross_cost, no_strategy_delay, strategy_delay))
@@ -2780,6 +3528,16 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     dt = float(MP_ECTM_DT_S)
     q_sat_vps = float(getattr(self, 'SaturationFlow', 1800.0)) / 3600.0
     k_jam = float(getattr(self, 'JamDensity', 200.0))
+    try:
+        _mp_sec = int((getattr(self, 'config', {}).get('MainSections') or [0])[0])
+        _cal = self._ctm_params(_mp_sec) if hasattr(self, '_ctm_params') else {}
+        if _cal:
+            k_jam = float(_cal.get('k_jam_vkm_lane', k_jam) or k_jam)
+            _qm = float(_cal.get('q_max_vph_lane', 0.0) or 0.0)
+            if _qm > 0.0:
+                q_sat_vps = _qm / 3600.0
+    except Exception:
+        pass
     _bus_occ = float(getattr(self, 'BusOcc', 40.0))
     _cycle_s = float(self._signal_cycle_s()) if hasattr(self, '_signal_cycle_s') else float(self.config.get('CycleTime', 135.0) or 135.0)
     _bus_g_base = float(getattr(self, 'BusPhaseDuration', 20.0))
@@ -2801,7 +3559,7 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         q_arr_bus_vps = 300.0 / 3600.0
         n0_bus = 5.0
     _cap_veh = k_jam * 0.15
-    # ── Passenger weighting for the approach cell ────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Passenger weighting for the approach cell ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `n0_bus` is the LWR/shockwave estimate of the WHOLE approach queue in
     # vehicles and `q_arr_bus_vps` is the WHOLE approach flow -- neither is
     # bus-only -- so passing `_bus_occ` (40 pax/veh) into _ctm_delay_pax priced
@@ -2826,21 +3584,21 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     else:
         _t_wait_na = 0.0; _g_bus_na = float(remaining_red_s)
     # ETA correction: a bus still `bus_eta_s` away has NOT been waiting the full
-    # remaining red — it only accrues delay from the moment it reaches the
+    # remaining red ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it only accrues delay from the moment it reaches the
     # stopline.  Without this, a bus 18 s out was treated as already queued and
     # every action's bus benefit was massively inflated (INS_PRETERM_3 showed
-    # bus_saved 21k–54k pax·s for a 3 s action).
+    # bus_saved 21kÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“54k paxÃƒâ€šÃ‚Â·s for a 3 s action).
     _eta = max(0.0, float(bus_eta_s))
     d_bus_na = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                               max(0.0, _t_wait_na - _eta), _g_bus_na, _cell_occ)
-    # _dctsp_cross_traffic_delay_s returns pax·s (occupancy applied inside)
+    # _dctsp_cross_traffic_delay_s returns paxÃƒâ€šÃ‚Â·s (occupancy applied inside)
     d_side_na = float(self._dctsp_cross_traffic_delay_s(0.0))
     z_na = d_bus_na + d_side_na
     _d_min = float(MP_ECTM_MIN_EXT_S); _d_max = float(MP_ECTM_MAX_EXT_S)
     _d_step = float(dt)
     best_z = z_na; best_delta = 0.0; best_atype = 'NO_ACTION'
     best_d_bus = d_bus_na; best_d_side = d_side_na
-    _sweep_evals = []   # (atype, delta, d_bus, d_side) — the FULL CTM grid
+    _sweep_evals = []   # (atype, delta, d_bus, d_side) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the FULL CTM grid
     for _d_raw in np.arange(_d_min, _d_max + _d_step * 0.5, _d_step):
         delta = float(_d_raw)
         if not _wrong_phase:
@@ -2855,7 +3613,18 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             t_wait_post = float(remaining_red_s) + float(INS_INTERGREEN_S)
             d_bus_post = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                                         max(0.0, t_wait_post - _eta), delta, _cell_occ)
-            d_side_post = float(self._dctsp_cross_traffic_delay_s(t_wait_post + delta))
+            # 2026-11-02 marginal OFF-PHASE cross cost (CELLQ_INS_MARGINAL_CROSS,
+            # same fix as the CELLQ INS branch): INS_POST inserts the bus phase
+            # AFTER the current phase finishes, so the off phases are displaced
+            # only by the inserted green + one intergreen -- NOT by t_wait_post
+            # (the current phase's own green + the bus's pre-existing wait, which
+            # the cross does not pay for). t_wait_post+delta overcharged every
+            # off-phase insertion ~20-30 s of phantom cross green.
+            if bool(globals().get('CELLQ_INS_MARGINAL_CROSS', False)):
+                d_side_post = float(self._dctsp_cross_traffic_delay_s(
+                    delta + float(INS_INTERGREEN_S)))
+            else:
+                d_side_post = float(self._dctsp_cross_traffic_delay_s(t_wait_post + delta))
             z_post = d_bus_post + d_side_post
             _sweep_evals.append(('INS_POST', delta, d_bus_post, d_side_post))
             if z_post < best_z:
@@ -2900,7 +3669,7 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     best_r = r_na; best_so = so_na; best_tp = tp_na; best_r_delta = 0.0
     if not _satur_override:
         for (at, delta, d_bus, d_side) in _sweep_evals:
-            # The candidate's objective vector comes from the CTM model ITSELF —
+            # The candidate's objective vector comes from the CTM model ITSELF ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
             # re-scoring through _dctsp_eval_action (as before) collapsed ECTM's
             # rows onto the same kinematic vectors ZIG produces, so the shared
             # Pareto layer could never distinguish the two modes.
@@ -2910,17 +3679,17 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                     wrong_phase=_wrong_phase, remaining_red_s=remaining_red_s)
             except Exception:
                 so_act, tp_act, nsd_act, std_act = so_na, tp_na, nsd_na, std_na
-            bps_ctm = max(0.0, d_bus_na - d_bus)     # CTM bus pax·s saved
+            bps_ctm = max(0.0, d_bus_na - d_bus)     # CTM bus paxÃƒâ€šÃ‚Â·s saved
             # Cap the claimed savings by the bus's ACTUAL no-action delay: the CTM
             # queue model can still over-credit a short green window when n0_bus is
-            # large (INS_PRETERM_3 once claimed 62 000 pax·s ≈ 1 550 s from a 3 s
+            # large (INS_PRETERM_3 once claimed 62 000 paxÃƒâ€šÃ‚Â·s ÃƒÂ¢Ã¢â‚¬Â°Ã‹â€  1 550 s from a 3 s
             # action), so the claimed bus time can never exceed what the bus
             # actually loses without action.  Keeps the CTM vector identity.
             bps_ctm = min(bps_ctm, max(0.0, float(no_act_delay)) * _bus_occ)
-            cpc_ctm = max(0.0, d_side - d_side_na)   # CTM side pax·s added
+            cpc_ctm = max(0.0, d_side - d_side_na)   # CTM side paxÃƒâ€šÃ‚Â·s added
             # Same zero-cost fallback as _dctsp_eval_action: in the minimal config
             # the CTM d_side terms are 0 (empty shockwave arrays), so cost the
-            # insertion from live side-section vehicles instead — otherwise ECTM's
+            # insertion from live side-section vehicles instead ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â otherwise ECTM's
             # candidate looks free and the mode behaves identically to the base path.
             # Gate was `cpc_ctm < 1.0`, but the analytic path returns a small
             # non-zero value that masked the true ~0 side cost; use MAX so the
@@ -2941,12 +3710,12 @@ def dctsp_mp_ectm(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     return (best_atype, best_delta, best_r, best_r_delta, best_so, best_tp, rows)
 
 
-# ── Mode: MP_ECTM_DP — CTMGS grid + downstream DP coordination look-ahead ──────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: MP_ECTM_DP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CTMGS grid + downstream DP coordination look-ahead ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Hybrid Method III: the same exhaustive CTM grid sweep over [MIN_EXT, MAX_EXT]
 # as dctsp_mp_ectm, but each candidate also carries a CELLQLEARN-style DP
 # coordination penalty: the projected downstream-junction delay (bus + side
 # cross-traffic) over the bus-trajectory horizon, geometrically discounted by
-# MP_ECTM_DP_COORD_WEIGHT.  This counters CTMGS' myopia — an extension/insertion
+# MP_ECTM_DP_COORD_WEIGHT.  This counters CTMGS' myopia ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an extension/insertion
 # that locally helps the bus but burns cross-street green further along the
 # corridor now scores worse.
 
@@ -2976,7 +3745,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
         q_arr_bus_vps = 300.0 / 3600.0
         n0_bus = 5.0
     _cap_veh = k_jam * 0.15
-    # ── Passenger weighting for the approach cell ────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Passenger weighting for the approach cell ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `n0_bus` is the LWR/shockwave estimate of the WHOLE approach queue in
     # vehicles and `q_arr_bus_vps` is the WHOLE approach flow -- neither is
     # bus-only -- so passing `_bus_occ` (40 pax/veh) into _ctm_delay_pax priced
@@ -2996,8 +3765,8 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
             q_out = min(q_sat, n / max(dt, 1e-9))
             n = max(0.0, n + q_arr * dt - q_out * dt); delay += n * dt
         return delay * float(occ)
-    # ── DP coordination look-ahead: projected downstream delay over the
-    # bus-trajectory horizon, discounted per stage by COORD_WEIGHT. ─────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DP coordination look-ahead: projected downstream delay over the
+    # bus-trajectory horizon, discounted per stage by COORD_WEIGHT. ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _dp_horizon = float(MP_ECTM_DP_HORIZON_S)
     _dp_stage   = float(MP_ECTM_DP_STAGE_S)
     _coord_w    = float(MP_ECTM_DP_COORD_WEIGHT)
@@ -3011,7 +3780,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
         _side_red_elapsed = float(remaining_red_s)
     _side_red_elapsed = max(0.0, min(_side_red_elapsed, 2.0 * _cycle_s))
     def _dp_proj_side_delay(_sr):
-        """Real side-queue pax·s imposed by EXTRA red `_sr`: uses the live
+        """Real side-queue paxÃƒâ€šÃ‚Â·s imposed by EXTRA red `_sr`: uses the live
         SideUpFlowList/SideUpDenList shockwave model when available (grounded
         in actual accumulated side queue), else the analytic cross model.
         Scaled by CROSS_TRAFFIC_COST_MULTIPLIER so it competes with the
@@ -3031,7 +3800,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
         except Exception:
             return 0.0
     def _dp_coord_penalty(side_red_s, bus_saved_paxs, shift_sec=0.0):
-        """Projected coordination penalty (pax·s) of granting THIS action.
+        """Projected coordination penalty (paxÃƒâ€šÃ‚Â·s) of granting THIS action.
         side_red_s is the FULL extra red imposed on the cross approaches; the
         side term is the real SideUpFlowList-based queue delay, repeated per
         discounted stage.  The bus term is the REAL projected impact at the
@@ -3048,12 +3817,12 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
             _proj_dbus = _ctm_delay_pax(_proj_n0, q_arr_bus_vps, q_sat_vps,
                                         0.0, _bus_g_base, _cell_occ)
             _pen += (_proj_dbus + _proj_dside) * (_coord_w ** (_si + 1))
-        # ── Real downstream-junction projection (Z2, corridor-aware) ────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Real downstream-junction projection (Z2, corridor-aware) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # The bus time shift at THIS junction moves the bus's arrival at the
         # NEXT managed junction; project its red-wait there from the live
         # downstream phase schedule.  Positive = coordination cost, negative =
         # coordination benefit.  shift_sec is the ACTION's time shift in
-        # seconds (capped by the bus's actual no-action delay) — the pax·s
+        # seconds (capped by the bus's actual no-action delay) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the paxÃƒâ€šÃ‚Â·s
         # savings can be ~0 even for a real action, so the raw action duration
         # is the robust driver of the downstream projection.
         try:
@@ -3072,7 +3841,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
     else:
         _t_wait_na = 0.0; _g_bus_na = float(remaining_red_s)
     # ETA correction: a bus still `bus_eta_s` away has NOT been waiting the full
-    # remaining red — it only accrues delay from the moment it reaches the
+    # remaining red ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it only accrues delay from the moment it reaches the
     # stopline (same rationale as dctsp_mp_ectm).
     _eta = max(0.0, float(bus_eta_s))
     d_bus_na = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
@@ -3083,7 +3852,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
     _d_step = float(dt)
     best_z = z_na; best_delta = 0.0; best_atype = 'NO_ACTION'
     best_d_bus = d_bus_na; best_d_side = d_side_na; best_dp_pen = 0.0
-    _sweep_evals = []   # (atype, delta, d_bus, d_side, dp_pen) — the FULL CTM grid
+    _sweep_evals = []   # (atype, delta, d_bus, d_side, dp_pen) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the FULL CTM grid
     for _d_raw in np.arange(_d_min, _d_max + _d_step * 0.5, _d_step):
         delta = float(_d_raw)
         # The action's time shift at THIS junction (seconds): the bus can only
@@ -3103,13 +3872,24 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
             d_bus_post = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                                         max(0.0, t_wait_post - _eta), delta, _cell_occ)
             # ETA gate (mirrors _dctsp_eval_action INS rule): a bus still
-            # `bus_eta_s` away cannot catch a short insertion — otherwise the
+            # `bus_eta_s` away cannot catch a short insertion ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â otherwise the
             # CTM queue model credits phantom savings from a few seconds of
-            # green (INS_PRETERM_3 claimed up to ~62 000 pax·s).
+            # green (INS_PRETERM_3 claimed up to ~62 000 paxÃƒâ€šÃ‚Â·s).
             if float(bus_eta_s) > (max(0.0, delta) + float(INS_INTERGREEN_S)):
                 d_bus_post = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                                             max(0.0, t_wait_post), _bus_g_base, _cell_occ)
-            d_side_post = float(self._dctsp_cross_traffic_delay_s(t_wait_post + delta))
+            # 2026-11-02 marginal OFF-PHASE cross cost (CELLQ_INS_MARGINAL_CROSS,
+            # same fix as the CELLQ INS branch): INS_POST inserts the bus phase
+            # AFTER the current phase finishes, so the off phases are displaced
+            # only by the inserted green + one intergreen -- NOT by t_wait_post
+            # (the current phase's own green + the bus's pre-existing wait, which
+            # the cross does not pay for). t_wait_post+delta overcharged every
+            # off-phase insertion ~20-30 s of phantom cross green.
+            if bool(globals().get('CELLQ_INS_MARGINAL_CROSS', False)):
+                d_side_post = float(self._dctsp_cross_traffic_delay_s(
+                    delta + float(INS_INTERGREEN_S)))
+            else:
+                d_side_post = float(self._dctsp_cross_traffic_delay_s(t_wait_post + delta))
             _pen_post = _dp_coord_penalty(t_wait_post + delta, d_bus_na - d_bus_post, _act_shift)
             z_post = d_bus_post + d_side_post + _pen_post
             _sweep_evals.append(('INS_POST', delta, d_bus_post, d_side_post, _pen_post))
@@ -3153,7 +3933,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
         self, 'NO_ACTION', 0.0, sigma_in, no_act_delay, bus_eta_s)
     rows = [('NO_ACTION', 0.0, r_na, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na)]
     # Emit the FULL CTM grid sweep (each candidate with its DP coordination
-    # penalty folded into the cross-phase cost), not just the argmin — the
+    # penalty folded into the cross-phase cost), not just the argmin ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
     # Pareto layer needs the mode's whole model trade-off to distinguish
     # CTMGS_DP from CTMGS / GR_BASE.
     best_r = r_na; best_so = so_na; best_tp = tp_na; best_r_delta = 0.0
@@ -3169,7 +3949,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
             # authoritative value: it already applies the INS ETA gate (a bus still
             # `bus_eta_s` away cannot catch a short insertion) and the no_act_delay
             # cap, so the DP's raw CTM delta (d_bus_na - d_bus) cannot claim
-            # phantom savings (INS_PRETERM_3 once claimed 62 000 pax·s ≈ 1 550 s
+            # phantom savings (INS_PRETERM_3 once claimed 62 000 paxÃƒâ€šÃ‚Â·s ÃƒÂ¢Ã¢â‚¬Â°Ã‹â€  1 550 s
             # from a 3 s action).
             bps_ctm = min(max(0.0, float(bps_gated)),
                           max(0.0, d_bus_na - d_bus))
@@ -3197,7 +3977,7 @@ def dctsp_mp_ectm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id, current_pha
     return (best_atype, best_delta, best_r, best_r_delta, best_so, best_tp, rows)
 
 
-# ── Shared action-token helpers ───────────────────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Shared action-token helpers ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Every candidate row uses one canonical label format so the Pareto layer and
 # the execution dispatcher in engine.py can parse ANY mode's candidates.
 
@@ -3232,7 +4012,7 @@ def parse_action_token(tok) -> tuple:
     """Map any candidate label to (exec_kind, param_s).
 
     exec_kind is one of {'NO_ACTION','GE','INS','GR','ER','OC','OPP','VP','PT',
-    'SEQ','RG'} — the execution branches implemented in engine.py.  INS_POST /
+    'SEQ','RG'} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the execution branches implemented in engine.py.  INS_POST /
     INS_PRETERM / INS_close all map to 'INS'.  param_s is the trailing number in
     the label (absolute value; sign for OC stays encoded in the label) or None
     when the label carries no number (e.g. 'INS_close').
@@ -3257,27 +4037,58 @@ def parse_action_token(tok) -> tuple:
     return 'NO_ACTION', 0.0
 
 
-# ── Mode: DCTSP-BXT — CTM-based multiagent Q-learning ─────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: DCTSP-BXT ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CTM-based multiagent Q-learning ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Ported from kg/intersection_controller_lean.py (only existing implementation;
 # the reference kg controller lineage never had BXT).
 # Reference: Chanloha P., Chinrungrueng J., Usaha W. & Aswakul C. (2014),
 # "Cell Transmission Model-Based Multiagent Q-Learning for Network-Scale
 # Signal Control With Transit Priority", The Computer Journal 57(3), 451-466.
 
-# ── Discrete action-duration grids (seconds), TUNABLE per network ─────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Discrete action-duration grids (seconds), TUNABLE per network ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # The BXT learner SOLVES the exact magnitude at decision time (from the bus
-# deficit/ETA, bounded by the running green — see _ge_star/_ins_star), so for BXT
+# deficit/ETA, bounded by the running green ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â see _ge_star/_ins_star), so for BXT
 # these are family SELECTORS; the generic pool and the grid modes (ZIG/Nash grid,
 # MP-ECTM candidates) use the literal values. They are parameters (not hard-coded)
 # so they can be set to realistic magnitudes for a given signal's min/max green.
 # Defaults reproduce the historical {GE 5/10/15, INS 10/15/20, ER 10/20/30,
 # GR 5/10/15} set. NOTE: INS is additionally capped at BXT_MAX_INS_S at execution,
-# so INS grid entries above that are clamped there — raise BXT_MAX_INS_S to honour
+# so INS grid entries above that are clamped there ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â raise BXT_MAX_INS_S to honour
 # a longer INS grid.
 GE_DURATIONS_S = [5.0, 10.0, 15.0]
 INS_DURATIONS_S = [10.0, 15.0, 20.0]
 ER_DURATIONS_S = [10.0, 20.0, 30.0]
 GR_DURATIONS_S = [5.0, 10.0, 15.0]
+# Minimum viable committed action duration (s). Default 5.0 keeps the paper
+# champion unchanged; an arm may lower it to 1.0 so the shockwave/deficit-solved
+# extension executes at its true magnitude instead of being floored to NO_ACTION
+# (engine.py min-action-duration gate). Propagated via the engine flag list.
+MIN_ACTION_DURATION_S = 5.0
+# CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
+# cooperative-game (Shapley) + Q-learning controller. Default off. The observe
+# increment derives the junction's phase structure from live data + runs the
+# Shapley learner and logs it (no plan override). CBQL_EXECUTE then lets the
+# agent FORCE its selected phase at each decision point (clearance transition,
+# bounded by min/max green + a decision cooldown). EXECUTE requires _MODE on.
+CBQL_SHAPLEY_MODE = False
+CBQL_EXECUTE = False
+CBQL_QUEUE_DELAY_S = 2.0   # per-veh delay weight for the queue fallback when .DTa is None
+CBQL_MIN_GREEN_S = 7.0
+CBQL_MAX_GREEN_S = 60.0
+CBQL_DECISION_COOLDOWN_S = 3.0
+# Per-junction cap on agent-driven phase switches within a trailing one-cycle
+# window (anti-thrash); a max-green advance bypasses it. 0 disables the cap.
+CBQL_MAX_SWITCHES_PER_CYCLE = 4
+
+# CELL-STATE BACK-PRESSURE RELEASE (store-and-forward / max-pressure off the CTM
+# cells): serve the phase maximising upstream_queue x downstream_free_space, with
+# a spillback gate so green never pushes into a near-jam receiver. Off by default.
+CELL_BACKPRESSURE = False
+CELL_BP_MIN_GREEN_S = 7.0
+CELL_BP_MAX_GREEN_S = 60.0
+CELL_BP_COOLDOWN_S = 3.0
+CELL_BP_BLOCK_THRESH = 0.85      # downstream jam frac at/above which a phase is gated
+CELL_BP_MIN_QUEUE_VEH = 3.0      # don't switch for a queue smaller than this
+CELL_BP_MAX_SWITCHES_PER_CYCLE = 4
 
 
 def _build_rl_action_space():
@@ -3339,10 +4150,10 @@ def rebuild_action_space():
 # Q += alpha*(realized_adv - Q)). 0 disables (pure pessimistic init). Tunable.
 # 2026-08-24: DISABLED (120->0) for TRAINING. The seed made the learner CHOOSE
 # INS, but INS is blocked at EXECUTION by the guard stack in dctsp_bxt (esp.
-# `_side_ratio > BXT_BALANCE_FACTOR` — insertion steals a cross phase so it is
+# `_side_ratio > BXT_BALANCE_FACTOR` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â insertion steals a cross phase so it is
 # vetoed whenever side traffic is non-trivial). The pick converted to NO_ACTION,
 # INS's Q got credited with NO_ACTION's outcome (corrupt learning), and the churn
-# GRIDLOCKED training (car +55%, obj -20.7%). Selection was never the blocker —
+# GRIDLOCKED training (car +55%, obj -20.7%). Selection was never the blocker ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 # execution is. So the DEFAULT stays 0 (full-pipeline training is untouched).
 # 2026-09-11: re-enabled ONLY in the SMOKE run (champion_search injects it for
 # BXT learner arms when smoke). Rationale: a smoke run is EVAL-only with train=[],
@@ -3379,7 +4190,7 @@ _dctsp_bxt_q_table: dict = {}
 # shape and per-seed reset as the main head; trained on the analytic net-
 # throughput reward component so it conditions on how saturated the network is.
 _dctsp_bxt_qnet_table: dict = {}
-# {veh_id: (jct_id, atype, aparam, decision_time, state_bin, action_idx)} —
+# {veh_id: (jct_id, atype, aparam, decision_time, state_bin, action_idx)} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 # stored at decision time so a checkout hook can apply the terminal Q-update.
 _poz_action_log: dict = {}
 # Per-(junction,state) running mean of the realized delay under NO_ACTION.
@@ -3409,15 +4220,524 @@ def _bxt_bin(v: float, edges) -> int:
     return min(max(b, 0), 3)
 
 
+def _ctm_connector_occ_raw(self) -> tuple:
+    """RAW occupancy fractions (0..1) of the CONNECTOR CELL(S) between this
+    junction and the NEXT junction on the bus route.
+
+    A multi-cell CTM needs the inter-intersection link cells as well as the
+    local approach cells. ``UpFlowList``/``UpDenList`` stop at this junction's
+    stop line, so the learner currently cannot see whether the link it is about
+    to discharge a platoon into is free-flowing or already spilling back -- the
+    exact asymmetry that lets an extension look cheap locally and gridlock the
+    next junction.
+
+    We reconstruct the link state from the DOWNSTREAM junction's incoming/main
+    sections: the measured standing queue (``stats.latest_section``) normalised
+    by the link's jam storage (``CELLQ_CTM_CONNECTOR_CAP_FRAC * k_jam``), with
+    the downstream junction's ``UpDenList``/``k_jam`` as a fallback when the
+    measured feed is empty.
+
+    Returns ``()`` when there is no resolvable downstream junction (terminal
+    junction, no corridor coordinator, or no data), so the state keeps its
+    previous shape and existing per-junction Q-tables stay valid.
+    """
+    try:
+        _dbg_bag = globals().setdefault('_CTM_CONN_LOG', {})
+        _dbg_id = int(getattr(self, 'id', 0) or 0)
+
+        def _conn_log(_reason, **_kw):
+            """Bounded [CTM_CONN] trace: which stage produced (or failed to
+            produce) the downstream connector occupancy. Without this an empty
+            connector is indistinguishable from a genuinely free-flow link.
+            Also records the outcome in _CTM_CONN_STATUS so the state builder can
+            give a data failure its own bin instead of reading it as free flow."""
+            try:
+                globals().setdefault('_CTM_CONN_STATUS', {})[_dbg_id] = _reason
+            except Exception:
+                pass
+            try:
+                if int(_dbg_bag.get(_dbg_id, 0)) >= 12:
+                    return
+                _dbg_bag[_dbg_id] = int(_dbg_bag.get(_dbg_id, 0)) + 1
+                _extra = ' '.join('%s=%s' % (_k, _v) for _k, _v in _kw.items())
+                _log_func(self, f"[CTM_CONN] inter={_dbg_id} {_reason} {_extra}")
+            except Exception:
+                pass
+
+        _coord = getattr(self, '_corridor_coord', None)
+        if _coord is None:
+            # BXT may run on a wrapper that did not receive the coordinator
+            # back-reference; try the controller it belongs to.
+            for _a in ('gb', 'ic', 'controller', '_controller'):
+                _p = getattr(self, _a, None)
+                if _p is None:
+                    continue
+                _coord = getattr(_p, '_corridor_coord', None)
+                if _coord is not None:
+                    break
+        if _coord is None:
+            # Last resort: the engine-wide registry, matched by route index so
+            # the correct corridor group (a vs b) is chosen.
+            try:
+                _jid0 = int(getattr(self, 'id', 0) or 0)
+                _nid0 = int(getattr(self, 'node_id', _jid0) or _jid0)
+                for _c in list(globals().get('_CORRIDOR_COORDS', []) or []):
+                    _ri0 = getattr(_c, '_route_index', {}) or {}
+                    if _jid0 in _ri0 or _nid0 in _ri0:
+                        _coord = _c
+                        break
+            except Exception:
+                _coord = None
+        if _coord is None:
+            _conn_log('no_coord')
+            return ()
+        _order = list(getattr(_coord, 'route_inter_ids', []) or [])
+        _ri = getattr(_coord, '_route_index', {}) or {}
+        _jid = int(getattr(self, 'id', 0) or 0)
+        _nid = int(getattr(self, 'node_id', _jid) or _jid)
+        idx = _ri.get(_jid)
+        if idx is None:
+            idx = _ri.get(_nid)
+        _bnd = None
+        if idx is None or idx + 1 >= len(_order):
+            # Group-boundary fallback: the route ends there but the corridor
+            # continues into the next coordinator group.
+            _bnd = (CTM_CONN_BOUNDARY_NEXT.get(_jid)
+                    or CTM_CONN_BOUNDARY_NEXT.get(_nid))
+        if _bnd is None and (idx is None or idx + 1 >= len(_order)):
+            _conn_log('no_index', idx=idx, norder=len(_order), jid=_jid, nid=_nid)
+            return ()
+        _icm = getattr(_coord, '_ic_map', {}) or {}
+        _ctm = getattr(_coord, '_ctrl_map', {}) or {}
+        _rcm = getattr(_coord, '_route_ctrl_map', {}) or {}
+        if _bnd is not None:
+            _tgt = int(_bnd)
+            _conn_log('boundary', tgt=_tgt, norder=len(_order), jid=_jid)
+        else:
+            _tgt = int(_order[idx + 1])
+        _cands = []
+        for _m in (_rcm, _icm, _ctm):
+            try:
+                _c = _m.get(_tgt)
+            except Exception:
+                _c = None
+            if _c is not None and _c not in _cands:
+                _cands.append(_c)
+        # Maps can be keyed by node_id while route_inter_ids carry the junction
+        # id (or vice versa); match on either attribute.
+        for _m in (_rcm, _icm, _ctm):
+            for _c in list(_m.values()):
+                try:
+                    if (int(getattr(_c, 'id', -1)) == _tgt
+                            or int(getattr(_c, 'node_id', -1)) == _tgt):
+                        if _c not in _cands:
+                            _cands.append(_c)
+                except Exception:
+                    continue
+        # A wrapper controller may hold the real junction as .gb/.ic.
+        for _c in list(_cands):
+            for _a in ('gb', 'ic', 'controller', '_controller'):
+                _p = getattr(_c, _a, None)
+                if _p is not None and _p not in _cands:
+                    _cands.append(_p)
+        # GLOBAL REGISTRY FALLBACK (2026-10-30): the coordinator's maps only hold
+        # the intersections IT manages. The engine registers every controller by
+        # id in _CTRL_BY_ID, so a route junction that is missing from
+        # _route_ctrl_map / _ic_map / _ctrl_map -- the case that produced
+        # conn=[] at the head of a corridor -- can still be resolved, and it is
+        # also appended as an extra data source when the coordinator's object
+        # exists but carries no section data.
+        try:
+            _all = globals().get('_CTRL_BY_ID') or {}
+            _c = _all.get(_tgt)
+            if _c is not None and _c not in _cands:
+                _cands.append(_c)
+                for _a in ('gb', 'ic', 'controller', '_controller'):
+                    _p = getattr(_c, _a, None)
+                    if _p is not None and _p not in _cands:
+                        _cands.append(_p)
+        except Exception:
+            pass
+        if not _cands:
+            _conn_log('no_down', tgt=_tgt, nrcm=len(_rcm), nicm=len(_icm),
+                      nctm=len(_ctm))
+            return ()
+        _nk = float(globals().get('CELLQ_CTM_CONNECTOR_CAP_FRAC', 0.15) or 0.15)
+        _ls_map = getattr(globals().get('stats', None), 'latest_section', None) or {}
+        _occ = []
+        _src = '?'
+        _secs_seen = 0
+        _ls_hits = 0
+        for down in _cands:
+            _kj = max(float(getattr(down, 'JamDensity',
+                                    getattr(down, 'SaturationDensity', 150.0))
+                            or 150.0), 1.0)
+            _cap = max(1.0, _nk * _kj)      # veh of link storage per lane
+            # 1) measured standing queue on the downstream approach sections.
+            _secs = (list(getattr(down, 'incoming_sections', []) or [])
+                     or list(getattr(down, 'main_sections', []) or []))
+            _secs_seen = max(_secs_seen, len(_secs))
+            for _sid in _secs:
+                _st = _ls_map.get(int(_sid))
+                if _st is None:
+                    continue
+                _ls_hits += 1
+                # queue_veh is PER LANE, _cap is per-lane storage.
+                _q = float(_st.get('queue_veh', 0) or 0.0)
+                _occ.append(max(0.0, min(1.0, _q / _cap)))
+            if _occ:
+                _src = 'queue'
+                break
+            # 2) density list (veh/km/lane).
+            try:
+                for _row in (getattr(down, 'UpDenList', []) or []):
+                    try:
+                        for _v in _row:
+                            _occ.append(max(0.0, min(1.0, float(_v) / _kj)))
+                    except TypeError:
+                        _occ.append(max(0.0, min(1.0, float(_row) / _kj)))
+            except Exception:
+                pass
+            if _occ:
+                _src = 'den'
+                break
+            # 3) flow/saturation proxy (never empty when the loop has data).
+            try:
+                _sat = max(float(getattr(down, 'SaturationFlow', 1800.0)
+                                 or 1800.0), 1.0)
+                for _row in (getattr(down, 'UpFlowList', []) or []):
+                    try:
+                        for _v in _row:
+                            _occ.append(max(0.0, min(1.0, float(_v) / _sat)))
+                    except TypeError:
+                        _occ.append(max(0.0, min(1.0, float(_row) / _sat)))
+            except Exception:
+                pass
+            if _occ:
+                _src = 'flow'
+                break
+            # 4) side-street density.
+            try:
+                for _v in (getattr(down, 'SideUpDenList', []) or []):
+                    _occ.append(max(0.0, min(1.0, float(_v) / _kj)))
+            except Exception:
+                pass
+            if _occ:
+                _src = 'side'
+                break
+        if not _occ:
+            # CONFIG-SECTION FALLBACK (2026-10-30): the downstream controller can
+            # exist but expose none of the live feeds (incoming_sections /
+            # UpDenList / UpFlowList / SideUpDenList). Its MainSections are still
+            # in the static intersection config and still measured into
+            # stats.latest_section, so read the standing queue straight from
+            # there before declaring the connector unresolved.
+            try:
+                _cfg = globals().get('_INTERSECTIONS_CONFIG') or {}
+                _jc = _cfg.get(_tgt) or {}
+                _csecs = (list(_jc.get('MainSections', []) or [])
+                          + list(_jc.get('SideSections', []) or []))
+                _kjc = float(_jc.get('JamDensity', 150.0)
+                             or _jc.get('SaturationDensity', 150.0) or 150.0)
+                _capc = max(1.0, _nk * max(_kjc, 1.0))
+                for _sid in _csecs:
+                    _st = _ls_map.get(int(_sid))
+                    if _st is None:
+                        continue
+                    _q = float(_st.get('queue_veh', 0) or 0.0)
+                    _occ.append(max(0.0, min(1.0, _q / _capc)))
+                if _occ:
+                    _src = 'cfgqueue'
+            except Exception:
+                pass
+        if not _occ:
+            # LIVE-QUERY FALLBACK (2026-10-31): the downstream junction exists on
+            # the route (next!=None) but neither its live feeds nor stats.
+            # latest_section expose a queue -- on KG this is ~1/3 of CTM decisions
+            # (conn_status=no_data) because many downstream mains are virtual/
+            # modeled sections AKIEst/latest_section never populate. Count the
+            # standing vehicles directly with _zone_queue_count (live AKIVehState,
+            # valid on virtual sections, the same primitive the approach profile
+            # uses), so a present-but-uncongested downstream reads a real low
+            # occupancy instead of "no data".
+            try:
+                _zm = float(globals().get('CELLQ_CTM_CONN_ZONE_M', 60.0) or 60.0)
+                for down in _cands:
+                    if not hasattr(down, '_zone_queue_count'):
+                        continue
+                    _dsecs = (list(getattr(down, 'main_sections', []) or [])
+                              or list((getattr(down, 'config', {}) or {}).get(
+                                  'MainSections', []) or []))
+                    _kjd = max(float(getattr(down, 'JamDensity', 150.0)
+                                     or 150.0), 1.0) / 1000.0       # veh/m/lane
+                    for _sid in _dsecs:
+                        try:
+                            _c, _lm, _w = down._zone_queue_count(int(_sid), _zm)
+                        except Exception:
+                            continue
+                        if _lm and float(_lm) > 1e-6:
+                            try:
+                                _ln = max(1, int(down._sec_lane_count(int(_sid))
+                                                 or 1))
+                            except Exception:
+                                _ln = 1
+                            _occ.append(max(0.0, min(1.0,
+                                        (float(_c or 0.0) / _ln)
+                                        / (float(_lm) * _kjd))))
+                    if _occ:
+                        _src = 'livecount'
+                        break
+            except Exception:
+                pass
+        if not _occ:
+            _conn_log('no_data', tgt=_tgt, ncand=len(_cands),
+                      secs=_secs_seen, ls_hits=_ls_hits,
+                      cands=[type(_c).__name__ for _c in _cands][:4])
+            return ()
+        _conn_log('ok', tgt=_tgt, src=_src, n=len(_occ),
+                  vals=[round(float(_v), 3) for _v in _occ[:4]],
+                  ncand=len(_cands))
+        return tuple(_occ)
+    except Exception as _cc_err:
+        try:
+            _log_func(self, f"[CTM_CONN] inter={getattr(self, 'id', '?')} "
+                            f"raised {_cc_err!r}")
+        except Exception:
+            pass
+        return ()
+
+
+def _ctm_bin_cells(values, n_bins, edges=None) -> tuple:
+    """Split a sequence into ``n_bins`` groups and discretise each group mean on
+    ``edges`` (4 levels). Returns ``()`` for an empty input."""
+    _src = [float(v) for v in (values or [])]
+    if not _src:
+        return ()
+    _n = max(1, min(int(n_bins or 1), 40))
+    _e = list(edges or globals().get('CELLQ_CTM_CONNECTOR_EDGES',
+                                     [0.25, 0.5, 0.75]) or [0.25, 0.5, 0.75])
+    _L = len(_src)
+    _out = []
+    for _s in range(_n):
+        _a = (_s * _L) // _n
+        _b = max(_a + 1, (((_s + 1) * _L) // _n))
+        _b = min(_b, _L)
+        _sl = _src[_a:_b] if _b > _a else [_src[min(_a, _L - 1)]]
+        _v = (sum(_sl) / len(_sl)) if _sl else 0.0
+        _out.append(int(_bxt_bin(_v, _e)))
+    return tuple(_out)
+
+
+def _ctm_connector_occ(self, bins: int = None) -> tuple:
+    """Discretised connector-cell bins (see ``_ctm_connector_occ_raw``)."""
+    _raw = _ctm_connector_occ_raw(self)
+    if not _raw:
+        return ()
+    _n = int(bins if bins is not None
+             else (globals().get('CELLQ_CTM_CONNECTOR_BINS', 1) or 1))
+    return _ctm_bin_cells(_raw, _n)
+
+
+def _ctm_clear_time_s(n_queue, q_sat_vps, min_s=None) -> float:
+    """Seconds to discharge a standing queue of ``n_queue`` vehicles at the
+    saturation rate (upper bound on useful green). Used by CELLQ_CTM_CLEAR_CAP
+    so an extension is never longer than the queue it can serve."""
+    try:
+        _min = float(min_s if min_s is not None
+                     else (globals().get('CELLQ_CTM_CLEAR_MIN_S', 1.0) or 1.0))
+    except Exception:
+        _min = 1.0
+    try:
+        return max(_min, float(n_queue) / max(float(q_sat_vps), 1e-6))
+    except Exception:
+        return _min
+
+
+def _ctm_crit_occ() -> float:
+    """Critical occupancy k_crit/k_jam = w/(v_f + w) in [0.05, 0.95].
+
+    This is the free-flow -> queued transition of the triangular fundamental
+    diagram. It is the natural unit for "is the downstream link constrained":
+    below it the discharge is limited by the signal (q_sat), above it by storage.
+    Computed from the same CELLQ_CTM_WAVE_KMH / CELLQ_CTM_FREEFLOW_KMH the cell
+    model already uses, so it is corridor-agnostic (18/(50+18) = 0.265 at the
+    defaults). CELLQ_CTM_CRIT_OCC overrides it when a corridor is calibrated
+    separately.
+    """
+    try:
+        _o = float(globals().get('CELLQ_CTM_CRIT_OCC', 0.0) or 0.0)
+        if _o > 0.0:
+            return min(max(_o, 0.05), 0.95)
+        _vf = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
+        _w = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0) or 18.0)
+        if _vf + _w <= 1e-6:
+            return 0.265
+        return min(max(_w / (_vf + _w), 0.05), 0.95)
+    except Exception:
+        return 0.265
+
+
+def _system_regime(self, t, ds_max, queue_veh, conn_occ=None, cycle_s=None):
+    """SCATS-style discrete SYSTEM REGIME for the current decision tick.
+
+    SCATS does not act on a single DS number: it classifies the intersection into
+    operating states (free / rising / saturated / incremental failure / high
+    density-spillback) and applies a different strategy in each -- e.g. it stops
+    extending green under "incremental failure" (a queue that does not clear
+    within a cycle) and switches to cycle/offset control under high density.
+    This is the same idea, computed only from quantities the controller already
+    measures (no extra Aimsun calls):
+
+        0 FREE          DS < 0.55                        -- normal operation
+        1 RISING        0.55 <= DS < 0.85                -- approach filling
+        2 SATURATED     0.85 <= DS < 1.00                -- at capacity
+        3 INCR_FAILURE  DS >= 1.00 AND the queue has persisted for >= one
+                        cycle                            -- incremental failure:
+                        demand exceeds capacity, extra green cannot repay itself
+        4 SPILLBACK     downstream connector at/above critical occupancy --
+                        the junction cannot discharge regardless of its own green
+
+    `queue_veh` is the standing queue on the bus approach (n0_bus); `conn_occ`
+    is the raw connector occupancy tuple (``_ctm_connector_occ_raw``).
+    Returns (regime:int, detail:dict). Precedence: spillback > incremental
+    failure > saturated > rising > free.
+    """
+    ds = max(0.0, float(ds_max or 0.0))
+    q = max(0.0, float(queue_veh or 0.0))
+    try:
+        _cyc = float(cycle_s) if cycle_s else float(
+            getattr(self, '_signal_cycle_s', lambda *a: 0.0)() or 0.0)
+    except Exception:
+        _cyc = 0.0
+    if _cyc <= 0.0:
+        _cyc = 60.0
+    _crit = _ctm_crit_occ()
+    _conn_max = 0.0
+    try:
+        _conn_max = max([float(v) for v in (conn_occ or [])] or [0.0])
+    except Exception:
+        _conn_max = 0.0
+    _jid = int(getattr(self, 'id', 0) or 0)
+    _mem = globals().setdefault('_REGIME_MEM', {})
+    _m = _mem.setdefault(_jid, {'bad_since': None, 'peak': 0.0})
+    _q_min = float(globals().get('REGIME_QUEUE_MIN_VEH', 3.0) or 3.0)
+    _incr_cyc = float(globals().get('REGIME_INCR_CYCLES', 1.0) or 1.0)
+    _inflight = (ds >= 1.0 and q >= _q_min)
+    if _inflight:
+        if _m['bad_since'] is None:
+            _m['bad_since'] = float(t)
+        _m['peak'] = max(_m['peak'], q)
+    else:
+        _m['bad_since'] = None
+        _m['peak'] = 0.0
+    _bad_s = (float(t) - _m['bad_since']) if _m['bad_since'] is not None else 0.0
+    if _conn_max >= _crit:
+        _reg = 4
+    elif _inflight and _bad_s >= _incr_cyc * _cyc:
+        _reg = 3
+    elif ds >= 1.0:
+        _reg = 2
+    elif ds >= 0.85:
+        _reg = 2
+    elif ds >= 0.55:
+        _reg = 1
+    else:
+        _reg = 0
+    return _reg, {'ds': ds, 'q': q, 'bad_s': _bad_s, 'peak': _m['peak'],
+                  'conn': _conn_max, 'crit': _crit, 'cycle': _cyc}
+
+
+def _system_regime_name(reg: int) -> str:
+    return {0: 'FREE', 1: 'RISING', 2: 'SATURATED',
+            3: 'INCR_FAILURE', 4: 'SPILLBACK'}.get(int(reg), '?')
+
+
+def _ctm_derived_bins(self, cell_occ, conn_raw) -> tuple:
+    """Three information-dense scalars derived from the cell profile.
+
+    Returns ``(recv_bin, tail_bin, bind_class)``:
+
+    * ``recv`` = 1 - max(connector occupancy): 3 = plenty of downstream room,
+      0 = link full. This is the storage-headroom signal the receiving gate
+      consumes exactly.
+    * ``tail`` = share of approach cells above the low edge: 3 = the queue
+      spans the approach, 0 = only the stop line is loaded.
+    * ``bind`` = binding constraint:
+        0 stop-line  (queue concentrated at the stop line, downstream has room)
+        1 upstream   (queue spans the approach: demand exceeds capacity)
+        2 downstream (connector full: this junction cannot discharge anyway)
+        3 free / distributed (nothing is clearly binding)
+
+    ``cell_occ`` is ordered entry -> stop line when ``CELLQ_CTM_STOPLINE_LAST``
+    is true (the default, matching the Aimsun section order used by UpFlowList).
+    """
+    _cells = [max(0.0, min(1.0, float(v))) for v in (cell_occ or [])]
+    _conn = [max(0.0, min(1.0, float(v))) for v in (conn_raw or [])]
+    # `recv` and `tail` are both FRACTIONS in [0,1] (headroom, and share of cells
+    # loaded), so they bin on [0.25,0.5,0.75]. The old code applied the
+    # OCCUPANCY edges to both, mixing units; with the connector edges rescaled to
+    # critical occupancy that mix would have zeroed the tail dimension too.
+    _e = list(globals().get('CELLQ_CTM_CONNECTOR_EDGES', [0.25, 0.50, 0.75])
+              or [0.25, 0.50, 0.75])
+    # Occupancy thresholds for "loaded"/"binding", in the same units as the
+    # connector: k_crit/k_jam when CELLQ_CTM_CRIT_RELATIVE is on, else absolute.
+    if bool(globals().get('CELLQ_CTM_CRIT_RELATIVE', True)):
+        _crit = _ctm_crit_occ()
+        _lo = 0.5 * _crit                      # a cell counts as loaded here
+        _down_thr = _crit                      # downstream link at capacity
+        _stop_thr = _crit                      # stop line at capacity
+    else:
+        _crit = 1.0
+        _lo = float(_e[0]) if _e else 0.25
+        _down_thr = float(globals().get('CELLQ_CTM_BIND_DOWN_OCC', 0.75) or 0.75)
+        _stop_thr = 0.5
+    # UNRESOLVED CONNECTOR must not read as "free flow": a topology/data failure
+    # gets its own bin (CELLQ_CTM_UNKNOWN_BIN) so the learner can tell it apart
+    # from a genuinely empty downstream link (bin 3). A terminal junction (no
+    # downstream on this route) keeps bin 3 -- there really is no constraint.
+    if not _conn:
+        try:
+            _status = str((globals().get('_CTM_CONN_STATUS', {}) or {}).get(
+                int(getattr(self, 'id', 0) or 0), ''))
+        except Exception:
+            _status = ''
+        if _status in ('no_data', 'no_down', 'no_coord', 'raised', 'no_index'):
+            _recv_b = int(globals().get('CELLQ_CTM_UNKNOWN_BIN', 4) or 4)
+        else:
+            _recv_b = 3
+    else:
+        _load = (max(_conn) / _crit) if _crit > 0.0 else max(_conn)
+        _recv = max(0.0, min(1.0, 1.0 - _load))
+        _recv_b = int(_bxt_bin(_recv, _e))
+    _tail = (sum(1 for v in _cells if v >= _lo) / float(len(_cells))
+             if _cells else 0.0)
+    _tail_b = int(_bxt_bin(_tail, _e))
+    _tail_thr = float(globals().get('CELLQ_CTM_BIND_TAIL_FRAC', 0.60) or 0.60)
+    if bool(globals().get('CELLQ_CTM_STOPLINE_LAST', True)):
+        _stop = _cells[-1] if _cells else 0.0
+    else:
+        _stop = _cells[0] if _cells else 0.0
+    if _conn and max(_conn) >= _down_thr:
+        _bind = 2
+    elif _tail >= _tail_thr:
+        _bind = 1
+    elif _cells and _stop >= _stop_thr and _tail < _tail_thr:
+        _bind = 0
+    else:
+        _bind = 3
+    return (_recv_b, _tail_b, int(_bind))
+
+
 def _bxt_state_bin(n0_bus: float, side_ratio: float,
                    phase_is_bus: bool, bus_eta_s: float,
                    side_load: float = 0.0, ds_max: float = None,
-                    cell_occ=None) -> tuple:
+                    cell_occ=None, conn_occ=None, derived=None,
+                    regime=None) -> tuple:
     """Discretise the per-decision state into a hashable state tuple.
 
     Base 4-tuple = (bus-queue bin, side-RATIO bin, phase-is-bus, eta bin). When
     BXT_DEMAND_STATE is on, a 5th DEMAND-REGIME bin is appended from `side_load`
-    (absolute cross-street pax·s of delay) -- an OBSERVED level, not the ratio, so
+    (absolute cross-street paxÃƒâ€šÃ‚Â·s of delay) -- an OBSERVED level, not the ratio, so
     ONE policy can condition on how saturated the network is and behave
     differently at low vs high REAL-TIME demand instead of averaging over regimes.
     When DS_IN_LEARNER_STATE is on, a further SCATS degree-of-saturation bin is
@@ -3429,6 +4749,13 @@ def _bxt_state_bin(n0_bus: float, side_ratio: float,
 
     Edges come from the BXT_STATE_EDGES module flag (same 4 bins per dimension,
     no growth); defaults reproduce the historical hand-tuned edges exactly.
+
+    CTM additions (all flag-gated, appended in this order):
+      * raw per-cell tuple   -- CELLQ_CTM_STATE + CELLQ_CTM_STATE_RAW_CELLS
+      * connector link bin   -- CELLQ_CTM_CONNECTOR_STATE
+      * derived (recv, tail, bind) -- CELLQ_CTM_DERIVED_STATE
+    The derived tuple is the COMPACT learning key: 4^3 instead of 4^N, where
+    recv = downstream headroom, tail = queue extent, bind = binding constraint.
     """
     _ed = globals().get('BXT_STATE_EDGES') or {}
     if not isinstance(_ed, dict):
@@ -3453,10 +4780,22 @@ def _bxt_state_bin(n0_bus: float, side_ratio: float,
     if bool(globals().get('DS_IN_LEARNER_STATE', False)) and ds_max is not None:
         _dse = globals().get('DS_STATE_EDGES') or [0.6, 0.85, 1.0]
         _tup = _tup + (_bxt_bin(float(ds_max), _dse),)
+    # SYSTEM-REGIME bin (2026-10-30): the SCATS-style operating state
+    # (FREE/RISING/SATURATED/INCR_FAILURE/SPILLBACK) as ONE extra discrete
+    # dimension, so the policy can learn a different action per regime instead of
+    # averaging over them. Flag-gated: with SYSTEM_REGIME_IN_STATE off the state
+    # tuple is unchanged.
+    if bool(globals().get('SYSTEM_REGIME_IN_STATE', False)) and regime is not None:
+        try:
+            _tup = _tup + (int(regime),)
+        except Exception:
+            pass
     # Per-cell occupancy tuple (2026-10-15): spatial detail from the multi-cell
     # CTM. `cell_occ` is a sequence of per-cell occupancy fractions (0..1) for
     # the main approach. Off unless CELLQ_CTM_STATE; keeps existing states stable.
-    if bool(globals().get('CELLQ_CTM_STATE', False)) and cell_occ is not None:
+    if (bool(globals().get('CELLQ_CTM_STATE', False))
+            and bool(globals().get('CELLQ_CTM_STATE_RAW_CELLS', True))
+            and cell_occ is not None):
         try:
             _n = max(2, int(globals().get('CELLQ_CTM_STATE_CELLS', 4) or 4))
             _src = list(cell_occ)
@@ -3475,6 +4814,21 @@ def _bxt_state_bin(n0_bus: float, side_ratio: float,
                     else: _bb = 0
                     _cells.append(_bb)
                 _tup = _tup + (tuple(_cells),)
+        except Exception:
+            pass
+    # Connector-cell bins (2026-10-30): the link cells BETWEEN this junction and
+    # the next one. Appended after the approach cells so the state carries the
+    # full local+link CTM view. Empty tuple when disabled/unresolved.
+    if bool(globals().get('CELLQ_CTM_CONNECTOR_STATE', False)) and conn_occ:
+        try:
+            _tup = _tup + (tuple(int(v) for v in conn_occ),)
+        except Exception:
+            pass
+    # Derived CTM bins (2026-10-30): recv / tail / binding-constraint. This is
+    # the COMPACT alternative to the raw per-cell tuple (CELLQ_CTM_DERIVED_STATE).
+    if bool(globals().get('CELLQ_CTM_DERIVED_STATE', False)) and derived:
+        try:
+            _tup = _tup + (tuple(int(v) for v in derived),)
         except Exception:
             pass
     return _tup
@@ -3504,7 +4858,7 @@ _BXT_POOL_KEY = -1   # cross-signal warm-start pool (option 1)
 def _bxt_warmstart_on(jct_id: int) -> bool:
     """Warm-start mode: per-signal Q tables, but a junction's FIRST visit to a
     state is seeded from a cross-signal POOL (what other signals already learned)
-    and then fine-tunes its own copy.  Unlike full sharing (§39, which over-
+    and then fine-tunes its own copy.  Unlike full sharing (Ãƒâ€šÃ‚Â§39, which over-
     generalised into gridlock) this keeps per-junction specialisation while still
     getting the sample-efficiency of pooled early experience.  Disabled when full
     sharing is on (the pool key would collide with the shared table)."""
@@ -3766,7 +5120,7 @@ def _bxt_get_q(jct_id: int, state_bin: tuple, init_vals=None) -> list:
             # prior). Only in WRONG-PHASE bins (state_bin[2] == 0 = bus phase not
             # running = a bus is held on red): seed INS / GR positive so the
             # greedy policy advances the bus green instead of defaulting to
-            # NO_ACTION. Right-phase bins (bus green already up) keep Q=0 — there
+            # NO_ACTION. Right-phase bins (bus green already up) keep Q=0 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â there
             # the correct held-bus action is GE, learned normally.
             try:
                 _opt = float(globals().get('BXT_INS_OPTIMISTIC_INIT',
@@ -3976,7 +5330,7 @@ def _bxt_apply_pending_updates(self, time):
         if _now < float(_rec.get('due_t', 0.0)):
             continue
         try:
-            # ── REALIZED-delay reward ─────────────────────────────────────
+            # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ REALIZED-delay reward ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
             # The counterfactual reward credited the action's PREDICTED bus
             # benefit (no_act_delay*BusOcc, always large-positive) minus a LOCAL
             # short-window car cost -> systematically positive -> the model
@@ -4286,16 +5640,42 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     """CTM red-light-delay Q-learning candidate generation (BXT mode).
 
     Returns (best_type, best_param, best_r, best_r_delta, best_sigma_out,
-    best_t_poz, rows) — same contract as dctsp_zig / dctsp_mp_ectm.
+    best_t_poz, rows) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same contract as dctsp_zig / dctsp_mp_ectm.
     """
     import random as _rnd_bxt
 
-    # ── CONTINUOUS play for the learner (CELLQLEARN) ──────────────────────────
+    # 2026-11-03 PROGRESSION_COST_IN_REWARD: sample the coordination (POG) state
+    # once here, where current_phase is in scope, so _dctsp_eval_action's
+    # progression charge reads a fresh Purdue reading instead of the protect-
+    # default POG=1.0 (PROGRESSION_GATE does not sample on this arm).
+    if bool(globals().get('PROGRESSION_COST_IN_REWARD', False)):
+        try:
+            self._sample_progression(current_phase)
+        except Exception:
+            pass
+
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CONTINUOUS play for the learner (CELLQLEARN) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # On a no-bus monitor tick (veh_id<0 / bus_eta_s=1e9) the BXT reward model has
     # no bus to serve, so its Q argmaxes NO_ACTION. Route that tick through the
     # SHARED continuous state bargain (mainline-vs-cross green, incl. the bus-free
     # corridor coupling) so CELLQLEARN also acts on the traffic STATE continuously.
     # The learner still decides every bus-PRESENT tick. Gated by BXT_CONTINUOUS_
+    # ENTRY TRACE (2026-10-30): the 17:28 CellQ run logged `[BXT]=0` despite 706
+    # detections and 184 reward evaluations, i.e. every call returned before the
+    # final [BXT] line. Log the entry of each call so the next run distinguishes
+    # "not called" from "called and bailed". Bounded per junction.
+    try:
+        _be = globals().setdefault('_BXT_ENTRY_N', {})
+        _bek = int(getattr(self, 'id', 0) or 0)
+        if int(_be.get(_bek, 0)) < 3:
+            _be[_bek] = int(_be.get(_bek, 0)) + 1
+            _log_func(self,
+                f"[BXT_ENTRY] inter={_bek} t={time:.1f} veh={veh_id} "
+                f"eta={float(bus_eta_s):.1f} cont={int(bool(globals().get('BXT_CONTINUOUS_MODE', True)))} "
+                f"mode_monitor={int((int(veh_id) < 0) or (float(bus_eta_s) > 1.0e8))}")
+    except Exception:
+        pass
+
     # MODE; reached only under CONTINUOUS_MONITOR_MODE. (2026-09-24)
     if (((int(veh_id) < 0) or (float(bus_eta_s) > 1.0e8))
             and bool(globals().get('BXT_CONTINUOUS_MODE', True))):
@@ -4312,7 +5692,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         except Exception:
             pass
 
-    # ── POG need gate (offensive POG, 2026-09-30) ─────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ POG need gate (offensive POG, 2026-09-30) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Bus need scales with (1 - POG): a bus arriving on an intact wave needs
     # little help, one facing a broken wave needs a lot. When POG_NEED_GATE
     # is on, the effective minimum bus delay rises as POG rises, so
@@ -4343,7 +5723,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _bus_g_base  = float(getattr(self, 'BusPhaseDuration', 20.0))
     _wrong_phase = (int(current_phase) != int(self.BusPhase))
 
-    # ── Estimate initial bus-approach queue n0 (LWR back-shockwave) ──────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Estimate initial bus-approach queue n0 (LWR back-shockwave) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     try:
         upf = np.asarray(getattr(self, 'UpFlowList', np.zeros((1, 1))), dtype=float)
         rdt = np.asarray(getattr(self, 'RedDurationList', np.zeros((1, 1))), dtype=float)
@@ -4361,7 +5741,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         q_arr_bus_vps = 300.0 / 3600.0
         n0_bus = 5.0
 
-    # ── Passenger weighting for the approach cell ────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Passenger weighting for the approach cell ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `n0_bus` is the LWR/shockwave estimate of the WHOLE approach queue in
     # vehicles and `q_arr_bus_vps` is the WHOLE approach flow -- neither is
     # bus-only.  Passing `_bus_occ` (40 pax/veh) into _ctm_red_delay therefore
@@ -4378,10 +5758,45 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _car_occ_cell = float(getattr(self, 'CarOcc', None)
                           or globals().get('BXT_CAR_OCC', 1.2) or 1.2)
     _n_cell = max(float(n0_bus), 1.0)
-    _cell_occ = ((min(1.0, _n_cell) * _bus_occ
-                  + max(0.0, _n_cell - 1.0) * _car_occ_cell) / _n_cell)
+    # ---- BEGIN CELL_BUS_OCC (2026-11-02) ------------------------------
+    # The subject bus belongs in the approach cell only if it can actually
+    # use the green being priced. Charging it at BusOcc unconditionally made
+    # the blended occupancy 6.05 pax/veh at n0=8 (one 40-pax bus + 7 cars),
+    # so every action that SHORTENS the running phase -- EARLY_RED above all
+    # -- was charged for a bus that could be 300 m back and would not have
+    # arrived inside the green either way. For GE/INS the same cell is both
+    # the gain and the cost so the inflation largely cancels; it only bites
+    # where gain and cost live on different phases.
+    #
+    # A wrong-phase bus is always counted: it is held on red, its green is
+    # still to come, and shortening the cross phase genuinely advances it.
+    # BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING=False restores the always-count.
+    _bus_in_cell = True
+    if bool(globals().get('BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING', True)):
+        try:
+            _bus_in_cell = (bool(_wrong_phase)
+                            or float(bus_eta_s) <= float(remaining_red_s) + 1e-6)
+        except Exception:
+            _bus_in_cell = True
+    _bus_slots = 1.0 if _bus_in_cell else 0.0
+    _cell_occ = ((min(_n_cell, _bus_slots) * _bus_occ
+                  + max(0.0, _n_cell - _bus_slots) * _car_occ_cell) / _n_cell)
+    # ---- END CELL_BUS_OCC ----------------------------------------------
 
     _cap_veh = k_jam * 0.15
+    # Receiving constraint (set at the decision site once the connector cell is
+    # known). None = no downstream bound; a float = max discharge veh/s.
+    _recv_q = None
+    # True when the downstream link is at/above critical occupancy, i.e. the
+    # receiving term is actually throttling the discharge (not merely computed).
+    _recv_bind = False
+    # Clearance cap (seconds) on useful green; None = no cap.
+    _clear_cap_s = None
+    if bool(globals().get('CELLQ_CTM_CLEAR_CAP', False)):
+        try:
+            _clear_cap_s = _ctm_clear_time_s(n0_bus, q_sat_vps)
+        except Exception:
+            _clear_cap_s = None
 
     def _ctm_red_delay(n0, q_arr, q_sat, t_wait_red, g_dur, occ):
         """Pax-seconds accumulated by the bus-approach cell over one cycle.
@@ -4421,6 +5836,12 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             nonlocal n
             for _ in range(max(0, int(round(float(dur) / dt)))):
                 q_out = min(q_sat, n / max(dt, 1e-9))
+                # CELLQ_CTM_RECEIVING_GATE: the downstream link caps the
+                # discharge. q_out = min(sending, receiving) is the CTM law the
+                # cross-street chain already uses; here it stops a green
+                # extension from pumping vehicles into a full link.
+                if _recv_q is not None:
+                    q_out = min(q_out, float(_recv_q))
                 n = max(0.0, n + q_arr * dt - q_out * dt)
 
         _red(t_wait_red)
@@ -4430,7 +5851,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _red(max(0.0, _cycle_s - float(t_wait_red) - float(g_dur)))
         return delay * float(occ)
 
-    # ── Solved action durations (replaces the coarse {5,10,15} grid) ─────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Solved action durations (replaces the coarse {5,10,15} grid) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The action space offers GE/GR/INS at FIXED durations {5,10,15,20}.  With
     # the cost term underpriced, CTM reward is monotone in duration, so the grid
     # CEILING won ~80% of picks: measured kg seed 500, 265/350 GE picks were
@@ -4478,7 +5899,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _MIN_EFFECTIVE_GE_S = 1.0
     _solved_param = {'GE': _ge_star, 'GREEN_REALLOC': _ge_star, 'INS': _ins_star}
 
-    # ── Individual-bus catch/miss term ───────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Individual-bus catch/miss term ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `_ctm_red_delay` models the APPROACH-QUEUE delay only; for a bus that
     # already has green (right phase) its wait integral is empty, so the CTM
     # cannot see the one thing a green extension buys -- THIS bus catching THIS
@@ -4494,9 +5915,9 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _raw_deficit = max(0.0, float(bus_eta_s) - _green_left)
     _bus_wait_pax = max(0.0, float(no_act_delay)) * _bus_occ
 
-    # ── Purdue POG reward term (BXT_POG_REWARD) ──────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Purdue POG reward term (BXT_POG_REWARD) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Sample the coordination state once, then penalise each offset-shifting
-    # action by the pax·s of main platoon it pushes off green (Percent-on-Green
+    # action by the paxÃƒâ€šÃ‚Â·s of main platoon it pushes off green (Percent-on-Green
     # damage). Folds the Purdue metric into the LEARNER's reward.
     _bxt_pog_on = bool(globals().get('BXT_POG_REWARD', False))
     if _bxt_pog_on:
@@ -4551,10 +5972,16 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         # Grid durations are overridden by the solved value for the families
         # that support it; EARLY_RED keeps its grid (it is a phase truncation,
         # bounded by remaining_red_s, not an extend-to-clear action).
-        """Return (r_bxt, d_bus, d_side): r_bxt = -(queue + bus wait + side), pax·s.
+        """Return (r_bxt, d_bus, d_side): r_bxt = -(queue + bus wait + side), paxÃƒâ€šÃ‚Â·s.
         Offset-shifting actions also pay a Purdue-POG penalty when BXT_POG_REWARD."""
         aparam = _solved_param.get(atype, aparam)
         a_s = float(aparam)
+        # CELLQ_CTM_CLEAR_CAP: evaluate every extending action at the capped
+        # magnitude so the Q-value matches what will execute (green beyond the
+        # queue's discharge time buys nothing but still pays cross cost).
+        if (_clear_cap_s is not None
+                and atype in ('GE', 'GREEN_REALLOC', 'INS')):
+            a_s = min(a_s, float(_clear_cap_s))
         if atype == 'NO_ACTION':
             if _wrong_phase:
                 t_wait = float(remaining_red_s); g_bus = _bus_g_base
@@ -4582,11 +6009,37 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             return -(d_bus + d_side + _bxt_pog_penalty(a_s)
                      - _bxt_pog_bonus(a_s)), d_bus, d_side
         if atype == 'INS':
-            t_wait = float(remaining_red_s) + float(INS_INTERGREEN_S)
+            # 2026-11-03 CELLQ_INS_POSITION_BENEFIT: a real insertion TRUNCATES
+            # the current phase and brings the bus green FORWARD, so the bus
+            # approach waits only until the bus ARRIVES (bus_eta_s) or the
+            # earliest legal transition (one intergreen), whichever is later --
+            # and NEVER longer than doing nothing (capped at remaining_red_s).
+            # The old model charged remaining_red + intergreen, i.e. the FULL red
+            # PLUS a transition, so every insertion modelled WORSE than NO_ACTION
+            # (served_gain ~0) and INS was chosen but never cleared the gate.
+            # Bringing the green forward by (remaining_red - t_wait) also serves
+            # the CARS queued on the bus phase -- _ctm_red_delay integrates the
+            # whole approach cell (n0_bus * _cell_occ), so d_bus credits bus +
+            # concurrent cars, not the bus alone. POSITION-AWARE: if the bus
+            # arrives AFTER the phase would turn anyway (bus_eta_s >=
+            # remaining_red_s), t_wait pins to remaining_red_s and the insertion
+            # is correctly worth ~0 -- firing it early buys nothing.
+            if bool(globals().get('CELLQ_INS_POSITION_BENEFIT', False)):
+                t_wait = min(float(remaining_red_s),
+                             max(float(bus_eta_s), float(INS_INTERGREEN_S)))
+            else:
+                t_wait = float(remaining_red_s) + float(INS_INTERGREEN_S)
             d_bus = _ctm_red_delay(n0_bus, q_arr_bus_vps, q_sat_vps, t_wait, a_s, _cell_occ)
             if not (a_s > 0.0 and _raw_deficit <= float(BXT_MAX_INS_S) + 1e-6):
                 d_bus += _bus_wait_pax
-            d_side = float(self._dctsp_cross_traffic_delay_s(t_wait + a_s))
+            # Cross cost = green the insertion DISPLACES from the off phases, not
+            # the bus's own pre-existing wait (see CELLQ_INS_MARGINAL_CROSS note
+            # at the flag definition). Marginal = inserted green + one intergreen.
+            if bool(globals().get('CELLQ_INS_MARGINAL_CROSS', False)):
+                _ins_cross_s = a_s + float(INS_INTERGREEN_S)
+            else:
+                _ins_cross_s = t_wait + a_s
+            d_side = float(self._dctsp_cross_traffic_delay_s(_ins_cross_s))
             return -(d_bus + d_side + _bxt_pog_penalty(a_s)
                      - _bxt_pog_bonus(a_s)), d_bus, d_side
         if atype == 'GREEN_REALLOC':
@@ -4624,7 +6077,21 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                                        0.0, max(0.0, float(remaining_red_s) - a_s),
                                        _cell_occ)
                 d_bus += _bus_wait_pax
-                d_side = float(self._dctsp_cross_traffic_delay_s(0.0))
+                # 2026-11-02: the seconds this truncates away go to the OFF
+                # phases, and _dctsp_cross_traffic_delay_s returns 0.0 for a
+                # non-positive argument -- it charges green TAKEN, never
+                # credits green GIVEN. This branch used to record d_side = 0,
+                # so right-phase ER could only ever be scored as pure harm.
+                # Price the mirror-image gain, as a NEGATIVE cost.
+                d_side = 0.0
+                if bool(globals().get('BXT_ER_OFFPHASE_CREDIT', True)):
+                    try:
+                        _er_w = float(globals().get(
+                            'BXT_ER_OFFPHASE_GAIN_WEIGHT', 1.0) or 0.0)
+                        d_side = -_er_w * float(
+                            self._dctsp_off_phase_gain_paxs(a_s))
+                    except Exception:
+                        d_side = 0.0
             return -(d_bus + d_side), d_bus, d_side
         # Unmodelled action type -> fall back to the NO_ACTION evaluation, NOT
         # 0.0.  Every real evaluation returns a NEGATIVE pax-s reward, so a
@@ -4640,21 +6107,113 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         # action space is extended again.
         return _bxt_reward_for('NO_ACTION', 0.0)
 
+    # ── Connector cell + CTM receiving, resolved BEFORE the reward sweep ──
+    # The receiving constraint must price every candidate, so the connector and
+    # `_recv_q` are computed here (the state block below reuses them). The raw
+    # connector occupancy is kept; the binned tuple is only for the state.
+    _conn_raw = ()
+    _conn_occ = ()
+    _need_conn = (bool(globals().get('CELLQ_CTM_CONNECTOR_STATE', False))
+                  or bool(globals().get('CELLQ_CTM_DERIVED_STATE', False))
+                  or bool(globals().get('CELLQ_CTM_RECEIVING_GATE', False)))
+    if _need_conn:
+        try:
+            _conn_raw = _ctm_connector_occ_raw(self)
+        except Exception:
+            _conn_raw = ()
+        if _conn_raw and bool(globals().get('CELLQ_CTM_CONNECTOR_STATE', False)):
+            try:
+                _conn_occ = _ctm_bin_cells(
+                    _conn_raw,
+                    int(globals().get('CELLQ_CTM_CONNECTOR_BINS', 1) or 1))
+            except Exception:
+                _conn_occ = ()
+    # RECEIVING FLOW (2026-10-30): computed whenever the connector RESOLVED, not
+    # only when it exceeded the old absolute 0.75-of-jam bar. The CTM receiving
+    # term is always finite (R = min(q_sat, w*(k_jam - k))), so returning None
+    # over free-flow links made recv_q permanently "n/a" and hid the fact that
+    # the gate had never once been evaluated. R now falls out of the same
+    # occupancy, so it degrades smoothly from q_sat (empty) to 0 (jam).
+    if (bool(globals().get('CELLQ_CTM_RECEIVING_GATE', False))
+            and _conn_raw):
+        try:
+            _occ_c = max(_conn_raw)
+            if bool(globals().get('CELLQ_CTM_CRIT_RELATIVE', True)):
+                _occ_thr = _ctm_crit_occ()
+            else:
+                _occ_thr = float(globals().get('CELLQ_CTM_RECEIVING_OCC', 0.75)
+                                 or 0.75)
+            _vf_kmh = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0)
+                            or 50.0)
+            _w_kmh = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0)
+                           or 18.0)
+            _rw = float(globals().get('CELLQ_CTM_RECEIVING_W', 1.0) or 1.0)
+            # PHYSICAL CTM RECEIVING TERM. The old form used `_cap_veh`
+            # (0.15 * k_jam, a CONNECTOR BIN cap, not the link's storage) as if
+            # it were capacity, so R came out ~8 veh/s against a 0.5 veh/s
+            # saturation and the min() always returned q_sat -> the constraint
+            # could never bind at any occupancy. The correct triangular-FD form is
+            #     R = min(q_sat, w * (k_jam - k))   with w in km/h, k in veh/km
+            # so R equals q_sat below critical occupancy and falls linearly above
+            # it, exactly where a link starts to throttle the discharge.
+            _k_jam_c = max(float(getattr(self, 'JamDensity', 150.0) or 150.0),
+                           1.0)
+            _sat_vph = max(float(q_sat_vps) * 3600.0, 1.0)
+            _r_vph = min(_sat_vph,
+                         max(0.0, _w_kmh) * (1.0 - min(1.0, _occ_c)) * _k_jam_c)
+            _recv_q = max(0.0, min(q_sat_vps, _rw * _r_vph / 3600.0))
+            # Bind = the receiving term actually THROTTLES the discharge
+            # (R < q_sat), i.e. the link is above critical occupancy.
+            _recv_bind = bool(_recv_q < float(q_sat_vps) - 1e-9)
+        except Exception:
+            _recv_q = None
+            _recv_bind = False
+
     _bxt_evals  = [_bxt_reward_for(_at, _ap) for (_at, _ap) in DCTSP_RL_ACTION_SPACE]
     bxt_rewards = [_e[0] for _e in _bxt_evals]
-    # ── CTM-predicted ADVANTAGE of each action vs NO_ACTION (pax·s) ───────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CTM-predicted ADVANTAGE of each action vs NO_ACTION (paxÃƒâ€šÃ‚Â·s) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # This is the model-based signal that makes the method genuinely CELL-
     # TRANSMISSION-MODEL Q-learning: _ctm_red_delay integrates the approach cell's
     # occupancy over red->green->red (Eq. 29-30) and the bus catch/miss term, so
     # bxt_rewards[a] = -(cell delay + bus wait + cross cost) is the CTM's own
     # prediction of total pax-delay under action a. The DIFFERENCE below cancels
-    # the large queue-integral baseline common to every action (that ±100k baseline
+    # the large queue-integral baseline common to every action (that Ãƒâ€šÃ‚Â±100k baseline
     # is exactly why the old code refused to seed Q from raw bxt_rewards), leaving
-    # only each action's MARGINAL effect — which is on the same scale as the
+    # only each action's MARGINAL effect ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â which is on the same scale as the
     # realized-advantage learning reward, so it is a valid CTM prior for the Q-table.
     _ctm_adv = [float(r) - float(bxt_rewards[0]) for r in bxt_rewards]
 
-    # ── State bins ────────────────────────────────────────────────────────────
+    # MULTI-CELL CTM COST (CELLQ_CTM_REWARD): replace the analytic cross-street
+    # cost with the genuine n-cell Daganzo cost (_ctm_cross_cost_paxs) for every
+    # green-giving action. This keeps the BXT TSP action set (no corridor-wide
+    # phase/offset controller), so the adaptive plan loop remains untouched.
+    if (bool(globals().get('CELLQ_CTM_REWARD', False))
+            and hasattr(self, '_ctm_cross_cost_paxs')):
+        _ev_ctm = []
+        for (_at2, _ap2), (_r2, _db2, _ds2) in zip(
+                DCTSP_RL_ACTION_SPACE, _bxt_evals):
+            if _at2 in ('GE', 'GREEN_REALLOC', 'INS', 'INS_POST',
+                        'INS_PRETERM'):
+                try:
+                    _ap_eff = float(_ap2)
+                    if (_clear_cap_s is not None
+                            and _at2 in ('GE', 'GREEN_REALLOC', 'INS')):
+                        _ap_eff = min(_ap_eff, float(_clear_cap_s))
+                    _cs2 = float(self._ctm_cross_cost_paxs(
+                        _ap_eff, timeSta))
+                    if _cs2 > 0.0:
+                        _ds2 = _cs2
+                        _r2 = -(_db2 + _ds2
+                                + _bxt_pog_penalty(float(_ap2))
+                                - _bxt_pog_bonus(float(_ap2)))
+                except Exception:
+                    pass
+            _ev_ctm.append((_r2, _db2, _ds2))
+        _bxt_evals = _ev_ctm
+        bxt_rewards = [_e[0] for _e in _bxt_evals]
+        _ctm_adv = [float(r) - float(bxt_rewards[0]) for r in bxt_rewards]
+
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ State bins ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `eff_delay` is bound HERE, before the [BXT] log below consumes it.  It
     # used to be assigned only after the log statement (in the saturation
     # guard), so every call raised UnboundLocalError, the dispatcher in
@@ -4676,7 +6235,32 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _side_ratio = _side_p / max(_bus_p, 1.0)
     except Exception:
         _side_ratio = 0.0
-    # `_side_p` (absolute cross-street pax·s) is the demand-regime signal used by
+    # CELLQ_STATE_SHOCKWAVE (2026-11-02): the raw _side_ratio above is
+    # sum(OtherDelay)*occ / (bus_wait*occ) -- an UNBOUNDED accumulated-delay STOCK
+    # over a single bus's wait (which can be ~0). On KG it is BIMODAL: 56% of
+    # decisions collapse to ~0 and 36% blow up to the top state bin (o_d reached
+    # 268282 veh*s, side_ratio 58096), so the demand-regime STATE dimension the
+    # learner keys on carries almost no gradient -- a near-binary {empty,
+    # saturated} flag. Replace ONLY the value fed to _bxt_state_bin with the
+    # BOUNDED marginal shockwave cross delay (_dctsp_cross_traffic_delay_s is
+    # physically capped) for a reference green, over a FLOORED bus term so
+    # eff_delay~0 cannot divide-by-near-zero. The raw _side_ratio is still logged
+    # (so the two are comparable) and still the gate fallback, so this changes
+    # nothing but the learner's state key. Off by default -> existing Q-tables
+    # unchanged; on for the OPEN learner arm, which retrains so a rescaled signal
+    # is fine. See [[ins-marginal-cross-cost]] / the side_ratio blow-up finding.
+    _side_ratio_state = _side_ratio
+    if bool(globals().get('CELLQ_STATE_SHOCKWAVE', False)):
+        try:
+            _ref_s = float(globals().get('CELLQ_STATE_SHOCKWAVE_REF_S', 10.0) or 10.0)
+            _sw_cost = float(self._dctsp_cross_traffic_delay_s(_ref_s))
+            _bus_floor = float(globals().get('CELLQ_STATE_BUS_FLOOR_PAXS',
+                                             50.0) or 50.0)
+            _bp = float(locals().get('_bus_p', 0.0) or 0.0)
+            _side_ratio_state = _sw_cost / max(_bp, _bus_floor)
+        except Exception:
+            _side_ratio_state = _side_ratio
+    # `_side_p` (absolute cross-street paxÃƒâ€šÃ‚Â·s) is the demand-regime signal used by
     # _bxt_state_bin when BXT_DEMAND_STATE is on (else it is ignored).
     # `_ds_max` is the SCATS worst-approach degree of saturation, used only when
     # DS_IN_LEARNER_STATE is on (else it is ignored). Measured once per tick.
@@ -4688,16 +6272,59 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 _ds_max = float(_dssnap.get('ds_max'))
         except Exception:
             _ds_max = None
-    _cell_occ = None
+    # Per-approach cell vector for the STATE / derived bins. Kept separate from
+    # `_cell_occ` (the scalar passenger-weighted occupancy the CTM recursion
+    # consumes) so the reward sweep can never see a tuple.
+    _cell_vec = None
+    # SPATIAL CELL PROFILE (2026-10-31): the UpDenList/UpFlowList rows below come
+    # back as a SINGLE density broadcast across every column (cells=[x, x, x] with
+    # no spatial variation), so _ctm_derived_bins' tail/bind dimensions carried no
+    # information and the "dense" CTM state collapsed to one scalar. Build a REAL
+    # entry->stop-line occupancy profile from the live approach queue instead;
+    # fall through to the old rows only if the geometry is unavailable.
+    if (bool(globals().get('CELLQ_CTM_SPATIAL_CELLS', True))
+            and (bool(globals().get('CELLQ_CTM_STATE', False))
+                 or bool(globals().get('CELLQ_CTM_DERIVED_STATE', False))
+                 or bool(globals().get('CELLQ_CTM_STATE_DENSITY', False)))):
+        try:
+            _prof = self._ctm_spatial_cell_profile(
+                int(globals().get('CELLQ_CTM_N_CELLS', 3) or 3),
+                globals().get('CELLQ_CTM_CELL_LEN_M', None))
+            if _prof and len(_prof) >= 2:
+                _cell_vec = tuple(_prof)
+        except Exception:
+            _cell_vec = None
+    # DENSITY-BASED cells (CELLQ_CTM_STATE_DENSITY): true occupancy = density /
+    # k_jam from UpDenList. Preferred for the derived tail/bind bins because a
+    # flow/saturation vector is a DEMAND ratio, not a spatial queue profile.
+    if _cell_vec is None and bool(globals().get('CELLQ_CTM_STATE_DENSITY', False)):
+        try:
+            _den = getattr(self, 'UpDenList', None)
+            if _den is not None:
+                _drow = (_den[0] if hasattr(_den, '__getitem__') else _den)
+                try:
+                    _dvals = [float(x) for x in (
+                        _drow.tolist() if hasattr(_drow, 'tolist')
+                        else list(_drow))]
+                except Exception:
+                    _dvals = []
+                if _dvals:
+                    _cell_vec = tuple(
+                        max(0.0, min(1.0, v / max(k_jam, 1e-6)))
+                        for v in _dvals)
+        except Exception:
+            _cell_vec = None
     try:
         _uf = getattr(self, 'UpFlowList', None)
-        if _uf is not None:
+        if _uf is not None and _cell_vec is None:
             _row = (_uf[0] if hasattr(_uf, '__getitem__') else _uf)
             try:
                 _vals = [float(x) for x in (_row.tolist() if hasattr(_row, 'tolist') else list(_row))]
             except Exception:
                 _vals = []
-            if bool(globals().get('CELLQ_CTM_STATE', False)) and _vals:
+            if (bool(globals().get('CELLQ_CTM_STATE', False))
+                    or bool(globals().get('CELLQ_CTM_DERIVED_STATE', False))) \
+                    and _vals:
                 _occ = []
                 _sat = float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)
                 for _v in _vals:
@@ -4705,12 +6332,50 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                     if _o > 1.0:
                         _o = 1.0
                     _occ.append(float(max(0.0, _o)))
-                _cell_occ = tuple(_occ)
+                _cell_vec = tuple(_occ)
     except Exception:
-        _cell_occ = None
-    _bxt_state = _bxt_state_bin(n0_bus, _side_ratio, not _wrong_phase,
+        _cell_vec = None
+    # `_conn_raw` / `_conn_occ` / `_recv_q` were resolved BEFORE the reward
+    # sweep (see above) so the receiving constraint prices every candidate.
+    _derived = ()
+    if bool(globals().get('CELLQ_CTM_DERIVED_STATE', False)):
+        try:
+            _derived = _ctm_derived_bins(self, _cell_vec, _conn_raw)
+        except Exception:
+            _derived = ()
+    # SCATS-STYLE SYSTEM REGIME (2026-10-30): classify the junction's operating
+    # state from what is already measured, log it on change, and (flagged) append
+    # it to the learning state. This is the "learn the system state" hook: one
+    # discrete regime dimension instead of hoping the 4 base bins average it out.
+    _regime = None
+    _reg_detail = None
+    try:
+        if (bool(globals().get('SYSTEM_REGIME_IN_STATE', False))
+                or bool(globals().get('SYSTEM_REGIME_LOG', True))):
+            _regime, _reg_detail = _system_regime(
+                self, time, _ds_max, n0_bus, _conn_raw)
+            if bool(globals().get('SYSTEM_REGIME_LOG', True)):
+                _rlast = globals().setdefault('_REGIME_LAST', {})
+                _rn = globals().setdefault('_REGIME_N', {})
+                _rk = int(getattr(self, 'id', 0) or 0)
+                if (_rlast.get(_rk) != _regime
+                        and int(_rn.get(_rk, 0)) < 30):
+                    _rlast[_rk] = _regime
+                    _rn[_rk] = int(_rn.get(_rk, 0)) + 1
+                    _log_func(self,
+                        f"[REGIME] inter={_rk} t={time:.1f} "
+                        f"regime={_system_regime_name(_regime)}({_regime}) "
+                        f"ds={_reg_detail['ds']:.2f} q={_reg_detail['q']:.1f} "
+                        f"bad_s={_reg_detail['bad_s']:.0f} "
+                        f"conn={_reg_detail['conn']:.3f} "
+                        f"crit={_reg_detail['crit']:.3f}")
+    except Exception:
+        _regime = None
+    _bxt_state = _bxt_state_bin(n0_bus, _side_ratio_state, not _wrong_phase,
                                 float(bus_eta_s), side_load=_side_p,
-                                ds_max=_ds_max, cell_occ=_cell_occ)
+                                ds_max=_ds_max, cell_occ=_cell_vec,
+                                conn_occ=_conn_occ, derived=_derived,
+                                regime=_regime)
     # Raw-state logging for quantile calibration (2026-09-30): when
     # BXT_LOG_RAW_STATE is on, record the continuous values behind the bins
     # so an offline calibrator can re-cut edges to the observed distribution.
@@ -4744,7 +6409,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                     globals()['_BXT_RAW_LOG'] = []
     except Exception:
         pass
-    # ── Extended state (2026-09-28): append measured flow/queue/time/bus bins
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Extended state (2026-09-28): append measured flow/queue/time/bus bins
     # and corridor-neighbour offset bins when enabled, so the policy conditions
     # on the network and the inter-junction timing, not just the bus.
     try:
@@ -4756,7 +6421,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     except Exception:
         pass
 
-    # ── epsilon-greedy over the Q-table (initialised from CTM rewards) ───────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ epsilon-greedy over the Q-table (initialised from CTM rewards) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Phase-aware exploration: train seeds explore (BXT_TRAIN_EPSILON, ~0.1) so
     # the Q-table sees alternatives to learn from; eval seeds are GREEDY (eps=0)
     # so the measured policy is deterministic and leakage-free; default/per-seed
@@ -4784,13 +6449,13 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _explore_bypass = (_use_explore
                        and bool(globals().get('BXT_EXPLORE_BYPASS', True))
                        and _phase in ('train', 'per_seed'))
-    # ── Q-table SEED: CTM-predicted advantage (authentic CTM Q-learning) ─────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Q-table SEED: CTM-predicted advantage (authentic CTM Q-learning) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # A NEW (state) bin starts at the CTM's own prediction of each action's
     # advantage, so the FIRST decision in that state is driven by cell-transmission
     # physics rather than a cold NO_ACTION default (which left INS sample-starved
     # and the whole learner toothless). The realized-advantage reward then REFINES
-    # each visited (state,action) toward its measured outcome — model-based init,
-    # model-free correction. The old ±100k-scale failure was from seeding the RAW
+    # each visited (state,action) toward its measured outcome ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â model-based init,
+    # model-free correction. The old Ãƒâ€šÃ‚Â±100k-scale failure was from seeding the RAW
     # bxt_rewards (which carry the common queue baseline); `_ctm_adv` is the
     # baseline-cancelled DIFFERENCE, on the reward's own scale. Clipped so a single
     # over-confident CTM prediction cannot dominate before experience corrects it.
@@ -4803,7 +6468,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     else:
         _init_q = [0.0] * len(DCTSP_RL_ACTION_SPACE)
     q_vals = _bxt_get_q(self.id, _bxt_state, init_vals=_init_q)
-    # ── Action-FAMILY gate (tactic sensitivity for a BXT champion) ────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Action-FAMILY gate (tactic sensitivity for a BXT champion) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The Phase-3 tactic axis (SWAPS/TIMES/BOTH) sets ZIG_ENABLE_* flags that only
     # the ZIG candidate builder reads -- the BXT decider always used the full
     # action space, so all tactics were byte-identical (218 duplicate SANITY
@@ -4821,7 +6486,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 if _a == 'NO_ACTION' or _fam_flag.get(_a, True)]
     if not _allowed:
         _allowed = [0]                      # NO_ACTION always available
-    # ── MULTI-HEAD mix (2026-10-14): value = Q_bus(bus-state) + w_net·Q_net(net-
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MULTI-HEAD mix (2026-10-14): value = Q_bus(bus-state) + w_netÃƒâ€šÃ‚Â·Q_net(net-
     # state). The network head learns the throughput value over the DS+queue+
     # downstream state; its weight is GATED by saturation (idle in free flow,
     # full when the junction is loaded) so priority runs unimpeded when there is
@@ -4892,7 +6557,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 _chosen_idx = int(_fb_idx)
                 _chosen_atype, _chosen_aparam = DCTSP_RL_ACTION_SPACE[_chosen_idx]
 
-    # ── Solve the action MAGNITUDE against the true total-system-delay ────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Solve the action MAGNITUDE against the true total-system-delay ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The Q-table argmax picks the action FAMILY; the magnitude is not a grid
     # value.  For a green extension to the bus phase (GE, or GREEN_REALLOC while
     # the bus phase runs) we HARMONY-SEARCH the seconds that minimise total
@@ -4903,7 +6568,13 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     # so the solver cannot over-extend (too much GE raises other_delay and is
     # rejected).  EARLY_RED (a phase truncation) keeps the analytic deficit.
     # Right-phase EARLY_RED shortens the bus's own green -> only hurts the bus.
-    if _chosen_atype == 'EARLY_RED' and not _wrong_phase:
+    # 2026-11-02: this used to force NO_ACTION unconditionally. That is right
+    # about the HARM (shortening the bus's own green) and wrong about the
+    # BENEFIT (the truncated seconds reach the off phases, which is what
+    # _dctsp_off_phase_gain_paxs now prices). Keep the old unconditional
+    # suppression when the credit is off so published runs reproduce.
+    if (_chosen_atype == 'EARLY_RED' and not _wrong_phase
+            and not bool(globals().get('BXT_ER_OFFPHASE_CREDIT', True))):
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
     _ge_solve_family = (_chosen_atype == 'GE'
                         or (_chosen_atype == 'GREEN_REALLOC' and not _wrong_phase))
@@ -4919,7 +6590,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _bp_solve_family = ((_chosen_atype == 'GREEN_REALLOC' and _wrong_phase)
                         or _chosen_atype == 'INS'
                         or (_chosen_atype == 'EARLY_RED' and _wrong_phase))
-    # ── Bus benefit from the RELIABLE timing delay (not the degenerate objective)
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Bus benefit from the RELIABLE timing delay (not the degenerate objective)
     # [DELAY_DIAG] proved GE/BP_Objective_Function return ~0 bus delay even for
     # buses held 90-100 s, because they model delay via shockwave KINEMATICS
     # (bus approaching at BusSpeed joining a queue) which collapses to 0 when the
@@ -5030,7 +6701,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                     _mag = float(_opt_ge)
             except Exception:
                 pass
-        # ── ETA-reachability gate (fixes far-ETA GEs that never help the bus) ──
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ETA-reachability gate (fixes far-ETA GEs that never help the bus) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # A GE extends the CURRENT bus green by at most _ge_ub, so it can only
         # bridge a bus arriving within (green_left + _ge_ub). The corridor pre-arm
         # was firing GE_10 for buses 100-230 s away (measured: 9/12 executed GEs
@@ -5148,7 +6819,19 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     elif _chosen_atype in _solved_param:
         _chosen_aparam = float(_solved_param[_chosen_atype])
 
-    # ── Family-canonical Q index (2026-09-26) ────────────────────────────────
+    # CELLQ_CTM_CLEAR_CAP at execution: keep the grant within the standing
+    # queue's discharge time even when the solver returned a longer magnitude.
+    if (_clear_cap_s is not None
+            and _chosen_atype in ('GE', 'GREEN_REALLOC', 'INS')
+            and float(_chosen_aparam) > 0.0
+            and not _explore_bypass):
+        try:
+            _chosen_aparam = float(min(float(_chosen_aparam),
+                                       float(_clear_cap_s)))
+        except Exception:
+            pass
+
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Family-canonical Q index (2026-09-26) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The argmax above chooses an action FAMILY, but the executed magnitude is
     # SOLVED (deficit / DE / harmony / golden -- see _solve_timing_min), so all
     # grid entries of one family execute identically. Crediting the winning
@@ -5165,61 +6848,286 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         except Exception:
             pass
 
+    # ── SPILLBACK / CANNOT-DISCHARGE GUARD (2026-10-31) ──────────────────────
+    # Root of the CellQLearn seed-lottery here: the learner takes green for the
+    # bus phase at a junction whose OWN stop-line approach is already loaded, so
+    # the grant cannot discharge (exit blocked), is stolen from the cross
+    # movement, and the queue spills back UPSTREAM.
+    #   Seed-500 blow-up (2026-10-31, same DSW base + demand): CELLQ 863.1 h vs
+    #   NO_TSP 693.9 h / MARL 642.0 h / GAME 664.2 h. Committed actions piled up
+    #   at terminal junctions 39593 (20) and 38339 (11); seed 500 had the most
+    #   downstream-binding readings (22 vs 10-17 on the healthy seeds).
+    # Two complementary vetoes, both green-TAKING only (GE/GREEN_REALLOC/INS),
+    # both veto -> NO_ACTION so they can never do worse than the DSW base plan:
+    #   (a) CELLQ_TERMINAL_SPILL_GUARD (default ON): at a coord-chain TERMINAL
+    #       junction (next is None) there is NO downstream receiving signal
+    #       (conn_status=no_index), so veto on the junction's OWN stop-line
+    #       occupancy alone >= CELLQ_TERMINAL_STOP_OCC.
+    #   (b) CELLQ_SPILL_GUARD_ALL (default ON): generalises (a) to EVERY junction
+    #       -- the robust fix for the instability. Mid-corridor a loaded stop-line
+    #       is only harmful to serve when the DOWNSTREAM is also binding (the
+    #       platoon cannot clear), so veto when own stop-line >= the threshold AND
+    #       the receiving term binds (recv_bind). This removes the entire
+    #       "serve green into a queue that cannot move" trigger class without
+    #       touching junctions whose downstream can still absorb the platoon.
+    # Set either flag False to A/B.
+    if (_chosen_atype in ('GE', 'GREEN_REALLOC', 'INS')
+            and float(_chosen_aparam) > 0.0
+            and not _explore_bypass
+            and (bool(globals().get('CELLQ_TERMINAL_SPILL_GUARD', True))
+                 or bool(globals().get('CELLQ_SPILL_GUARD_ALL', True)))):
+        try:
+            _is_terminal = False
+            _cc_g = getattr(self, '_corridor_coord', None)
+            if _cc_g is not None:
+                _ri_g = getattr(_cc_g, '_route_index', {}) or {}
+                _ix_g = _ri_g.get(int(self.id))
+                _ord_g = list(getattr(_cc_g, 'route_inter_ids', []) or [])
+                if _ix_g is not None and _ix_g + 1 >= len(_ord_g):
+                    _is_terminal = True
+            # stop-line cell occupancy: last cell when STOPLINE_LAST, else first
+            _stop_occ = None
+            if _cell_vec:
+                _stop_occ = (float(_cell_vec[-1])
+                             if bool(globals().get('CELLQ_CTM_STOPLINE_LAST', True))
+                             else float(_cell_vec[0]))
+            _occ_thr = float(globals().get('CELLQ_TERMINAL_STOP_OCC', 0.60))
+            try:
+                _ds_bind = bool(_recv_bind)
+            except Exception:
+                _ds_bind = False
+            _veto_reason = None
+            if _stop_occ is not None and _stop_occ >= _occ_thr:
+                if _is_terminal and bool(globals().get('CELLQ_TERMINAL_SPILL_GUARD', True)):
+                    _veto_reason = "terminal, no downstream signal"
+                elif (not _is_terminal) and _ds_bind \
+                        and bool(globals().get('CELLQ_SPILL_GUARD_ALL', True)):
+                    _veto_reason = "downstream binding, cannot discharge"
+            if _veto_reason is not None:
+                _vetoed_atype = _chosen_atype
+                _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
+                try:
+                    _log_func(self,
+                              f"[SPILLGUARD] inter={self.id} t={time:.1f} "
+                              f"veto {_vetoed_atype} stop_occ={_stop_occ:.3f}"
+                              f">={_occ_thr:.2f} ({_veto_reason})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if bool(globals().get('CELLQ_CTM_LOG', True)):
+        try:
+            _ctm_na = _bxt_reward_for('NO_ACTION', 0.0)
+            _ctm_ch = _bxt_reward_for(_chosen_atype, _chosen_aparam)
+            _coord_dbg = getattr(self, '_corridor_coord', None)
+            _idx_dbg = None
+            _next_dbg = None
+            try:
+                _ri_dbg = getattr(_coord_dbg, '_route_index', {}) or {}
+                _idx_dbg = _ri_dbg.get(int(self.id))
+                _ord_dbg = list(getattr(_coord_dbg, 'route_inter_ids', []) or [])
+                if _idx_dbg is not None and _idx_dbg + 1 < len(_ord_dbg):
+                    _next_dbg = _ord_dbg[_idx_dbg + 1]
+            except Exception:
+                pass
+            _log_func(self,
+                f"[CTM] inter={self.id} t={time:.1f} bus={veh_id} "
+                f"cells={[round(float(v), 3) for v in (_cell_vec or [])]} "
+                f"conn={[round(float(v), 3) for v in (_conn_raw or [])]} "
+                f"derived={list(_derived) if _derived else []} "
+                f"recv_q={('%.3f' % _recv_q) if _recv_q is not None else 'n/a'} "
+                f"recv_bind={int(bool(_recv_bind))} "
+                f"conn_status={'%s' % (globals().get('_CTM_CONN_STATUS', {}) or {}).get(int(self.id), '?')} "
+                f"gcap={('%.1f' % _clear_cap_s) if _clear_cap_s is not None else 'n/a'} "
+                f"coord={1 if _coord_dbg is not None else 0} "
+                f"idx={_idx_dbg} next={_next_dbg} "
+                f"ncoord={len(globals().get('_CORRIDOR_COORDS', []) or [])} "
+                f"action={_chosen_atype}_{_chosen_aparam:.1f}s "
+                f"r_na={_ctm_na[0]:.0f} r={_ctm_ch[0]:.0f} "
+                f"delta={(_ctm_ch[0] - _ctm_na[0]):.0f} "
+                f"bus_delay={_ctm_ch[1]:.1f} side={_ctm_ch[2]:.1f}")
+        except Exception:
+            pass
+
     _log_func(self, f"[BXT] inter={self.id} t={time:.1f} bus={veh_id} "
                     f"state={_bxt_state} n0={n0_bus:.1f}veh side_ratio={_side_ratio:.3f} "
+                    f"sr_state={_side_ratio_state:.3f} "
                     f"eff_delay={eff_delay:.1f}s o_occ={_o_occ:.2f} o_d={_o_d:.0f}vhs "
                     f"upflow={[round(float(v),0) for v in self.UpFlowList[0].tolist()] if hasattr(self,'UpFlowList') and len(self.UpFlowList)>0 else 'n/a'} "
+                    f"conn={list(_conn_occ) if _conn_occ else 'n/a'} "
+                    f"derived={list(_derived) if _derived else 'n/a'} "
+                    f"recv={('%.3f' % _recv_q) if _recv_q is not None else 'n/a'} "
+                    f"gcap={('%.1f' % _clear_cap_s) if _clear_cap_s is not None else 'n/a'} "
                     f"explore={_use_explore} chosen={_chosen_atype}_{_chosen_aparam:.0f}s")
 
 
-    # ── Saturation avoidance (same guard as ZIG / MP_ECTM) ───────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Saturation avoidance (same guard as ZIG / MP_ECTM) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # eff_delay already bound in the state-bin block above.
     _bxt_min_delay_s = float(globals().get('CELLQLEARN_MIN_GAIN_S',
                                            CELLQLEARN_MIN_GAIN_S) or 0.0)
     if _bxt_min_delay_s <= 0.0:
         _bxt_min_delay_s = float(SELFORG_MIN_BUS_DELAY_S)
-    if eff_delay < _bxt_min_delay_s and not _explore_bypass:
+    # Every branch below forces NO_ACTION. _cellq_veto records the FIRST failing
+    # constraint (with both sides of the comparison) and _cellq_prop keeps the
+    # action that was discarded, so a refused decision is attributable.
+    _cellq_veto = None
+    _cellq_prop = (_chosen_atype, _chosen_aparam)
+    # ------------------------------------------------------------------
+    # 2026-11-02 FIX: the side_ratio gate compared INCOMMENSURABLE terms.
+    #   _side_ratio = (SUM of every other vehicle's standing delay, veh*s)
+    #                 / (ONE bus's remaining wait, s)
+    # The numerator aggregates the whole approach set; the denominator is a
+    # single vehicle. The ratio therefore scales with the car population and
+    # grows monotonically as queues build. KG seed-300 log evidence:
+    #   o_d=223725 veh*s, eff_delay=56 s, BusOcc=40
+    #   -> 223725 * 1.2 / (56 * 40) = 119.85   (logged side_ratio=119.853)
+    # against thresholds of 1.0 / 2.0. The gate latched shut and vetoed 73%
+    # (GATED) / 54% (OPEN) of candidates -- which is why the CELLQ_GATED vs
+    # CELLQ_GATED_OPEN A/B came out indistinguishable: every arm that would
+    # otherwise differ was killed by this one gate, identically.
+    #
+    # The gate compares PHASES, not vehicle classes: pax*s given up on the
+    # phases that are NOT running, against pax*s saved on the phase that IS.
+    # The running phase's term is the whole approach cell, so it credits the
+    # cars behind the bus as well as the bus itself -- an extension that
+    # clears 30 queued cars is worth 30 cars' worth of pax*s, not one bus's.
+    # Both sides are pax*s deltas against NO_ACTION from the same _bxt_evals
+    # the reward uses, so BXT_BALANCE_FACTOR=1.0 finally means what its name
+    # says ('allow while off-phase cost <= on-phase gain'). No threshold
+    # change: 1.0 / 2.0 were always right for a marginal ratio.
+    #
+    # [BXT] keeps logging the raw _side_ratio: it is the demand-regime signal
+    # that _bxt_state_bin reads, and changing it would move the state bins.
+    # ------------------------------------------------------------------
+    _side_ratio_gate = _side_ratio
+    if (bool(globals().get('CELLQ_SIDE_RATIO_MARGINAL', True))
+            and _chosen_atype != 'NO_ACTION'):
+        try:
+            # Split by PHASE (see _bxt_reward_for):
+            #   [1] = pax*s on the phase that is RUNNING. n0_bus is the
+            #         whole approach queue in vehicles and _cell_occ blends
+            #         BusOcc with CarOcc, so this is every pax on that
+            #         phase -- the queued cars included, not just the bus.
+            #         It also carries _bus_wait_pax, the cost of the bus
+            #         missing the green it is trying to catch.
+            #   [2] = pax*s on the OFF phases (_dctsp_cross_traffic_delay_s
+            #         iterates _nonmain_phase_indices()).
+            _cur_na = float(_bxt_evals[0][1])
+            _off_na = float(_bxt_evals[0][2])
+            _cur_ch, _off_ch = _bxt_reward_for(
+                _chosen_atype, _chosen_aparam)[1:3]
+            _served_gain = max(0.0, _cur_na - float(_cur_ch))
+            _off_cost = max(0.0, float(_off_ch) - _off_na)
+            # ------------------------------------------------------------------
+            # 2026-11-03 CELLQ_SIDE_RATIO_GATE_BOUNDED (OPEN arm): even after
+            # CELLQ_SIDE_RATIO_MARGINAL, INS was CHOSEN ~42x but COMMITTED 0x on
+            # KG -- killed here by side_ratio values like 2963 > 1.1. Two causes,
+            # both addressed only when this flag is on:
+            #   (1) _off_cost inherits the reward's d_side, which carries the
+            #       PESSIMISTIC network amplifiers (oversaturation residual,
+            #       multi-cycle 1/(1-x), measured-v/c ramp, cascade). For a 1 s
+            #       insertion those stack into thousands of pax*s. Re-price the
+            #       GATE on the BOUNDED marginal displaced green instead (the
+            #       reward keeps the full cost; only the go/no-go gate changes).
+            #   (2) _served_gain = d_bus(NA)-d_bus(act) is the APPROACH-cell
+            #       delta, dominated by the standing CAR queue (n0_bus blends
+            #       car+bus occ). An insertion advances the BUS, it does not
+            #       clear the car queue, so this delta collapses to ~0 and the
+            #       ratio becomes the raw off-cost. Credit the bus pax*s the
+            #       action targets (_bus_wait_pax) -- that is what a TSP
+            #       insertion is FOR -- so the ratio is a real net test.
+            if bool(globals().get('CELLQ_SIDE_RATIO_GATE_BOUNDED', False)):
+                _disp_s = 0.0
+                if _chosen_atype == 'INS':
+                    _disp_s = float(_chosen_aparam) + float(INS_INTERGREEN_S)
+                elif _chosen_atype in ('GE', 'GREEN_REALLOC'):
+                    _disp_s = float(_chosen_aparam)
+                elif _chosen_atype == 'EARLY_RED' and _wrong_phase:
+                    _disp_s = float(_chosen_aparam)
+                if _disp_s > 0.0:
+                    _off_cost = max(0.0, float(
+                        self._dctsp_cross_traffic_delay_s(
+                            _disp_s, bounded=True)))
+                _served_gain = max(_served_gain, float(_bus_wait_pax))
+            _side_ratio_gate = _off_cost / max(_served_gain, 1.0)
+        except Exception:
+            _side_ratio_gate = _side_ratio
+    # 2026-11-02: right-phase EARLY_RED is not a bus-benefit action -- the
+    # bus is already on green -- so grading it on the bus's remaining wait
+    # (eff_delay) asks the wrong question and vetoed it every time it was
+    # offered. With the off-phase credit on, let the reward decide; with it
+    # off this is byte-identical to the old gate.
+    _er_offphase = (_chosen_atype == 'EARLY_RED' and not _wrong_phase
+                    and bool(globals().get('BXT_ER_OFFPHASE_CREDIT',
+                                                     True)))
+    if (eff_delay < _bxt_min_delay_s and not _explore_bypass
+            and not _er_offphase):
+        _cellq_veto = 'min_gain(%.1f<%.1f)' % (eff_delay, _bxt_min_delay_s)
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
     elif (_chosen_atype in _solved_param
           and _chosen_aparam < _MIN_EFFECTIVE_GE_S and not _explore_bypass):
-        # Solved deficit is ~0: the bus already clears without help.  This is
-        # the case the fixed grid mispriced -- it granted 15 s to a bus facing
-        # no delay.  Grant nothing and pay no cross-traffic cost.
+        _cellq_veto = 'solved_deficit(%.1f<%.1f)' % (
+            _chosen_aparam, _MIN_EFFECTIVE_GE_S)
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
-    elif (not _explore_bypass) and _side_ratio > float(
+    elif (not _explore_bypass) and _side_ratio_gate > float(
             BXT_GE_BALANCE_FACTOR if _chosen_atype == 'GE'
             else BXT_BALANCE_FACTOR):
-        # 2026-08-24: the CTM-override relaxation here was REVERTED — it did not
-        # help (INS never fired; GE gridlocked) because the CTM over-values GE.
+        _cellq_veto = 'side_ratio(%.3f>%.3f)' % (
+            _side_ratio_gate,
+            float(BXT_GE_BALANCE_FACTOR if _chosen_atype == 'GE'
+                  else BXT_BALANCE_FACTOR))
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
     elif _chosen_atype == 'INS' and _chosen_aparam > float(BXT_MAX_INS_S):
-        # Clamp the disruptive insertion instead of committing the full
-        # 15-20 s candidate (mode-commits-own-action bypasses BP_upper_bound).
         _chosen_aparam = float(BXT_MAX_INS_S)
 
-    # Absolute main-approach saturation veto (2026-10-08). The ratio-based side
-    # veto below can never fire when the bus is also held up (the seed-600 failure:
-    # side/bus ratio stays small while BOTH approaches gridlock). When the LOCAL
-    # corridor is already saturated, extending the bus green cannot discharge more
-    # main demand and only starves cross streets -> refuse.
+    # Absolute main-approach saturation veto: refuse to extend into a jam. It is
+    # ABSOLUTE, so on a saturated corridor (density near jam is the normal state
+    # where buses are actually held) it can suppress every candidate -- the
+    # [CELLQ_HELD] tally is what distinguishes this from the min-gain gate.
     try:
         _kj = max(float(getattr(self, 'JamDensity', 150.0)) or 150.0, 1.0)
+        # 2026-11-02 FIX: UpDenList is np.zeros((n_phases, n_cols)) and
+        # SideUpDenList is np.zeros(n_side) (engine.py IntersectionController
+        # __init__), and neither is ever re-assigned. The old idiom
+        #     for _row in (getattr(self, 'UpDenList', []) or []):
+        # therefore raised 'truth value of an array with more than one
+        # element is ambiguous' on EVERY call; the bare except below swallowed
+        # it and _local_sat was 0.000 on all 184 logged KG decisions, so this
+        # gate has never vetoed anything and CELLQLEARN_SAT_VETO (0.85, or
+        # 0.95 in the OPEN arm) has never been exercised. The state dimension
+        # hit the same trap on 2026-10-19 and was given a fallback; this veto
+        # was not, so it stayed dead. Read through np.asarray instead.
         _ds = []
-        for _row in (getattr(self, 'UpDenList', []) or []):
-            try:
-                for _v in _row:
-                    _ds.append(float(_v))
-            except TypeError:
-                _ds.append(float(_row))
-        _local_sat = max(_ds) / _kj if _ds else 0.0
+        for _attr in ('UpDenList', 'SideUpDenList'):
+            _arr = np.asarray(getattr(self, _attr, ()), dtype=float)
+            if _arr.size:
+                _ds.extend([float(v) for v in _arr.ravel().tolist()])
+        _dmax = max(_ds) if _ds else 0.0
+        _local_sat = _dmax / _kj if _dmax > 0.0 else 0.0
+        if _local_sat <= 0.0:
+            # Mirror the 2026-10-19 state-dim fallback: the density arrays
+            # can be all-zero at a tick, and a permanently dead gate is worse
+            # than an approximate one. 20 veh ~= a saturated main queue.
+            _mq = self._measured_main_queue_veh()
+            if _mq is not None and float(_mq) > 0.0:
+                _local_sat = min(1.0, float(_mq) / 20.0)
     except Exception:
         _local_sat = 0.0
     _sat_veto = float(globals().get('CELLQLEARN_SAT_VETO', 0.85) or 0.85)
     if (_local_sat > _sat_veto and not _explore_bypass
             and _chosen_atype != 'NO_ACTION'):
+        _cellq_veto = 'local_sat(%.3f>%.2f)' % (_local_sat, _sat_veto)
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
 
-    # ── Baked-in traditional-TSP rule layer ───────────────────────────────────
+    if _cellq_veto is not None:
+        _cellq_held_log(self, time, veh_id, _cellq_veto, _cellq_prop,
+                        eff_delay, _side_ratio_gate, _local_sat)
+    elif _chosen_atype != 'NO_ACTION':
+        _cellq_admit_log(self, time, veh_id, _chosen_atype, _chosen_aparam,
+                          eff_delay, _side_ratio_gate, _local_sat)
+
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Baked-in traditional-TSP rule layer ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Domain rules from classic transit-signal-priority practice, applied as HARD
     # constraints AFTER the learned policy + harmony solver have chosen a tactic
     # and magnitude.  Each rule can only make the decision MORE conservative
@@ -5276,7 +7184,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             _pd_min = float(globals().get('PERSON_DELAY_WARRANT_MIN_PAXS', 0.0) or 0.0)
             _pd = max(0.0, float(no_act_delay)) * float(_bus_occ)
             if _pd_min > 0.0 and _pd < _pd_min:
-                _rule_veto = f"person_delay({_pd:.0f}pax·s<{_pd_min:.0f})"
+                _rule_veto = f"person_delay({_pd:.0f}paxÃƒâ€šÃ‚Â·s<{_pd_min:.0f})"
 
         if _rule_veto is not None:
             _log_func(self, f"[TSP RULE] inter={self.id} t={time:.1f} bus={veh_id} "
@@ -5293,7 +7201,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 _cd_map = {}; self._bxt_last_served = _cd_map
             _cd_map[int(veh_id)] = float(time)
 
-    # ── Rows for the shared Pareto layer / reward CSV ─────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Rows for the shared Pareto layer / reward CSV ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     r_na, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na = _dctsp_eval_action(
         self, 'NO_ACTION', 0.0, sigma_in, no_act_delay, bus_eta_s)
     rows = [('NO_ACTION', 0.0, r_na, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na)]
@@ -5343,14 +7251,14 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             if _reach_ok:
                 _keep_credit = _keep_s * _bus_occ * _eqw_r
         bps_ctm = bps_ctm * _eqw_r + _keep_credit
-        # ── Multi-bus benefit: sum over ALL oncoming buses the action serves ──
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Multi-bus benefit: sum over ALL oncoming buses the action serves ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # The single detected bus underweights a PLATOON -- an action that also
         # serves a following bus within the (extended) green window is worth more,
         # and should clear the cost veto where one bus wouldn't. Scale the benefit
         # by the total occupancy of oncoming buses inside the reach window (>=1x;
         # only >1 when a second bus is genuinely coming). Capped by
         # MULTIBUS_MAX_FACTOR to avoid runaway. Uses the continuously-corrected
-        # trackers (§50) so "oncoming" is accurate.
+        # trackers (Ãƒâ€šÃ‚Â§50) so "oncoming" is accurate.
         if bps_ctm > 0.0:
             try:
                 _cc = getattr(self, '_corridor_coord', None)
@@ -5359,7 +7267,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                                   if not _wrong_phase else (float(_cycle_s) + 5.0))
                     _onc = _cc.oncoming_buses(self.id, time, max_eta_s=_reach_win)
                     # 2026-08-24 (#3): default factor rolled back 3.0 -> 1.0
-                    # (disabled). The ×3 platoon amplification over-bought bus
+                    # (disabled). The ÃƒÆ’Ã¢â‚¬â€3 platoon amplification over-bought bus
                     # time and drove the OC/GR cascade (champion search car +69%).
                     # Set MULTIBUS_MAX_FACTOR>1 to re-enable once GR/OC are gated.
                     _mb_cap = float(globals().get('MULTIBUS_MAX_FACTOR', 1.0) or 1.0)
@@ -5390,7 +7298,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _chosen_atype, _chosen_aparam = 'NO_ACTION', 0.0
         best_r, best_so, best_tp, best_r_delta = r_na, so_na, tp_na, 0.0
 
-    # ── CLOSED-LOOP LEARNING: log this decision + a delay snapshot so the
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CLOSED-LOOP LEARNING: log this decision + a delay snapshot so the
     # realized outcome (measured from the sim ~1.5 cycles later) can be credited
     # back via _bxt_update_q.  Keyed by (junction, bus) -- one bus visits several
     # junctions and each is a separate decision.  Without this the Q-table stays
@@ -5427,8 +7335,8 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         except Exception:
             pass
 
-    # ── MULTI-HEAD: train the network head on the CHOSEN action's analytic net
-    # throughput (pax·s), over the DS+queue+downstream state it was keyed on. The
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MULTI-HEAD: train the network head on the CHOSEN action's analytic net
+    # throughput (paxÃƒâ€šÃ‚Â·s), over the DS+queue+downstream state it was keyed on. The
     # throughput is analytic and available now, so a contextual-bandit update is
     # applied immediately (no deferral). NO_ACTION has zero throughput delta.
     if _mh and _net_state is not None and globals().get('BXT_LEARN', True):
@@ -5459,7 +7367,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             best_so, best_tp, rows)
 
 
-# ── Mode: CPD-QL — tabular Q-learning per junction (DCTSP_MARL as a learner) ──
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: CPD-QL ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â tabular Q-learning per junction (DCTSP_MARL as a learner) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Per-junction independent Q-tables (the "cooperative per-junction Q-learning"
 # of the DCTSP_MARL lineage): each signal is its own agent over
 # CPDQL_ACTION_SPACE; the shared GLOBAL_REWARD objective is expressed through
@@ -5473,10 +7381,10 @@ CPDQL_ACTION_SPACE = [
 
 # Q-tables: {jct_id: {state_bin: [Q per action in CPDQL_ACTION_SPACE]}}
 _cpdql_q_table: dict = {}
-# {veh_id: decision record} — written at decision time, applied by
+# {veh_id: decision record} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â written at decision time, applied by
 # _cpdql_apply_pending_updates once the evaluation window elapses.
 _cpdql_action_log: dict = {}
-# {(jct_id, state_bin): [sum_realized_delay, count]} — NO_ACTION per-state
+# {(jct_id, state_bin): [sum_realized_delay, count]} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â NO_ACTION per-state
 # baseline for the realized-advantage reward.
 _cpdql_noaction_baseline: dict = {}
 
@@ -5533,6 +7441,8 @@ def _valid_cpdql_actions(phase_is_bus: bool) -> list:
         elif _at == 'GE' and phase_is_bus:
             _valid.append((_i, _at, _ap))
         elif _at == 'INS' and not phase_is_bus:
+            if not bool(globals().get('CPDQL_ENABLE_INS', True)):
+                continue
             _valid.append((_i, _at, _ap))
     if len(_valid) <= 1:
         _valid = [(0, 'NO_ACTION', 0.0)]
@@ -5647,7 +7557,7 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     """Per-junction tabular Q-learning TSP (CPDQL mode).
 
     Returns (best_type, best_param, best_r, best_r_delta, best_sigma_out,
-    best_t_poz, rows) — same contract as dctsp_bxt.
+    best_t_poz, rows) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same contract as dctsp_bxt.
     """
     import random as _rnd_cpdql
 
@@ -5658,10 +7568,10 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _eff_delay = max(0.0, float(no_act_delay))
     _sig_in = float(sigma_in or 0.0)
 
-    # ── State bin (54 states) ────────────────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ State bin (54 states) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _state = _cpdql_state_bin(_sig_in, float(bus_eta_s), _eff_delay, _phase_is_bus)
 
-    # ── Per-decision paper reward for every action (drives the rows + Q seed) ─
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Per-decision paper reward for every action (drives the rows + Q seed) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # r(a) = w_h*rho_bus*(|sigma_in|-|sigma_out(a)|)
     #      + (1-w_h)*((d_NA-d_a)*n_b - D_car(a))
     def _cpdql_sel_reward(_at, _ap):
@@ -5676,8 +7586,8 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         return (_hw_term + (1.0 - float(CPDQL_W_H)) * _dly_term,
                 _so, _tp, max(0.0, _bps), max(0.0, _cpc), _nsd, _std)
 
-    # ── Validate the action set: GE only on the bus phase; INS everywhere ────
-    # (wrong-phase GE would extend the cross phase and push the bus later —
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Validate the action set: GE only on the bus phase; INS everywhere ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
+    # (wrong-phase GE would extend the cross phase and push the bus later ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     #  paper's wrong-phase rejection).
     _valid_actions = []
     for _i, (_at, _ap) in enumerate(CPDQL_ACTION_SPACE):
@@ -5692,7 +7602,7 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     if len(_valid_actions) <= 1:
         _valid_actions = [(0, 'NO_ACTION', 0.0)]
 
-    # ── Warm start: a NEW state bin is seeded with the paper's estimated
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Warm start: a NEW state bin is seeded with the paper's estimated
     # immediate reward per action so the first visit is not a cold zero-tie
     # (which would make argmax always pick NO_ACTION at index 0).
     _init_q = [0.0] * len(CPDQL_ACTION_SPACE)
@@ -5702,7 +7612,7 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         except Exception:
             _init_q[_i] = 0.0
 
-    # ── epsilon-greedy over the Q-table (train: CPDQL_TRAIN_EPSILON) ─────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ epsilon-greedy over the Q-table (train: CPDQL_TRAIN_EPSILON) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _phase = str(globals().get('CPDQL_PHASE', 'per_seed'))
     if _phase == 'eval':
         _eff_eps = 0.0
@@ -5722,12 +7632,75 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _chosen_idx = _valid_actions[_best_i][0]
     _chosen_atype, _chosen_aparam = CPDQL_ACTION_SPACE[_chosen_idx]
 
-    # ── Minimum-gain gate (0 = disabled): never act for a near-free bus ──────
+    # ── Continuous duration solve (2026-10-29) ─────────────────────────────
+    # The Q-table selects the ACTION TYPE (GE / INS / NO_ACTION). The duration
+    # is NOT taken from the discrete grid: it is solved in integer seconds on
+    # [min, cap]. GE uses the shockwave objective through solve_green_extension
+    # (BXT_SOLVER='de' => differential evolution); INS maximises the local net
+    # benefit by DE. A GE can therefore be 1 s if that is what the shockwave
+    # trade-off supports, and is capped at the configured maximum.
+    if (_chosen_atype != 'NO_ACTION'
+            and bool(globals().get('CPDQL_SOLVE_DURATION', False))):
+        _is_ge = (_chosen_atype == 'GE')
+        try:
+            _lo = float(globals().get(
+                'CPDQL_GE_MIN_S' if _is_ge else 'CPDQL_INS_MIN_S', 1.0) or 1.0)
+            _hi = float(globals().get(
+                'CPDQL_GE_MAX_S' if _is_ge else 'CPDQL_INS_MAX_S',
+                10.0 if _is_ge else 6.0) or (10.0 if _is_ge else 6.0))
+            _hard = float(globals().get(
+                'MAX_GE_EXTENSION_S' if _is_ge else 'BXT_MAX_INS_S',
+                10.0 if _is_ge else 12.0) or (10.0 if _is_ge else 12.0))
+            _hi = max(_lo, min(_hi, _hard))
+            _lo_i, _hi_i = int(math.ceil(_lo)), int(math.floor(_hi))
+            if _hi_i >= _lo_i:
+                if _is_ge and hasattr(self, 'solve_green_extension'):
+                    _opt_ge, _b0, _b1 = self.solve_green_extension(
+                        float(_lo_i), float(_hi_i), time)
+                    if float(_b1) + 1e-9 < float(_b0):
+                        _chosen_aparam = float(max(
+                            _lo_i, min(_hi_i, int(round(float(_opt_ge))))))
+                    else:
+                        # The shockwave solve says the extension does not lower
+                        # total passenger delay: do not force a 1 s action.
+                        _chosen_atype, _chosen_aparam, _chosen_idx = \
+                            'NO_ACTION', 0.0, 0
+                elif hasattr(self, 'solve_bus_phase_green'):
+                    # INS uses the SHOCKWAVE objective (BP_Objective_Function:
+                    # UpFlowList/ShockwaveSpeed1-4), solved by the continuous DE
+                    # when TIMING_DE_CONTINUOUS is on. Previously this branch used
+                    # _de_solve_magnitude on the CPDQL local reward, which does not
+                    # price the shockwave queue.
+                    _opt_i, _b0i, _b1i = self.solve_bus_phase_green(
+                        float(_lo), float(_hi), time)
+                    if float(_b1i) + 1e-9 < float(_b0i):
+                        _chosen_aparam = float(max(_lo, min(_hi,
+                                                           float(_opt_i))))
+                    else:
+                        _chosen_atype, _chosen_aparam, _chosen_idx = \
+                            'NO_ACTION', 0.0, 0
+                else:
+                    def _cpdql_ins_eval(_x):
+                        return float(_cpdql_sel_reward('INS', float(_x))[0])
+                    _bx, _bv = _de_solve_magnitude(
+                        _cpdql_ins_eval, float(_lo_i), float(_hi_i),
+                        seeds=(float(_lo_i), float(_chosen_aparam), float(_hi_i)),
+                        rng_seed=int(self.id) * 1000 + int(time))
+                    if float(_bv) > 0.0:
+                        _chosen_aparam = float(max(
+                            _lo_i, min(_hi_i, int(round(float(_bx))))))
+                    else:
+                        _chosen_atype, _chosen_aparam, _chosen_idx = \
+                            'NO_ACTION', 0.0, 0
+        except Exception:
+            pass
+
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Minimum-gain gate (0 = disabled): never act for a near-free bus ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _gain_min = float(globals().get('CPDQL_MIN_GAIN_S', CPDQL_MIN_GAIN_S) or 0.0)
     if _chosen_atype != 'NO_ACTION' and _eff_delay < _gain_min:
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
 
-    # ── Rows for the shared Pareto layer / reward CSV ────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Rows for the shared Pareto layer / reward CSV ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _r_na, _so_na, _tp_na, _bps_na, _cpc_na, _nsd_na, _std_na = \
         _cpdql_sel_reward('NO_ACTION', 0.0)
     rows = [('NO_ACTION', 0.0, _r_na, _so_na, _tp_na, _bps_na, _cpc_na,
@@ -5749,7 +7722,7 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                     f"eff_delay={_eff_delay:.1f}s phase_is_bus={_phase_is_bus} "
                     f"explore={_use_explore} chosen={_chosen_atype}_{_chosen_aparam:.0f}s")
 
-    # ── Closed-loop learning: log this decision + a delay snapshot so the
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Closed-loop learning: log this decision + a delay snapshot so the
     # realized outcome (~1.5 cycles later) can be credited via _cpdql_update_q.
     if bool(globals().get('CPDQL_LEARN', True)) and _phase != 'eval':
         try:
@@ -5769,7 +7742,7 @@ def dctsp_cpdql(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             best_so, best_tp, rows)
 
 
-# ── Mode: BARGAIN_SPM — Nash bargaining game candidate generation ─────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: BARGAIN_SPM ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Nash bargaining game candidate generation ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Ported (simplified) from kg/intersection_controller_lean.py: ETA detection
 # level sets the bus bargaining weight; a stochastic-shockwave risk multiplier
 # (cross-flow CV + saturation ratio) and cascade multiplier scale car cost; the
@@ -5809,7 +7782,7 @@ def dctsp_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     except Exception:
         _risk_mult = 1.0
 
-    # ── WOBJ objective targeting (Z1 delay / Z2 progression / Z3 headway) ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ WOBJ objective targeting (Z1 delay / Z2 progression / Z3 headway) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _wobj_alpha = float(globals().get('WOBJ_ALPHA', 1.0))
     _wobj_beta  = float(globals().get('WOBJ_BETA', 0.0))
     _wobj_gamma = float(globals().get('WOBJ_GAMMA', 0.0))
@@ -5845,7 +7818,7 @@ def dctsp_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             self, _at, _ap, sigma_in, no_act_delay, bus_eta_s,
             wrong_phase=_wrong_phase, remaining_red_s=remaining_red_s)
         # Main-approach car saving (phases=[0]); zero for EARLY_RED on the bus
-        # phase — cutting the bus green gives the main approach nothing.
+        # phase ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â cutting the bus green gives the main approach nothing.
         if _at == 'EARLY_RED' and not _wrong_phase:
             _main_sav = 0.0
         else:
@@ -5932,12 +7905,13 @@ def dctsp_nash_gate(self, time, timeSta, acycle, bus_eta_s, veh_id,
     return result
 
 
-def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0):
+def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0,
+                       diag=None):
     """Generalized Nash bargaining selection over a discrete action frontier.
 
-    `frontier`: list of (bps, cpc) pax·s pairs for the ACTIVE candidate actions
-    (NO_ACTION excluded). bps = transit benefit (pax·s saved, >=0); cpc =
-    cross-street cost added (pax·s, >=0). Returns (best_index, best_value) into
+    `frontier`: list of (bps, cpc) paxÃƒâ€šÃ‚Â·s pairs for the ACTIVE candidate actions
+    (NO_ACTION excluded). bps = transit benefit (paxÃƒâ€šÃ‚Â·s saved, >=0); cpc =
+    cross-street cost added (paxÃƒâ€šÃ‚Â·s, >=0). Returns (best_index, best_value) into
     `frontier`, or (None, 0.0) if NO action produces a net corridor surplus -- in
     which case NO_ACTION is the correct bargaining outcome.
 
@@ -5949,7 +7923,7 @@ def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0):
         N = bps**p_T * surplus**p_C ,   surplus = bps - cpc
     -- balancing raw transit benefit (bps) against the NET social gain (surplus,
     i.e. how little cross cost it takes). p_T, p_C are bargaining powers
-    (symmetric = 1,1). Scale-invariant: multiplying all pax·s by a constant does
+    (symmetric = 1,1). Scale-invariant: multiplying all paxÃƒâ€šÃ‚Â·s by a constant does
     not change the argmax (the Nash axiom of invariance to affine rescaling).
 
     NOTE (2026-09-03 fix): the previous form used a threat point Cmax=max(cpc) and
@@ -5958,6 +7932,13 @@ def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0):
     junction outlier in Cmax neutralized the cross penalty for every action ->
     massive over-acting (KG NASH_BARGAIN ranked worst). Requiring surplus>0 and
     using the surplus itself as the cross-side gain removes both pathologies.
+
+    `diag` (optional out-dict): filled with the EXACT quantities this gate tested
+    for the candidate it returned - bps as gated (i.e. after any caller-side
+    neighbour adjustment already baked into `frontier`), cpc, surplus, gain_T,
+    plus n / nfeas / nmargin. The [NASH_BARGAIN] log reads this instead of
+    recomputing the surplus from the raw action, so the logged number is by
+    construction the one that decided.
     """
     if not frontier:
         return (None, 0.0)
@@ -5974,20 +7955,50 @@ def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0):
     # estimate.
     _net_ratio = float(globals().get('NASH_NET_GATE_RATIO', 1.0) or 1.0)
     best_i, best_N = None, 0.0
+    # DIAGNOSTIC OUT (2026-11-02): the caller may pass a dict and get back the
+    # exact quantities this loop tested. The [NASH_BARGAIN] line used to recompute
+    # surplus = bps_tot - cpc from the raw action, which is a DIFFERENT number
+    # whenever the caller has already adjusted the benefit -- the corridor solver
+    # hands this function max(0, bps - w_nb*net). That is why published runs log
+    # committed actions with NEGATIVE surplus under a rule that rejects
+    # surplus <= eps. Filling the dict here (rather than duplicating the predicate
+    # at the log site) is what keeps the log from drifting from the gate again.
+    _dg_best = None
+    _dg_nfeas = 0
+    _dg_second = 0.0
     for i, (bps, cpc) in enumerate(frontier):
         bps = float(bps); cpc = float(cpc)
-        surplus = bps - cpc               # net corridor pax·s (>0 to bargain)
+        surplus = bps - cpc               # net corridor paxÃƒâ€šÃ‚Â·s (>0 to bargain)
         gain_T = bps - d_T                # transit GAIN OVER THREAT (not over 0)
         # individual rationality is now vs the (state-dependent) threat, not a bare
         # 0: on a congested corridor d_T rises, so a small bus gain no longer looks
         # like a bargain against a good NO_ACTION outcome (the fix the fixed
         # MIN_GAIN gate was doing crudely). d_T=0 -> identical to the old form.
-        if gain_T <= eps or surplus <= eps or bps < _net_ratio * cpc:
+        # The rejection REASON is derived here, next to the test that rejected it,
+        # so the [NASH_HELD] line cannot describe a gate that did not fire. Same
+        # three tests, same order, same short-circuit as the one-liner this
+        # replaced -- the only change is that the first failure is now named.
+        if gain_T <= eps:
+            _why, _slack = 'gain_T', gain_T
+        elif surplus <= eps:
+            _why, _slack = 'surplus', surplus
+        elif bps < _net_ratio * cpc:
+            _why, _slack = 'ratio', bps - _net_ratio * cpc
+        else:
+            _why, _slack = None, 0.0
+        if _why is not None:
+            if diag is not None:
+                try:
+                    diag.setdefault('rej', []).append(
+                        (i, bps, cpc, surplus, gain_T, _why, _slack))
+                except Exception:
+                    pass
             continue
+        _dg_nfeas += 1
         if float(p_T) <= 0.0:
             # p_T=0 -> PURE NET-SURPLUS (utilitarian / Coase-efficient) objective:
             # select the action that reduces TOTAL passenger delay the MOST
-            # (surplus = bus pax·s saved - cross pax·s cost). This is the
+            # (surplus = bus paxÃƒâ€šÃ‚Â·s saved - cross paxÃƒâ€šÃ‚Â·s cost). This is the
             # "reduce net total passenger delay" outcome the game is meant to
             # deliver -- the symmetric Nash PRODUCT (p_T=1) instead maximizes
             # bps*surplus, which over-weights raw bus benefit and does NOT
@@ -5996,35 +8007,57 @@ def _nash_bargain_pick(frontier, p_T=1.0, p_C=1.0, eps=1e-6, threat=0.0):
         else:
             N = (gain_T ** float(p_T)) * (surplus ** float(p_C))
         if N > best_N:
+            _dg_second = best_N
             best_N, best_i = N, i
+            _dg_best = (bps, cpc, surplus, gain_T)
+        elif N > _dg_second:
+            _dg_second = N
+    if diag is not None:
+        try:
+            diag['n'] = len(frontier)
+            diag['nfeas'] = _dg_nfeas
+            diag['sel'] = best_i
+            diag['nmargin'] = ((best_N - _dg_second)
+                               if best_i is not None else 0.0)
+            if _dg_best is not None:
+                (diag['bps'], diag['cpc'],
+                 diag['surplus'], diag['gain_T']) = _dg_best
+        except Exception:
+            pass
     return (best_i, best_N)
 
 
 def _nash_corridor_solve(order, frontiers, etas, project_fn, occ,
-                         w_nb=0.5, max_iter=10, tol=0.01, p_T=1.0, p_C=1.0):
+                         w_nb=0.5, max_iter=10, tol=0.01, p_T=1.0, p_C=1.0,
+                         diag=None):
     """Pure Gauss-Seidel best-response solver for the corridor Nash game (Tier 2).
 
     `order`       : junction ids in bus-travel order (THIS junction first).
     `frontiers`   : {jid: [(at, ap, bps, cpc, s_saved), ...]} real action frontier.
     `etas`        : {jid: bus_eta_s at that junction}.
-    `project_fn(jid, eta, s)` : downstream landing cost (pax·s, + = worse red) of
+    `project_fn(jid, eta, s)` : downstream landing cost (paxÃƒâ€šÃ‚Â·s, + = worse red) of
                     saving `s` bus-seconds at `jid`; only called when `jid` has a
                     downstream neighbour still in `order`. May raise -> treated 0.
 
     Each junction picks the Nash-bargaining action whose transit gain is its local
     benefit minus the NEIGHBOUR-weighted downstream landing cost, credited by the
     downstream junction's own planned saving (green-wave hand-off
-    occ*min(s_self, s_down)). Iterated until savings stabilise (max |Δs| < tol) or
+    occ*min(s_self, s_down)). Iterated until savings stabilise (max |ÃƒÅ½Ã¢â‚¬Âs| < tol) or
     `max_iter`. Returns {jid: chosen_index_or_None}. Pure and Aimsun-free."""
     active = [j for j in order if frontiers.get(j)]
     savings = {j: 0.0 for j in active}
     chosen = {j: None for j in active}
+    # `order[0]` is THIS junction (see the docstring). Only its diagnostics are
+    # kept: downstream junctions are evaluated on every sweep and their detail is
+    # discarded, so allocating it for them would be pure per-sweep garbage.
+    _diag_jid = order[0] if order else None
     for _ in range(max(1, int(max_iter))):
         max_delta = 0.0
         for i, j in enumerate(active):
             nxt = active[i + 1] if i + 1 < len(active) else None
             s_down = savings.get(nxt, 0.0) if nxt is not None else 0.0
             fr = []
+            _nets = []
             for (_at, _ap, _bps, _cpc, _s) in frontiers[j]:
                 net = 0.0
                 if nxt is not None:
@@ -6033,8 +8066,30 @@ def _nash_corridor_solve(order, frontiers, etas, project_fn, occ,
                     except Exception:
                         _dp = 0.0
                     net = max(0.0, _dp - occ * min(_s, s_down))
+                _nets.append(net)
                 fr.append((max(0.0, float(_bps) - float(w_nb) * net), float(_cpc)))
-            bi, _N = _nash_bargain_pick(fr, p_T, p_C)
+            _jd = ({} if (diag is not None and j == _diag_jid) else None)
+            bi, _N = _nash_bargain_pick(fr, p_T, p_C, diag=_jd)
+            if _jd is not None:
+                # `net` for the CHOSEN candidate: the neighbour discount this
+                # junction's frontier applied BEFORE the gate saw it. Logged as
+                # `nadj`, so the reader can reconstruct the un-adjusted value:
+                #     bps - nadj  ==  max(0, bps - w_nb*net)
+                # (equal unless the max() clipped a negative to zero).
+                _jd['nadj'] = (float(w_nb) * float(_nets[bi])
+                               if bi is not None else 0.0)
+                _jd['w_nb'] = float(w_nb)
+                # Per-candidate landing cost and UN-adjusted benefit, so
+                # [NASH_HELD] can show both sides of the neighbour adjustment
+                # (bps = max(0, raw - w_nb*net); the max() can clip, which is why
+                # the raw value cannot be recovered from bps + nadj).
+                _jd['nets'] = _nets
+                try:
+                    _jd['raws'] = [float(_x[2]) for _x in frontiers[j]]
+                except Exception:
+                    pass
+                # Last sweep wins, which is the state `chosen` is returned in.
+                diag[j] = _jd
             new_s = savings[j] if bi is None else float(frontiers[j][bi][4])
             max_delta = max(max_delta, abs(new_s - savings[j]))
             savings[j] = new_s
@@ -6044,8 +8099,295 @@ def _nash_corridor_solve(order, frontiers, etas, project_fn, occ,
     return chosen
 
 
+def _cellq_held_ok(self, slot='pre'):
+    """Consume one [CELLQ_HELD] slot at this junction; False when exhausted.
+
+    `slot` splits the budget. 'pre' covers the decider's own six gates in
+    dctsp_bxt; 'post' covers refusals applied later by the engine's
+    DeciderCostVeto and NET_PAX_DELAY_GATE. Separate budgets because a seed
+    that spends every slot on min_gain holds would otherwise hide all of its
+    downstream refusals -- the exact question the split exists to answer.
+    """
+    try:
+        _cap = int(globals().get('CELLQ_HELD_LOG_MAX', 8) or 0)
+    except Exception:
+        _cap = 8
+    if _cap <= 0:
+        return False
+    try:
+        _attr = ('_cellq_held_n' if slot == 'pre'
+                 else '_cellq_held_n_%s' % slot)
+        _n = int(getattr(self, _attr, 0))
+        if _n >= _cap:
+            return False
+        setattr(self, _attr, _n + 1)
+        return True
+    except Exception:
+        return False
+
+
+def _cellq_held_log(self, time, veh_id, veto, prop, eff_delay, side_ratio,
+                    local_sat):
+    """One [CELLQ_HELD] line per rejected CellQ decision.
+
+    `veto` is the FIRST failing constraint, with the two quantities that
+    compare against each other, so the margin is readable without the code.
+    `prop` is the action that was discarded -- logging only the veto would hide
+    whether the solver proposed anything worth having.
+    """
+    if not _cellq_held_ok(self):
+        return
+    try:
+        _log_func(
+            self,
+            f"[CELLQ_HELD] inter={self.id} t={float(time):.1f} bus={veh_id} "
+            f"veto={veto} proposed={prop[0]}_{float(prop[1]):.0f}s "
+            f"eff_delay={float(eff_delay):.1f}s "
+            f"side_ratio={float(side_ratio):.3f} "
+            f"local_sat={float(local_sat):.3f}")
+    except Exception:
+        pass
+
+
+def _cellq_admit_log(self, time, veh_id, atype, aparam, eff_delay,
+                      side_ratio, local_sat):
+    """One [CELLQ_ADMIT] line per action that cleared the cost/saturation gates.
+
+    NOT a commit: the R1--R11 policy layer runs immediately after this point and
+    can still force NO_ACTION, so treat these lines as an upper bound on actuation.
+    Unthrottled up to CELLQ_ADMIT_LOG_MAX because the count is the measurement.
+    The sim_time is what makes concurrency testable: group the lines by cycle and
+    a post-run script can show how many junctions acted in the same cycle, which
+    is the question the 2-grant total could not answer.
+    """
+    try:
+        _cap = int(globals().get('CELLQ_ADMIT_LOG_MAX', 400) or 400)
+        _n = int(getattr(self, '_cellq_admit_n', 0))
+        if _cap <= 0 or _n >= _cap:
+            return
+        setattr(self, '_cellq_admit_n', _n + 1)
+    except Exception:
+        pass
+    try:
+        _log_func(
+            self,
+            f"[CELLQ_ADMIT] inter={self.id} t={float(time):.1f} bus={veh_id} "
+            f"action={atype}_{float(aparam):.0f}s "
+            f"eff_delay={float(eff_delay):.1f}s "
+            f"side_ratio={float(side_ratio):.3f} "
+            f"local_sat={float(local_sat):.3f}")
+    except Exception:
+        pass
+    # Handshake for [CELLQ_HELD] downstream attribution: record the action
+    # this decider admitted so the engine's cost / net-pax vetoes can tell a
+    # CellQ refusal from any other decider's. Cleared by those vetoes and at
+    # the top of every _run_reward_tsp_evaluate call.
+    try:
+        setattr(self, '_cellq_pending', {
+            'eff_delay': float(eff_delay),
+            'side_ratio': float(side_ratio),
+            'local_sat': float(local_sat),
+            't': float(time),
+            # proposed action, so a downstream kill site that no longer has the
+            # engine's _mode_label in scope (reward_no_action, no_bus) can still
+            # name what CellQ admitted.
+            'atype': str(atype),
+            'aparam': float(aparam),
+        })
+    except Exception:
+        pass
+
+
+def _cellq_downstream_held(self, time, veh_id, veto, prop=None):
+    """One [CELLQ_HELD] line for a CellQ admit killed in the ENGINE.
+
+    dctsp_bxt logs its own six gates, but the action it admits still has to
+    survive the DeciderCostVeto and NET_PAX_DELAY_GATE, which run in
+    _run_reward_tsp_evaluate AFTER dctsp_bxt returns. Those two are gated by
+    LOG_COST_VETO, and Logan sets that False, so on Logan a downstream
+    refusal is completely silent.
+
+    Fires only when dctsp_bxt itself admitted the action being judged:
+    self._cellq_pending is that handshake, cleared here and at the top of
+    every evaluate call, so a refusal from another decider (NASH, MP_ECTM,
+    CELLQLEARN_DP) can never be reported as a CellQ hold. The line keeps the
+    exact [CELLQ_HELD] shape so one parser reads the whole ledger.
+    """
+    _pend = getattr(self, '_cellq_pending', None)
+    if not _pend:
+        return
+    try:
+        setattr(self, '_cellq_pending', None)
+    except Exception:
+        pass
+    if not _cellq_held_ok(self, 'post'):
+        return
+    # prop defaults to what the admit handshake stored, so callers that no longer
+    # hold the engine's _mode_label (reward_no_action, no_bus) need not pass it.
+    if prop is None:
+        prop = (_pend.get('atype', 'NO_ACTION'), _pend.get('aparam', 0.0))
+    try:
+        _log_func(
+            self,
+            f"[CELLQ_HELD] inter={self.id} t={float(time):.1f} bus={veh_id} "
+            f"veto={veto} proposed={prop[0]}_{float(prop[1]):.0f}s "
+            f"eff_delay={float(_pend.get('eff_delay', 0.0)):.1f}s "
+            f"side_ratio={float(_pend.get('side_ratio', 0.0)):.3f} "
+            f"local_sat={float(_pend.get('local_sat', 0.0)):.3f}")
+    except Exception:
+        pass
+
+
+def _nash_held_ok(self, slot='main'):
+    """Consume one [NASH_HELD] slot at this junction; False when exhausted.
+
+    `slot` splits the budget: 'main' covers holds that had a candidate frontier,
+    'pre' covers the gates that fire before any candidate exists. Each slot gets
+    its own NASH_HELD_LOG_MAX per junction per RUN, so neither can starve the
+    other. Counted on the CONTROLLER, not in a module global -- a module global
+    survives across the seeds of one Aimsun process and silently silences every
+    run after the first (the [NASH_CTM_LOG] failure mode).
+    """
+    try:
+        _cap = int(globals().get('NASH_HELD_LOG_MAX', 8) or 0)
+    except Exception:
+        _cap = 8
+    if _cap <= 0:
+        return False
+    _attr = '_nash_held_pre_n' if slot == 'pre' else '_nash_held_n'
+    try:
+        _n = int(getattr(self, _attr, 0))
+        if _n >= _cap:
+            return False
+        setattr(self, _attr, _n + 1)
+        return True
+    except Exception:
+        return False
+
+
+def _nash_held_log(self, time, veh_id, cand, diag, stage):
+    """Throttled [NASH_HELD]: one line per REJECTED candidate at a HELD decision.
+
+    WHY (2026-11-02): the held path logged only the generic reward, so a refusal
+    carried no explanation -- on seed 600, 356 of 396 holds read "no net-positive
+    action" and neither the cascade nor the demand could be blamed from the log.
+    `_nash_bargain_pick` now records the exact quantities and the FIRST failing
+    constraint for every candidate it skips (`diag['rej']`), and this prints them.
+
+    `stage`      : 'corridor' (Tier 2 owned the pick) or 'local' (Tier 1).
+    `why` fields : gain_T  -- transit gain over the threat point, not above zero
+                   surplus -- bps - cpc, the individual-rationality budget
+                   ratio   -- bps < NASH_NET_GATE_RATIO * cpc, the risk margin
+    `slack`      : signed margin against that constraint (<=0; nearer 0 = closer
+                   to being accepted, so this is the quantity to histogram).
+
+    THROTTLE: at most NASH_HELD_LOG_MAX held decisions per junction per RUN in the
+    'main' slot, counted on the CONTROLLER -- not in a module global. A module
+    global would persist across the seeds of one Aimsun process and silently
+    starve every run after the first, which is the failure mode that made
+    [NASH_CTM] look like a build difference (see NASH_CTM_LOG). The gates that
+    fire before a frontier exists draw on a separate 'pre' budget
+    (`_nash_held_ok`), so a chatty early gate cannot crowd out these margins.
+    """
+    if not diag:
+        return
+    try:
+        _rej = diag.get('rej') or []
+    except Exception:
+        return
+    if not _rej:
+        return
+    if not _nash_held_ok(self):
+        return
+    try:
+        _maxc = int(globals().get('NASH_HELD_MAX_CANDS', 8) or 8)
+    except Exception:
+        _maxc = 8
+    _nets = diag.get('nets') or []
+    _raws = diag.get('raws') or []
+    try:
+        _wnb = float(globals().get('NASH_NEIGHBOR_WEIGHT', 0.5) or 0.0)
+    except Exception:
+        _wnb = 0.5
+    _shown = 0
+    for _r in _rej:
+        if _shown >= _maxc:
+            break
+        try:
+            _i, _b, _cp, _su, _gt, _why, _sl = _r
+        except Exception:
+            continue
+        _i = int(_i)
+        _lbl = '?'
+        try:
+            _lbl = action_label(cand[_i][0], cand[_i][1])
+        except Exception:
+            _lbl = '?'
+        _nadj = 0.0
+        _raw = float(_b)
+        try:
+            if _nets and 0 <= _i < len(_nets):
+                _nadj = _wnb * float(_nets[_i])
+            if _raws and 0 <= _i < len(_raws):
+                _raw = float(_raws[_i])
+        except Exception:
+            _nadj = 0.0
+            _raw = float(_b)
+        # A DIAGNOSTIC MUST NEVER BREAK A DECISION: every emit is inside a guard,
+        # so a malformed candidate or a failed write cannot turn a deliberate
+        # NO_ACTION into an exception out of the decider.
+        try:
+            _log_func(self,
+                      f"[NASH_HELD] inter={self.id} t={float(time):.1f} "
+                      f"bus={veh_id} stage={stage} at={_lbl} "
+                      f"raw={_raw:.0f} nadj={_nadj:.0f} bps={float(_b):.0f} "
+                      f"cpc={float(_cp):.0f} surplus={float(_su):.0f} "
+                      f"gainT={float(_gt):.0f} why={_why} "
+                      f"slack={float(_sl):.0f}")
+        except Exception:
+            pass
+        _shown += 1
+    if len(_rej) > _shown:
+        try:
+            _log_func(self,
+                      f"[NASH_HELD] inter={self.id} t={float(time):.1f} "
+                      f"bus={veh_id} stage={stage} nrej={len(_rej)} "
+                      f"shown={_shown} (NASH_HELD_MAX_CANDS={_maxc})")
+        except Exception:
+            pass
+
+
+def _nash_held_gate(self, time, veh_id, why, value, limit, stage='pre'):
+    """[NASH_HELD] for a veto that fires BEFORE any candidate exists.
+
+    Gate 1 (NASH_MIN_BUS_DELAY_S) refuses to bargain at all when the bus is barely
+    delayed, so it never builds a frontier -- `_nash_held_log` cannot describe it
+    (there is no candidate to name, and the quantity is seconds of bus delay, not
+    pax*s). Same tag and same `why=`/`slack=` vocabulary, with the seconds named
+    explicitly so the two shapes cannot be confused:
+
+        [NASH_HELD] inter=7 t=12.0 bus=55 stage=pre why=min_delay \
+            delay_s=1.00 limit_s=5.00 slack_s=-4.00
+
+    `slack_s` = value - limit (<= 0 by construction). Uses the 'pre' budget so it
+    cannot crowd out the frontier holds.
+    """
+    if not _nash_held_ok(self, 'pre'):
+        return
+    try:
+        _slack = float(value) - float(limit)
+        _log_func(self,
+                  f"[NASH_HELD] inter={self.id} t={float(time):.1f} "
+                  f"bus={veh_id} stage={stage} why={why} "
+                  f"delay_s={float(value):.2f} limit_s={float(limit):.2f} "
+                  f"slack_s={_slack:.2f}")
+    except Exception:
+        pass
+
+
 def _nash_duration_search(self, atype, d_lo, d_hi, sigma_in, no_act_delay,
-                          bus_eta_s, wrong_phase, remaining_red_s, p_T, p_C):
+                          bus_eta_s, wrong_phase, remaining_red_s, p_T, p_C,
+                          time=0.0, timeSta=0.0):
     """Bargain over the action DURATION at integer-second resolution for one
     action type, instead of the naive coarse {5,10,15} grid.
 
@@ -6078,32 +8420,78 @@ def _nash_duration_search(self, atype, d_lo, d_hi, sigma_in, no_act_delay,
         except Exception:
             _ts = 0.0
 
-    d_lo = max(1, int(round(d_lo)))
-    d_hi = max(d_lo, int(round(d_hi)))
+    _cont = bool(globals().get('NASH_DE_CONTINUOUS', False))
+    if _cont:
+        d_lo = max(1.0, float(d_lo))
+        d_hi = max(d_lo, float(d_hi))
+    else:
+        d_lo = max(1, int(round(d_lo)))
+        d_hi = max(d_lo, int(round(d_hi)))
     _cache = {}
     _rows = []
 
     def _ev(d):
-        d = int(d)
-        if d in _cache:
-            return _cache[d]
+        _d = float(d) if _cont else int(d)
+        _key = round(_d, 4) if _cont else _d
+        if _key in _cache:
+            return _cache[_key]
         try:
             r, so, tp, bps, cpc, nsd, std = _dctsp_eval_action(
-                self, atype, float(d), sigma_in, no_act_delay, bus_eta_s,
+                self, atype, float(_d), sigma_in, no_act_delay, bus_eta_s,
                 wrong_phase=wrong_phase, remaining_red_s=remaining_red_s)
+            # NASH_CTM_COST: price the cross side with the same n-cell Daganzo
+            # CTM CellQ uses. cpc = max(analytic, CTM) so the CTM is a floor and
+            # cannot hide a cost the shockwave/cascade term already priced.
+            if (bool(globals().get('NASH_CTM_COST', False))
+                    and hasattr(self, '_ctm_cross_cost_paxs')):
+                _cpc_an = float(cpc)
+                _ctm_c = None
+                _ctm_err = None
+                try:
+                    _ctm_c = float(self._ctm_cross_cost_paxs(
+                        float(_d), timeSta) or 0.0)
+                except Exception as _ce:
+                    _ctm_err = repr(_ce)
+                if _ctm_c is not None and _ctm_c > 0.0:
+                    cpc = max(float(cpc), _ctm_c)
+                # [NASH_CTM] (2026-10-30): the CTM cross cost is applied with
+                # cpc=max(analytic, CTM) and every exception was swallowed, so a
+                # dead CTM (no side sections / no cells) was indistinguishable
+                # from a CTM that simply priced nothing. Log both branches.
+                try:
+                    _cn = globals().setdefault('_NASH_CTM_LOG', {})
+                    _ck = int(getattr(self, 'id', 0) or 0)
+                    if int(_cn.get(_ck, 0)) < 4:
+                        _cn[_ck] = int(_cn.get(_ck, 0)) + 1
+                        _nside = -1
+                        try:
+                            _nside = len(self._get_side_sections() or [])
+                        except Exception:
+                            _nside = -1
+                        _log_func(self,
+                            f"[NASH_CTM] inter={getattr(self, 'id', '?')} "
+                            f"at={atype} d={float(_d):.2f} "
+                            f"analytic={_cpc_an:.0f} "
+                            f"ctm={('%.0f' % _ctm_c) if _ctm_c is not None else 'ERR'} "
+                            f"used={max(_cpc_an, _ctm_c or 0.0):.0f} "
+                            f"nside={_nside}"
+                            + (f" err={_ctm_err}" if _ctm_err else ""))
+                except Exception:
+                    pass
             _thru = None
             if _thru_on:
                 try:
                     _thru = float(self._net_pax_throughput_delta(
-                        atype, float(d), _sp, _ts) or 0.0)
+                        atype, float(_d), _sp, _ts) or 0.0)
                 except Exception:
                     _thru = None
-            _cache[d] = (max(0.0, float(bps)), max(0.0, float(cpc)), so, tp, _thru)
-            _rows.append((atype, float(d), _cache[d][2], _cache[d][3],
-                          _cache[d][0], _cache[d][1]))
+            _cache[_key] = (max(0.0, float(bps)), max(0.0, float(cpc)),
+                            so, tp, _thru)
+            _rows.append((atype, float(_d), _cache[_key][2], _cache[_key][3],
+                          _cache[_key][0], _cache[_key][1]))
         except Exception:
-            _cache[d] = None
-        return _cache[d]
+            _cache[_key] = None
+        return _cache[_key]
 
     def _score(v):
         if not v:
@@ -6116,7 +8504,40 @@ def _nash_duration_search(self, atype, d_lo, d_hi, sigma_in, no_act_delay,
             return (R ** float(p_C)) if R > 0.0 else 0.0
         s = bps - cpc
         return (bps ** p_T) * (s ** p_C) if (bps > 0.0 and s > 0.0) else 0.0
-    # coarse pass across the range
+    if _cont and d_hi <= d_lo:
+        # DEGENERATE RANGE under continuous mode: the bounds collapsed to a single
+        # point (e.g. _ge_hi clamped to the 1 s floor by the recoverable-headroom
+        # cap). Evaluate that one point and return. Without this the code falls
+        # through to the integer refine below with FLOAT bounds and
+        # range(1.0, 2.0) raises "'float' object cannot be interpreted as an
+        # integer" -- the [NASH_BARGAIN] error repeated 77-89x per run.
+        _ev(d_lo)
+        return _rows
+    if _cont and d_hi > d_lo:
+        # CONTINUOUS DE (2026-10-30): the duration is a continuous quantity;
+        # solve it with _de_solve_magnitude (float population, deterministic
+        # local RNG) on the SAME Nash/throughput score, then materialise the
+        # best + bounds as rows so the caller can still pick across action TYPES.
+        def _eval_cont(_x):
+            return float(_score(_ev(_x)))
+        _seed = (int(getattr(self, 'id', 0) or 0) * 1000003
+                 + int(round(d_hi * 10))) & 0x7fffffff
+        try:
+            _best_d, _best_s = _de_solve_magnitude(
+                _eval_cont, d_lo, d_hi,
+                seeds=(d_lo, 0.5 * (d_lo + d_hi), d_hi),
+                rng_seed=_seed)
+        except Exception:
+            _best_d = d_lo
+        for _x in (d_lo, _best_d, d_hi):
+            _ev(_x)
+        return _rows
+    # coarse pass across the range (legacy integer path)
+    # int() casts are defensive: every branch above now guarantees integer bounds
+    # when _cont is False, but a float leaking in here would resurface as the
+    # "'float' object cannot be interpreted as an integer" NASH_BARGAIN error.
+    d_lo = int(round(float(d_lo)))
+    d_hi = int(max(d_lo, round(float(d_hi))))
     if d_hi > d_lo:
         _n = min(5, d_hi - d_lo + 1)
         _coarse = sorted(set(int(round(d_lo + i * (d_hi - d_lo) / (_n - 1)))
@@ -6216,7 +8637,7 @@ def _cellq_corridor_state(self, time, current_phase, no_act_delay):
         _d = 0.0
     _bu = 0 if _d < 1.0 else (1 if _d < 15.0 else 2)
 
-    # ── NEIGHBOUR STATE (2026-10-05, CELLQ_STATE_NEIGHBOUR default True) ──────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ NEIGHBOUR STATE (2026-10-05, CELLQ_STATE_NEIGHBOUR default True) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Corridor coordination needs the policy to CONDITION on the ADJACENT junctions'
     # state, not just this one -- the most important part. Add two bins describing
     # the corridor neighbours:
@@ -6321,7 +8742,7 @@ def _de_solve_magnitude(_eval, lo, hi, seeds=(), n_pop=6, n_gen=6, F=0.6, CR=0.9
     optima on a non-monotone surplus (e.g. a spillback knee). `rng_seed` makes that
     exploration DETERMINISTIC via a LOCAL Random instance (the caller passes a
     per-junction+tick seed), so the same decision state solves identically across
-    runs -- clean arm-to-arm A/B -- without touching the global RNG (ε-greedy)."""
+    runs -- clean arm-to-arm A/B -- without touching the global RNG (ÃƒÅ½Ã‚Âµ-greedy)."""
     import random as _rnd_de
     _rng = _rnd_de.Random(rng_seed)          # local, seeded; None -> system entropy
     lo = float(lo); hi = float(hi)
@@ -6403,7 +8824,7 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _ge_grid = [float(x) for x in (globals().get('GE_DURATIONS_S') or [5.0, 10.0, 15.0])]
     _er_grid = [float(x) for x in (globals().get('ER_DURATIONS_S') or [10.0, 20.0, 30.0])]
 
-    # ── CORRIDOR COUPLING (CELLQ_CORRIDOR_COUPLED, default OFF) ────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CORRIDOR COUPLING (CELLQ_CORRIDOR_COUPLED, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The local surplus (_nash_phase_total_bps - cpc) credits through-traffic on
     # the extended green but prices only the LOCAL cross + opposite-main cost; it
     # does NOT see the downstream landing cost of shoving the through-platoon into
@@ -6417,11 +8838,11 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _coupled = bool(globals().get('CELLQ_CORRIDOR_COUPLED', False))
     _wcorr = float(globals().get('CONTINUOUS_CORRIDOR_NEIGHBOR_W', 0.5) or 0.0)
 
-    # ── EXACT-TRACKER BUS BENEFIT (CELLQ_CORRIDOR_BUS_CHAIN, default OFF) ──────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ EXACT-TRACKER BUS BENEFIT (CELLQ_CORRIDOR_BUS_CHAIN, default OFF) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The local bus benefit (bps from _dctsp_eval_action) credits the FULL
     # seconds an extension saves the bus AT THIS junction -- but on a coordinated
     # corridor the bus re-queues downstream, so that local saving does NOT survive
-    # end-to-end (KG A/B: 8600 pax·s predicted bus saving, realized bus delay
+    # end-to-end (KG A/B: 8600 paxÃƒâ€šÃ‚Â·s predicted bus saving, realized bus delay
     # FLAT). When on, net the bus benefit by its CHAINED downstream re-delay from
     # the EXACT bus tracker (project_chain_delay_paxs reads self._trackers[veh_id]
     # speed + corridor geometry), so only bus time that actually survives the
@@ -6449,13 +8870,13 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _ctm_reward = (bool(globals().get('CELLQ_CTM_REWARD', False))
                    and hasattr(self, '_ctm_cross_cost_paxs'))
 
-    # ── best action per FAMILY via the CTM (magnitude solved within family) ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ best action per FAMILY via the CTM (magnitude solved within family) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # families: 0=HOLD, 1=EXTEND(GE), 2=END_EARLY(ER). This keeps the LEARNER's
     # action space tiny (3) while the CTM still picks the best magnitude.
     _fam = {0: ('NO_ACTION', 0.0, 0.0, so_na, tp_na)}      # HOLD, surplus 0
 
     def _score_action(_atype, _ap):
-        """Corridor surplus (pax·s) of one (action, magnitude); appends its row.
+        """Corridor surplus (paxÃƒâ€šÃ‚Â·s) of one (action, magnitude); appends its row.
         Returns (surplus, so, tp) or None on failure. Shared by the DE solver so
         the magnitude is optimised against the SAME objective the decider ranks."""
         try:
@@ -6487,7 +8908,7 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
                 bps = max(0.0, bps - max(0.0, _chain_cost))
             except Exception:
                 pass
-        _s = _nash_phase_total_bps(self, _atype, float(_ap), bps) - cpc  # corridor pax·s
+        _s = _nash_phase_total_bps(self, _atype, float(_ap), bps) - cpc  # corridor paxÃƒâ€šÃ‚Â·s
         if _coupled and _wcorr > 0.0:
             try:
                 _cp = float(_continuous_corridor_penalty(
@@ -6521,7 +8942,7 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
 
     _ge_lo, _ge_hi = (min(_ge_grid), max(_ge_grid)) if _ge_grid else (5.0, 15.0)
     _er_lo, _er_hi = (min(_er_grid), max(_er_grid)) if _er_grid else (10.0, 30.0)
-    # ── RECOVERABILITY CLAMP on GE (offset preservation) ──────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ RECOVERABILITY CLAMP on GE (offset preservation) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # A GE lengthens the cycle by its seconds, which _apply_cycle_recovery must
     # trim back from the upcoming cross phases THIS cycle to keep the junction on
     # the corridor's coordinated OFFSET. If the extension exceeds the recoverable
@@ -6560,7 +8981,7 @@ def dctsp_cellqlearn_corridor(self, time, timeSta, acycle, bus_eta_s, veh_id,
         _fam[2] = _rr
     _fam_surplus = {k: max(0.0, float(v[2])) for k, v in _fam.items()}
 
-    # ── selection: STAGE 1 greedy heuristic, or STAGE 2 Q-learner ─────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ selection: STAGE 1 greedy heuristic, or STAGE 2 Q-learner ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     if not bool(globals().get('CELLQ_CORRIDOR_LEARN', False)):
         _pick = max(_fam.keys(), key=lambda k: _fam[k][2])        # CTM-greedy
         _mode_tag = ''
@@ -6696,7 +9117,7 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         self, 'NO_ACTION', 0.0, sigma_in, no_act_delay, bus_eta_s)
     rows = [('NO_ACTION', 0.0, 0.0, so_na, tp_na, bps_na, cpc_na, nsd_na, std_na)]
 
-    # ── CONTINUOUS play (no bus present) ──────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CONTINUOUS play (no bus present) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The monitor path calls this with veh_id=-1 / bus_eta_s=1e9: there is no bus,
     # so play the SAME bargaining game on the current traffic STATE. The transit
     # side's bus term is 0, leaving the through-traffic (mainline) served by
@@ -6710,7 +9131,14 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
 
     # gate 1: do not bargain for a barely-delayed bus (bus-present game only)
+    # INSTRUMENTED 2026-11-02: this is the earliest exit in the decider and it is
+    # indistinguishable in the engine's log from a net-negative bargain -- both
+    # surface as "decider held: no net-positive action". Because it returns before
+    # `cand` exists, a hold here could never be explained by [NASH_HELD]; it now
+    # reports its own delay against the threshold.
     if not _monitor and eff_delay < _proj['min_delay_s']:
+        _nash_held_gate(self, time, veh_id, 'min_delay', eff_delay,
+                        _proj['min_delay_s'])
         return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
 
     p_T = float(globals().get('NASH_BUS_WEIGHT', 1.0))
@@ -6735,23 +9163,77 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         # recoverable-headroom caps the generic-GE solver uses, so Nash
         # magnitudes can't exceed what the junction's own cycle can repay.
         try:
-            _nub = None
+            # SHOCKWAVE / CYCLE CAP: min(MAX_GE_EXTENSION_S, 0.15 * live cycle),
+            # the same bound the generic GE solver uses.
+            _sw_cap = None
             if hasattr(self, '_junction_ge_ub'):
                 try:
-                    _nub = float(self._junction_ge_ub(timeSta))
+                    _sw_cap = float(self._junction_ge_ub(timeSta))
                 except Exception:
-                    _nub = None
-            if _nub is None or _nub <= 0.0:
-                _nub = float(globals().get('MAX_GE_EXTENSION_S', 10.0) or 10.0)
+                    _sw_cap = None
+            if _sw_cap is None or _sw_cap <= 0.0:
+                _sw_cap = float(globals().get('MAX_GE_EXTENSION_S', 10.0) or 10.0)
+            _nrec_dbg = None
+            _nrec_cap = None
             try:
                 _nrec = float(self._reward_get_recoverable(
                     current_phase, timeSta))
+                _nrec_dbg = _nrec
                 _nslack = float(globals().get('RECOVERABILITY_SLACK_S', 1.0))
-                _nub = min(_nub, max(1.0, _nrec + _nslack))
+                _nrec_cap = max(1.0, _nrec + _nslack)
+            except Exception:
+                _nrec_cap = None
+            # CAP SOURCE (2026-10-30): _reward_get_recoverable builds its donor
+            # set from the *upcoming* phases and then excludes the bus phase, so
+            # on a 2-phase junction (main + bus) it returns 0 -> nrec_cap = 1.0
+            # -> the whole search collapses to a single second. That first showed
+            # up as the range(1.0, 2.0) NASH_BARGAIN crash, and would otherwise
+            # leave the game arm inert. Per the design rule (no veto; solve the
+            # duration continuously; cap it with the shockwave/cycle bound, not a
+            # discrete grid), fall back to the shockwave cap whenever the
+            # recoverable headroom cannot support a real search span, and price
+            # the cross-street loss in cpc/CTM instead of hard-capping it.
+            #
+            # INS / EARLY_RED truncate the CURRENT phase, whose remaining green is
+            # exactly the donor the helper excludes, so they always use the
+            # shockwave cap -- their cost is already in cpc.
+            _min_span = float(globals().get('NASH_UB_MIN_SPAN_S', 2.0) or 0.0)
+            _sw_fallback = bool(globals().get('NASH_UB_SHOCKWAVE_CAP', True))
+            _degenerate = (_nrec_cap is None) or (_nrec_cap < _min_span)
+            if _sw_fallback and _degenerate:
+                _nub_ge = _sw_cap
+            elif _nrec_cap is None:
+                _nub_ge = _sw_cap
+            else:
+                _nub_ge = min(_sw_cap, _nrec_cap)
+            if _sw_fallback and (_degenerate or wrong_phase):
+                _nub_ins = _sw_cap
+            elif _nrec_cap is None:
+                _nub_ins = _sw_cap
+            else:
+                _nub_ins = min(_sw_cap, _nrec_cap)
+            _ge_hi = int(max(1.0, min(float(_ge_hi), _nub_ge)))
+            _ins_hi = int(max(_ins_lo, min(float(_ins_hi), _nub_ins)))
+            # [NASH_UB]: the recoverability cap can collapse the duration range to
+            # a single second (nrec=0 -> nub=1.0 -> ge_hi=ins_hi=1), which turns
+            # the game into a no-op. Log the headroom so that is visible instead
+            # of being inferred from a suspiciously inert arm.
+            try:
+                _ubn = globals().setdefault('_NASH_UB_LOGGED', {})
+                _ubk = int(getattr(self, 'id', 0) or 0)
+                if int(_ubn.get(_ubk, 0)) < 3:
+                    _ubn[_ubk] = int(_ubn.get(_ubk, 0)) + 1
+                    _log_func(self,
+                        f"[NASH_UB] inter={getattr(self, 'id', '?')} "
+                        f"ph={current_phase} busph={getattr(self, 'BusPhase', None)} "
+                        f"wrong={int(bool(wrong_phase))} "
+                        f"nrec={('%.1f' % _nrec_dbg) if _nrec_dbg is not None else 'n/a'} "
+                        f"nrec_cap={('%.1f' % _nrec_cap) if _nrec_cap is not None else 'n/a'} "
+                        f"sw={_sw_cap:.1f} nub_ge={_nub_ge:.1f} nub_ins={_nub_ins:.1f} "
+                        f"ge_hi={_ge_hi} ins={_ins_lo}..{_ins_hi} "
+                        f"phases={list(getattr(self, 'phase_list', []) or [])}")
             except Exception:
                 pass
-            _ge_hi = int(max(1.0, min(float(_ge_hi), _nub)))
-            _ins_hi = int(max(_ins_lo, min(float(_ins_hi), _nub)))
         except Exception:
             pass
         if wrong_phase:
@@ -6762,7 +9244,8 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         for (_at, _lo, _hi) in _types:
             for (_a, _d, _so, _tp, _bps, _cpc) in _nash_duration_search(
                     self, _at, _lo, _hi, sigma_in, no_act_delay, bus_eta_s,
-                    wrong_phase, remaining_red_s, p_T, p_C):
+                    wrong_phase, remaining_red_s, p_T, p_C,
+                    time=time, timeSta=timeSta):
                 cand.append((_a, _d, _so, _tp, _bps, _cpc))
                 rows.append((action_label(_a, _d), _d, 0.0, _so, _tp,
                              _bps, _cpc, 0.0, 0.0))
@@ -6788,20 +9271,55 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     if not cand:
         return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
 
-    # ── Tier 2: corridor best-response (couples junction to the bus route) ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tier 2: corridor best-response (couples junction to the bus route) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Returns an int index into `cand`, or None meaning the corridor equilibrium
     # for THIS junction is NO_ACTION. Only an EXCEPTION falls back to Tier 1.
     _bi = None
     _corridor = False
     _corridor_ran = False
+    # Out-dict for the corridor solver's gated quantities (see _nash_corridor_solve).
+    # Initialised unconditionally: the log line below reads it, and an unbound name
+    # there would kill every non-corridor commit.
+    _corr_diag = {}
+    # Same out-dict for the Tier-1 local bargain, so ITS holds are explained too
+    # (the [NASH_HELD] line is emitted at both held returns).
+    _loc_diag = {}
+    # State-dependent threat point (assigned in the Tier-1 branch). Hoisted because
+    # the min-gain [NASH_HELD] line reports gainT even when the corridor solver
+    # owned the pick, and an unbound name there would kill the very hold it is
+    # meant to explain.
+    _threat = 0.0
+    # FEASIBILITY ACCOUNTING (2026-10-30): MUST be initialised at function scope.
+    # They were first defined inside the Tier-1 `else:` block, so whenever the
+    # corridor solver owned the pick the log line raised UnboundLocalError --
+    # which killed every GAME_BUS bargain (13 errors, 0 commits) on 17:35.
+    _nfeas = 0
+    _margin = 0.0
+    # `_frontier` is built inside the Tier-1 branch only, so the log line below
+    # must not assume it exists: with NASH_CORRIDOR_MODE the corridor solver owns
+    # the pick and the name is unbound (this crashed every GAME_BUS commit on
+    # 2026-10-31: "cannot access local variable '_frontier'"). Keep a count that
+    # is always defined and fill it where the frontier is built.
+    _ncand = 0
     _coord = getattr(self, '_corridor_coord', None)
-    if (not _monitor and bool(globals().get('NASH_CORRIDOR_MODE', False))
+    # COOPERATIVE ARMS MUST NOT DELEGATE TO THE NASH CORRIDOR SOLVER (2026-10-30).
+    # `nash_corridor_bestresponse` maximises the NASH product and knows nothing
+    # about the coalition objective, but it ran first and set _corridor_ran, so the
+    # Tier-1 coop block below was never reached. GAME_COOP was therefore the SAME
+    # decision procedure as GAME_BUS with only the log tag and the objective label
+    # changed -- which is why the two arms were byte-identical (16/16 commits, every
+    # field equal, all lines ending in [corridor]). Skip Tier 2 for cooperative
+    # arms so their own coalition rule actually selects the action.
+    _coop_pre = bool(globals().get('NASH_COOPERATIVE', False))
+    if (not _monitor and not _coop_pre
+            and bool(globals().get('NASH_CORRIDOR_MODE', False))
             and _coord is not None
             and hasattr(_coord, 'nash_corridor_bestresponse')):
         try:
             _bi = _coord.nash_corridor_bestresponse(
                 self, veh_id, time, timeSta, bus_eta_s, _bus_occ,
-                [(c[0], c[1], c[4], c[5]) for c in cand], p_T, p_C)
+                [(c[0], c[1], c[4], c[5]) for c in cand], p_T, p_C,
+                diag=_corr_diag)
             _corridor_ran = True
             _corridor = True
         except Exception as _e:
@@ -6809,11 +9327,29 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
             _corridor_ran = False
             _bi = None
 
+    _coop = bool(globals().get('NASH_COOPERATIVE', False))
+    # Cooperative objective for the log line (defined here so it is in scope even
+    # when the corridor branch owns the pick).
+    _cobj = str(globals().get('NASH_COOP_OBJECTIVE', 'joint')
+                or 'joint').strip().lower()
+    # Feasibility-accounting names used by the shared log line below. Hoisted here
+    # (like _cobj) so they are in scope when the CORRIDOR branch owns the pick --
+    # the Tier-1 else branch reassigns them. Without this, NASH_CORRIDOR_MODE arms
+    # (GAME_BUS/COOP) crash with "cannot access local variable '_frontier'" and
+    # every bargain falls back to NO_ACTION (0 commits). (2026-10-31)
+    _frontier = []
+    _nfeas = 0
+    _margin = 0.0
     if _corridor_ran:
         if _bi is None:                          # corridor equilibrium = do nothing
+            # _corr_diag is keyed by junction (the solver may evaluate a slice);
+            # the helper wants THIS junction's record.
+            _nash_held_log(self, time, veh_id, cand,
+                           _corr_diag.get(int(getattr(self, 'id', -1))),
+                           'corridor')
             return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
     else:
-        # ── Tier 1: local Nash bargain ──
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Tier 1: local Nash bargain ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Bargain on the FULL bus-phase benefit (bus + mainline through traffic)
         # vs the cross cost, so the net surplus is the TOTAL passenger-delay
         # change (see _nash_phase_total_bps). The green-wave seconds inside the
@@ -6840,7 +9376,8 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
                                         (0.0 if _monitor else _c[4]))
             if _pen is not None:
                 _bt = max(0.0, _bt - _wnb * _pen[_i])
-            _frontier.append((_bt, _c[5]))
+            _frontier.append((_bt, _c[5], _c[4]))
+        _ncand = len(_frontier)
         # STATE-DEPENDENT THREAT (bus-present only): the disagreement point gets
         # worse for the bus as the cross street saturates, so a bargain requires a
         # larger transit gain exactly where preemption is most costly.
@@ -6854,8 +9391,73 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
                            * _xsat * _bus_occ)
             except Exception:
                 _threat = 0.0
-        _bi, _ = _nash_bargain_pick(_frontier, p_T, p_C, threat=_threat)
+        _coop = bool(globals().get('NASH_COOPERATIVE', False))
+        _cobj = str(globals().get('NASH_COOP_OBJECTIVE', 'joint')
+                    or 'joint').strip().lower()
+        # FEASIBILITY ACCOUNTING (2026-10-30): GAME_COOP reproduced GAME_BUS
+        # 16/16 decisions even after switching to Nash welfare, which is only
+        # possible if the individual-rationality filter leaves a SINGLETON (then
+        # every monotone score picks the same action). nfeas/ncand/margin make
+        # that visible instead of inferred.
+        _nfeas = 0
+        _margin = 0.0
+        if _coop:
+            # COOPERATIVE (team) GAME: the grand coalition {bus, cars} chooses the
+            # action that maximises JOINT passenger surplus. Feasibility is the
+            # coalition budget: joint surplus must be positive and each player may
+            # lose at most its configured tolerance (absolute + a fraction of the
+            # joint surplus, i.e. a side payment the winner can fund). With both
+            # fractions 0 this is the strict individual-rationality team game.
+            _btol = float(globals().get('NASH_COOP_BUS_TOL', 0.0) or 0.0)
+            _ctol = float(globals().get('NASH_COOP_CAR_TOL', 0.0) or 0.0)
+            _bfr = float(globals().get('NASH_COOP_BUS_TOL_FRAC', 0.0) or 0.0)
+            _cfr = float(globals().get('NASH_COOP_CAR_TOL_FRAC', 0.0) or 0.0)
+            _fair = float(globals().get('NASH_COOP_FAIR_W', 0.0) or 0.0)
+            _cobj = str(globals().get('NASH_COOP_OBJECTIVE', 'joint')
+                        or 'joint').strip().lower()
+            _bi, _best_joint = None, -1.0e18
+            _scs = []
+            for _i, (_bt, _cpc, _bus) in enumerate(_frontier):
+                _joint = float(_bt) - float(_cpc)
+                _car = _joint - float(_bus)
+                # SIDE-PAYMENT COALITION: the coalition is viable when joint
+                # surplus is positive; one side may lose up to a configured
+                # fraction of the joint surplus and be compensated by the other.
+                # frac=0 recovers the strict individual-rationality team game.
+                _tol_b = _btol + _bfr * max(_joint, 0.0)
+                _tol_c = _ctol + _cfr * max(_joint, 0.0)
+                if (float(_bus) < -_tol_b or _car < -_tol_c
+                        or _joint <= 0.0):
+                    continue
+                _nfeas += 1
+                if _cobj == 'maxmin':
+                    _score = min(float(_bus), _car)      # egalitarian / Rawlsian
+                elif _cobj == 'nash':
+                    _score = (max(0.0, float(_bus))
+                              * max(0.0, _car))          # Nash welfare
+                else:
+                    _score = _joint - _fair * abs(float(_bus) - _car)
+                _scs.append(_score)
+                if _score > _best_joint:
+                    _best_joint, _bi = _score, _i
+            if len(_scs) > 1:
+                _ss = sorted(_scs, reverse=True)
+                _margin = float(_ss[0] - _ss[1])
+        else:
+            _bi, _ = _nash_bargain_pick(
+                [(a, b) for (a, b, _bus) in _frontier],
+                p_T, p_C, threat=_threat, diag=_loc_diag)
+            try:
+                _netr = float(globals().get('NASH_NET_GATE_RATIO', 1.0) or 1.0)
+                for (_a, _b, _bus) in _frontier:
+                    _sur = float(_a) - float(_b)
+                    if (float(_a) - float(_threat) > 1e-6 and _sur > 1e-6
+                            and float(_a) >= _netr * float(_b)):
+                        _nfeas += 1
+            except Exception:
+                _nfeas = 0
         if _bi is None:
+            _nash_held_log(self, time, veh_id, cand, _loc_diag, 'local')
             return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
         if _corr_cont and _pen and _pen[_bi] > 0.0:
             _corridor = True     # tag the log: corridor coupling shaped the pick
@@ -6867,7 +9469,42 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # Skipped in continuous (no-bus) play: there is no bus term to gate; the
     # engine's CONTINUOUS_MONITOR_MIN_GAIN_PAXS guard instead requires the SURPLUS
     # (returned below) to clear a minimum before committing.
-    if not _monitor and _bps < float(globals().get('NASH_MIN_GAIN_S', 5.0)) * _bus_occ:
+    # MAIN-vs-SIDE GATE (2026-10-31): the benefit side used to be BUS-ONLY, so an
+    # extension that also discharges queued mainline cars was judged as if only
+    # the bus gained. The cost side already sums every conflicting (side/cross)
+    # approach, so the comparison was asymmetric and over-vetoed marginal grants
+    # -- a 1 s GE serving a full mainline queue looked like a loss. The gate now
+    # uses the PHASE total (bus + mainline through traffic) unless explicitly
+    # disabled, which makes it main-approach benefit vs side-approach cost.
+    _bps_gate = _bps
+    if bool(globals().get('NASH_MIN_GAIN_INCLUDE_MAIN', True)) and not _monitor:
+        try:
+            _bps_gate = max(float(_bps),
+                            float(_nash_phase_total_bps(self, _at, _ap, _bps)))
+        except Exception:
+            _bps_gate = _bps
+    if (not _monitor
+            and _bps_gate < float(globals().get('NASH_MIN_GAIN_S', 5.0)) * _bus_occ):
+        # MIN-GAIN VETO (2026-11-02): the last silent hold inside the decider. A
+        # candidate that CLEARED the net gate can still be refused here for being
+        # too small, and that refusal used to leave no trace at all -- on a seed
+        # where the game was otherwise inert it was indistinguishable from a gate
+        # rejection. Reported on the same [NASH_HELD] line with why=min_gain:
+        #     limit = bps - slack   (== NASH_MIN_GAIN_S * BusOcc)
+        # The benefit measured here is the PHASE total with NO neighbour
+        # adjustment (that is what this gate consumes), so nadj stays 0 and
+        # raw == bps on the line -- a corridor decision can therefore show a
+        # min_gain refusal whose bps is larger than the pick's adjusted surplus.
+        try:
+            _minreq = float(globals().get('NASH_MIN_GAIN_S', 5.0)) * _bus_occ
+        except Exception:
+            _minreq = 0.0
+        _nash_held_log(self, time, veh_id, cand,
+                       {'rej': [(_bi, float(_bps_gate), float(_cpc),
+                                 float(_bps_gate) - float(_cpc),
+                                 float(_bps_gate) - float(_threat),
+                                 'min_gain', float(_bps_gate) - _minreq)]},
+                       'corridor' if _corridor_ran else 'local')
         return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
 
     # Surplus / Nash value are on the FULL phase benefit (bus + mainline), so a
@@ -6875,21 +9512,45 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # Monitor ticks use the CAR-ONLY phase total (see the frontier note above).
     _bps_tot = _nash_phase_total_bps(self, _at, _ap,
                                      (0.0 if _monitor else _bps))
-    _surplus = _bps_tot - _cpc           # net corridor pax·s of the chosen action
+    _surplus = _bps_tot - _cpc           # net corridor paxÃƒâ€šÃ‚Â·s of the chosen action
+    # GATED SURPLUS (2026-11-02): the log must report the number the decider
+    # TESTED, not a re-derivation of it. Under NASH_CORRIDOR_MODE the solver prices
+    # each candidate at max(0, bps - w_nb*net) and gates on THAT minus cpc; the
+    # old log recomputed bps_tot - cpc here, which is a different quantity, so
+    # published runs show committed actions with NEGATIVE surplus under a rule
+    # that rejects surplus <= eps, and held decisions carry no usable margin at
+    # all. `_surplus` keeps its old value because it feeds the RETURNED reward
+    # (_N below): correcting the reward is a behaviour change, correcting the log
+    # is not, so only the log moves here.
+    _surplus_log = _surplus
+    _nadj_log = 0.0
+    if _corridor_ran and _corr_diag:
+        _dg = _corr_diag.get(int(getattr(self, 'id', -1)))
+        if _dg:
+            _surplus_log = float(_dg.get('surplus', _surplus))
+            _nadj_log = float(_dg.get('nadj', 0.0))
+            _ncand = int(_dg.get('n', _ncand))
+            _nfeas = int(_dg.get('nfeas', _nfeas))
+            _margin = float(_dg.get('nmargin', _margin) or 0.0)
     _N = (_bps_tot ** p_T) * (max(0.0, _surplus) ** p_C)
     # Bus-present: report the Nash value. Continuous (no bus): report the SURPLUS
-    # (pax·s) so the engine's monitor commit guard threshold is in pax·s units.
-    _ret = max(0.0, _surplus) if _monitor else _N
-    _log_func(self, f"[NASH_BARGAIN]{' [monitor]' if _monitor else ''} "
+    # (paxÃƒâ€šÃ‚Â·s) so the engine's monitor commit guard threshold is in paxÃƒâ€šÃ‚Â·s units.
+    # Cooperative commits report the joint surplus; Nash reports the Nash value.
+    _ret = max(0.0, _surplus) if (_monitor or _coop) else _N
+    _tag = '[COOP_GAME]' if _coop else '[NASH_BARGAIN]'
+    _log_func(self, f"{_tag}{' [monitor]' if _monitor else ''} "
                     f"inter={self.id} t={time:.1f} bus={veh_id} "
-                    f"pT={p_T:.2f} pC={p_C:.2f} surplus={_surplus:.0f} "
+                    f"pT={p_T:.2f} pC={p_C:.2f} "
+                    f"obj={_cobj if _coop else 'nashprod'} "
+                    f"nfeas={_nfeas}/{_ncand} margin={_margin:.0f} "
+                    f"surplus={_surplus_log:.0f} nadj={_nadj_log:.0f} "
                     f"chosen={action_label(_at, _ap)} bps_bus={_bps:.0f} "
                     f"bps_phase={_bps_tot:.0f} cpc={_cpc:.0f} "
                     f"N={_N:.1f}{' [corridor]' if _corridor else ''}")
     return (_at, _ap, _ret, _ret, _so, _tp, rows)
 
 
-# ── Mode: CELLQLEARN_DP — CellQ-Learn with Dynamic Programming ───────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: CELLQLEARN_DP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CellQ-Learn with Dynamic Programming ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # V2X-coordinated TSP: queue-length prediction via CTM + DP backward recursion
 # to find the optimal TSP action sequence along the transit route.
 # Reference: Huang H.-K. & Hsu Y.-T. (2025), Transportation Letters.
@@ -6903,7 +9564,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     passenger delay (bus + general traffic) along the corridor.
 
     Returns (best_type, best_param, best_r, best_r_delta, best_sigma_out,
-    best_t_poz, rows) — same contract as dctsp_bxt / dctsp_zig.
+    best_t_poz, rows) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same contract as dctsp_bxt / dctsp_zig.
     """
     dt          = float(CELLQLEARN_DP_DT_S)
     q_sat_vps   = float(getattr(self, 'SaturationFlow', 1800.0)) / 3600.0
@@ -6915,7 +9576,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _wrong_phase = (int(current_phase) != int(self.BusPhase))
     _cap_veh    = k_jam * 0.15
 
-    # ── Estimate initial bus-approach queue (same LWR back-shockwave as BXT) ──
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Estimate initial bus-approach queue (same LWR back-shockwave as BXT) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     try:
         upf = np.asarray(getattr(self, 'UpFlowList', np.zeros((1, 1))), dtype=float)
         rdt = np.asarray(getattr(self, 'RedDurationList', np.zeros((1, 1))), dtype=float)
@@ -6934,7 +9595,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
         n0_bus = 5.0
         t_red_past = 60.0
 
-    # ── Passenger weighting for the approach cell ────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Passenger weighting for the approach cell ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # `n0_bus` is the LWR/shockwave estimate of the WHOLE approach queue in
     # vehicles and `q_arr_bus_vps` is the WHOLE approach flow -- neither is
     # bus-only -- so passing `_bus_occ` (40 pax/veh) into _ctm_delay_pax priced
@@ -6984,16 +9645,24 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
         if atype in ('INS', 'INS_POST'):
             t_wait = float(remaining_red_s) + float(INS_INTERGREEN_S)
             # ETA gate (mirrors _dctsp_eval_action INS rule): a bus still
-            # `bus_eta_s` away cannot catch a short insertion — otherwise the
+            # `bus_eta_s` away cannot catch a short insertion ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â otherwise the
             # CTM queue model credits phantom savings from a few seconds of
-            # green (INS_PRETERM_3 claimed up to ~62 000 pax·s).
+            # green (INS_PRETERM_3 claimed up to ~62 000 paxÃƒâ€šÃ‚Â·s).
             if float(bus_eta_s) > (a_s + float(INS_INTERGREEN_S)):
                 d_bus = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                                        t_wait, _bus_g_base, _cell_occ)
             else:
                 d_bus = _ctm_delay_pax(n0_bus, q_arr_bus_vps, q_sat_vps,
                                        t_wait, a_s, _cell_occ)
-            d_side = float(self._dctsp_cross_traffic_delay_s(t_wait + a_s))
+            # 2026-11-02 marginal OFF-PHASE cross cost (CELLQ_INS_MARGINAL_CROSS):
+            # charge only the green the insertion displaces (a_s + one intergreen),
+            # not t_wait (the bus's own pre-existing wait). Same fix as CELLQ /
+            # MP_ECTM so every decider prices an off-phase insertion consistently.
+            if bool(globals().get('CELLQ_INS_MARGINAL_CROSS', False)):
+                d_side = float(self._dctsp_cross_traffic_delay_s(
+                    a_s + float(INS_INTERGREEN_S)))
+            else:
+                d_side = float(self._dctsp_cross_traffic_delay_s(t_wait + a_s))
             return d_bus, d_side, a_s
 
         # --- V2X-coordinated DP-specific actions: green reallocation, early red ---
@@ -7017,7 +9686,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
 
         return 1e9, 0.0, 0.0
 
-    # ── DP Action space ─────────────────────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DP Action space ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _dp_actions = [
         ('NO_ACTION', 0.0),
         ('GE', 5.0), ('GE', 10.0), ('GE', 15.0),
@@ -7043,7 +9712,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _side_red_elapsed = max(0.0, min(_side_red_elapsed, 2.0 * _cycle_s))
 
     def _dp_proj_side_delay(_ap):
-        """Real side-queue pax·s imposed by action red `_ap`: uses the live
+        """Real side-queue paxÃƒâ€šÃ‚Â·s imposed by action red `_ap`: uses the live
         SideUpFlowList/SideUpDenList shockwave model when available (grounded
         in actual accumulated side queue), else the analytic cross model.
         Scaled by CROSS_TRAFFIC_COST_MULTIPLIER so it competes with the
@@ -7066,13 +9735,13 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     # For now, the DP stages are virtual "look-ahead windows" along the
     # bus trajectory. Each stage corresponds to an arrival at a downstream
     # intersection or a future cycle boundary.
-    # ── DP backward recursion ──────────────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DP backward recursion ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # DP[i][q_state] = min cumulative delay from stage i onward
     # i=0 is "now" (first stage), i=dp_stages-1 is the furthest horizon.
     # We discretise the "remaining queue" state as a coarse bin.
     _n_stages = min(_dp_stages, 6)
 
-    # ── Per-action evaluation at the current stage ─────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Per-action evaluation at the current stage ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _na_dbus, _na_dside, _na_saved = _eval_stage_action('NO_ACTION', 0.0)
     _baseline_total = _na_dbus + _na_dside
 
@@ -7089,7 +9758,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
         if _dbus >= 1e8:
             continue
 
-        # ── DP look-ahead: estimate downstream delay impact ─────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ DP look-ahead: estimate downstream delay impact ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Local CTM self-projection (future queue at THIS junction), then ADD
         # the REAL downstream-junction projection (Z2, corridor-aware): the
         # bus time shift here moves its arrival at the NEXT managed junction;
@@ -7110,7 +9779,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
             _coord = getattr(self, '_corridor_coord', None)
             if _coord is not None:
                 # The bus can only be pulled forward by as much as it is
-                # actually delayed without action — cap the downstream shift.
+                # actually delayed without action ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â cap the downstream shift.
                 _shift_sec = min(float(_saved), max(0.0, float(no_act_delay)))
                 if _shift_sec > 0.0:
                     _dp_coord_penalty += float(_coord.project_downstream_delay_paxs(
@@ -7122,7 +9791,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
         _total = _dbus + _dside + _dp_coord_penalty
         _cand_rows.append((_at, _ap, _total, _dbus, _dside, _saved, _dp_coord_penalty))
 
-    # ── Saturation avoidance guard ──────────────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Saturation avoidance guard ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     try:
         _o_d = (_safe_float(self._safe_array_sum(getattr(self, 'OtherDelay', [0])))
                 + _safe_float(self._safe_array_sum(
@@ -7137,7 +9806,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _eff_delay_gate = max(0.0, float(no_act_delay) - float(ZIG_PHASE_OVERLAP_S))
     _low_bus_delay = _eff_delay_gate < float(SELFORG_MIN_BUS_DELAY_S)
 
-    # ── Select best action via minimum total delay (DP optimal) ─────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Select best action via minimum total delay (DP optimal) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _best_atype, _best_aparam, _best_total = 'NO_ACTION', 0.0, _baseline_total
     _best_dbus, _best_dside, _best_dp_pen = _na_dbus, _na_dside, 0.0
     for (_at, _ap, _tot, _dbus, _dside, _saved, _pen) in _cand_rows:
@@ -7169,7 +9838,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
                     f"chosen={_best_atype}_{_best_aparam:.0f} "
                     f"total_delay={_best_total:.1f}paxs")
 
-    # ── Build rows for the shared Pareto layer / reward CSV ─────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Build rows for the shared Pareto layer / reward CSV ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Emit EVERY DP-evaluated candidate that survives the balance gates (not
     # just the argmin), so the Pareto layer sees the mode's full model
     # trade-off across the action space (GE / INS / GREEN_REALLOC / EARLY_RED)
@@ -7199,7 +9868,7 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
                 so_act, tp_act, bps_gated, nsd_act, std_act = so_na, tp_na, 0.0, nsd_na, std_na
             # Use the ETA-gated bus benefit from _dctsp_eval_action as the
             # authoritative value (it already applies the INS ETA gate and the
-            # no_act_delay cap — see dctsp_mp_ectm_dp for the phantom-savings
+            # no_act_delay cap ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â see dctsp_mp_ectm_dp for the phantom-savings
             # rationale), bounded by the DP's raw CTM delta.
             bps_ctm = min(max(0.0, float(bps_gated)),
                           max(0.0, _na_dbus - _dbus))
@@ -7225,29 +9894,887 @@ def dctsp_cellqlearn_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
     return (_best_atype, _best_aparam, best_r, best_r_delta,
             best_so, best_tp, rows)
 
+# =========================================================================
+# Mode: BELLMAN_CTM -- finite-horizon Bellman DP over the multi-cell CTM
+# =========================================================================
+# The existing CELLQLEARN_DP/MP_ECTM_DP are one-step rollouts with a discounted
+# delay penalty. This is an EXPLICIT finite-horizon recursion over a discretised
+# CTM state:
+#
+#     V_t(s) = max_a [ r_t(s,a) + gamma * V_{t+1}(s') ]
+#
+# with r = passengers discharged (bus + car) minus an optional queue-delay
+# penalty, and a terminal penalty on the leftover queue. The multi-cell Daganzo
+# chain (sending S=min(n,Q), receiving R=min(Q, (w/vf)(N-n))) is the transition
+# model, so the DP sees the backward wave, not just a point queue.
+#
+# State: side cell occupancies (K cells, B bins), main queue (B bins), phase
+# (main/side), remaining green (4 bins). The DP is memoised over the reachable
+# discretised states, so it is an exact backward induction on the discretised
+# MDP. Actions are the executable TSP overrides NONE/GE/INS/ER/GREEN_REALLOC.
 
-# ── Mode: MaxPressure (Varaiya 2013) — Fix & Flex ────────────────────────────
+# MULTI-CTM + Q-LEARN hybrid state (2026-10-28). Dyna-style realized-reward
+# correction on the model DP (see BELLMAN_CTM_QLEARN):
+#   _bellman_q_table   {(jct, state_bin, action_type): [ewma_realized_pax, count]}
+#   _bellman_q_pending {jct: (t, state_bin, action_type)} -- the last decision,
+#                      scored against the measured feed at the NEXT decision.
+_bellman_q_table: dict = {}
+_bellman_q_pending: dict = {}
+
+
+def dctsp_bellman_ctm_dp(self, time, timeSta, acycle, bus_eta_s, veh_id,
+                         current_phase, no_act_delay, sigma_in,
+                         remaining_red_s=0.0):
+    try:
+        _t0 = float(time or 0.0)
+        _stage = max(5.0, float(BELLMAN_CTM_STAGE_S))
+        _horizon = max(_stage, float(BELLMAN_CTM_HORIZON_S))
+        _gamma = min(max(float(BELLMAN_CTM_GAMMA), 0.0), 0.9999)
+        _bins = max(2, int(BELLMAN_CTM_BINS))
+        _max_cells = max(1, int(BELLMAN_CTM_CELLS))
+        _thru_w = float(BELLMAN_CTM_THRU_W)
+        _delay_w = float(BELLMAN_CTM_DELAY_W)
+        _term_w = float(BELLMAN_CTM_TERMINAL_W)
+        # (2026-10-26) Tunable weight on the bus-throughput bonus. The DP values
+        # mostly CAR throughput; the per-stage bus bonus below is tiny next to it,
+        # so clearing a 40-pax bus rarely changes the horizon value by the
+        # MIN_GAIN_PAX threshold -> the DP picks NO_ACTION and the arm goes inert.
+        # BUS_W > 1 makes a serviced bus worth proportionally more. Default 1.0
+        # leaves the base arm unchanged.
+        _bus_w = max(0.0, float(globals().get('BELLMAN_CTM_BUS_W', 1.0) or 1.0))
+        _car_occ = max(float(BELLMAN_CTM_CAR_OCC), 1.0)
+        _ttl = max(0.0, float(BELLMAN_CTM_TTL_S))
+
+        _q_sat_h = float(getattr(self, 'SaturationFlow', 1800.0) or 1800.0)
+        _q_sat = max(_q_sat_h / 3600.0, 0.05)
+        _k_jam = max(float(getattr(self, 'JamDensity', 200.0) or 200.0), 1.0)
+        _bus_occ = max(float(getattr(self, 'BusOcc', 40.0) or 40.0), 1.0)
+        _cycle_s = 135.0
+        try:
+            if hasattr(self, '_signal_cycle_s'):
+                _cycle_s = float(self._signal_cycle_s())
+            else:
+                _cycle_s = float(self.config.get('CycleTime', 135.0) or 135.0)
+        except Exception:
+            pass
+        _bus_g = max(float(getattr(self, 'BusPhaseDuration', 20.0) or 20.0), 5.0)
+        _side_g = max(6.0, _cycle_s - _bus_g)
+        _wp = (int(current_phase) != int(getattr(self, 'BusPhase', -1)))
+
+        # side approach geometry
+        _side_secs = []
+        try:
+            _side_secs = list(self._get_side_sections() or [])
+        except Exception:
+            _side_secs = []
+        _side_sec = int(_side_secs[0]) if _side_secs else 0
+        _lanes = 1
+        try:
+            _lanes = max(int(self._sec_lane_count(_side_sec) or 1), 1)
+        except Exception:
+            _lanes = 1
+        _len_m = 150.0
+        _vf_kmh = float(globals().get('CELLQ_CTM_FREEFLOW_KMH', 50.0) or 50.0)
+        _w_kmh = float(globals().get('CELLQ_CTM_WAVE_KMH', 18.0) or 18.0)
+        try:
+            _si = _eci_call('AKIInfNetGetSectionANGInf', int(_side_sec))
+            if getattr(_si, 'report', -1) >= 0:
+                if float(getattr(_si, 'length', 0.0) or 0.0) > 0.0:
+                    _len_m = float(_si.length)
+                _slim = float(getattr(_si, 'speedLimit', 0.0) or 0.0)
+                if _slim > 1.0:
+                    _vf_kmh = _slim
+        except Exception:
+            pass
+        _vf = max(_vf_kmh / 3.6, 1.0)
+        _w = max(_w_kmh / 3.6, 0.1)
+        _w_ratio = min(1.0, _w / _vf)
+        _L = max(_vf, 5.0)                      # dt = 1 s
+        _K = max(1, min(int(math.ceil(_len_m / _L)), _max_cells))
+        _N = max(_k_jam * (_L / 1000.0) * _lanes, 1.0)
+        _Q = max(_q_sat * _lanes, 1e-6)
+
+        # arrivals
+        _q_side = 300.0 / 3600.0
+        try:
+            _q_side = max(0.0, float(
+                self._measured_section_flow_vph(_side_sec) or 0.0)) / 3600.0
+        except Exception:
+            pass
+        if _q_side <= 0.0:
+            _q_side = 300.0 / 3600.0
+        _q_main = 600.0 / 3600.0
+        try:
+            _upf = np.asarray(getattr(self, 'UpFlowList', np.zeros((1, 1))),
+                              dtype=float)
+            _u = (_upf[0].ravel() if _upf.ndim >= 2 and _upf.shape[0] > 0
+                  else np.zeros(1))
+            _pos = _u[_u > 0.0]
+            if _pos.size:
+                _q_main = max(float(np.mean(_pos)) / 3600.0, 1e-6)
+        except Exception:
+            pass
+
+        # initial state: side queue at the stop line, main queue from the zone
+        def _meas_queue(_sec):
+            # Live section occupancy is the most reliable queue proxy: the
+            # 2026-10-24 BELLMAN_CTM log showed cells=[0,0,0] main=1.0 (blind)
+            # while the same junction had 160 veh in the section.
+            try:
+                _nv = int(_eci_call('AKIVehStateGetNbVehiclesSection',
+                                    int(_sec), False) or 0)
+                if _nv > 0:
+                    return float(_nv)
+            except Exception:
+                pass
+            try:
+                _ls = getattr(globals().get('stats', None),
+                              'latest_section', {}) or {}
+                _st = _ls.get(int(_sec))
+                if _st:
+                    _ln = max(int(_st.get('lanes', 1) or 1), 1)
+                    return max(0.0, float(
+                        _st.get('queue_veh', 0.0) or 0.0) * _ln)
+            except Exception:
+                pass
+            try:
+                return max(0.0, float(
+                    self._zone_queue_count(_sec) or 0.0))
+            except Exception:
+                return 0.0
+
+        _n0_side = sum(_meas_queue(_s) for _s in _side_secs)
+        _cells = [0.0] * _K
+        _remq = min(_n0_side, _N * _K)
+        for _i in range(_K - 1, -1, -1):
+            _put = min(_remq, _N - _cells[_i])
+            _cells[_i] += _put
+            _remq -= _put
+            if _remq <= 1e-9:
+                break
+        _main_sec = 0
+        try:
+            _main_sec = int((self.config.get('MainSections') or [0])[0])
+        except Exception:
+            pass
+        _n_main = _meas_queue(_main_sec)
+        if _n_main <= 0.0:
+            _n_main = max(1.0, float(no_act_delay) * _q_main * 0.25)
+        _phase = 0 if int(current_phase) == int(getattr(self, 'BusPhase', -1)) else 1
+        _rem = max(1.0, float(remaining_red_s)
+                   if float(remaining_red_s) > 0.0
+                   else (_bus_g if _phase == 0 else _side_g))
+
+        _bin_w = max(_N / _bins, 1e-6)
+        _mbin_w = max(_N / _bins, 1e-6)
+        _rbin_w = max(_stage / 2.0, 1.0)
+
+        def _qcell(x):
+            return min(max(int(round(float(x) / _bin_w)), 0), _bins - 1)
+
+        def _qmain(x):
+            return min(max(int(round(float(x) / _mbin_w)), 0), _bins - 1)
+
+        def _qrem(x):
+            return min(max(int(round(float(x) / _rbin_w)), 0), 3)
+
+        def _dcell(b):
+            return (float(b) + 0.5) * _bin_w
+
+        def _dmain(b):
+            return (float(b) + 0.5) * _mbin_w
+
+        def _drem(b):
+            return max(1.0, min(float(b) * _rbin_w, _cycle_s))
+
+        _actions = [('NO_ACTION', 0.0), ('GE', 10.0), ('INS', 15.0),
+                    ('ER', 10.0), ('GREEN_REALLOC', 10.0)]
+
+        # DOWNSTREAM-AWARE lookahead: live receiving-link fill for the bus/main
+        # movement (0..1+). Serving the main into a full link does not clear
+        # passengers, it only relocates the queue, so the DP credits the main
+        # discharge by the spare capacity (1-block) and debits the overflow. This
+        # is what lets the DP VALUE discover the cascade instead of a myopic veto.
+        _downstream_aware = bool(globals().get('BELLMAN_CTM_DOWNSTREAM', False))
+        _dblock_pen = float(globals().get('BELLMAN_CTM_DBLOCK_PEN', 1.0) or 0.0)
+        _dblock = 0.0
+        if _downstream_aware:
+            try:
+                _dblock = float(self._phase_downstream_block(
+                    int(getattr(self, 'BusPhase', -1))) or 0.0)
+            except Exception:
+                _dblock = 0.0
+            _dblock = min(max(_dblock, 0.0), 1.5)
+        _eff_m = (1.0 - min(_dblock, 1.0)) if _downstream_aware else 1.0
+
+        # COUPLED 2-JUNCTION ROLLOUT: resolve the next arterial junction downstream
+        # and read its LIVE signal so the DP can transport this junction's platoon
+        # into the downstream queue and reward only what clears the downstream stop
+        # line. The downstream green is a deterministic clock function (no extra
+        # state); only the downstream queue becomes a new DP dim. Fail-open to the
+        # single-junction / snapshot model if anything is unreadable.
+        _coupled = bool(globals().get('BELLMAN_CTM_COUPLED', False))
+        _chain = max(1, int(globals().get('BELLMAN_CTM_DOWN_CHAIN', 1) or 1))
+        # per-downstream-node params (nearest first). chain=1 reproduces the old
+        # single-node rollout exactly; chain>1 appends further junctions.
+        _Cds = []; _Gds = []; _gs0s = []; _lags = []
+        _Qds = []; _Ndms = []; _dm0s = []; _dbgs = []
+
+        def _resolve_node(_dn):
+            # all params for one downstream junction (formulas unchanged from the
+            # old single-node block); returns the SEGMENT lag into this node, the
+            # caller accumulates it into the arrival lag.
+            _dnode = int(getattr(_dn, 'node_id',
+                                 getattr(_dn, 'id', 0)) or 0)
+            _Cd = max(float(getattr(_dn, 'cycle_len_s', 135.0) or 135.0), 10.0)
+            _Gd = max(float(getattr(_dn, '_live_bus_phase_dur', None)
+                            or getattr(_dn, 'BusPhaseDuration', 20.0)
+                            or 20.0), 3.0)
+            _Gd = min(_Gd, _Cd - 1.0)
+            _dbp = int(getattr(_dn, 'BusPhase', 2) or 2)
+            _cur_d = int(_eci_call('ECIGetCurrentPhase', _dnode) or -1)
+            _ps_d = float(_eci_call('ECIGetStartingTimePhase', _dnode) or 0.0)
+            # committed-then-live phase duration (push-aware), same as
+            # _downstream_bus_red_wait so a just-committed downstream plan change
+            # is priced into the green timing immediately.
+            def _ddur(_ph):
+                try:
+                    return max(0.0, float(_eci_call(
+                        '_dur_or_live', _dnode, int(_ph), timeSta) or 0.0))
+                except Exception:
+                    return 0.0
+            if _cur_d == _dbp:
+                _pd_d = _ddur(_cur_d) or _Gd
+                _drem_d = max(0.0, _pd_d - (_t0 - _ps_d))
+                _gstart0 = _drem_d - _Gd       # green started in the past
+            else:
+                # REAL phase_list walk to the next downstream green start.
+                _rem_d = max(0.0, _ddur(_cur_d) - (_t0 - _ps_d))
+                _gstart0 = _rem_d
+                try:
+                    _phs = list(getattr(_dn, 'phase_list', None) or [])
+                    _ci = _phs.index(int(_cur_d))
+                    _bi = _phs.index(int(_dbp))
+                    _nph = len(_phs)
+                    _nsteps = (_bi - _ci) % _nph
+                    for _k in range(1, _nsteps):
+                        _gstart0 += _ddur(_phs[(_ci + _k) % _nph])
+                except Exception:
+                    _gstart0 = _rem_d          # 2-phase fallback
+            _dmsec = 0
+            try:
+                _dmsec = int((_dn.config.get('MainSections') or [0])[0])
+            except Exception:
+                _dmsec = 0
+            _dlen = 150.0; _dlanes = 1
+            try:
+                _dsi = _eci_call('AKIInfNetGetSectionANGInf', int(_dmsec))
+                if getattr(_dsi, 'report', -1) >= 0 and float(
+                        getattr(_dsi, 'length', 0.0) or 0.0) > 0.0:
+                    _dlen = float(_dsi.length)
+            except Exception:
+                pass
+            try:
+                _dlanes = max(int(_dn._sec_lane_count(_dmsec) or 1), 1)
+            except Exception:
+                _dlanes = 1
+            _seglag = float(globals().get('BELLMAN_CTM_DOWN_LAG_S', 0.0) or 0.0)
+            if _seglag <= 0.0:
+                _seglag = min(max(_dlen / max(_vf, 1.0), 2.0), float(_Cd))
+            _dsat = max(float(getattr(_dn, 'SaturationFlow', 1800.0)
+                              or 1800.0) / 3600.0, 0.05)
+            _Qd = max(_dsat * _dlanes, 1e-6)
+            _dk = max(float(getattr(_dn, 'JamDensity', 200.0) or 200.0), 1.0)
+            _Ndm = max(_dk * (_dlen / 1000.0) * _dlanes, 1.0)
+            _dm0 = min(_meas_queue(_dmsec), _Ndm)
+            _dbg = _q_main * 0.25
+            try:
+                _dfl = float(_dn._measured_section_flow_vph(_dmsec)
+                             or 0.0) / 3600.0
+                if _dfl > 0.0:
+                    _dbg = max(0.0, min(_dfl, _Qd) - _q_main) * 0.5
+            except Exception:
+                pass
+            return (_Cd, _Gd, _gstart0, _seglag, _Qd, _Ndm, _dm0, _dbg)
+
+        if _coupled:
+            try:
+                _coord = getattr(self, '_corridor_coord', None)
+                _my = int(getattr(self, 'id', 0) or 0)
+                _ridx = getattr(_coord, '_route_index', {}) or {}
+                _order = list(getattr(_coord, 'route_inter_ids', []) or [])
+                _icmap = getattr(_coord, '_ic_map', {}) or {}
+                _ctmap = getattr(_coord, '_ctrl_map', {}) or {}
+                _pos = _ridx.get(_my)
+                _sd = 1
+                try:
+                    _nb = getattr(self, '_bus_is_nb', None)
+                    if _nb is not None:
+                        _sd = 1 if bool(_nb) else -1
+                except Exception:
+                    _sd = 1
+                # collect up to _chain downstream junctions in the bus's direction
+                # (fall back to the opposite direction if that end has none)
+                _nodes = []
+                if _pos is not None:
+                    for _dir in (_sd, -_sd):
+                        j = _pos + _dir
+                        _got = []
+                        while 0 <= j < len(_order) and len(_got) < _chain:
+                            _cid = int(_order[j])
+                            _cand = _icmap.get(_cid) or _ctmap.get(_cid)
+                            if _cand is not None and _cand is not self:
+                                _got.append(_cand)
+                            j += _dir
+                        if _got:
+                            _nodes = _got
+                            break
+                if not _nodes:
+                    _coupled = False
+                else:
+                    _cum = 0.0
+                    for _dn in _nodes:
+                        (_Cd, _Gd, _gstart0, _seglag, _Qd, _Ndm, _dm0, _dbg) = \
+                            _resolve_node(_dn)
+                        _cum += _seglag
+                        _Cds.append(_Cd); _Gds.append(_Gd); _gs0s.append(_gstart0)
+                        _lags.append(_cum); _Qds.append(_Qd); _Ndms.append(_Ndm)
+                        _dm0s.append(_dm0); _dbgs.append(_dbg)
+            except Exception:
+                _coupled = False
+        _nchain = len(_Cds)
+        # scalars for the diagnostic log (nearest node); only read when _coupled
+        _lag = _lags[0] if _lags else 15.0
+        _Cd = _Cds[0] if _Cds else 135.0
+        _Gd = _Gds[0] if _Gds else 20.0
+        _dm0 = _dm0s[0] if _dm0s else 0.0
+        _Ndm = _Ndms[0] if _Ndms else max(_N * _bins, 1.0)
+
+        def _dgreen(_k, _ta):
+            # downstream junction _k main green at relative time _ta (on arrival)
+            return (((float(_ta) - _gs0s[_k]) % _Cds[_k]) < _Gds[_k])
+
+        # bus-premium timing (constant across the rollout): with CREDIT_ONCE the
+        # 40-pax bus bonus is paid in the single second the bus is expected to
+        # clear, not on every green second -- see BELLMAN_CTM_BUS_CREDIT_ONCE.
+        _credit_once = bool(globals().get('BELLMAN_CTM_BUS_CREDIT_ONCE', False))
+        _bus_arr_sec = int(max(0.0, float(bus_eta_s or 0.0)))
+        # BUS GREEN-WAVE: pay the bus premium at EACH chain junction the bus clears,
+        # not once at the final stop line -- see BELLMAN_CTM_BUS_CHAIN_CREDIT.
+        _bus_chain_credit = bool(globals().get(
+            'BELLMAN_CTM_BUS_CHAIN_CREDIT', False))
+        # PASSENGER-WEIGHTED DELAY (2026-10-28): the throughput credit is in PAX but the
+        # shockwave-queue penalty was in VEHICLES (unit mismatch) and treated a queued
+        # BUS the same as one car. When on, (1) price the queue in pax (x car_occ) and
+        # (2) charge the bus's WAIT at (bus_occ-car_occ)/s until it clears -- a held bus
+        # delays ~40 people, so the solver values clearing it FAST, which is what cuts
+        # system passenger delay. OFF (default) = byte-identical. See BELLMAN_CTM_PAX_DELAY.
+        _pax_delay = bool(globals().get('BELLMAN_CTM_PAX_DELAY', False))
+        _bus_arr_stage = int(_bus_arr_sec // max(1, int(round(_stage))))
+
+        def _step(_t, _c, _nm, _dmqs, _ph, _rm, _at, _ap):
+            _cc = list(_c)
+            _m = float(_nm)
+            _dqs = [float(x) for x in _dmqs]   # downstream queues, nearest first
+            _p = int(_ph)
+            _r = float(_rm)
+            _bus_wait_done = False             # bus cleared this junction (pax-delay)
+            if _at == 'GE':
+                _r += _ap
+            elif _at == 'INS':
+                if _p != 0:
+                    _p = 0
+                    _r = _ap
+                else:
+                    _r += _ap
+            elif _at == 'ER':
+                _r -= _ap
+                if _r <= 0.0:
+                    _p = 1 - _p
+                    _r = _bus_g if _p == 0 else _side_g
+            elif _at == 'GREEN_REALLOC':
+                _r += _ap
+            _pax = 0.0
+            _pax_bus = 0.0           # bus-only subtotal (Nash-vs-DSW gate)
+            _base = float(_t) * _stage
+            for _sec in range(max(1, int(round(_stage)))):
+                # bus premium: once at the bus's expected clear second, or (default)
+                # on every discharge second (byte-identical when CREDIT_ONCE is off)
+                _pay_bus = (not _credit_once) or (
+                    int(_base + _sec) == _bus_arr_sec)
+                _r -= 1.0
+                if _r <= 0.0:
+                    _p = 1 - _p
+                    _r = _bus_g if _p == 0 else _side_g
+                _S = [min(_cc[i], _Q) for i in range(_K)]
+                _R = [min(_Q, _w_ratio * max(0.0, _N - _cc[i]))
+                      for i in range(_K)]
+                _y = [min(_S[i], _R[i + 1]) for i in range(_K - 1)]
+                _in0 = min(_q_side, _R[0])
+                _out_s = _S[_K - 1] if _p == 1 else 0.0
+                _nc = [0.0] * _K
+                for _i in range(_K):
+                    _in_i = _in0 if _i == 0 else _y[_i - 1]
+                    _out_i = _y[_i] if _i < _K - 1 else _out_s
+                    _nc[_i] = max(0.0, min(_N, _cc[_i] + _in_i - _out_i))
+                _cc = _nc
+                _out_m = min(_m, _Q) if _p == 0 else 0.0
+                _m = max(0.0, min(_N * _bins, _m + _q_main - _out_m))
+                # BUS WAIT (pax-delay): while the bus has arrived at this junction but
+                # the main has not discharged it, charge (bus_occ-car_occ)/s -- the bus's
+                # ~40 passengers are delayed. Cleared when the main first discharges.
+                if _pax_delay and _t == _bus_arr_stage and not _bus_wait_done \
+                        and (_base + _sec) >= _bus_arr_sec:
+                    if _out_m > 0.0:
+                        _bus_wait_done = True
+                    else:
+                        _bw_pen = _delay_w * max(0.0, _bus_occ - _car_occ)
+                        _pax -= _bw_pen
+                        _pax_bus -= _bw_pen
+                if _coupled:
+                    # transport this junction's main discharge down the CHAIN: each
+                    # junction's platoon clears only when ITS signal is green on
+                    # arrival, and what it clears feeds the next junction's queue.
+                    # Reward = passengers through the FINAL stop line (did the
+                    # platoon progress all the way); the delay term below penalises
+                    # queue left at EVERY junction, so a green-wave break downstream
+                    # is priced. chain=1 reduces to the old 2-junction reward.
+                    _prev = _out_m
+                    _out_last = 0.0
+                    _bus_cross = 0
+                    for _k in range(_nchain):
+                        _arr = _base + _sec + _lags[_k]
+                        _ok = (min(_dqs[_k], _Qds[_k])
+                               if _dgreen(_k, _arr) else 0.0)
+                        _dqs[_k] = max(0.0, min(
+                            _Ndms[_k], _dqs[_k] + _dbgs[_k] + _prev - _ok))
+                        if _bus_chain_credit and _pay_bus and _ok > 0.0:
+                            _bus_cross += 1          # bus clears junction k on green
+                        _prev = _ok
+                        _out_last = _ok
+                    _pax += (_out_s + _out_last) * _car_occ * _thru_w
+                    if _bus_chain_credit:
+                        # BUS GREEN-WAVE (2026-10-28): pay the ~40-pax premium at EACH
+                        # junction the bus clears on green (this junction + every chain
+                        # junction) instead of once at the end, so the DP values
+                        # walking the bus through the whole corridor. Matches the
+                        # objective, which counts passenger-weighted junction-crossings
+                        # (a bus ~= 40 pax-crossings). OFF => old single-credit path.
+                        if _pay_bus:
+                            _bus_here = 1 if _out_m > 0.0 else 0
+                            _bus_cr = _bus_w * max(0.0, _bus_occ - _car_occ) \
+                                * float(_bus_here + _bus_cross)
+                            _pax += _bus_cr
+                            _pax_bus += _bus_cr
+                    elif _out_last > 0.0 and _pay_bus:
+                        _bus_cr = _bus_w * max(0.0, _bus_occ - _car_occ) \
+                            * min(_out_last, 1.0)
+                        _pax += _bus_cr
+                        _pax_bus += _bus_cr
+                    if _delay_w:
+                        _dpen = sum(_cc) + _m + sum(_dqs)
+                        _pax -= _delay_w * (_dpen * _car_occ if _pax_delay
+                                            else _dpen)
+                else:
+                    # local / snapshot reward (unchanged; base arms byte-identical)
+                    _pax += (_out_s + _out_m * _eff_m) * _car_occ * _thru_w
+                    if _downstream_aware and _out_m > 0.0 and _dblock > 0.0:
+                        _pax -= _dblock_pen * min(_dblock, 1.0) \
+                            * _out_m * _car_occ * _thru_w
+                    if _out_m > 0.0 and _pay_bus:
+                        _bus_cr = _bus_w * max(0.0, _bus_occ - _car_occ) \
+                            * min(_out_m, 1.0) * _eff_m
+                        _pax += _bus_cr
+                        _pax_bus += _bus_cr
+                    if _delay_w:
+                        _dpen = sum(_cc) + _m
+                        _pax -= _delay_w * (_dpen * _car_occ if _pax_delay
+                                            else _dpen)
+            return _cc, _m, _dqs, _p, max(1.0, _r), _pax, _pax_bus
+
+        _n_stages = max(1, int(round(_horizon / _stage)))
+        from functools import lru_cache
+
+        @lru_cache(maxsize=120000)
+        def _V(_t, _cb, _mb, _dbs, _ph, _rb):
+            # _dbs is a TUPLE of downstream-queue bins (one per chain junction;
+            # empty when uncoupled). chain=1 == the old single-_db recursion.
+            if _t >= _n_stages:
+                _term = (sum(_dcell(b) for b in _cb) + _dmain(_mb)
+                         + sum(_dmain(b) for b in _dbs))
+                return -_term_w * _term * _car_occ
+            _c = [_dcell(b) for b in _cb]
+            _m = _dmain(_mb)
+            _dqs = [_dmain(b) for b in _dbs]
+            _r = _drem(_rb)
+            _best = -1e18
+            for _at, _ap in _actions:
+                _c2, _m2, _dqs2, _p2, _r2, _rw, _rwb = _step(
+                    _t, _c, _m, _dqs, _ph, _r, _at, _ap)
+                _k2 = tuple(_qcell(x) for x in _c2)
+                _val = (_rw + _gamma * _V(
+                    _t + 1, _k2, _qmain(_m2),
+                    tuple(_qmain(x) for x in _dqs2), _p2, _qrem(_r2)))
+                if _val > _best:
+                    _best = _val
+            return _best
+
+        _root = tuple(_qcell(x) for x in _cells)
+        _mb = _qmain(_n_main)
+        _rb = _qrem(_rem)
+        _db0 = tuple(_qmain(x) for x in _dm0s)   # () when uncoupled
+        _cache = getattr(self, '_bellman_ctm_cache', None)
+        if _cache is None:
+            _cache = self._bellman_ctm_cache = {}
+        _key = (int(getattr(self, 'id', 0) or 0), _root, _mb, _db0, _phase, _rb)
+        _hit = _cache.get(_key)
+        _min_q = max(0.0, float(BELLMAN_CTM_MIN_QUEUE_VEH))
+        _min_gain = max(0.0, float(BELLMAN_CTM_MIN_GAIN_PAX))
+        # DIAGNOSTIC STATE (2026-10-26): capture why the DP landed on its action so
+        # "what could go wrong" is answerable from the log -- the min-queue gate, a
+        # cache hit, the per-action DP values, or the min-gain downgrade.
+        _reason = ''
+        _no_val = float('nan')
+        _vals = {}
+        _vdur = {}                 # action -> chosen duration (Nash-vs-DSW gate)
+        if (_n0_side + _n_main) < _min_q:
+            # Empty/near-empty approach: the plan loop is strictly better than
+            # any TSP action. This is the state that produced every BELLMAN_CTM
+            # action at t=60 in the 2026-10-24 suite.
+            _best_at, _best_ap, _best_val = 'NO_ACTION', 0.0, 0.0
+            _reason = 'min_queue(<%.1f)' % _min_q
+        elif _hit is not None and _ttl > 0.0 and (_t0 - float(_hit[0])) < _ttl:
+            _best_at, _best_ap = _hit[1], _hit[2]
+            _best_val = float(_hit[3])
+            _reason = 'cache'
+        else:
+            # Root-state constants (computed once; _step copies its inputs so the
+            # shared lists are never mutated -> byte-identical to the per-iteration
+            # recompute the grid loop used before).
+            _root_cells = [_dcell(b) for b in _root]
+            _root_m = _dmain(_mb)
+            _root_dqs = [_dmain(x) for x in _db0]   # [] when uncoupled
+            _root_r = _drem(_rb)
+
+            def _fitness(_at, _ap):
+                _c2, _m2, _dqs2, _p2, _r2, _rw, _rwb = _step(
+                    0, _root_cells, _root_m, _root_dqs, _phase,
+                    _root_r, _at, _ap)
+                _k2 = tuple(_qcell(x) for x in _c2)
+                return (_rw + _gamma * _V(
+                    1, _k2, _qmain(_m2),
+                    tuple(_qmain(x) for x in _dqs2), _p2, _qrem(_r2)))
+
+            def _root_bus(_at, _ap):
+                # bus-only subtotal of the ROOT step (Nash-vs-DSW gate): did this
+                # action help the BUS? The car cascade lives in the full horizon
+                # value (total - bus, via _fitness), so U_car stays cascade-aware.
+                return _step(0, _root_cells, _root_m, _root_dqs, _phase,
+                             _root_r, _at, _ap)[6]
+
+            _solver = str(globals().get(
+                'BELLMAN_CTM_SOLVER', 'grid') or 'grid').lower()
+            # NO_ACTION baseline (needed by the min_gain gate) is always scored.
+            _no_val = _fitness('NO_ACTION', 0.0)
+            _vals['NO_ACTION'] = _no_val
+            _vdur['NO_ACTION'] = 0.0
+            _best_at, _best_ap, _best_val = 'NO_ACTION', 0.0, _no_val
+
+            if _solver == 'harmony':
+                # --- continuous-time Harmony Search per action type ----------
+                # SLACK-ONLY (lever 1, 2026-10-28): on a coordinated corridor the only
+                # bus gain that doesn't cost the green wave is SLACK -- a short green
+                # extension into time the main would otherwise waste. INS and
+                # GREEN_REALLOC lengthen the cycle / shift downstream offsets (the
+                # 41-48 insertions that sank CHAIN2), so when BELLMAN_CTM_SLACK_ONLY is
+                # on, search GE + recoverable ER only and cap the extension at
+                # BELLMAN_CTM_SLACK_EXT_S. Fuses the DP solver with the win-only
+                # actuation family (see win-only-actuation-variants). OFF => unchanged.
+                _slack_only = bool(globals().get('BELLMAN_CTM_SLACK_ONLY', False))
+                _types = (['GE', 'ER'] if _slack_only
+                          else ['GE', 'INS', 'ER', 'GREEN_REALLOC'])
+                _dmin = max(1.0, float(globals().get(
+                    'BELLMAN_CTM_MIN_EXT_S', 2.0) or 2.0))
+                _dmax = max(_dmin + 1.0, float(globals().get(
+                    'BELLMAN_CTM_MAX_EXT_S', 20.0) or 20.0))
+                if _slack_only:
+                    _dmax = min(_dmax, max(_dmin + 1.0, float(globals().get(
+                        'BELLMAN_CTM_SLACK_EXT_S', 8.0) or 8.0)))
+                _hms = max(3, int(globals().get('BELLMAN_CTM_HS_MEM', 6) or 6))
+                _nit = max(5, int(globals().get(
+                    'BELLMAN_CTM_HS_ITERS', 25) or 25))
+                _hmcr = min(max(float(globals().get(
+                    'BELLMAN_CTM_HS_HMCR', 0.9) or 0.9), 0.0), 1.0)
+                _par = min(max(float(globals().get(
+                    'BELLMAN_CTM_HS_PAR', 0.3) or 0.3), 0.0), 1.0)
+                _bwfrac = max(1e-3, float(globals().get(
+                    'BELLMAN_CTM_HS_BW', 0.25) or 0.25))
+                import random as _rnd_hs
+                # deterministic per (junction, decision time) -> reproducible on a
+                # fixed seed (RULE 3), independent of global RNG state.
+                _rng = _rnd_hs.Random(
+                    (int(getattr(self, 'id', 0) or 0) * 100003
+                     + int(_t0)) & 0x7fffffff)
+
+                def _hi_for(_at):
+                    # an early-red can only cut the green it has left
+                    if _at == 'ER':
+                        return max(_dmin, min(_dmax, _root_r))
+                    return _dmax
+
+                for _at in _types:
+                    _hi = _hi_for(_at)
+                    if _hi <= _dmin:
+                        _f = _fitness(_at, _dmin)
+                        _vals[_at] = _f
+                        _vdur[_at] = _dmin
+                        if _f > _best_val:
+                            _best_val, _best_at, _best_ap = _f, _at, _dmin
+                        continue
+                    _bw = _bwfrac * (_hi - _dmin)
+                    # init harmony memory with random durations
+                    _mem = sorted(
+                        ((_fitness(_at, _d), _d)
+                         for _d in (_rng.uniform(_dmin, _hi)
+                                    for _ in range(_hms))),
+                        reverse=True)
+                    for _ in range(_nit):
+                        if _rng.random() < _hmcr:            # memory consideration
+                            _d = _mem[_rng.randrange(len(_mem))][1]
+                            if _rng.random() < _par:         # pitch adjustment
+                                _d += _rng.uniform(-_bw, _bw)
+                        else:                                # random improvisation
+                            _d = _rng.uniform(_dmin, _hi)
+                        _d = min(max(_d, _dmin), _hi)
+                        _f = _fitness(_at, _d)
+                        if _f > _mem[-1][0]:                 # replace the worst
+                            _mem[-1] = (_f, _d)
+                            _mem.sort(reverse=True)
+                    _bf, _bd = _mem[0]
+                    _vals[_at] = _bf
+                    _vdur[_at] = round(_bd, 1)
+                    if _bf > _best_val:
+                        _best_val, _best_at, _best_ap = _bf, _at, round(_bd, 1)
+                _reason = 'dp(harmony)'
+            else:
+                # --- fixed integer grid (unchanged) --------------------------
+                for _at, _ap in _actions:
+                    if _at == 'NO_ACTION':
+                        continue
+                    _val = _fitness(_at, _ap)
+                    _vals[_at] = _val
+                    _vdur[_at] = _ap
+                    if _val > _best_val:
+                        _best_val = _val
+                        _best_at, _best_ap = _at, _ap
+                _reason = 'dp(argmax)'
+
+            # MULTI-CTM + Q-LEARN (2026-10-28): blend a learned realized-advantage
+            # into the model values before selection -- the DP keeps its model
+            # foresight but is corrected by what actually paid off in this sim
+            # (Dyna-style). OFF (default) => _vals untouched, byte-identical.
+            _ql_on = bool(globals().get('BELLMAN_CTM_QLEARN', False))
+            _ql_jid = int(getattr(self, 'id', 0) or 0)
+            _ql_sbin = None
+            if _ql_on:
+                _eb = (0 if _bus_arr_sec < 10 else (1 if _bus_arr_sec < 30 else 2))
+                _mbn = (0 if _n_main < 3.0 else (1 if _n_main < 10.0 else 2))
+                _sbn = (0 if _n0_side < 3.0 else (1 if _n0_side < 10.0 else 2))
+                _ql_sbin = (int(_phase), _eb, _mbn, _sbn)
+                _qa = min(max(float(globals().get(
+                    'BELLMAN_CTM_QLEARN_ALPHA', 0.3) or 0.3), 0.0), 1.0)
+                _qw = max(0.0, float(globals().get(
+                    'BELLMAN_CTM_QLEARN_W', 0.3) or 0.3))
+                _qcl = max(0.0, float(globals().get(
+                    'BELLMAN_CTM_QLEARN_CLAMP', 20.0) or 20.0))
+                # (1) TD-update the PENDING decision against the realized measured
+                #     reward now (= the outcome of what we committed last time).
+                try:
+                    _qreal = float(_dctsp_eval_action(
+                        self, 'NO_ACTION', 0.0, sigma_in,
+                        no_act_delay, bus_eta_s)[0])
+                except Exception:
+                    _qreal = float('nan')
+                _pend = _bellman_q_pending.get(_ql_jid)
+                if _pend is not None and _qreal == _qreal:
+                    _pk = (_ql_jid, _pend[1], _pend[2])
+                    _row = _bellman_q_table.get(_pk)
+                    if _row is None:
+                        _bellman_q_table[_pk] = [_qreal, 1]
+                    else:
+                        _row[0] += _qa * (_qreal - _row[0])
+                        _row[1] += 1
+
+                def _qv(_a):
+                    _r = _bellman_q_table.get((_ql_jid, _ql_sbin, _a))
+                    return _r[0] if _r else 0.0
+                # (2) blend learned advantage Q[s,a]-Q[s,NO_ACTION] into the values.
+                _q_na = _qv('NO_ACTION')
+                for _qat in list(_vals.keys()):
+                    if _qat == 'NO_ACTION':
+                        continue
+                    _resid = _qv(_qat) - _q_na
+                    _resid = max(-_qcl, min(_qcl, _resid))
+                    _vals[_qat] += _qw * _resid
+                # (3) re-select argmax over the corrected values (Nash, if on, then
+                #     runs on these; the committed action is stored as pending below).
+                _best_at, _best_ap = 'NO_ACTION', 0.0
+                _best_val = _vals['NO_ACTION']
+                for _qat, _qvv in _vals.items():
+                    if _qat != 'NO_ACTION' and _qvv > _best_val:
+                        _best_val = _qvv
+                        _best_at, _best_ap = _qat, _vdur.get(_qat, 0.0)
+                _reason = (_reason + '+qlearn') if _reason else 'qlearn'
+
+            # NASH-vs-DSW GATE (2026-10-28): re-select the committed action as the
+            # solution of a 2-player bargain -- the BUS against the corridor CARS --
+            # with DO-NOTHING (DSW) as the disagreement point. Admissible only if it
+            # helps the bus (du_bus>0) AND leaves cars no worse than DSW beyond
+            # CAR_TOL; du_car = (total DP gain) - (bus gain) carries the full horizon
+            # value so the downstream car cascade is priced. Pick the max asymmetric
+            # Nash product du_bus^BUS_POWER * (du_car+CAR_TOL). CAR_TOL=0 => the arm
+            # can never do worse than DSW (fixes every arm that committed what DSW
+            # declined). OFF (default) => the argmax above stands, byte-identical.
+            if (bool(globals().get('BELLMAN_CTM_NASH_DSW', False))
+                    and _no_val == _no_val and _no_val > -1e17):
+                # CAR_TOL >= 0 lets a bus gain buy that many pax of predicted car
+                # cost (bus-focused lean). CAR_TOL < 0 REQUIRES a predicted car
+                # SURPLUS of |CAR_TOL| pax -- a safety margin against the model
+                # under-pricing the realized cascade (the leak that put strict
+                # NASH_DSW at 752h > DSW 686h: predicted du_car>=0 realized <0).
+                _car_tol = float(globals().get(
+                    'BELLMAN_CTM_NASH_CAR_TOL', 0.0) or 0.0)
+                _bus_pow = max(0.1, float(globals().get(
+                    'BELLMAN_CTM_NASH_BUS_POWER', 2.0) or 2.0))
+                _bus_d = _root_bus('NO_ACTION', 0.0)
+                _nash_best = None
+                for _nat, _nval in _vals.items():
+                    if _nat == 'NO_ACTION':
+                        continue
+                    _nap = _vdur.get(_nat, 0.0)
+                    _du_tot = _nval - _no_val
+                    _du_bus = _root_bus(_nat, _nap) - _bus_d
+                    _du_car = _du_tot - _du_bus
+                    if _du_bus <= 0.0 or _du_car < -_car_tol:
+                        continue
+                    _prod = (_du_bus ** _bus_pow) * (_du_car + _car_tol + 1e-9)
+                    if _nash_best is None or _prod > _nash_best[0]:
+                        _nash_best = (_prod, _nat, _nap, _nval,
+                                      _du_bus, _du_car)
+                if _nash_best is None:
+                    _best_at, _best_ap, _best_val = 'NO_ACTION', 0.0, _no_val
+                    _reason = 'nash_dsw(no_pareto)'
+                else:
+                    (_, _best_at, _best_ap, _best_val,
+                     _ndu_bus, _ndu_car) = _nash_best
+                    _reason = 'nash_dsw(du_bus=%.1f du_car=%.1f tol=%.1f)' % (
+                        _ndu_bus, _ndu_car, _car_tol)
+            if (_best_at != 'NO_ACTION' and _no_val > -1e17
+                    and _best_val < _no_val + _min_gain):
+                _reason = 'min_gain(gain=%.1f<%.1f)' % (
+                    _best_val - _no_val, _min_gain)
+                _best_at, _best_ap, _best_val = 'NO_ACTION', 0.0, _no_val
+            # Q-LEARN: remember the FINAL committed action (post all gates) so the
+            # next decision at this junction can score its realized outcome.
+            if _ql_on and _ql_sbin is not None:
+                _bellman_q_pending[_ql_jid] = (_t0, _ql_sbin, _best_at)
+            _cache[_key] = (_t0, _best_at, _best_ap, _best_val)
+
+        _r_na, _so_na, _tp_na, _bps_na, _cpc_na, _nsd_na, _std_na = \
+            _dctsp_eval_action(self, 'NO_ACTION', 0.0, sigma_in,
+                               no_act_delay, bus_eta_s)
+        _rows = [('NO_ACTION', 0.0, _r_na, _so_na, _tp_na, _bps_na,
+                  _cpc_na, _nsd_na, _std_na)]
+        _best_r = _r_na
+        _best_so, _best_tp = _so_na, _tp_na
+        _best_rd = 0.0
+        if _best_at != 'NO_ACTION':
+            try:
+                _, _so, _tp, _bps, _cpc, _nsd, _std = _dctsp_eval_action(
+                    self, _best_at, _best_ap, sigma_in, no_act_delay,
+                    bus_eta_s, wrong_phase=_wp,
+                    remaining_red_s=remaining_red_s)
+            except Exception:
+                _so, _tp, _bps, _cpc = _so_na, _tp_na, 0.0, 0.0
+                _nsd, _std = _nsd_na, _std_na
+            # Emit the standard pax-s reward for the Pareto layer; the DP
+            # value (_best_val) is the selection criterion, not the row reward.
+            _best_r = float(_bps - _cpc)
+            # TRUST-THE-DP: carry the DP's own net THROUGHPUT GAIN as the reward
+            # the commit funnel sees (benefit = gain, cost = 0 -- the cross /
+            # downstream cost is already netted inside the coupled value). Without
+            # this the funnel judges a throughput action by bus_pax_saved - cross
+            # (~negative) and reverts it to NO_ACTION. Off => unchanged (bps-cpc).
+            if bool(globals().get('BELLMAN_CTM_TRUST_DP', False)):
+                _gain_pax = (float(_best_val) - float(_no_val)
+                             if (_no_val == _no_val and _no_val > -1e17)
+                             else 0.0)
+                if _gain_pax > 0.0:
+                    _bps, _cpc = _gain_pax, 0.0
+                    _best_r = _gain_pax
+            _best_so, _best_tp = _so, _tp
+            _best_rd = _best_r - _r_na
+            _rows.append((action_label(_best_at, _best_ap), _best_ap,
+                          _best_r, _so, _tp, _bps, _cpc, _nsd, _std))
+        # Gain over NO_ACTION (the thing the min-gain gate tests) and the per-action
+        # DP values, so a run that never acts is explainable: is the queue below
+        # min_queue, do all actions tie NO_ACTION (coarse state / weak bus value), or
+        # is the gain real but under the min_gain threshold?
+        _gain = (float(_best_val) - float(_no_val)
+                 if _no_val == _no_val and _no_val > -1e17 else float('nan'))
+        _vals_s = {k: round(v, 1) for k, v in _vals.items()} if _vals else {}
+        _log_func(self, "[BELLMAN_CTM] inter=%s t=%.1f bus=%s phase=%d "
+                        "cells=%s main=%.1f n_side=%.1f q_side=%.0f q_main=%.0f "
+                        "K=%d stages=%d chosen=%s_%.0f V=%.1f no_act_V=%.1f "
+                        "gain=%.1f (min_gain=%.1f min_q=%.1f) dblock=%.2f%s%s "
+                        "why=%s vals=%s"
+                  % (self.id, _t0, veh_id, _phase,
+                     [round(x, 1) for x in _cells], _n_main, _n0_side,
+                     _q_side * 3600.0, _q_main * 3600.0, _K,
+                     _n_stages, _best_at, _best_ap, _best_val,
+                     (_no_val if _no_val == _no_val else float('nan')),
+                     _gain, _min_gain, _min_q, _dblock,
+                     ('(DS-aware)' if _downstream_aware else ''),
+                     ((' COUPLED[chain=%d lag=%.0f Cd=%.0f Gd=%.0f dm0=%.0f Ndm=%.0f]'
+                       % (_nchain, _lag, _Cd, _Gd, _dm0, _Ndm)) if _coupled else ''),
+                     _reason, _vals_s))
+        return (_best_at, _best_ap, _best_r, _best_rd, _best_so, _best_tp,
+                _rows)
+    except Exception as _e:
+        _log_func(self, "[BELLMAN_CTM] error: %r" % (_e,))
+        try:
+            _r_na, _so_na, _tp_na, _bps_na, _cpc_na, _nsd_na, _std_na = \
+                _dctsp_eval_action(self, 'NO_ACTION', 0.0, sigma_in,
+                                   no_act_delay, bus_eta_s)
+            return ('NO_ACTION', 0.0, _r_na, 0.0, _so_na, _tp_na,
+                    [('NO_ACTION', 0.0, _r_na, _so_na, _tp_na, _bps_na,
+                      _cpc_na, _nsd_na, _std_na)])
+        except Exception:
+            return ('NO_ACTION', 0.0, 0.0, 0.0, 0.0, 0.0, [])
+
+
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Mode: MaxPressure (Varaiya 2013) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Fix & Flex ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Ported from sumoITScontrol (Riehl et al. 2026, ETHZ, GPL-3.0):
 #   src/sumoITScontrol/control/intersection_management/MaxPressure_Fix.py
 #   src/sumoITScontrol/control/intersection_management/MaxPressure_Flex.py
 #
-# Pressure per phase = Σ upstream_queue – Σ downstream_queue  (pax-weighted).
+# Pressure per phase = ÃƒÅ½Ã‚Â£ upstream_queue ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ ÃƒÅ½Ã‚Â£ downstream_queue  (pax-weighted).
 # Fix: at each cycle boundary, average pressure over measurement_period steps,
-#      allocate effective green (cycle – n·T_L) proportional to pressure, clamp
+#      allocate effective green (cycle ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ nÃƒâ€šÃ‚Â·T_L) proportional to pressure, clamp
 #      to [G_MIN,G_MAX], redistribute to meet cycle exactly, round to int.
 # Flex: re-evaluate every T_A seconds, extend current phase if it still has max
 #       pressure, otherwise switch (phase rotation) to the max-pressure phase.
 #
 # Aimsun mapping (uses ALL available information):
-#   • Upstream queue: MaxQueueLength per detector + section vehicle count
-#     (AKIVehStateGetNbVehiclesSection / AKIDetGetCounter) — per incoming
+#   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Upstream queue: MaxQueueLength per detector + section vehicle count
+#     (AKIVehStateGetNbVehiclesSection / AKIDetGetCounter) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â per incoming
 #     section of each turnings' origin.  Bus vehicles counted at BusOcc (40) vs
 #     CarOcc (1.5) so a queued bus dominates pressure.
-#   • Downstream queue: same, on the turning's destination sections.
-#   • Saturation / turnings / signal groups: from control_plans dump + live
+#   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Downstream queue: same, on the turning's destination sections.
+#   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Saturation / turnings / signal groups: from control_plans dump + live
 #     ECIGetCurrentPhase / GetPhaseDuration.  Falls back to MainSections/
 #     SideSections when dump lacks a junction.
-#   • Pressures averaged over MAXPRESSURE_MEAS_PERIOD steps for stability.
+#   ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ Pressures averaged over MAXPRESSURE_MEAS_PERIOD steps for stability.
 _MP_PRESSURE_HIST: dict = {}  # {jct_id: {phase_idx: [recent pressures]}}
 _MP_FSM: dict = {}            # {jct_id: {"timer": int, "schedule": [g0..], "idx": int}}
 
@@ -7258,7 +10785,7 @@ _MP_FSM: dict = {}            # {jct_id: {"timer": int, "schedule": [g0..], "idx
 # weights buses inline); removed 2026-09-10 rather than fixed dead code.
 
 
-# ── MP-TSP-LB helpers (Kobeissi et al. 2026) ─────────────────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ MP-TSP-LB helpers (Kobeissi et al. 2026) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 def _mp_section_lane_count(sid: int) -> float:
     """Approach lane count for a section: measured feed first, then Aimsun ANG
     info, else the MP_LANEBLOCK_TOTAL_LANES fallback."""
@@ -7398,7 +10925,7 @@ def _mp_corridor_discount(self) -> float:
 
 
 def _mp_pressures_for_junction(self, time, current_phase=None) -> list:
-    """Return per-phase pressures (pax) for this junction — uses full dump info when present.
+    """Return per-phase pressures (pax) for this junction ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â uses full dump info when present.
 
     `current_phase` (the live Aimsun phase index) lets the lane-blockage term
     gate dwelling on phase-is-green (see _mp_dwelling_block_factor). When None it
@@ -7421,7 +10948,7 @@ def _mp_pressures_for_junction(self, time, current_phase=None) -> list:
     # Phase list: prefer control_plans dump, else SignalGroupIDList
     phases = []
     try:
-        # Try to find control plan entry for this junction — uses the full
+        # Try to find control plan entry for this junction ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â uses the full
         # Aimsun export (sections/turnings/control_plans/PT lines/OD matrices)
         # so pressure is computed from the same truck/bus/car counts, signal
         # phases and turning movements that the simulator runs.  Falls back to
@@ -7518,7 +11045,7 @@ def _mp_pressures_for_junction(self, time, current_phase=None) -> list:
                             pass
                 except Exception:
                     pass
-            # Detector-level queue is more precise for pressure — add MaxQueueLength
+            # Detector-level queue is more precise for pressure ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â add MaxQueueLength
             try:
                 mq = getattr(self, 'MaxQueueLength', None)
                 if mq is not None:
@@ -7557,7 +11084,7 @@ def _mp_pressures_for_junction(self, time, current_phase=None) -> list:
 
 
 def _mp_compute_greens(pressures: list, n: int, cycle: float, t_l: float, gmin: float, gmax: float) -> list:
-    """Proportional green split given pressures — mirrors sumoITScontrol logic."""
+    """Proportional green split given pressures ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â mirrors sumoITScontrol logic."""
     effective = max(0.0, float(cycle) - n * float(t_l))
     total_p = sum(pressures) if pressures else 0
     if total_p <= 0:
@@ -7713,7 +11240,7 @@ def dctsp_maxpressure_flex(self, time, timeSta, acycle, bus_eta_s, veh_id, curre
                                remaining_red_s)
 
 
-# ── Constants that must be propagated from run_config.py into engine globals ───
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Constants that must be propagated from run_config.py into engine globals ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 
 # Decider cost-veto ratios (2026-08-24). Declared HERE so they are part of
 # MODE_FLAGS: AAPIInit copies run_config.py values into this module, and
@@ -7784,6 +11311,85 @@ SAT_RELIEF_MAX_X = 1.30          # main_x at/above which credit is full
 SAT_RELIEF_RATE_PAXS = 60.0      # pax-s credit per second of action magnitude
 SAT_RELIEF_CAP_PAXS = 2500.0     # bound, same reason as MAIN_STARVATION_CAP_PAXS
 
+# SATURATION GAME (2026-10-22, operator): reward the action by the saturation
+# relief it buys (main DS over target) plus net passenger throughput, minus the
+# side/cross saturation cost. This is a game over degrees of saturation, not a
+# bus-priority delay ledger. Weights are explicit so the variants are tunable.
+SAT_GAME_REWARD = False
+SAT_GAME_RELIEF_W = 1.0
+SAT_GAME_SIDE_W = 1.0
+SAT_GAME_THRU_W = 1.0
+SAT_GAME_DS_TARGET = 0.90
+# Rolling cycle planner / fixed-time action chooser defaults. Defined here so
+# MODE_FLAGS reset restores them between arms (engine globals otherwise leak).
+CYCLE_PLANNER = False
+CYCLE_PLANNER_USE_SCATS = True
+CYCLE_PLANNER_PBIL = True
+CYCLE_PLANNER_DELAY_CYCLES = 1
+CYCLE_PLANNER_INTERVAL_S = 120.0
+CYCLE_PLANNER_WARM_S = 300.0
+CYCLE_PLANNER_CANDIDATES = 8
+CYCLE_PLANNER_DELTA = 0.15
+# (2026-10-23) Hysteresis toward the commissioned ("model") plan: only deviate
+# from it when a candidate's score beats it by more than this fraction. The
+# commissioned plan is seed-stable, so this bounds the downside (the odd seed where
+# an adaptive move loses to NO_TSP) while keeping the wins. 0 = pure argmin (old).
+CYCLE_PLANNER_SWITCH_MARGIN = 0.0
+CYCLE_PLANNER_MAIN_DOWN_FRAC = 0.05
+# Floor the MAIN green at this fraction of its COMMISSIONED value (progression
+# band) so the plan-library cannot flatten the coordinated green wave (2026-10-23).
+CYCLE_PLANNER_MAIN_KEEP_FRAC = 0.90
+# DSW split-change damping (2026-11-03, default OFF). The DSW/offset-hold
+# re-planner can swing a phase's green ~20s cycle-to-cycle, oscillating the
+# corridor and costing main delay even when no TSP action fires. When ON, the
+# re-plan moves at most DSW_SPLIT_MAX_DELTA_S toward its target per phase per
+# re-plan (all phase deltas scaled by one factor, so sum(greens) -- and the
+# cycle identity -- is preserved exactly). A genuine cycle-length change applies
+# in full. Applied in _apply_plan_durations so it catches every re-plan path.
+DSW_SPLIT_DAMP = False
+DSW_SPLIT_MAX_DELTA_S = 4.0
+# ACTUATION_LATENCY_S (2026-11-03, default 0.0 = off): the decider computes on
+# the live bus ETA but the phase change lands ~one control step (~1s) later,
+# when the bus is this much closer. Evaluate at eta - latency so near-boundary
+# INS feasibility and benefit are timed correctly. Set to ~1.0 (the sim step).
+ACTUATION_LATENCY_S = 0.0
+CYCLE_PLANNER_HORIZON_CYCLES = 4
+CYCLE_PLANNER_PBIL_ALPHA = 0.20
+CYCLE_PLANNER_PBIL_MIN_P = 0.05
+PBIL_HORIZON_CYCLES = 4
+CYCLE_ACTION_PBIL = False
+CYCLE_ACTION_ALLOW_GE = True
+CYCLE_ACTION_ALLOW_ER = False
+CYCLE_ACTION_ALLOW_INS = False
+CYCLE_ACTION_INTERVAL_S = 120.0
+CYCLE_ACTION_WARM_S = 300.0
+CYCLE_ACTION_DELAY_CYCLES = 1
+CYCLE_ACTION_GE_S = 2.0
+CYCLE_ACTION_GE_MAX_S = 120.0
+CYCLE_ACTION_ALPHA = 0.20
+CYCLE_ACTION_MIN_P = 0.05
+CYCLE_ACTION_DEFAULT_CYCLE_S = 120.0
+SCATS_GAP_MAIN_PHASE = False
+ACT_EXTEND_MAIN = True
+CYCLE_PLANNER_ADAPTIVE_WEIGHTS = False
+ADAPTIVE_WEIGHTS_PATH = ""
+ADAPTIVE_WEIGHT_LR = 0.05
+ADAPTIVE_WEIGHT_REG = 0.02
+CYCLE_PLANNER_PLAN_LIBRARY = True
+CYCLE_PLANNER_NASH_THRU = False
+CYCLE_PLANNER_ARRIVAL_TUNE = True
+CYCLE_PLANNER_UNMAPPED_MODE = "green_weighted"
+CYCLE_PLANNER_ARRIVAL_BLEND = 0.50
+CYCLE_PLANNER_ARRIVAL_ALPHA = 0.30
+CYCLE_PLANNER_ARRIVAL_MIN_VPH = 0.0
+# Flow policy bridge (optional): CYCLE_ACTION_POLICY='flow' loads a JSON rule
+# policy trained in Flow/SUMO; empty path = <bundle>/kg/flow_policy.json.
+CYCLE_ACTION_POLICY = ""
+FLOW_POLICY_PATH = ""
+
+
+
+
 # Main-starvation COST, degree-of-saturation basis (2026-10-13). -1 = disabled,
 # which keeps the legacy measured-queue path in charge. With main_x now
 # lane-corrected, a value of 0.85-0.95 means "the main approach is at/over
@@ -7810,7 +11416,8 @@ MODE_FLAGS = [
     'BXT_DEMAND_WARMSTART', 'BXT_WARMSTART_SCENARIOS', 'BXT_WARMSTART_SAT_FRAC',
     'BXT_CAR_OCC', 'BXT_BALANCE_FACTOR', 'BXT_GE_BALANCE_FACTOR',
     'BXT_MAX_INS_S', 'TIMING_DE_POP', 'TIMING_DE_GENS', 'TIMING_DE_F',
-    'TIMING_DE_CR', 'TIMING_DE_SEED',     'BXT_EVAL_DIAGNOSTICS',
+    'TIMING_DE_CR', 'TIMING_DE_SEED', 'TIMING_DE_CONTINUOUS',
+    'NASH_DE_CONTINUOUS',     'BXT_EVAL_DIAGNOSTICS',
     'REWARD_GE_SOLVER', 'GE_MAX_FRAC_OF_CYCLE',
     'RETIME_APPLY', 'RETIME_CSV',
     'MEASURED_TURN_COST', 'HEADROOM_RESERVE_S',
@@ -7836,16 +11443,33 @@ MODE_FLAGS = [
 'SCATS_MAX_OUT_GRACE_S',
 'DS_TRUTH_CHECK', 'DS_TRUTH_INTERVAL_S',
 'CYCLE_CAP_ENABLE', 'CYCLE_CAP_SLACK_S', 'CYCLE_CAP_SLACK_FRAC',
+'SCATS_FLEX_PROFILE', 'SCATS_FLEX_PERSIST', 'SCATS_FLEX_CYCLE_BAND',
+'SCATS_FLEX_MIN_GREEN_S', 'SCATS_FLEX_GAP_S', 'SCATS_FLEX_MAX_GREEN_S',
+'SCATS_FLEX_MAX_BAND', 'SCATS_FLEX_MAX_ABS_S',
 'DS_BIAS_CORRECT', 'DS_GATE_REQUIRE_RELIABLE', 'DS_CALIB_MIN_N',
 'DS_CALIB_MAX_MAE_VEH', 'DS_CALIB_MIN_CORR',
+'DETECT_AT_ZONE_ENTRY',
+'TUNING_GATE_ENABLE', 'DET_COVERAGE_MIN',
+'PLOT_PLAN_EVOLUTION',
 'SPILLBACK_GATE', 'SPILLBACK_GATE_FRAC', 'JAM_VEH_SPACING_M',
 'SCATS_PHASE_ORIGIN_FALLBACK', 'RELIEF_NEEDS_DOWNSTREAM',
 'ACTUATED_EXTEND', 'ACT_EXTEND_STEP_S', 'ACT_EXTEND_MAX_GREEN_S',
 'ACT_EXTEND_BAND', 'ACT_EXTEND_ABS_CAP_S',
 'ACT_EXTEND_MIN_OCC_VEH', 'ACT_EXTEND_MIN_FLOW_VPH', 'ACT_EXTEND_BUS_PHASE',
+'ACT_EXTEND_DONOR', 'ACT_EXTEND_DONOR_MAX_FRAC',
 'SCATS_LEADLAG', 'SCATS_LEADLAG_HEAVY_Y',
  'SCATS_CRITICAL_INTERSECTION', 'SCATS_PLAN_LIBRARY',
  'SCATS_POG_OFFSETS', 'SCATS_POG_STEP_S', 'SCATS_POG_EPS', 'PLAN_MEASURED',
+ 'SCATS_POG_STATE_SOLVE', 'SCATS_POG_STATE_START_S', 'SCATS_POG_STATE_SPLITS',
+ 'SCATS_POG_STATE_OFFSETS', 'SCATS_POG_STATE_HOLD',
+ 'SCATS_POG_STATE_HOLD_SPLITS',
+ 'SCATS_POG_STATE_BUS_SPEED_MS', 'SCATS_POG_STATE_DWELL_S',
+ 'SCATS_POG_STATE_CYCLE_BAND', 'SCATS_POG_STATE_SPLIT_SHARE_TOL',
+ 'SCATS_POG_STATE_ALLOW_CYCLE_SHIFT',
+ 'SCATS_POG_STATE_HORIZON_S', 'SCATS_POG_STATE_FALLBACK_HEADWAY_S',
+ 'SCATS_POG_STATE_MAX_SHIFT_FRAC', 'SCATS_POG_STATE_MIN_GAIN',
+'POG_KALMAN', 'POG_KF_R0', 'POG_KF_Q_LEVEL', 'POG_KF_Q_SLOPE',
+'POG_KF_FULL_FLOW_VPH', 'POG_KF_TREND_K', 'POG_KF_MAX_STEP_S', 'POG_SAMPLE_S',
  'PLAN_SCATS_HIST', 'SCATS_HIST_SHARE', 'SCATS_HIST_DAYTYPE',
  'SCATS_HIST_TOD_MIN',
 'DS_MASTER_SUBSYS_SPREAD',
@@ -7855,12 +11479,17 @@ MODE_FLAGS = [
 'VLOOP_EMULATION', 'VLOOP_WINDOW_S', 'VLOOP_WARM_S', 'VLOOP_MIN_WINDOW_S',
 'VLOOP_VISIT_GAP_S', 'VLOOP_SANE_FACTOR',
 'VLOOP_OCC_SPILLBACK', 'VLOOP_STOP_KPH', 'VLOOP_OCC_ALPHA',
-'VLOOP_OCC_MIN_VEH', 'VLOOP_SPILL_DIS_FRAC', 'SIDE_FLOW_MEASURED_ONLY',
+'DS_PRIME_VLOOP',
+'VLOOP_OCC_MIN_VEH', 'VLOOP_SPILL_DIS_FRAC',
+'SPILLBACK_DIRECT_OCC', 'VLOOP_OCC_MIN_VEH_PER_LANE', 'SIDE_FLOW_MEASURED_ONLY',
 'DETECTION_COVERAGE_AUDIT', 'SCATS_DS_DISCHARGE', 'DS_FLOW_QUEUE_AWARE',
 'DS_GREEN_INDEPENDENT', 'DS_PER_TURN_FLOW',
 'DS_ORDER_PRESERVE', 'DS_ORDER_CEIL',
 'DS_SOLVE_PER_CYCLE', 'DS_SPLIT_MAX_MOVE_FRAC',
 'DS_QUEUE_SAT_VEH_PER_LANE', 'DS_SPLIT_COMMISSIONED_BAND',
+'DS_QUEUE_TERM_CAP',
+ 'DS_BUS_FLOOR_FRAC', 'PLAN_OFFSET_BUS_BOUNDARY_ONLY',
+'PLAN_OFFSET_PRESERVE', 'PLAN_REAPPLY_DEADBAND_S',
 'DS_BAND_DEMAND_ENABLE', 'DS_BAND_DEMAND_DS', 'DS_BAND_DEMAND_MULT',
 'SCATS_BUS_PRIORITY', 'BUS_PRIO_MAX_EXT_S', 'BUS_PRIO_MAX_RECALL_S',
 'BUS_PRIO_JIT_ENABLE', 'BUS_PRIO_QUEUE_DELAY_S', 'BUS_PRIO_JIT_MARGIN_S',
@@ -7883,10 +11512,22 @@ MODE_FLAGS = [
     'STATE_INCLUDE_BUS_COUNT', 'STATE_INCLUDE_SIGNAL_CLOCKS',
     'STATE_QUEUE_PHYSICAL_FIRST',
     'GE_DURATIONS_S', 'INS_DURATIONS_S', 'ER_DURATIONS_S', 'GR_DURATIONS_S',
+    # Shockwave-solved magnitude down to 1s (2026-11-04): floor + solver bound.
+    'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S',
+    'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
+    'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
+    'CBQL_MAX_SWITCHES_PER_CYCLE',
+    'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
+    'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',
+    'CELL_BP_MAX_SWITCHES_PER_CYCLE',
     'BXT_ENABLE_GE', 'BXT_ENABLE_INS', 'BXT_ENABLE_GR', 'BXT_ENABLE_ER',
+    'BXT_ER_OFFPHASE_CREDIT', 'BXT_ER_OFFPHASE_GAIN_WEIGHT',
+    'BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING',
     'BXT_ENABLE_OC',
     'MEASURED_SIDE_COST', 'MEASURED_SIDE_SPILL_GAIN', 'MEASURED_SIDE_FRESH_S', 'MEAS_MIN_SECTION_M',
-    'DELAY_CALIBRATION', 'DELAY_CAL_REF_S', 'DELAY_CAL_ALPHA', 'DELAY_CAL_MIN', 'DELAY_CAL_MAX',
+    'DELAY_CALIBRATION', 'DELAY_CAL_REF_S', 'DELAY_CAL_ALPHA',
+    'DELAY_CAL_ALPHA_UP', 'DELAY_CAL_ALPHA_DOWN', 'DELAY_CAL_MIN', 'DELAY_CAL_MAX',
+    'DELAY_CAL_DIAG', 'DELAY_CAL_DIAG_PERIOD_S',
     'MICRO_QUEUE_MODE', 'MICRO_QUEUE_SPEED_KMH',
     'MEASURED_SIDE_COST_DIAG', 'DIAG_FLOW_STAGE', 'DIAG_DECISION',
     'RECOVERABILITY_GATE', 'RECOVERABILITY_SLACK_S',
@@ -7898,7 +11539,16 @@ MODE_FLAGS = [
     'SIDE_QUEUE_STOPPED_THRESHOLD_KMH',
     'MONITOR_PROG_WEIGHT', 'MONITOR_BUS_ZERO',
     'BXT_DEMAND_STATE', 'BXT_DEMAND_BIN_LO_PAXS', 'BXT_DEMAND_BIN_HI_PAXS',
-    'CELLQLEARN_MIN_GAIN_S',
+    'CELLQLEARN_MIN_GAIN_S', 'CELLQLEARN_SAT_VETO',
+    'CELLQ_SIDE_RATIO_MARGINAL', 'CELLQ_SIDE_RATIO_GATE_BOUNDED',
+    'CELLQ_SIDE_QUEUE_FLOOR', 'PROGRESSION_COST_IN_REWARD',
+    'CELLQ_INS_POSITION_BENEFIT', 'CELLQ_INS_MARGINAL_CROSS',
+    'CELLQ_STATE_SHOCKWAVE', 'CELLQ_STATE_SHOCKWAVE_REF_S',
+    'CELLQ_STATE_BUS_FLOOR_PAXS',
+    # [CELLQ_HELD]/[CELLQ_ADMIT] caps: per-junction per-run diagnostic
+    # budgets. Whitelisted so an A/B arm can raise them for a forensic run
+    # and reset_mode_flags() returns them to 8/400 for the next arm.
+    'CELLQ_HELD_LOG_MAX', 'CELLQ_ADMIT_LOG_MAX',
     'CELLQLEARN_DP_MODE', 'CELLQLEARN_DP_DT_S', 'CELLQLEARN_DP_HORIZON_S',
     'CELLQLEARN_DP_STAGE_S', 'CELLQLEARN_DP_COORD_WEIGHT',
     'CELLQLEARN_DP_CAR_OCC', 'CELLQLEARN_DP_BALANCE_FACTOR',
@@ -7917,11 +11567,16 @@ MODE_FLAGS = [
     'CENTRALIZED_MODE', 'CENTRALIZED_INTERVAL_S',
     'CENTRALISED_MIN_BUS_DELAY_S', 'CENTRALISED_REACH_MARGIN_S',
     'NASH_BARGAIN_MODE', 'NASH_BUS_WEIGHT', 'NASH_CROSS_WEIGHT',
+    'NASH_COOPERATIVE', 'NASH_COOP_BUS_TOL', 'NASH_COOP_CAR_TOL',
+    'NASH_CTM_COST',
+    'NASH_COOP_BUS_TOL_FRAC', 'NASH_COOP_CAR_TOL_FRAC',
+    'NASH_COOP_FAIR_W', 'NASH_COOP_OBJECTIVE',
     'NASH_THRU_SURPLUS', 'NASH_NET_GATE_RATIO',
+    'NASH_HELD_LOG_MAX', 'NASH_HELD_MAX_CANDS',
+    'NASH_MIN_GAIN_INCLUDE_MAIN', 'DECIDER_VETO_INCLUDE_MAIN',
     'NASH_MIN_BUS_DELAY_S', 'NASH_MIN_GAIN_S', 'NASH_MEASURED_STATE',
     'NASH_STATE_THREAT', 'NASH_THREAT_CROSS_GAIN',
-    'NASH_CONTINUOUS_MODE', 'CONTINUOUS_BARGAIN_BUS_WEIGHT',
-    'CONTINUOUS_CORRIDOR_MODE', 'CONTINUOUS_CORRIDOR_NEIGHBOR_W',
+    'NASH_CONTINUOUS_MODE', 'CONTINUOUS_BARGAIN_BUS_WEIGHT',    'CONTINUOUS_CORRIDOR_MODE', 'CONTINUOUS_CORRIDOR_NEIGHBOR_W',
     'CORRIDOR_COUPLE_BIDIRECTIONAL',
     'BXT_CONTINUOUS_MODE', 'MIN_PHASE_ACTIVE_S', 'NO_ACTION_HOLD_S',
     'NO_ACTION_QUEUE_AWARE', 'QUEUE_DISCHARGE_S_PER_VEH',
@@ -7964,8 +11619,41 @@ MODE_FLAGS = [
     'CELLQ_CTM_REWARD', 'CELLQ_CTM_DT_S', 'CELLQ_CTM_HORIZON_S',
     'CELLQ_STATE_NEIGHBOUR',
     'CELLQ_CTM_FREEFLOW_KMH', 'CELLQ_CTM_WAVE_KMH', 'CELLQ_CTM_MAX_CELLS',
-    'CELLQ_CTM_STATE', 'CELLQ_CTM_STATE_CELLS',
+    'CELLQ_CTM_STATE', 'CELLQ_CTM_STATE_CELLS', 'CELLQ_CTM_LOG',
     'CELLQ_CTM_SINGLE_CELL',
+    'CELLQ_CTM_CONNECTOR_STATE', 'CELLQ_CTM_CONNECTOR_BINS',
+    'CELLQ_CTM_CONNECTOR_CAP_FRAC', 'CELLQ_CTM_CONNECTOR_EDGES',
+    'CELLQ_CTM_RECEIVING_GATE', 'CELLQ_CTM_RECEIVING_W',
+    'CELLQ_CTM_CRIT_RELATIVE', 'CELLQ_CTM_CRIT_OCC', 'CELLQ_CTM_UNKNOWN_BIN',
+    'CELLQ_CTM_RECEIVING_OCC',
+    'CELLQ_CTM_CLEAR_CAP', 'CELLQ_CTM_CLEAR_MIN_S',
+    'CELLQ_CTM_DERIVED_STATE', 'CELLQ_CTM_STATE_RAW_CELLS',
+    'CELLQ_CTM_STOPLINE_LAST', 'CELLQ_CTM_BIND_DOWN_OCC',
+    'CELLQ_TERMINAL_SPILL_GUARD', 'CELLQ_SPILL_GUARD_ALL', 'CELLQ_TERMINAL_STOP_OCC',
+    'SMALL_ACTION_RELIEF_S', 'TSP_RATE_LIMIT_MODE',
+    'CELLQ_CTM_BIND_TAIL_FRAC', 'CELLQ_CTM_STATE_DENSITY',
+    'BELLMAN_CTM_MODE', 'BELLMAN_CTM_HORIZON_S', 'BELLMAN_CTM_STAGE_S',
+    'BELLMAN_CTM_GAMMA', 'BELLMAN_CTM_CELLS', 'BELLMAN_CTM_BINS',
+    'BELLMAN_CTM_THRU_W', 'BELLMAN_CTM_DELAY_W',
+    'BELLMAN_CTM_TERMINAL_W', 'BELLMAN_CTM_CAR_OCC',
+    'BELLMAN_CTM_TTL_S', 'BELLMAN_CTM_MIN_QUEUE_VEH',
+    'BELLMAN_CTM_MIN_GAIN_PAX', 'BELLMAN_CTM_BUS_W',
+    'BELLMAN_CTM_DOWNSTREAM', 'BELLMAN_CTM_DBLOCK_PEN',
+    'BELLMAN_CTM_COUPLED', 'BELLMAN_CTM_DOWN_LAG_S',
+    'BELLMAN_CTM_TRUST_DP',
+    'BELLMAN_CTM_SOLVER', 'BELLMAN_CTM_MIN_EXT_S',
+    'BELLMAN_CTM_MAX_EXT_S', 'BELLMAN_CTM_HS_MEM',
+    'BELLMAN_CTM_HS_ITERS', 'BELLMAN_CTM_HS_HMCR',
+    'BELLMAN_CTM_HS_PAR', 'BELLMAN_CTM_HS_BW',
+    'BELLMAN_CTM_BUS_CREDIT_ONCE', 'BELLMAN_CTM_DOWN_CHAIN',
+    'BELLMAN_CTM_SLACK_ONLY', 'BELLMAN_CTM_SLACK_EXT_S',
+    'BELLMAN_CTM_BUS_CHAIN_CREDIT', 'BELLMAN_CTM_PAX_DELAY',
+    'BELLMAN_CTM_NASH_DSW', 'BELLMAN_CTM_NASH_CAR_TOL',
+    'BELLMAN_CTM_NASH_BUS_POWER',
+    'BELLMAN_CTM_QLEARN', 'BELLMAN_CTM_QLEARN_W',
+    'BELLMAN_CTM_QLEARN_ALPHA', 'BELLMAN_CTM_QLEARN_CLAMP',
+    'DECIDER_WARM_S',
+    'DECIDER_MIN_LATENESS_S',
     # Decision-level ablation levers: MUST reset each arm or a True/value on one
     # arm bleeds into later arms (2026-10-01: A4/A5 inherited A3's bargain and came
     # out byte-identical to A3, invalidating their GE-cap / net-gate tests).
@@ -7976,6 +11664,7 @@ MODE_FLAGS = [
     'ACTUATED_OFFSET_PRESERVE', 'ACTUATED_DRIFT_TOL_S', 'ACTUATED_DRIFT_MAX',
     'NASH_CORRIDOR_MODE', 'NASH_NEIGHBOR_WEIGHT', 'NASH_MAX_ITER',
     'NASH_CONVERGENCE_TOL', 'NASH_INTEGER_DURATIONS',
+    'NASH_HELD_LOG_MAX', 'NASH_HELD_MAX_CANDS',
     'TWOWAY_BAND_MODE', 'B_PLUS_MIN', 'B_MINUS_MIN', 'TWOWAY_GREEN_S',
     'DECIDER_COST_VETO_RATIO',
     'DCTSP_MIN_INS_DURATION_S', 'DCTSP_MAX_INS_DURATION_S',
@@ -7988,6 +11677,7 @@ MODE_FLAGS = [
     'CROSS_TRAFFIC_COST_MULTIPLIER',
     'DCTSP_W_H', 'DCTSP_W_HEADWAY', 'DCTSP_W_PAX_DELAY', 'DCTSP_CAR_WEIGHT',
     'SELFORG_MIN_BUS_DELAY_S', 'MAX_GE_EXTENSION_S',
+    'NASH_UB_SHOCKWAVE_CAP', 'NASH_UB_MIN_SPAN_S',
     'ZIG_ENABLE_GE', 'ZIG_ENABLE_INS', 'ZIG_ENABLE_GR', 'ZIG_ENABLE_SEQ',
     'PHASE_ROTATION_MODE',
     'ZIG_MIN_GAIN_S',
@@ -8004,8 +11694,10 @@ MODE_FLAGS = [
     'BXT_CTM_PRIOR_K', 'BXT_CTM_PRIOR_CLIP_PAXS',
     # CPD-QL: per-junction tabular Q-learning (DCTSP_MARL as a learner)
     'CPDQL_MODE', 'CPDQL_ALPHA', 'CPDQL_GAMMA', 'CPDQL_EPSILON',
-    'CPDQL_TRAIN_EPSILON', 'CPDQL_W_H', 'CPDQL_CAR_OCC', 'CPDQL_MIN_GAIN_S',
-    # MaxPressure (Riehl et al. 2026, ETHZ) — fixed & flexible cycle
+    'CPDQL_ENABLE_INS', 'CPDQL_TRAIN_EPSILON', 'CPDQL_W_H', 'CPDQL_CAR_OCC', 'CPDQL_MIN_GAIN_S',
+    'CPDQL_SOLVE_DURATION', 'CPDQL_GE_MIN_S', 'CPDQL_GE_MAX_S',
+    'CPDQL_INS_MIN_S', 'CPDQL_INS_MAX_S',
+    # MaxPressure (Riehl et al. 2026, ETHZ) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â fixed & flexible cycle
     'MAXPRESSURE_FIX_MODE', 'MAXPRESSURE_FLEX_MODE',
     'MAXPRESSURE_T_L', 'MAXPRESSURE_G_MIN', 'MAXPRESSURE_G_MAX',
     'MAXPRESSURE_CYCLE_FIX', 'MAXPRESSURE_CYCLE_FLEX', 'MP_FIX_COMMISSIONED_BAND',
@@ -8015,10 +11707,14 @@ MODE_FLAGS = [
     'MAXPRESSURE_MEAS_PERIOD',
     'MP_PER_PHASE_PRESSURES', 'MP_EXTEND_ENABLE', 'MP_EXTEND_STEP_S',
     'MP_EXTEND_MAX_S', 'MP_DIRECT_TRANSITION', 'MP_NASH_ENABLE',
+    'MP_NASH_THRU',
     'MAXPRESSURE_CYCLIC',
     # PBIL timing learner (2026-10-21)
     'PBIL_TS_MODE', 'PBIL_GEN_S', 'PBIL_DELTA', 'PBIL_ALPHA',
     'PBIL_MIN_P', 'PBIL_WARM_S',
+    'PBIL_PRESSURE_MODE', 'PBIL_HORIZON_CYCLES', 'PBIL_CANDIDATES',
+    'PBIL_PRESSURE_QCAP', 'PBIL_PRESSURE_PAX', 'PBIL_FORECAST_KALMAN',
+    'PBIL_FORECAST_TREND', 'PBIL_DOWNSTREAM_BLOCK',
     # Jalluri heuristic adaptive control (OCIT 2025)
     'JALLURI_MODE', 'JALLURI_MAX_WAIT_W', 'JALLURI_COUNT_W',
     'JALLURI_AGING_W', 'JALLURI_AGING_UNIT_S', 'JALLURI_GREEN_FACTOR',
@@ -8037,11 +11733,14 @@ MODE_FLAGS = [
     'MAIN_STARVATION_COST', 'MAIN_STARVATION_X0', 'MAIN_STARVATION_CAP_PAXS',
     # SCATS degree-of-saturation feed / balance gate / plan adapt (2026-10-14)
     'DS_BALANCE_GATE', 'DS_MAX', 'DS_SPREAD_TOL', 'DS_CLAMP_MAX', 'DS_RAW_CLAMP_MAX',
+    'DS_ARRIVAL_SAT_CAP_X',
 'FLOW_DET_LANE_SCALE', 'DS_STUB_RESOLVE', 'DS_STUB_RESOLVE_M', 'DS_STUB_MAX_HOPS',
 'DS_PAXF_MAX',
     'DS_SNAPSHOT_TTL_S', 'DS_PLAN_ADAPT', 'DS_ADAPT_STEP_S', 'DS_MIN_GREEN_S',
 'DS_CAP_FLOOR_GREEN_S',
     'DS_ADAPT_EVERY_S', 'DS_IN_LEARNER_STATE', 'DS_STATE_EDGES', 'LOG_DS_ADAPT',
+    'SYSTEM_REGIME_LOG', 'SYSTEM_REGIME_IN_STATE', 'REGIME_QUEUE_MIN_VEH',
+    'REGIME_INCR_CYCLES',
     'DS_COST_IN_REWARD', 'DS_COST_CAP_PAXS',
     'DS_PAX_WEIGHTED', 'DS_BUS_PAX_WEIGHT',
     'SCATS_TRANSIT_PRIORITY', 'SCATS_TP_LEVEL', 'SCATS_TP_WEIGHT',
@@ -8058,6 +11757,35 @@ MODE_FLAGS = [
     'MODE_NET_BENEFIT_GATE', 'NET_GATE_RATIO', 'BXT_WARMSTART_FROM_SHARED',
     'SAT_RELIEF_BONUS', 'SAT_RELIEF_MIN_X', 'SAT_RELIEF_MAX_X',
     'SAT_RELIEF_RATE_PAXS', 'SAT_RELIEF_CAP_PAXS',
+    'SAT_GAME_REWARD', 'SAT_GAME_RELIEF_W', 'SAT_GAME_SIDE_W',
+    'SAT_GAME_THRU_W', 'SAT_GAME_DS_TARGET',
+    'CYCLE_PLANNER', 'CYCLE_PLANNER_USE_SCATS', 'CYCLE_PLANNER_PBIL',
+    'CYCLE_PLANNER_DELAY_CYCLES', 'CYCLE_PLANNER_INTERVAL_S',
+    'CYCLE_PLANNER_WARM_S', 'CYCLE_PLANNER_CANDIDATES',
+    'CYCLE_PLANNER_DELTA', 'CYCLE_PLANNER_SWITCH_MARGIN',
+    'CYCLE_PLANNER_MAIN_DOWN_FRAC',
+    'CYCLE_PLANNER_MAIN_KEEP_FRAC',
+    'DSW_SPLIT_DAMP', 'DSW_SPLIT_MAX_DELTA_S', 'ACTUATION_LATENCY_S',
+    'CYCLE_PLANNER_HORIZON_CYCLES', 'CYCLE_PLANNER_PBIL_ALPHA',
+    'CYCLE_PLANNER_PBIL_MIN_P', 'PBIL_HORIZON_CYCLES',
+    'CYCLE_ACTION_PBIL', 'CYCLE_ACTION_ALLOW_GE',
+    'CYCLE_ACTION_ALLOW_ER', 'CYCLE_ACTION_ALLOW_INS',
+    'CYCLE_ACTION_INTERVAL_S', 'CYCLE_ACTION_WARM_S',
+    'CYCLE_ACTION_DELAY_CYCLES', 'CYCLE_ACTION_GE_S',
+    'CYCLE_ACTION_GE_MAX_S', 'CYCLE_ACTION_ALPHA',
+    'CYCLE_ACTION_MIN_P', 'CYCLE_ACTION_DEFAULT_CYCLE_S',
+    'SCATS_GAP_MAIN_PHASE', 'ACT_EXTEND_MAIN',
+    'CYCLE_PLANNER_PLAN_LIBRARY',
+    'CYCLE_PLANNER_NASH_THRU',
+    'CYCLE_PLANNER_ADAPTIVE_WEIGHTS', 'ADAPTIVE_WEIGHTS_PATH',
+    'ADAPTIVE_WEIGHT_LR', 'ADAPTIVE_WEIGHT_REG',
+    'CYCLE_PLANNER_ARRIVAL_TUNE', 'CYCLE_PLANNER_UNMAPPED_MODE',
+    'CYCLE_PLANNER_ARRIVAL_BLEND', 'CYCLE_PLANNER_ARRIVAL_ALPHA',
+    'CYCLE_PLANNER_ARRIVAL_MIN_VPH',
+    'CYCLE_ACTION_POLICY', 'FLOW_POLICY_PATH',
+    'MASTER_LINK_PRESSURE', 'MASTER_LINK_PRESSURE_QUEUE_W',
+    'MASTER_LINK_PRESSURE_DS_W', 'MASTER_LINK_PRESSURE_CAP',
+    'MASTER_LINK_PRESSURE_CYCLE_FRAC', 'MASTER_LINK_PRESSURE_LOG',
     # 2026-10-13: main_x lane correction + saturation-term instrumentation.
     # Without these the degree-of-saturation was inflated by the lane count
     # (pinned at exactly 2.0 on a 2-lane approach), the stage classifier called
@@ -8110,7 +11838,7 @@ PURE_STATE_MIN_STAGE = "SAT"          # "SAT", "OVER", "JAM"
 PURE_STATE_MAX_HORIZON_S = 120.0
 PURE_STATE_REQUIRE_TIMETABLE = True
 PURE_STATE_MAX_ACTIONS_PER_TICK = 5
-PURE_STATE_CAR_OCC = 1.5             # car occupancy for pax conversion
+PURE_STATE_CAR_OCC = 1.2             # car occupancy for pax conversion
 PURE_STATE_BUS_OCC = 40.0            # bus occupancy (timetable average)
 PURE_STATE_SAT_RAMP = 1.0            # ramp factor for saturation credit
 
@@ -8142,18 +11870,25 @@ REQUIRE_BUS_FOR_ACTION = False
 # configured lists when no plan/detectors are readable (e.g. SUMO/HPC, where the
 # Aimsun detector API is absent) -- so it is a no-op off-Aimsun.
 AUTO_PLACE_DETECTORS = True
-# DISABLE_PREARM (2026-10-13, default OFF): skip the corridor coordinator's
-# PRE-ARM. Pre-arming an upstream junction for a bus many seconds away adds a
-# speculative action on a guessed ETA; the live tracker + monitor can instead act
-# now on the current ETA or do nothing and re-check next tick. When ON, the
-# coordinator does not pre-arm; local deciders still act on detection.
-DISABLE_PREARM = False
+# DISABLE_PREARM (2026-10-13; default flipped ON 2026-11-03): skip the corridor
+# coordinator's PRE-ARM entirely. With ~1s global bus tracking the system already
+# knows where every bus is and when it will reach each junction, so there is NO
+# information gained by speculatively pre-arming an upstream junction on a guessed
+# ETA 40-75s out -- that only reserves green far too early and (KG seed 500) blows
+# up the main. The correct design is reactive: each local decider evaluates the
+# immediate phase-change implication at THAT junction and acts when the bus is
+# actually within actionable range, or does nothing and re-checks next tick.
+# Default ON so "no pre-arm" is the standard across all arms. This guards BOTH
+# pre-arm paths (green-band at engine.py ~7680 and _ic_map/harmony ~7777). An arm
+# that genuinely needs the old speculative pre-arm must set DISABLE_PREARM=False
+# explicitly (e.g. to reproduce a pre-2026-11-03 paper-champion baseline).
+DISABLE_PREARM = True
 
 # Mode TOGGLES that gate the dispatch registry.  Each one MUST default to False
 # and only be turned on by an experiment that explicitly wants it.  A
 # batch_runner writes run_config.py per experiment but only lists the flags an
 # experiment turns ON, and this module is loaded ONCE per Aimsun session and
-# reused across every experiment — so without an explicit reset a toggle set
+# reused across every experiment ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so without an explicit reset a toggle set
 # True by experiment N stays True for N+1..end, making later experiments run
 # extra modes and produce identical results.  reset_mode_flags() (called from
 # AAPIInit before applying each run_config.py) clears this leak.
@@ -8200,7 +11935,7 @@ def reset_bxt_learning():
         pass
 
 
-# ── Q-table disk persistence (2026-10-09, SUMO/HPC only) ─────────────────────
+# ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Q-table disk persistence (2026-10-09, SUMO/HPC only) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
 # Aimsun runs every seed in ONE process, so the in-memory table warm-starts
 # train->eval for free. The SUMO sweep runs one process per (arm, seed), so the
 # trained table must be serialized between the train job and the eval jobs.
@@ -8209,7 +11944,14 @@ def reset_bxt_learning():
 _BXT_QTABLE_LOADED_PATH = None
 
 
-def _sm_sat_relief_paxs(_ctrl, _mag):
+# Action types that ADD green to the phase the bus is on (and therefore to
+# the main, when the bus is on the main): the only actions that can RELIEVE a
+# saturated main approach. See the direction gate in _sm_sat_relief_paxs.
+_RELIEF_GREEN_ADD_TYPES = ('GE', 'GREEN_REALLOC', 'INS', 'INS_POST',
+                           'INS_PRETERM')
+
+
+def _sm_sat_relief_paxs(_ctrl, _mag, _action_type='', _wrong_phase=False):
     """Passenger-seconds of CREDIT for applying an action of _mag seconds where
     the measured main is over-saturated -- the benefit-side counterpart to the
     main-starvation COST. The reward ledger is otherwise asymmetric (saturation
@@ -8222,6 +11964,28 @@ def _sm_sat_relief_paxs(_ctrl, _mag):
     flag is off or no fresh measurement exists.
     """
     if not bool(globals().get('SAT_RELIEF_BONUS', False)):
+        return 0.0
+    # DIRECTION GATE (2026-11-02): the credit below used abs(_mag), so an
+    # EARLY_RED -- which CUTS _mag seconds of main green -- collected exactly the
+    # same relief bonus as an extension that ADDS them, on the saturated main it
+    # was starving. _dctsp_eval_action already charges ER for that cut
+    # (cross_cost += _mainline_pax_saved_for_green(param)), so the reward paid
+    # twice with opposite signs and ER read as free relief. Credit only actions
+    # where green on the SERVING phase grows:
+    #   * GE / GREEN_REALLOC / INS*   -> add green to the phase the bus is on
+    #   * EARLY_RED on the WRONG phase -> ends a cross phase, returns green to
+    #     the serving (main) phase
+    #   * EARLY_RED on the serving phase -> a CUT; no credit (already charged)
+    _at = str(_action_type).upper()
+    if float(_mag) <= 0.0:
+        _diag_relief_gate(_ctrl, 0.0, 0.0, 'relief_skip_dir')
+        return 0.0
+    if _at in ('EARLY_RED', 'ER'):
+        if not bool(_wrong_phase):
+            _diag_relief_gate(_ctrl, 0.0, 0.0, 'relief_skip_dir')
+            return 0.0
+    elif _at not in _RELIEF_GREEN_ADD_TYPES:
+        _diag_relief_gate(_ctrl, 0.0, 0.0, 'relief_skip_dir')
         return 0.0
     try:
         _snap = _ctrl._flow_stage_snapshot() or {}
@@ -8294,7 +12058,7 @@ def _diag_relief_gate(_ctrl, _x, _xmin, _what, value=0.0):
                   'relief_paxs': 0.0, 'relief_x_max': 0.0,
                   'starve_consults': 0, 'starve_fires': 0,
                   'starve_paxs': 0.0, 'starve_q_max': 0.0,
-                  'starve_none_meas': 0}
+                  'starve_none_meas': 0, 'relief_skip_dir': 0}
             _own._tsp_sat_term_diag = _c
         if _what == 'gate':
             _c['relief_consults'] += 1
@@ -8303,6 +12067,11 @@ def _diag_relief_gate(_ctrl, _x, _xmin, _what, value=0.0):
         elif _what == 'fired':
             _c['relief_fires'] += 1
             _c['relief_paxs'] = float(_c.get('relief_paxs', 0.0)) + float(value)
+        elif _what == 'relief_skip_dir':
+            # Counted so an arm whose relief is always 0.0 because every action
+            # was a CUT (EARLY_RED on the serving phase) is distinguishable from
+            # one that never consulted the term at all.
+            _c['relief_skip_dir'] = int(_c.get('relief_skip_dir', 0)) + 1
         elif _what == 'starve_none':
             _c['starve_none_meas'] += 1
         elif _what == 'starve_consult':
@@ -8328,15 +12097,17 @@ def sm_sat_term_diag_report():
     the 12 junctions never even consulted the term.
     """
     try:
-        _tot = {'rc': 0, 'rf': 0, 'rp': 0.0, 'rx': 0.0,
+        _tot = {'rc': 0, 'rf': 0, 'rp': 0.0, 'rx': 0.0, 'rd': 0,
                 'sc': 0, 'sf': 0, 'sp': 0.0, 'sq': 0.0, 'sn': 0}
         _n_own = 0
         for _own in _diag_owners():
             _c = getattr(_own, '_tsp_sat_term_diag', None)
-            if not isinstance(_c, dict) or not _c.get('relief_consults'):
+            if not isinstance(_c, dict) or not (_c.get('relief_consults')
+                                                 or _c.get('relief_skip_dir')):
                 continue
             _n_own += 1
             _tot['rc'] += int(_c.get('relief_consults', 0))
+            _tot['rd'] += int(_c.get('relief_skip_dir', 0))
             _tot['rf'] += int(_c.get('relief_fires', 0))
             _tot['rp'] += float(_c.get('relief_paxs', 0.0))
             _tot['rx'] = max(_tot['rx'], float(_c.get('relief_x_max', 0.0)))
@@ -8347,10 +12118,12 @@ def sm_sat_term_diag_report():
             _tot['sn'] += int(_c.get('starve_none_meas', 0))
         if _n_own:
             return (
-                "[SAT_TERMS] relief %d/%d fired (x_max=%.3f, %.0f pax-s) | "
+                "[SAT_TERMS] relief %d/%d fired (x_max=%.3f, %.0f pax-s, "
+                "%d skipped-by-direction) | "
                 "starve %d/%d fired (q_max=%.1f, %.0f pax-s, %d no-measurement) "
                 "[owners=%d]"
                 % (_tot['rf'], _tot['rc'], _tot['rx'], _tot['rp'],
+                   _tot['rd'],
                    _tot['sf'], _tot['sc'], _tot['sq'], _tot['sp'],
                    _tot['sn'], _n_own))
     except Exception:
@@ -8415,7 +12188,7 @@ def _sm_main_starve_cost_paxs(_ctrl, _mag):
     """
     if not bool(globals().get('BXT_MAIN_STARVE_GATE', False)):
         return 0.0
-    # ── Option A: degree-of-saturation basis ────────────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Option A: degree-of-saturation basis ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     try:
         _xthr = float(globals().get('BXT_MAIN_STARVE_X', -1.0))
     except Exception:
@@ -8441,7 +12214,7 @@ def _sm_main_starve_cost_paxs(_ctrl, _mag):
         _out = _excess * _occ * _s * 100.0 * max(0.0, float(_mag))
         _diag_relief_gate(_ctrl, _x, _xthr, 'starve_fired', value=_out)
         return _out
-    # ── Option B (legacy): measured queue-length basis ─────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Option B (legacy): measured queue-length basis ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     try:
         _q = _ctrl._measured_main_queue_veh()
     except Exception:
@@ -8563,10 +12336,10 @@ def reset_mode_flags():
     return list(MODE_TOGGLES)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚Â
 # ZIGDOG (2026-10-02) -- per-cycle receding-horizon arrivals-on-green (AOG)
 # optimizer, driven by the PT timetable + measured demand.
-# ═══════════════════════════════════════════════════════════════════════════
+# ÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚ÂÃƒÂ¢Ã¢â‚¬Â¢Ã‚Â
 def _ins_gr_coord_phase_ok(self, timeSta):
     """True when INS / GREEN_REALLOC may fire (2026-10-03).
 
@@ -9071,7 +12844,7 @@ def _zigdog_queue_release_pred(self, timeSta, cur_phase=None, rem_green=None):
             pass
     except Exception:
         pass
-    # ── OBSERVED-vs-EXPECTED accuracy (2026-10-04) ─────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ OBSERVED-vs-EXPECTED accuracy (2026-10-04) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Tracks each phase's predicted queue / green-start against what actually
     # happens, so prediction reliability is MEASURED, not assumed:
     #   [QUEUEREL_ACC] ph=.. GREEN   pred_t.. obs_q vs pred_q
@@ -9160,7 +12933,7 @@ def _zigdog_dp_pathways(self, fleet, cur_phase, rem_green, cycle_s, bus_w,
             'ZIGDOG_MIN_PHASE_GREEN_S', 6.0) or 6.0))
         _w = max(0.0, float(bus_w or 0.0))
         _fs = sorted(fleet, key=lambda z: float(z[1]))
-        # ── neighbour-state DP (2026-10-03) ───────────────────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ neighbour-state DP (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Future layers use the ADJACENT junction's live windows; a bus served
         # in THIS junction's window earns a neighbour credit when it reaches
         # the neighbour during one of the neighbour's bus-phase windows.
@@ -9272,7 +13045,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _boost = 1.0 + min(1.0, _late / max(
         1.0, float(globals().get('ZIGDOG_LATE_BOOST_S', 120.0) or 120.0)))
 
-    # ── cycle horizon: cache the plan, re-solve at every new cycle ─────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ cycle horizon: cache the plan, re-solve at every new cycle ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _cycle_s = float(globals().get('ZIGDOG_CYCLE_S', 0.0) or 0.0)
     if _cycle_s <= 0.0:
         try:
@@ -9282,7 +13055,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     if _cycle_s <= 0.0:
         _cycle_s = 120.0
     _cycle_id = int(float(time) // max(1.0, _cycle_s))
-    # ── phase-binary STATE (ZIGDOG_STATE_MODE='phase', default) ───────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ phase-binary STATE (ZIGDOG_STATE_MODE='phase', default) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The state is ONLY which phases are green at this junction: one bit per
     # phase (4 phases -> 4 states per junction, 48 across a 12-signal
     # corridor). The per-cycle cache is keyed by (cycle, state), so each cycle
@@ -9341,7 +13114,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
 
     _bus_w = float(globals().get('ZIGDOG_BUS_W', 4.0) or 0.0)
     _car_w = float(globals().get('ZIGDOG_CAR_W', 1.0) or 0.0)
-    # ── CTM inheritance (ZIGDOG_CTM, default ON) ──────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ CTM inheritance (ZIGDOG_CTM, default ON) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Same cell-transmission-model cross cost the CellQLearn-corridor decider
     # prices with (engine _ctm_cross_cost_paxs): sending=min(sat,n/dt), jam
     # receiving, cascade. Falls back cleanly to the analytic cpc when absent.
@@ -9476,7 +13249,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
                 and bool(globals().get('ZIGDOG_INS_GR_COORD_ONLY', True))
                 and not _ins_gr_coord_phase_ok(self, timeSta)):
             return None
-        # ── ER BAND RESPECT (2026-10-04) ──────────────────────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ER BAND RESPECT (2026-10-04) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # A phase cut desynchronises the fixed-time progression band -- the
         # dominant car-delay loss on the Aimsun KG plan (bus delay improved
         # while car delay rose 5-9 s on the hard seeds). ER is now bounded by
@@ -9509,7 +13282,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
 
     _best = ('NO_ACTION', 0.0, 0.0, so_na, tp_na)
     if not _wrong and _ge_cap >= float(globals().get('MIN_GE_EXTENSION_S', 3.0)):
-        # ── GE magnitude is SOLVED, not scanned (2026-10-02) ──────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ GE magnitude is SOLVED, not scanned (2026-10-02) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # Same solver chain the corridor decider uses: _solve_ge_durations
         # gives the closed-form BUS-serve / DEMAND-clear seconds (honouring
         # BXT_SOLVER harmony/deficit/golden where applicable), then DE refines
@@ -9566,7 +13339,7 @@ def dctsp_zigdog(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         _c = _eval_cand('EARLY_RED', _s)
         if _c and _c[2] > _best[2]:
             _best = _c
-    # ── INS / GREEN_REALLOC magnitudes SOLVED (2026-10-03) ─────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ INS / GREEN_REALLOC magnitudes SOLVED (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Same treatment as GE/ER: 1s-resolution seeds + DE refine against the
     # composite score. Both are green-giving families (coord-phase gated in
     # _score_fam) and cycle-gated like GE; caps ZIGDOG_INS_MAX_S / ZIGDOG_GR_MAX_S.
@@ -9673,7 +13446,7 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
         _rem_green = float(self._current_green_remaining_s(time, timeSta) or 0.0)
     except Exception:
         _rem_green = 0.0
-    # ── well-defined TIME-AWARE state (2026-10-03) ─────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ well-defined TIME-AWARE state (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # The phase bit alone is not a Markov state: doing nothing keeps the bit
     # while the natural green runs out, and the same bit is observed with 60s
     # or 2s of green left -- ambiguous futures. Bucketize the REMAINING GREEN
@@ -9750,7 +13523,7 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
     except Exception:
         _qr_pred = None
 
-    # ── PREDICTIVE STATE EXTENSION (2026-10-04) ────────────────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ PREDICTIVE STATE EXTENSION (2026-10-04) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Extra state bits for the predictive arm (ZIGDOG_QP):
     #   * red-queue bucket from the queue-release prediction (other_q_paxs)
     #   * bus-context bit from the fleet tracker (late bus within horizon)
@@ -9885,7 +13658,7 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
                 and bool(globals().get('ZIGDOG_INS_GR_COORD_ONLY', True))
                 and not _ins_gr_coord_phase_ok(self, timeSta)):
             return None
-        # ── ER BAND RESPECT (2026-10-04) ──────────────────────────────────
+        # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ ER BAND RESPECT (2026-10-04) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
         # A phase cut desynchronises the fixed-time progression band -- the
         # dominant car-delay loss on the Aimsun KG plan (bus delay improved
         # while car delay rose 5-9 s on the hard seeds). ER is now bounded by
@@ -9970,7 +13743,7 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
             _be = _c
     if _be is not None:
         _fam[2] = _be
-    # ── INS / GREEN_REALLOC magnitudes SOLVED (2026-10-03) ─────────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ INS / GREEN_REALLOC magnitudes SOLVED (2026-10-03) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     # Same treatment as GE/ER: 1s-resolution seeds + DE refine; the Q's
     # action space grows to 5 ({HOLD, GE, ER, INS, GR}).
     if bool(globals().get('ZIGDOG_INS_GR_SOLVER', True)):
@@ -10016,7 +13789,7 @@ def dctsp_zigdog_q(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase
             if _bgq is not None:
                 _fam[_slot] = _bgq
 
-    # ── Q table (per junction, phase-binary state, optimistic seed) ────────
+    # ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ Q table (per junction, phase-binary state, optimistic seed) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬
     _alpha = float(globals().get('ZIGDOG_Q_ALPHA', 0.2) or 0.2)
     _gamma = float(globals().get('ZIGDOG_Q_GAMMA', 0.9) or 0.9)
     _eps = float(globals().get('ZIGDOG_Q_EPSILON', 0.05) or 0.0)

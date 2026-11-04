@@ -1765,16 +1765,55 @@ class SimulationStats:
                     return
 
     def add_schedule_dev(self, line_id, dev_s, bus_occ=40.0, veh_id=None,
-                         observed_time_s=None, intended_time_s=None):
+                         observed_time_s=None, intended_time_s=None,
+                         headway_s=None):
         """Headway/schedule deviation for one line arrival. dev>0 = late
         (passengers at stops wait longer); dev<0 = early (bunching risk).
-        Penalty: late full-weight, early half-weight -- both hurt fidelity."""
+        Penalty: late full-weight, early half-weight -- both hurt fidelity.
+
+        Ported from kg/Simulation_Stats.py (2026-10-31). The Logan copy was a
+        STALE version with no `headway_s` parameter, so the engine's call
+        (add_schedule_dev(..., headway_s=_H)) raised TypeError and was swallowed
+        by the caller's `except: pass` -- every Logan run reported schedule_n=0 /
+        status=unavailable. This also brings the per-bus dedup guard (without it
+        the per-tick enumeration re-records the same physical bus ~20x) and the
+        one-headway penalty cap. See [[feedback-kg-is-reference-controller]]."""
+        # ONE record per bus per line per replication. The capture path is a
+        # per-tick enumeration; without this guard the same physical bus is
+        # re-recorded, inflating n and the penalty.
+        if veh_id is not None:
+            try:
+                _seen_pairs = getattr(self, "_sched_seen_pairs", None)
+                if _seen_pairs is None:
+                    _seen_pairs = self._sched_seen_pairs = set()
+                _pair = (int(line_id), int(veh_id))
+                if _pair in _seen_pairs:
+                    return
+                _seen_pairs.add(_pair)
+            except Exception:
+                pass
         lst = getattr(self, "_sched_devs", None)
         if lst is None:
             lst = self._sched_devs = []
             self._sched_pen_pax = 0.0
+            self._sched_pen_raw_pax = 0.0
+            self._sched_pen_clamped = 0
         dev_s = float(dev_s)
-        lst.append(dev_s)
+        raw_dev_s = dev_s
+        # Penalty cap: one headway (floored at 300 s), never above
+        # SCHED_DEV_CLAMP_S. A bus more than one run off timetable has missed a
+        # departure, it is not continuously accumulating lateness.
+        _cap = float(getattr(self, "SCHED_DEV_CLAMP_S", 900.0) or 900.0)
+        try:
+            if headway_s is not None and float(headway_s) > 30.0:
+                _cap = min(_cap, max(300.0, float(headway_s)))
+        except Exception:
+            pass
+        dev_s = max(-_cap, min(dev_s, _cap))
+        if abs(raw_dev_s) > _cap:
+            self._sched_pen_clamped = int(
+                getattr(self, "_sched_pen_clamped", 0) or 0) + 1
+        lst.append(raw_dev_s)
         records = getattr(self, "_schedule_records", None)
         if records is None:
             records = self._schedule_records = []
@@ -1783,12 +1822,17 @@ class SimulationStats:
             "bus_id": "" if veh_id is None else int(veh_id),
             "observed_time_s": "" if observed_time_s is None else round(float(observed_time_s), 3),
             "intended_time_s": "" if intended_time_s is None else round(float(intended_time_s), 3),
-            "deviation_s": round(dev_s, 3),
-            "abs_deviation_s": round(abs(dev_s), 3),
+            "deviation_s": round(raw_dev_s, 3),
+            "abs_deviation_s": round(abs(raw_dev_s), 3),
+            "penalty_deviation_s": round(dev_s, 3),
+            "penalty_clamped": 1 if abs(raw_dev_s) > _cap else 0,
         })
         pen = dev_s if dev_s > 0 else 0.5 * abs(dev_s)
+        raw_pen = raw_dev_s if raw_dev_s > 0 else 0.5 * abs(raw_dev_s)
         self._sched_pen_pax = getattr(self, "_sched_pen_pax", 0.0) \
             + max(pen, 0.0) * float(bus_occ)
+        self._sched_pen_raw_pax = getattr(self, "_sched_pen_raw_pax", 0.0) \
+            + max(raw_pen, 0.0) * float(bus_occ)
 
     def schedule_kpis(self):
         lst = getattr(self, "_sched_devs", None) or []
@@ -5291,7 +5335,8 @@ class SimulationStats:
                         _fh,
                         fieldnames=["line_id", "bus_id", "observed_time_s",
                                     "intended_time_s", "deviation_s",
-                                    "abs_deviation_s"])
+                                    "abs_deviation_s", "penalty_deviation_s",
+                                    "penalty_clamped"])
                     _writer.writeheader()
                     _writer.writerows(_schedule_records)
             except Exception as _schedule_csv_err:
