@@ -79,7 +79,16 @@ if _seeds_env:
 else:
     SEEDS = [300, 400, 500, 600, 700]
 _cs.EVAL_SEEDS = list(SEEDS)
-_cs.TRAIN_SEEDS = []
+# Learners (LEARNING_ARMS) train on these seeds first, then freeze and are
+# scored on SEEDS -- champion_search's fair-training protocol. Empty (the
+# default) keeps the old behaviour: learners are scored on an UNTRAINED, frozen
+# Q-table, which on KG (2026-11-04) made the CellQ arms hold on every
+# decision and repeat byte-identical results.
+_cs.TRAIN_SEEDS = [int(s) for s in
+                   _os.environ.get("PAXWIN_TRAIN_SEEDS", "").split(",") if s.strip()]
+if _cs.TRAIN_SEEDS:
+    print("  learners pre-train on %s, then freeze for the scored seeds"
+          % _cs.TRAIN_SEEDS)
 _cs.SCORED_SEEDS = list(SEEDS)
 _cs.USE_TOPUP_SEEDS = False
 _cs.DEMAND_SCALARS = [1.0]

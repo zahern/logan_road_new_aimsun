@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-05T1700-1s-actions-solve-gain"
+ENGINE_BUILD = "2026-11-05T1900-train-learners-ins-reach"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -23636,6 +23636,22 @@ class IntersectionController:
                                 ("%.0fs" % float(_be[1])) if _be else '-'),
                             force=True)
         return _out
+
+    def _sw_ins_needed_s(self, veh_id, time):
+        """Inserted green (s) the shockwave model says THIS bus needs to
+        discharge: it starts after INS_INTERGREEN_S, the vehicles ahead in its
+        lane leave at saturation, then the bus (+1 s margin). None when the
+        bus state is unknown."""
+        if not _SWL_AVAILABLE or veh_id is None or int(veh_id) < 0:
+            return None
+        _bs = self._sw_bus_route_state(int(veh_id), time)
+        if _bs is None:
+            return None
+        _g = _swl.ins_green_to_serve_bus(
+            self._sw_lane_fd(_bs.get('target')),
+            float(globals().get('INS_INTERGREEN_S', 5.0) or 5.0),
+            _bs['dist_m'], _bs['n_ahead'], _bs['cruise_ms'])
+        return float(_g) if _g > 0.0 else None
 
     def _sw_bus_ctx(self, time, insertion=False):
         """Inputs for the shockwave bus term, computed ONCE per solve (the

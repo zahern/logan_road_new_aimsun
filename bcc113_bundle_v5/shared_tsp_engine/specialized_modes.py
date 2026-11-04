@@ -4111,6 +4111,10 @@ SOLVE_REQUIRES_GAIN = True
 # so every reader fell back to its own 3.0 -- a hidden 3 s GE floor in nine
 # places. Declared at 1.0 so a solved 1 s GE survives every path.
 MIN_GE_EXTENSION_S = 1.0
+# Let the insertion cap stretch to the green the shockwave model says the
+# waiting bus needs (vehicles ahead discharge + intergreen), up to SW_INS_MAX_S.
+SW_INS_STRETCH = True
+SW_INS_MAX_S = 15.0
 # CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
 # cooperative-game (Shapley) + Q-learning controller. Default off. The observe
 # increment derives the junction's phase structure from live data + runs the
@@ -6008,7 +6012,24 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
     _ge_star = min(max(0.0, float(bus_eta_s) - _green_left), _ge_ub)
     # Insertion serves the bus its clearance window, not a fixed 10-20 s block;
     # bound by the disruptiveness cap already applied downstream.
-    _ins_star = min(max(0.0, float(bus_eta_s) - _green_left), float(BXT_MAX_INS_S))
+    # EFFECTIVE insertion cap (2026-11-05). An arm's BXT_MAX_INS_S (6 s on the
+    # CELLQ_GATED arms) was shorter than the green a waiting bus needs to
+    # discharge (KG: 7-11 s for a bus 12-60 m back behind 2-4 cars), so every
+    # insertion fell just short and only added cost. When the shockwave model
+    # says THIS bus needs more, let the cap stretch to that need, up to
+    # SW_INS_MAX_S. The solve must still lower total delay to act.
+    _ins_cap = float(BXT_MAX_INS_S)
+    _ins_need = None
+    if bool(globals().get('SW_INS_STRETCH', True)):
+        try:
+            _ins_need = self._sw_ins_needed_s(int(veh_id), time)
+        except Exception as _swx:
+            _note_swallow_spm(self, 'bxt_ins_need', _swx)
+            _ins_need = None
+        _ins_max = float(globals().get('SW_INS_MAX_S', 15.0) or 15.0)
+        if _ins_need is not None and _ins_cap < _ins_need <= _ins_max:
+            _ins_cap = float(math.ceil(_ins_need))
+    _ins_star = min(max(0.0, float(bus_eta_s) - _green_left), _ins_cap)
     _MIN_EFFECTIVE_GE_S = 1.0
     _solve_no_gain = None    # set when the shockwave solve says acting does not pay
     _solved_param = {'GE': _ge_star, 'GREEN_REALLOC': _ge_star, 'INS': _ins_star}
@@ -6144,7 +6165,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             else:
                 t_wait = float(remaining_red_s) + float(INS_INTERGREEN_S)
             d_bus = _ctm_red_delay(n0_bus, q_arr_bus_vps, q_sat_vps, t_wait, a_s, _cell_occ)
-            if not (a_s > 0.0 and _raw_deficit <= float(BXT_MAX_INS_S) + 1e-6):
+            if not (a_s > 0.0 and _raw_deficit <= _ins_cap + 1e-6):
                 d_bus += _bus_wait_pax
             # Cross cost = green the insertion DISPLACES from the off phases, not
             # the bus's own pre-existing wait (see CELLQ_INS_MARGINAL_CROSS note
@@ -6890,7 +6911,7 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
         else:
             _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
     elif _bp_solve_family:
-        _bp_ub = float(BXT_MAX_INS_S) if _chosen_atype == 'INS' else _ge_ub
+        _bp_ub = _ins_cap if _chosen_atype == 'INS' else _ge_ub
         _mag = min(max(_MIN_EFFECTIVE_GE_S,
                        _raw_deficit if _raw_deficit > 0.0 else _MIN_EFFECTIVE_GE_S),
                    _bp_ub)
@@ -7210,8 +7231,8 @@ def dctsp_bxt(self, time, timeSta, acycle, bus_eta_s, veh_id, current_phase,
             float(BXT_GE_BALANCE_FACTOR if _chosen_atype == 'GE'
                   else BXT_BALANCE_FACTOR))
         _chosen_atype, _chosen_aparam, _chosen_idx = 'NO_ACTION', 0.0, 0
-    elif _chosen_atype == 'INS' and _chosen_aparam > float(BXT_MAX_INS_S):
-        _chosen_aparam = float(BXT_MAX_INS_S)
+    elif _chosen_atype == 'INS' and _chosen_aparam > _ins_cap:
+        _chosen_aparam = _ins_cap
 
     # Absolute main-approach saturation veto: refuse to extend into a jam. It is
     # ABSOLUTE, so on a saturated corridor (density near jam is the normal state
@@ -11707,6 +11728,7 @@ MODE_FLAGS = [
     'GE_DURATIONS_S', 'INS_DURATIONS_S', 'ER_DURATIONS_S', 'GR_DURATIONS_S',
     # Shockwave-solved magnitude down to 1s (2026-11-04): floor + solver bound.
     'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S', 'SOLVE_REQUIRES_GAIN',
+    'SW_INS_STRETCH', 'SW_INS_MAX_S',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',

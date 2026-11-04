@@ -123,6 +123,8 @@ print("=" * 84)
 
 # PAXWIN_ARMS runs ONE NO_TSP baseline followed by every listed arm.
 _os.environ["PAXWIN_SEEDS"] = _SEEDS
+# Learner pre-training seeds (empty = none, the previous behaviour).
+_os.environ["PAXWIN_TRAIN_SEEDS"] = _os.environ.get("ARM_SUITE_TRAIN_SEEDS", "").strip()
 _os.environ["PAXWIN_WARMUP"] = "0"
 _os.environ["PAXWIN_ARM"] = _arms[0]
 _os.environ["PAXWIN_ARMS"] = ",".join(_arms)

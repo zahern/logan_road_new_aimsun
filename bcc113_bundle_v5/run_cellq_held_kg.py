@@ -97,6 +97,13 @@ if not _HERE:
 
 SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
 
+# Learner PRE-TRAINING seeds (the paper's protocol: train on 800-1100, then
+# freeze and score on SEEDS). Without them the CellQ arms are scored on an
+# untrained, frozen Q-table and hold on every decision (KG run 2026-11-04:
+# phase=eval train=[] freeze=True, 0 Q-states loaded). Each learner arm runs
+# these extra seeds first (~15 min each). FIXED_TRAIN_SEEDS="" to skip.
+TRAIN_SEEDS = _os.environ.get("FIXED_TRAIN_SEEDS", "800,900,1000,1100")
+
 ARMS = _os.environ.get(
     "FIXED_ARMS",
     "CHAMP_ADAPTIVE_DSW_CELLQ_GATED,"
@@ -176,6 +183,7 @@ def _sha12(rel):
 
 
 _os.environ["ARM_SUITE_SEEDS"] = SEEDS
+_os.environ["ARM_SUITE_TRAIN_SEEDS"] = TRAIN_SEEDS
 _os.environ["ARM_SUITE_ARMS"] = ARMS
 _os.environ["ARM_SUITE_OUT"] = OUT
 _os.environ["ARM_SUITE_CORRIDOR"] = CORRIDOR
@@ -187,6 +195,7 @@ _os.environ["CHAMPION_POSTRUN_BUILD_CHECK"] = "1"
 print("=" * 76)
 print("CELLQ GATE A/B -- KELVIN GROVE")
 print("  seeds:", SEEDS)
+print("  train:", TRAIN_SEEDS or "(none -- learners scored untrained)")
 print("  arms :", ARMS)
 print("  out  :", _OUT_PATH)
 print("  (NO_TSP added automatically by the suite as the paired control)")
