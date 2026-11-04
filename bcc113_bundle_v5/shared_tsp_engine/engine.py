@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-04T2330-cbql-delayfeed-fix"
+ENGINE_BUILD = "2026-11-05T0100-cbql-softmax-ratios"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -22722,17 +22722,37 @@ class IntersectionController:
         _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
         _v = _cbql.priority_game_value(_st, _delay)
         _phi = _cbql.shapley_values(["P", "N"], _v)
-        _probs = _cbql.transition_probs_from_shapley(_phi)
+        _probs = _cbql.transition_probs_from_shapley(
+            _phi, float(globals().get('CBQL_SHAPLEY_TEMP_S', 10.0) or 10.0))
+        # LEARN FROM WHAT ACTUALLY RAN. Observe-only never applies the pick, so
+        # crediting the pick with a delay measured BEFORE it (the old code)
+        # taught the table nothing about consequences. Instead: the phase that
+        # was green at the PREVIOUS step is the action actually taken in that
+        # step's state; its reward is the delay on that phase measured NOW,
+        # one step later. First step of a replication has nothing to credit.
+        _r = None
+        _prev = getattr(self, '_cbql_prev', None)
+        if _prev is not None:
+            _pstate, _pphase = _prev
+            if _pphase in _delay:
+                _r = -float(_delay[_pphase])  # reward = -delay (minimise delay)
+                self._cbql_agent.update(
+                    _pstate, _pphase, _r,
+                    _phi.get("P" if _st.is_priority(_pphase) else "N", 0.0))
+        self._cbql_prev = ((_state, int(_cur)) if _cur in _st.phase_types
+                           else None)         # interphase: nothing to credit
+        # What the agent WOULD pick here -- logged only, never applied.
         _pick = self._cbql_agent.select_phase(_state, shapley_bias=_probs)
-        _r = -float(_delay.get(_pick, 0.0))   # reward = -delay (minimise delay)
-        self._cbql_agent.update(
-            _state, _pick, _r,
-            _phi.get("P" if _st.is_priority(_pick) else "N", 0.0))
         _dmean = (sum(_delay.values()) / len(_delay)) if _delay else 0.0
-        log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%.1f dmean=%.1f "
-                    "ratios=%s (observe-only)" % (_st.junction_id, time, _cur,
-                    _pick, _r, _dmean,
-                    {k: round(x, 2) for k, x in _probs.items()}), force=True)
+        _dpri = [_delay[_p] for _p in _st.priority_phases if _p in _delay]
+        _dnon = [_delay[_p] for _p in _st.non_priority_phases if _p in _delay]
+        log_to_file("[CBQL] jct=%d t=%.0f cur=%d pick=%d R=%s dmean=%.1f "
+                    "dP=%.1f dN=%.1f ratios=%s (observe-only)"
+                    % (_st.junction_id, time, _cur, _pick,
+                       ("%.1f" % _r) if _r is not None else "-", _dmean,
+                       (sum(_dpri) / len(_dpri)) if _dpri else 0.0,
+                       (sum(_dnon) / len(_dnon)) if _dnon else 0.0,
+                       {k: round(x, 2) for k, x in _probs.items()}), force=True)
 
     def _cbql_execute(self, time, timeSta, acycle):
         """CBQL phase-selection EXECUTION (flag CBQL_EXECUTE): at a decision
@@ -22778,7 +22798,8 @@ class IntersectionController:
         _state = _cbql.CbqlState(_cur, _lam, _st.cycle_s, _flow)
         _v = _cbql.priority_game_value(_st, _delay)
         _phi = _cbql.shapley_values(["P", "N"], _v)
-        _probs = _cbql.transition_probs_from_shapley(_phi)
+        _probs = _cbql.transition_probs_from_shapley(
+            _phi, float(globals().get('CBQL_SHAPLEY_TEMP_S', 10.0) or 10.0))
         _pick = int(self._cbql_agent.select_phase(_state, shapley_bias=_probs))
         # learn from the delay realised on the phase we are LEAVING
         _r = -float(_delay.get(_cur, 0.0))

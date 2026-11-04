@@ -4078,6 +4078,10 @@ CBQL_DECISION_COOLDOWN_S = 3.0
 # Per-junction cap on agent-driven phase switches within a trailing one-cycle
 # window (anti-thrash); a max-green advance bypasses it. 0 disables the cap.
 CBQL_MAX_SWITCHES_PER_CYCLE = 4
+# Softmax temperature (s of delay/veh) turning the P/N Shapley values into
+# transition ratios: a gap of T s -> ~0.73/0.27, 3T -> ~0.95/0.05. Replaces the
+# shift-by-min normalisation that pinned the ratios at 1.0/0.0 (2026-11-05).
+CBQL_SHAPLEY_TEMP_S = 10.0
 
 # CELL-STATE BACK-PRESSURE RELEASE (store-and-forward / max-pressure off the CTM
 # cells): serve the phase maximising upstream_queue x downstream_free_space, with
@@ -11516,7 +11520,7 @@ MODE_FLAGS = [
     'MIN_ACTION_DURATION_S', 'MIN_GE_EXTENSION_S',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
-    'CBQL_MAX_SWITCHES_PER_CYCLE',
+    'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_SHAPLEY_TEMP_S',
     'CELL_BACKPRESSURE', 'CELL_BP_MIN_GREEN_S', 'CELL_BP_MAX_GREEN_S',
     'CELL_BP_COOLDOWN_S', 'CELL_BP_BLOCK_THRESH', 'CELL_BP_MIN_QUEUE_VEH',
     'CELL_BP_MAX_SWITCHES_PER_CYCLE',

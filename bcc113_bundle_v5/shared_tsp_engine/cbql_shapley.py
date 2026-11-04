@@ -187,18 +187,28 @@ def shapley_values(players: Sequence,
     return phi
 
 
-def transition_probs_from_shapley(phi: Dict) -> Dict:
-    """Shapley RATIOS -> state-transition probabilities (the paper's mechanism).
+def transition_probs_from_shapley(phi: Dict,
+                                  temperature_s: float = 10.0) -> Dict:
+    """Shapley values -> state-transition probabilities (the paper's mechanism).
 
-    Shift so the smallest value is >=0 (Shapley values can be negative), then
-    normalise. Degenerate all-equal case falls back to uniform.
+    SOFTMAX over the Shapley values with a temperature in the same units as
+    the value (seconds of delay per vehicle): p_i ∝ exp(phi_i / T).
+
+    The earlier version shifted every value by the minimum and normalised.
+    With two players (P, N) that ALWAYS sends the smaller one to 0 and the
+    larger to 1, so the ratios were pinned at 1.0/0.0 whenever the two delays
+    differed by even 1 s -- and select_phase then put log(1e-6) = -13.8 on
+    every phase of the losing group, i.e. a hard lock. The softmax moves
+    smoothly with the delay gap: equal delays -> 0.5/0.5; a gap of T seconds
+    -> ~0.73/0.27; a gap of 3T -> ~0.95/0.05. Never exactly 0 or 1.
     """
     if not phi:
         return {}
-    lo = min(phi.values())
-    shifted = {p: (val - lo) + 1e-9 for p, val in phi.items()}
-    tot = sum(shifted.values()) or 1.0
-    return {p: s / tot for p, s in shifted.items()}
+    T = max(float(temperature_s), 1e-6)
+    hi = max(phi.values())
+    w = {p: math.exp((val - hi) / T) for p, val in phi.items()}
+    tot = sum(w.values()) or 1.0
+    return {p: x / tot for p, x in w.items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -261,20 +271,31 @@ def priority_game_value(structure: PhaseStructure,
                         phase_delay: Dict[int, float]) -> Callable[[frozenset], float]:
     """Characteristic function for the {priority, non-priority} coalition game.
 
-    Value of a coalition = negative summed delay of the phases that coalition
-    controls (higher == less delay == better). phase_delay maps phase idx ->
-    measured delay (veh*s or pax*s). This is the delay-only payoff.
+    Value of a coalition = minus the sum, over the GROUPS in it, of that
+    group's MEAN measured delay per phase (higher == less delay == better).
+    phase_delay maps phase idx -> measured delay (s/veh). Delay-only payoff.
+
+    Mean, not sum: the priority group is usually one phase and the
+    non-priority group all the rest, so a summed delay made N look worse in
+    almost every state purely because it has more phases -- P "won" the game
+    regardless of where the delay actually was. Per-group mean compares like
+    with like (seconds per vehicle per phase). Phases missing from
+    phase_delay are skipped, not counted as zero.
     """
-    pri = set(structure.priority_phases)
-    non = set(structure.non_priority_phases)
+    def _mean(phs):
+        vals = [float(phase_delay[ph]) for ph in phs if ph in phase_delay]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    d_pri = _mean(structure.priority_phases)
+    d_non = _mean(structure.non_priority_phases)
 
     def v(coalition: frozenset) -> float:
-        served = set()
+        val = 0.0
         if "P" in coalition:
-            served |= pri
+            val -= d_pri
         if "N" in coalition:
-            served |= non
-        return -sum(phase_delay.get(ph, 0.0) for ph in served)
+            val -= d_non
+        return val
 
     return v
 
@@ -316,6 +337,31 @@ def _demo_logan_junction() -> JunctionSpec:
                         bus_movements=(("W", "through"),))
 
 
+def _ratio_regression() -> None:
+    """The 1.0/0.0 lock seen on KG (2026-11-04): with the old shift-by-min
+    normalisation, ANY delay gap pinned the ratios. Check they now move
+    smoothly, are symmetric, and are not decided by the phase count."""
+    st = PhaseStructure(1, 4, {1: PHASE_THROUGH, 2: PHASE_THROUGH,
+                               3: PHASE_THROUGH, 4: PHASE_THROUGH},
+                        (1,), (2, 3, 4), 120.0)
+
+    def ratios(dp, dn_each):
+        d = {1: dp, 2: dn_each, 3: dn_each, 4: dn_each}
+        return transition_probs_from_shapley(
+            shapley_values(["P", "N"], priority_game_value(st, d)))
+
+    r = ratios(55.0, 56.0)                  # 1 s gap: near even, NOT 1.0/0.0
+    assert 0.45 < r["P"] < 0.6, r
+    r = ratios(50.0, 50.0)                  # equal mean delay, 1 vs 3 phases
+    assert abs(r["P"] - 0.5) < 1e-9, r      # phase count must not decide it
+    a, b = ratios(40.0, 70.0), ratios(70.0, 40.0)
+    assert abs(a["P"] - b["N"]) < 1e-9, (a, b)   # symmetric
+    assert a["P"] > 0.9 and a["N"] > 0.0, a      # big gap: strong, never 0
+    print("   ratio regression: 1s gap ->", {k: round(x, 3) for k, x in
+                                              ratios(55.0, 56.0).items()},
+          " 30s gap ->", {k: round(x, 3) for k, x in a.items()})
+
+
 def _selftest() -> None:
     for spec, label in ((_demo_kg_junction(), "KG-8phase"),
                         (_demo_logan_junction(), "Logan-6phase")):
@@ -333,6 +379,8 @@ def _selftest() -> None:
         phi = shapley_values(["P", "N"], v)
         probs = transition_probs_from_shapley(phi)
         assert abs(sum(probs.values()) - 1.0) < 1e-6, "transition probs must sum to 1"
+        assert 0.0 < min(probs.values()) and max(probs.values()) < 1.0, \
+            "ratios must not be pinned at 0/1: %r" % (probs,)
         print("   Shapley:", {k: round(x, 1) for k, x in phi.items()},
               " transition ratios:", {k: round(x, 3) for k, x in probs.items()})
 
@@ -353,6 +401,7 @@ def _selftest() -> None:
               % (moved, st.n_phases,
                  {k: round(v2, 1) for k, v2 in list(after.items())[:4]}))
         assert moved > 0, "Q-learner did not update"
+    _ratio_regression()
     print("\nOK: phase derivation + Shapley game + Q-update all pass "
           "for both corridors.")
 
