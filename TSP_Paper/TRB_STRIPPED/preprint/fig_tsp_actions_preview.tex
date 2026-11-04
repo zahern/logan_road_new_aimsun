@@ -1,0 +1,15 @@
+\documentclass[letterpaper,8pt]{extarticle}
+\usepackage[left=.65in,top=.65in,bottom=.65in,right=.65in]{geometry}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, decorations.pathreplacing}
+\definecolor{busred}{RGB}{200,40,40}
+\definecolor{carblue}{RGB}{40,80,180}
+\definecolor{corridorgreen}{RGB}{40,150,80}
+\definecolor{Highlight}{HTML}{580F8B}
+\pagestyle{empty}
+\begin{document}
+\begin{figure}[p]\centering
+\input{fig_tsp_actions.tex}
+\caption{What each TSP action does to the signal timing. Each panel is one junction: the \emph{plan} row is the timing that runs without the action and the row below it is the same cycle with the action applied, on a common 0--64\,s axis. Green bars are the bus (main) phase \textsf{B}, blue bars the cross-street phases \textsf{X}, orange the intergreens. The dashed red line is the bus arrival; the bus glyph marks when it leaves on each row and the red arrow is its wait. The purple outline and brace mark exactly what the action changed. (a) Without action a bus that arrives just after its green waits a full red. (b) \texttt{GE} holds the bus green $\delta$ longer so the bus clears; the cross green is shortened by $\delta$ to recover the cycle. (c) \texttt{GR} cuts the running cross green by $\delta$ so the bus green starts $\delta$ sooner. (d) \texttt{INS} (phase insertion, PI) inserts a short bus phase inside the cross green, serving the bus this cycle instead of the next. (e) \texttt{ER} ends the bus green early once the bus has passed and hands the time to the cross street. (f) \texttt{VP} skips an empty phase, removing it and one intergreen from the ring. (g) \texttt{PT} rotates the phase order so the bus phase is served first, with the same greens. (h) Offset correction shifts the downstream junction's green band by $\Delta$ so the bus arriving from upstream meets green. Timings are schematic; waits are computed from the drawn timing.}
+\end{figure}
+\end{document}

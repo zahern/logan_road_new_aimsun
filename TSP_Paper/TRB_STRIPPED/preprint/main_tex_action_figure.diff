@@ -1,0 +1,268 @@
+--- main.tex
++++ main.tex
+@@ -8,7 +8,7 @@
+ \setlength{\emergencystretch}{3em} % let long inline math/code lines stretch instead of overflowing
+ \usepackage{tikz}
+ \usepackage{cleveref} % intelligent cross-references with \cref/\Cref
+-\usetikzlibrary{positioning, shapes.geometric, arrows.meta, fit, calc, backgrounds}
++\usetikzlibrary{positioning, shapes.geometric, arrows.meta, fit, calc, backgrounds, decorations.pathreplacing}
+ 
+ % Fix for TikZ scoping: define stepnode style globally so it's available in all pictures
+ % (avoids collision with TikZ's built-in 'step' key which expects a numeric value)
+@@ -550,252 +550,10 @@
+ 
+ \begin{figure}[p]
+ \centering
+-% ---------- effect of each action on traffic flow (schematic) ----------
+-\begin{tikzpicture}[
+-    tspRoad/.style={draw=gray!30, line width=4.2pt, line cap=butt},
+-    tspRoadX/.style={draw=gray!30, line width=3pt, line cap=butt},
+-    tspDir/.style={-{Stealth[length=1.2mm]}, draw=black!30, line width=0.5pt},
+-    tspCar/.style={draw=carblue!80!black, fill=carblue!55, line width=0.4pt,
+-                   minimum width=0.23cm, minimum height=0.15cm, inner sep=0pt},
+-    tspCarH/.style={tspCar, fill=carblue!22, draw=carblue!62, dashed},
+-    tspBus/.style={draw=busred!85!black, fill=busred!65, line width=0.5pt,
+-                   minimum width=0.50cm, minimum height=0.17cm, inner sep=0pt,
+-                   rounded corners=1pt},
+-    tspBusH/.style={tspBus, fill=busred!20, draw=busred!62, dashed},
+-    tspStop/.style={draw=black!60, line width=0.5pt, dash pattern=on 1pt off 1pt},
+-    tspGrn/.style={draw=corridorgreen!80!black, fill=corridorgreen!65, line width=0.6pt, minimum size=0.19cm, inner sep=0pt},
+-    tspRed/.style={draw=busred!80!black, fill=busred!60, line width=0.6pt, minimum size=0.19cm, inner sep=0pt},
+-    tspBlk/.style={draw=black!45, line width=0.4pt, minimum width=0.44cm,
+-                   minimum height=0.17cm, inner sep=0pt, font=\scriptsize},
+-    tspNew/.style={tspBlk, draw=busred!85!black, line width=0.9pt, text=busred!85!black},
+-    tspTit/.style={font=\fontsize{7.5}{9}\selectfont\bfseries, text=black!85},
+-    tspSub/.style={font=\fontsize{6}{7}\selectfont, text=black!70},
+-    tspAnn/.style={font=\fontsize{7}{8.4}\selectfont\itshape, text=Highlight},
+-    tspLg/.style={font=\fontsize{6}{7}\selectfont, text=black!70},
+-]
+-  % (a) reference -- no intervention
+-  \begin{scope}[shift={(0,12.9)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(a) reference: no action};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBusH] at (1.16,1.05) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {bus waits the full red;};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {queue grows behind it};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspRed] at (2.30,1.62) {};
+-    \node[tspGrn] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % (b) green extension
+-  \begin{scope}[shift={(5.6,12.9)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(b) \texttt{GE} green extension};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBusH] at (1.16,1.05) {};
+-    \foreach \x in {1.80,2.08,2.36} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.74,1.05) {};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspGrn] at (2.30,1.62) {};
+-    \node[tspRed] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-    \draw[-{Stealth[length=1.3mm]},corridorgreen!75!black,line width=0.7pt] (1.72,1.24) -- (2.55,1.24);
+-    \node[tspSub,text=corridorgreen!75!black,anchor=west] at (2.60,1.24) {$+\delta$};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {green window widened;};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {bus clears without stopping};
+-  \end{scope}
+-  % (c) green reallocation
+-  \begin{scope}[shift={(0,8.6)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(c) \texttt{GR} green realloc.};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBusH] at (1.16,1.05) {};
+-    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.62,1.05) {};
+-    \draw[corridorgreen!70!black, line width=3pt, line cap=butt] (1.65,1.18) -- (1.65,1.50);
+-    \draw[busred!85!black, line width=0.7pt] (1.51,1.78) -- (1.79,1.50);
+-    \draw[busred!85!black, line width=0.7pt] (1.79,1.78) -- (1.51,1.50);
+-    \draw[busred!80!black, line width=0.6pt] (1.90,1.50) -- (1.90,1.78);
+-    \draw[busred!80!black, line width=0.6pt] (1.86,1.50) -- (1.94,1.50);
+-    \draw[busred!80!black, line width=0.6pt] (1.86,1.78) -- (1.94,1.78);
+-    \node[tspSub,text=busred!80!black,anchor=west] at (1.98,1.64) {$-\delta$};
+-    \draw[corridorgreen!75!black, line width=2.2pt, line cap=butt] (1.55,0.90) -- (2.42,0.90);
+-    \draw[-{Stealth[length=1.3mm]},corridorgreen!75!black,line width=0.7pt] (2.45,1.24) -- (1.78,1.24);
+-    \node[tspSub,text=corridorgreen!75!black,anchor=west] at (2.50,1.24) {sooner};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspRed] at (2.30,1.62) {};
+-    \node[tspGrn] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {cross green truncated,};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {bus green brought forward};
+-  \end{scope}
+-  % (d) phase insertion
+-  \begin{scope}[shift={(5.6,8.6)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(d) \texttt{INS} phase insertion};
+-    \node[tspBlk,fill=corridorgreen!30] at (0.90,2.04) {M};
+-    \node[tspBlk,fill=gray!25] at (1.42,2.04) {X};
+-    \node[tspNew,fill=busred!32] at (1.94,2.04) {+B};
+-    \node[tspBlk,fill=corridorgreen!30] at (2.46,2.04) {M};
+-    \node[tspSub,text=busred!80!black,anchor=west] at (2.72,2.04) {added};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBusH] at (1.16,1.05) {};
+-    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.62,1.05) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {bus phase added to ring:};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {served now, not next cycle};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspRed] at (2.30,1.62) {};
+-    \node[tspGrn] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % (e) early red
+-  \begin{scope}[shift={(0,4.3)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(e) \texttt{ER} early red};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+-    \foreach \x in {1.80,2.08,2.36} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.74,1.05) {};
+-    \node[tspCar,rotate=90] at (1.65,1.50) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {bus phase cut once clear:};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {cross street served sooner};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspGrn] at (2.30,1.62) {};
+-    \node[tspRed] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % (f) variable phase / skip
+-  \begin{scope}[shift={(5.6,4.3)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(f) \texttt{VP} phase skip};
+-    \node[tspBlk,fill=corridorgreen!30] at (0.90,2.04) {M};
+-    \node[tspBlk,fill=gray!25] at (1.42,2.04) {X};
+-    \draw[busred!85!black,line width=0.9pt] (1.20,1.88) -- (1.64,2.20);
+-    \node[tspBlk,fill=corridorgreen!30] at (1.94,2.04) {M};
+-    \node[tspBlk,fill=busred!25] at (2.46,2.04) {B};
+-    \node[tspSub,text=busred!80!black,anchor=west] at (2.72,2.04) {skipped};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+-    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.62,1.05) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {empty phase dropped from};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {the ring: two lost reds removed};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspRed] at (2.30,1.62) {};
+-    \node[tspGrn] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % (g) phase rotation
+-  \begin{scope}[shift={(0,0)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(g) \texttt{PT} phase rotation};
+-    \node[tspBlk,fill=gray!25] at (0.50,2.04) {X};
+-    \node[tspBlk,fill=gray!25] at (1.00,2.04) {M};
+-    \draw[-{Stealth[length=1.3mm]},black!55,line width=0.6pt] (1.26,2.04) -- (1.60,2.04);
+-    \node[tspBlk,fill=busred!25] at (1.90,2.04) {B};
+-    \node[tspBlk,fill=gray!25] at (2.40,2.04) {X};
+-    \node[tspBlk,fill=corridorgreen!30] at (2.90,2.04) {M};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50,0.78} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBusH] at (1.16,1.05) {};
+-    \foreach \x in {1.80,2.08} \node[tspCar] at (\x,1.05) {};
+-    \node[tspBus] at (2.62,1.05) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {ring re-sequenced so the};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {bus phase is served first};
+-    \node[tspSub,anchor=center] at (2.44,1.84) {\textit{current aspect}};
+-    \node[tspRed] at (2.30,1.62) {};
+-    \node[tspGrn] at (2.58,1.62) {};
+-    \node[tspSub,anchor=center] at (2.44,1.44) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % (h) offset correction
+-  \begin{scope}[shift={(5.6,0)}, scale=1.55]
+-    \node[tspTit] at (1.62,2.34) {(h) offset correction};
+-    \draw[corridorgreen!30, line width=2.4pt, line cap=butt, dash pattern=on 2pt off 1.4pt] (1.62,1.52) -- (3.28,1.52);
+-    \draw[corridorgreen!75!black, line width=2.4pt, line cap=butt] (0.95,1.24) -- (2.61,1.24);
+-    \draw[-{Stealth[length=1.3mm]},black!60,line width=0.6pt] (2.98,1.24) -- (2.98,1.52);
+-    \node[tspSub,text=black!60,anchor=west] at (3.03,1.38) {$\Delta$};
+-    \node[tspSub,text=black!55,anchor=east] at (1.55,1.66) {before};
+-    \node[tspSub,text=corridorgreen!75!black,anchor=east] at (0.88,1.31) {after};
+-    \draw[tspRoad] (-0.05,1.05) -- (3.12,1.05);
+-    \draw[tspDir] (0.10,0.82) -- (0.56,0.82);
+-    \draw[tspRoadX] (1.65,1.05) -- (1.65,1.88);
+-    \draw[tspStop] (1.55,0.80) -- (1.55,1.30);
+-    \foreach \x in {0.22,0.50} \node[tspCarH] at (\x,1.05) {};
+-    \node[tspBus] at (1.34,1.05) {};
+-    \node[tspAnn,anchor=west] at (-0.02,0.58) {upstream green shifted by};
+-    \node[tspAnn,anchor=west] at (-0.02,0.34) {$\Delta$: bus arrives on green};
+-    \node[tspSub,anchor=center] at (2.44,2.06) {\textit{current aspect}};
+-    \node[tspGrn] at (2.30,1.86) {};
+-    \node[tspRed] at (2.58,1.86) {};
+-    \node[tspSub,anchor=center] at (2.44,1.68) {main\quad cross};
+-    \node[tspLg,anchor=west] at (0.60,0.82) {now};
+-    \node[tspLg,anchor=east] at (3.05,0.82) {after};
+-  \end{scope}
+-  % ---------- glyph legend ----------
+-  \node[anchor=north west,align=left] at (-0.02,-1.2) {%
+-    \begin{tabular}{@{}lll@{}}
+-      \multicolumn{3}{@{}l}{\textit{hollow} = state at the decision instant (\textit{now})}\\
+-      \tikz[baseline=-0.6ex]\node[tspCarH] {}; car &
+-      \tikz[baseline=-0.6ex]\node[tspBusH] {}; bus & \\[1pt]
+-      \multicolumn{3}{@{}l}{\textit{filled} = state after the action (\textit{after})}\\
+-      \tikz[baseline=-0.6ex]\node[tspCar] {}; car &
+-      \tikz[baseline=-0.6ex]\node[tspBus] {}; bus & \\[1pt]
+-      \multicolumn{3}{@{}l}{\textit{current aspect} (top right of each panel), main then cross:}\\
+-      \tikz[baseline=-0.6ex]\node[tspGrn] {}; green &
+-      \tikz[baseline=-0.6ex]\node[tspRed] {}; red &
+-      phase blocks: M arterial, X cross, B bus \\
+-    \end{tabular}};
+-\end{tikzpicture}
+-\caption{Effect of each action on traffic flow. Each panel is one junction seen
+-top-down, the arterial running left to right with the cross street joining from
+-above. In every panel the left of the stop line is the state at the decision
+-instant (\textit{now}: hollow glyphs) and the right is the same stream
+-after the action (\textit{after}: filled glyphs); the light pair at the top
+-right is the \textit{current aspect}, main then cross, so the reader can see the
+-light the action is taken on together with the flow it changes.
+-(a) With no intervention the bus waits out the red and the queue behind it grows.
+-(b) \texttt{GE} widens the arterial's green window by $\delta$, so the bus
+-clears without stopping. (c) \texttt{GR} truncates the cross-street green by
+-$\delta$, bringing the bus green forward. (d) \texttt{INS} adds a bus phase to
+-the ring, so the bus is served this cycle instead of the next. (e) \texttt{ER}
+-ends the bus phase once the bus has cleared, handing green to the cross street
+-early. (f) \texttt{VP} drops an empty phase from the ring, removing two lost
+-reds per cycle. (g) \texttt{PT} re-sequences the ring so the bus phase is served
+-first. (h) Offset correction shifts the upstream green band by $\Delta$ so the
+-bus arrives on green. Panels are schematic and carry no measured values.
+-Panel (b) is enlarged in \cref{fig:ge_wave}.}
++% TSP actions as signal-timing diagrams. Generated by make_fig_tsp_actions.py
++% (edit the generator, then re-run it; waits are computed from the timings).
++\input{fig_tsp_actions.tex}
++\caption{What each TSP action does to the signal timing. Each panel is one junction: the \emph{plan} row is the timing that runs without the action and the row below it is the same cycle with the action applied, on a common 0--64\,s axis. Green bars are the bus (main) phase \textsf{B}, blue bars the cross-street phases \textsf{X}, orange the intergreens. The dashed red line is the bus arrival; the bus glyph marks when it leaves on each row and the red arrow is its wait. The purple outline and brace mark exactly what the action changed. (a) Without action a bus that arrives just after its green waits a full red. (b) \texttt{GE} holds the bus green $\delta$ longer so the bus clears; the cross green is shortened by $\delta$ to recover the cycle. (c) \texttt{GR} cuts the running cross green by $\delta$ so the bus green starts $\delta$ sooner. (d) \texttt{INS} (phase insertion, PI) inserts a short bus phase inside the cross green, serving the bus this cycle instead of the next. (e) \texttt{ER} ends the bus green early once the bus has passed and hands the time to the cross street. (f) \texttt{VP} skips an empty phase, removing it and one intergreen from the ring. (g) \texttt{PT} rotates the phase order so the bus phase is served first, with the same greens. (h) Offset correction shifts the downstream junction's green band by $\Delta$ so the bus arriving from upstream meets green. Timings are schematic; waits are computed from the drawn timing. Panel (b) is enlarged in \cref{fig:ge_wave}.}
+ \label{fig:action_mech}
+ \end{figure}
+ 
