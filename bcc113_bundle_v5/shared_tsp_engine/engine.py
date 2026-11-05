@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-06T1100-bus-crossing-offsets"
+ENGINE_BUILD = "2026-11-06T1200-no-prearm-no-wave-lock"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -6966,7 +6966,7 @@ class CorridorCoordinator:
         # the attribution blamed for the -26.9% gridlock -- removed. Clearing the
         # allowed set here means the cleanup loop below also drops any stale
         # pre-arm already queued for this bus, so nothing fires in _process_pre_requests.
-        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+        if not bool(globals().get('COORD_PREARM_ENABLED', False)):
             _allowed_targets = set()
 
         # (legacy mojibake comment truncated)
@@ -7731,7 +7731,7 @@ class CorridorCoordinator:
         # COORD_PREARM_ENABLED=False: coordinate the decision but never fire a
         # downstream pre-green. notify_bus_granted already stops queuing, so this
         # is defensive (and clears anything queued before the flag flipped).
-        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+        if not bool(globals().get('COORD_PREARM_ENABLED', False)):
             if self._pre_requests:
                 self._pre_requests.clear()
             return
@@ -30104,7 +30104,11 @@ class IntersectionController:
                     if self._corridor_coord is not None and COORDINATED_TSP:
                         _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
                         _this_bus = int(self.last_detected_bus_id or -1)
-                        if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
+                        # One bus's wave must not freeze every other junction: the block only
+                        # applies when pre-arms exist (the wave drives TSP through them).
+                        if (bool(globals().get('COORD_PREARM_ENABLED', False))
+                                and self._corridor_coord._wave_active and _wave_bus > 0
+                                and _wave_bus != _this_bus):
                             return False
 
                     opt_GE = _solve_timing_min(
@@ -30477,7 +30481,11 @@ class IntersectionController:
                 if self._corridor_coord is not None and COORDINATED_TSP:
                     _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
                     _this_bus = int(self.last_detected_bus_id or -1)
-                    if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
+                    # One bus's wave must not freeze every other junction: the block only
+                    # applies when pre-arms exist (the wave drives TSP through them).
+                    if (bool(globals().get('COORD_PREARM_ENABLED', False))
+                            and self._corridor_coord._wave_active and _wave_bus > 0
+                            and _wave_bus != _this_bus):
                         return False
 
                 opt_BP = _solve_timing_min(
@@ -33293,7 +33301,7 @@ def AAPISimulationReady():
                     elif prev_xy is None:
                         prev_xy = (0.0, 0.0)  # anchor first junction at origin
                 coord.set_corridor_positions(pos_map)
-            _prearm_on = bool(globals().get('COORD_PREARM_ENABLED', True))
+            _prearm_on = bool(globals().get('COORD_PREARM_ENABLED', False))
             log_to_file(
                 f"[CORRIDOR] geometry built for {len(corridor_coordinators)} "
                 f"group(s) (COORDINATED_TSP={COORDINATED_TSP} "

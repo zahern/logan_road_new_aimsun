@@ -6129,7 +6129,7 @@ for _nm, _ov in _DSW_ISO_ARMS:
 # wider off-set. Read the [STRATEGY]/[LOAD] lines and the per-arm action counts.
 _ABL_BASE = "CHAMP_DSW_ISO_CTRL"
 _ABL_ARMS = [
-    ("CHAMP_ABL_m_prearmsup", {"DISABLE_PREARM": False}),                       # restore the speculative pre-arm green-wave
+    ("CHAMP_ABL_m_prearmsup", {"DISABLE_PREARM": False, "COORD_PREARM_ENABLED": True}),                       # restore the speculative pre-arm green-wave
     ("CHAMP_ABL_m_spillback",  {"SPILLBACK_DIRECT_OCC": False}),                # drop the micro-API main-queue occupancy floor
     ("CHAMP_ABL_m_delaycal",   {"DELAY_CALIBRATION": False}),                   # stop scaling reward toward realised .DTa
     ("CHAMP_ABL_m_cascade",    {"CASCADE_COST_MODE": False,
@@ -6178,7 +6178,7 @@ if _GABL_BASE not in {a["name"] for a in ARMS}:
     if "CHAMP_ADAPTIVE_DSW_CELLQ_GATED" in LEARNING_ARMS:
         LEARNING_ARMS.add(_GABL_BASE)
 _GABL_ARMS = [
-    ("CHAMP_GABL_m_prearmsup", {"DISABLE_PREARM": False}),            # restore the speculative pre-arm
+    ("CHAMP_GABL_m_prearmsup", {"DISABLE_PREARM": False, "COORD_PREARM_ENABLED": True}),            # restore the speculative pre-arm
     ("CHAMP_GABL_m_netgate",   {"BXT_NET_BENEFIT_GATE": False}),      # remove the bus-benefit>cross-cost veto (ON in GATED -> real test)
     ("CHAMP_GABL_m_cascade",   {"CASCADE_COST_MODE": False}),         # drop the CTM downstream-spillback cost term
     ("CHAMP_GABL_m_delaycal",  {"DELAY_CALIBRATION": False}),         # stop kappa-scaling reward toward realised .DTa
