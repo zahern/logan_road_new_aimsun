@@ -1,0 +1,11 @@
+--- /z/tsp/sumo_hpc/shared_tsp_engine/engine.py	2026-11-04 16:29:29.000000000 +1000
++++ _sumo_port/shared_tsp_engine/engine.py	2026-11-05 09:47:34.271235800 +1000
+@@ -35,7 +35,7 @@
+ # can be verified from the [LOAD] line in the run log. If the log shows an older
+ # stamp than this, Aimsun is running a CACHED copy of the module (re-running the
+ # script alone does NOT reload it — the whole Aimsun process must be quit).
+-ENGINE_BUILD = "2026-11-04T2330-sumo-cbql-cellbp"
++ENGINE_BUILD = "2026-11-06T1200-sumo-game-ladder"
+ try:
+     from AAPI import *
+ except Exception:
