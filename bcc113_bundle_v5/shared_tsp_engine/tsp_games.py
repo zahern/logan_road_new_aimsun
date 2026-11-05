@@ -108,6 +108,12 @@ def solve(concept: str, cands: Sequence[Cand], p: Params = None
     concept = (concept or '').strip().lower()
     diag = {'concept': concept, 'n': len(cands), 'nfeas': 0, 'score': None,
             'reason': ''}
+    if concept == 'null':
+        # CONTROL ARM: the identical pipeline (adaptive plan, candidates, CTM
+        # payoffs, logging) but the game never acts, so  arm - null  is the
+        # effect of the game alone, net of the adaptive plan underneath it.
+        diag['reason'] = 'null game (control arm)'
+        return None, diag
     if concept not in CONCEPTS:
         raise ValueError('unknown GAME_SOLUTION %r (one of %s)' % (concept, CONCEPTS))
     if not cands:

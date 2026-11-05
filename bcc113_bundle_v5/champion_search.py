@@ -6129,7 +6129,7 @@ for _nm, _ov in _DSW_ISO_ARMS:
 # wider off-set. Read the [STRATEGY]/[LOAD] lines and the per-arm action counts.
 _ABL_BASE = "CHAMP_DSW_ISO_CTRL"
 _ABL_ARMS = [
-    ("CHAMP_ABL_m_prearmsup", {"DISABLE_PREARM": False}),                       # restore the speculative pre-arm green-wave
+    ("CHAMP_ABL_m_prearmsup", {"DISABLE_PREARM": False, "COORD_PREARM_ENABLED": True}),                       # restore the speculative pre-arm green-wave
     ("CHAMP_ABL_m_spillback",  {"SPILLBACK_DIRECT_OCC": False}),                # drop the micro-API main-queue occupancy floor
     ("CHAMP_ABL_m_delaycal",   {"DELAY_CALIBRATION": False}),                   # stop scaling reward toward realised .DTa
     ("CHAMP_ABL_m_cascade",    {"CASCADE_COST_MODE": False,
@@ -6178,7 +6178,7 @@ if _GABL_BASE not in {a["name"] for a in ARMS}:
     if "CHAMP_ADAPTIVE_DSW_CELLQ_GATED" in LEARNING_ARMS:
         LEARNING_ARMS.add(_GABL_BASE)
 _GABL_ARMS = [
-    ("CHAMP_GABL_m_prearmsup", {"DISABLE_PREARM": False}),            # restore the speculative pre-arm
+    ("CHAMP_GABL_m_prearmsup", {"DISABLE_PREARM": False, "COORD_PREARM_ENABLED": True}),            # restore the speculative pre-arm
     ("CHAMP_GABL_m_netgate",   {"BXT_NET_BENEFIT_GATE": False}),      # remove the bus-benefit>cross-cost veto (ON in GATED -> real test)
     ("CHAMP_GABL_m_cascade",   {"CASCADE_COST_MODE": False}),         # drop the CTM downstream-spillback cost term
     ("CHAMP_GABL_m_delaycal",  {"DELAY_CALIBRATION": False}),         # stop kappa-scaling reward toward realised .DTa
@@ -6305,6 +6305,18 @@ if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
                 {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
                  "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
                  "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
+
+    # NULL-GAME CONTROL (2026-11-05): the game arms run on the adaptive DSW
+    # plan (cycle planner, plan library, MAIN_KEEP_FRAC 0.90), which retimes
+    # the corridor by itself -- the KG ladder of 2026-11-05 shows main greens
+    # cut at 6 of 12 junctions. This arm runs the SAME pipeline with a game
+    # that always holds, so  game arm - NULL  isolates what the game does.
+    if "CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2" not in {a["name"] for a in ARMS}:
+        ARMS.append(_with_overrides(
+            "CHAMP_ADAPTIVE_DSW_GAME_COOP", "CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2",
+            {"GAME_SOLUTION": "null", "NASH_COOPERATIVE": False,
+             "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+             "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
 
 # -- CELL-STATE BACK-PRESSURE arm (2026-11-04) ------------------------------
 # Store-and-forward / max-pressure release off the CTM cell state (queue x

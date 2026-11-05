@@ -49,7 +49,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-06T1000-nextred-check-game-dominance"
+ENGINE_BUILD = "2026-11-06T1200-no-prearm-no-wave-lock"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -6586,6 +6586,60 @@ class CorridorCoordinator:
             pass
         return None
 
+    def record_bus_crossing(self, veh_id, at_inter_id, time):
+        """TRUE offset: bus stop-line crossing at this junction minus its
+        crossing at the previous route junction (2026-11-05). The grant-based
+        [GREEN_OFFSET] measures controller decisions, which the pre-arm fires
+        in bursts (0-2 s apart over 700-1300 m); this measures the bus.
+        grant_lag_s = grant here - grant at previous junction, for comparison."""
+        try:
+            veh_id, at_inter_id = int(veh_id), int(at_inter_id)
+            at_pos = self.corridor_pos.get(at_inter_id)
+            _at_idx = self._route_index.get(at_inter_id, -1)
+            if at_pos is None or _at_idx < 0:
+                return
+            if not hasattr(self, '_cross_t'):
+                self._cross_t = {}
+            _cr = self._cross_t.setdefault(veh_id, {})
+            if time - _cr.get(at_inter_id, -1e9) < 60.0:
+                return                                   # same pass, debounce
+            _prev = [(self._route_index.get(j, -1), j, t) for j, t in _cr.items()
+                     if 0 <= self._route_index.get(j, -1) < _at_idx
+                     and time - t < 900.0]
+            _cr[at_inter_id] = float(time)
+            if not _prev:
+                return
+            _, _pj, _pt = max(_prev, key=lambda x: x[0])
+            _off = float(time) - _pt
+            _pp = self.corridor_pos.get(_pj)
+            _dist = abs(at_pos - (_pp if _pp is not None else at_pos))
+            _spd = _dist / _off if _off > 0.5 else 0.0
+            if _spd > 30.0:                  # id recycled / route jump: not one bus
+                return
+            _g = self._grant_times.get(veh_id, {}) if hasattr(self, '_grant_times') else {}
+            _glag = (_g[at_inter_id] - _g[_pj]) if (at_inter_id in _g and _pj in _g) else None
+            log_to_file("[BUS_OFFSET] bus=%d jct%d->%d offset=%.1fs dist=%.0fm "
+                        "speed=%.1fm/s grant_lag=%s" % (
+                            veh_id, _pj, at_inter_id, _off, _dist, _spd,
+                            ('%.1fs' % _glag) if _glag is not None else 'n/a'))
+            global _offset_header_written
+            import csv as _csv_mod
+            _row = {'sim_time_s': round(time, 1), 'experiment': _CURRENT_EXPERIMENT,
+                    'group': self.name, 'veh_id': veh_id, 'from_jct': _pj,
+                    'to_jct': at_inter_id, 'offset_s': round(_off, 2),
+                    'dist_m': round(_dist, 1), 'speed_est_ms': round(_spd, 2),
+                    'quality': 'crossing',
+                    'grant_from_t': round(_g.get(_pj, -1.0), 1),
+                    'grant_to_t': round(_g.get(at_inter_id, -1.0), 1)}
+            with open(_OFFSET_CSV, 'a', newline='') as _f_off:
+                _w = _csv_mod.DictWriter(_f_off, fieldnames=list(_row.keys()))
+                if not _offset_header_written:
+                    _w.writeheader()
+                    _offset_header_written = True
+                _w.writerow(_row)
+        except Exception as _e:
+            _note_swallow('record_bus_crossing', _e)
+
     def notify_bus_granted(self, veh_id: int, at_inter_id: int,
                            time: float, bus_sg=None):
         """
@@ -6912,7 +6966,7 @@ class CorridorCoordinator:
         # the attribution blamed for the -26.9% gridlock -- removed. Clearing the
         # allowed set here means the cleanup loop below also drops any stale
         # pre-arm already queued for this bus, so nothing fires in _process_pre_requests.
-        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+        if not bool(globals().get('COORD_PREARM_ENABLED', False)):
             _allowed_targets = set()
 
         # (legacy mojibake comment truncated)
@@ -7677,7 +7731,7 @@ class CorridorCoordinator:
         # COORD_PREARM_ENABLED=False: coordinate the decision but never fire a
         # downstream pre-green. notify_bus_granted already stops queuing, so this
         # is defensive (and clears anything queued before the flag flipped).
-        if not bool(globals().get('COORD_PREARM_ENABLED', True)):
+        if not bool(globals().get('COORD_PREARM_ENABLED', False)):
             if self._pre_requests:
                 self._pre_requests.clear()
             return
@@ -23059,6 +23113,30 @@ class IntersectionController:
         _jid = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
         _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
         _veh = _vlt_scan(self._vlt_secs(_v['built']), time, _btp)
+        # ---- bus stop-line crossings -> true corridor offsets -------------
+        _cc = getattr(self, '_corridor_coord', None)
+        if _cc is not None and _btp > 0:
+            try:
+                _seen = _v.setdefault('bus_near', {})
+                for _ap in _v['approaches']:
+                    _ss = int(_ap['stop_sec'])
+                    _rows = _veh.get(_ss)
+                    if _rows is None:
+                        _rows = _vlt_scan([_ss], time, _btp).get(_ss, [])
+                    _L = float(_sec_len_m(_ss) or 0.0)
+                    _here = {r[0] for r in _rows if r[4]}
+                    for _r in _rows:
+                        if _r[4] and _L > 0 and _r[1] >= _L - 15.0:
+                            _seen[_r[0]] = (_ss, time)
+                    # a bus seen at the stop line that has now left the
+                    # section has crossed it
+                    for _vid, (_s0, _t0) in list(_seen.items()):
+                        if _s0 == _ss and _vid not in _here:
+                            del _seen[_vid]
+                            if time - _t0 < 30.0:
+                                _cc.record_bus_crossing(_vid, _jid, time)
+            except Exception as _swx:
+                _note_swallow('_vlt_tick#cross', _swx)
         _lg = _vlt_ledger()
         _chk = bool(globals().get('ASSUME_CHECKS', True)) and _lg is not None
         # ---- phase tracking (served greens, rem-green check) --------------
@@ -30026,7 +30104,11 @@ class IntersectionController:
                     if self._corridor_coord is not None and COORDINATED_TSP:
                         _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
                         _this_bus = int(self.last_detected_bus_id or -1)
-                        if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
+                        # One bus's wave must not freeze every other junction: the block only
+                        # applies when pre-arms exist (the wave drives TSP through them).
+                        if (bool(globals().get('COORD_PREARM_ENABLED', False))
+                                and self._corridor_coord._wave_active and _wave_bus > 0
+                                and _wave_bus != _this_bus):
                             return False
 
                     opt_GE = _solve_timing_min(
@@ -30399,7 +30481,11 @@ class IntersectionController:
                 if self._corridor_coord is not None and COORDINATED_TSP:
                     _wave_bus = int(getattr(self._corridor_coord, '_wave_veh_id', -1) or -1)
                     _this_bus = int(self.last_detected_bus_id or -1)
-                    if self._corridor_coord._wave_active and _wave_bus > 0 and _wave_bus != _this_bus:
+                    # One bus's wave must not freeze every other junction: the block only
+                    # applies when pre-arms exist (the wave drives TSP through them).
+                    if (bool(globals().get('COORD_PREARM_ENABLED', False))
+                            and self._corridor_coord._wave_active and _wave_bus > 0
+                            and _wave_bus != _this_bus):
                         return False
 
                 opt_BP = _solve_timing_min(
@@ -33215,7 +33301,7 @@ def AAPISimulationReady():
                     elif prev_xy is None:
                         prev_xy = (0.0, 0.0)  # anchor first junction at origin
                 coord.set_corridor_positions(pos_map)
-            _prearm_on = bool(globals().get('COORD_PREARM_ENABLED', True))
+            _prearm_on = bool(globals().get('COORD_PREARM_ENABLED', False))
             log_to_file(
                 f"[CORRIDOR] geometry built for {len(corridor_coordinators)} "
                 f"group(s) (COORDINATED_TSP={COORDINATED_TSP} "

@@ -4151,7 +4151,7 @@ CBQL_EXECUTE = False
 CBQL_QUEUE_DELAY_S = 2.0   # per-veh delay weight for the queue fallback when .DTa is None
 CBQL_MIN_GREEN_S = 7.0
 CBQL_MAX_GREEN_S = 60.0
-CBQL_DECISION_COOLDOWN_S = 3.0
+CBQL_DECISION_COOLDOWN_S = 1.0   # act at 1 s intervals (no pre-arms)
 # Per-junction cap on agent-driven phase switches within a trailing one-cycle
 # window (anti-thrash); a max-green advance bypasses it. 0 disables the cap.
 CBQL_MAX_SWITCHES_PER_CYCLE = 4

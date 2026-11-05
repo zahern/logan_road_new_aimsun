@@ -55,6 +55,8 @@ if _PAY in ("legacy", "both"):
     _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_" + k for k in _SOL]
 if _PAY in ("ctm2", "both"):
     _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_%s_CTM2" % k for k in _SOL]
+    # control: same pipeline, the game never acts (game arm - NULL = game effect)
+    _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2"]
 _os.environ.setdefault("FIXED_ARMS", ",".join(
     ["CHAMP_ADAPTIVE_DSW_GAME_BUS", "CHAMP_ADAPTIVE_DSW_GAME_COOP"] + _sol_arms))
 _os.environ.setdefault("FIXED_TRAIN_SEEDS", "")          # games do not learn
