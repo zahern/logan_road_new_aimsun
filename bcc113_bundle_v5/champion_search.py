@@ -6306,6 +6306,18 @@ if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
                  "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
                  "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
 
+    # NULL-GAME CONTROL (2026-11-05): the game arms run on the adaptive DSW
+    # plan (cycle planner, plan library, MAIN_KEEP_FRAC 0.90), which retimes
+    # the corridor by itself -- the KG ladder of 2026-11-05 shows main greens
+    # cut at 6 of 12 junctions. This arm runs the SAME pipeline with a game
+    # that always holds, so  game arm - NULL  isolates what the game does.
+    if "CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2" not in {a["name"] for a in ARMS}:
+        ARMS.append(_with_overrides(
+            "CHAMP_ADAPTIVE_DSW_GAME_COOP", "CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2",
+            {"GAME_SOLUTION": "null", "NASH_COOPERATIVE": False,
+             "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+             "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
+
 # -- CELL-STATE BACK-PRESSURE arm (2026-11-04) ------------------------------
 # Store-and-forward / max-pressure release off the CTM cell state (queue x
 # downstream free space) with a spillback gate -- drains saturated approaches
