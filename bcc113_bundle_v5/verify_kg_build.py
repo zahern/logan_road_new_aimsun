@@ -13,10 +13,20 @@ the files on disk right now:
 
  1. The run's own [LOAD] line
         [LOAD] AAPILoad complete | ... | ENGINE_BUILD=<tag> | SOURCE_HASH=<h> |
+               SPM_HASH=<h> | SPM_SRC=loaded | SPM_FILE=<path> |
                STATS_BUILD=<s> | engine_file=<path>
     SOURCE_HASH is sha1(engine.py)[:12] captured AT IMPORT, so it identifies the
     bytes Aimsun executed. A log written before that field existed shows no
     SOURCE_HASH at all -- which is itself proof it is not the patched build.
+    SPM_HASH is specialized_modes' own import-time stamp, so ONE run log now
+    identifies BOTH modules without reading runner_console.txt. It is only
+    checked when SPM_SRC=loaded: "disk" means spm was not importable and the
+    value describes the file on disk, so it cannot prove what executed.
+    The [LOAD] stamp and the runner's [PREFLIGHT] hash must also AGREE within
+    one session: a disagreement means the two sources describe different
+    specialized_modes bytes (one is from another session, or a foreign copy
+    shadowed the bundle), which is a failure even when each value looks
+    plausible on its own.
 
  2. The batch runner's preflight in <logs>/runner_console.txt
         [PREFLIGHT] engine build matches disk (<tag>)
@@ -80,6 +90,16 @@ def engine_tag(path=ENG_PY):
 def expected():
     return {"tag": engine_tag(), "eng": sha12(ENG_PY), "spm": sha12(SPM_PY),
             "eng_py": ENG_PY, "spm_py": SPM_PY}
+
+
+def corridor_label(logs_dir):
+    """'logan_road_new' / 'kg' -- for messages, so a Logan run is not told to
+    reopen the KG model."""
+    try:
+        return os.path.basename(os.path.dirname(
+            os.path.abspath(logs_dir).rstrip('/' + os.sep)))
+    except Exception:
+        return "the"
 
 
 def run_logs(logs_dir):
@@ -150,6 +170,21 @@ def preflight_tag(text):
     return m.group(1) if m else None
 
 
+def is_bundle_copy(observed, want):
+    """True when a logged import path resolves to the bundle file.
+
+    Aimsun may report the path with either separator or different case, so both
+    sides are normalised. Anything that does not land on the bundle is a SHADOWED
+    module regardless of how familiar its hash or tag looks: the process ran code
+    from somewhere else on sys.path, which no content comparison can reveal.
+    """
+    if not observed:
+        return False
+    n = os.path.normcase(os.path.normpath(observed)).replace("/", "\\")
+    w = os.path.normcase(os.path.normpath(want)).replace("/", "\\")
+    return n == w
+
+
 def _verdict(res, label, observed, want, note=""):
     if observed is None:
         res["unmeasured"] += 1
@@ -205,11 +240,39 @@ def evaluate(log_path, logs_dir=None, since=0.0):
     else:
         _verdict(res, "[LOAD] SOURCE_HASH", fields.get("SOURCE_HASH"), exp["eng"])
 
-    eng_file = fields.get("engine_file", "")
-    norm = os.path.normcase(os.path.normpath(eng_file)).replace("/", "\\")
-    want = os.path.normcase(os.path.normpath(ENG_PY)).replace("/", "\\")
-    _verdict(res, "engine_file", "bundle" if norm == want else (eng_file or None),
-             "bundle", note="resolved elsewhere: a foreign copy shadowed the bundle")
+    # specialized_modes is cached separately from engine.py, so a run can carry
+    # a fresh engine hash and a stale spm. The stamp is only decisive when the
+    # engine reported the hash of the module it actually imported (SPM_SRC
+    # loaded); a disk hash must never be scored as a pass for what ran.
+    if "SPM_HASH" not in fields:
+        _verdict(res, "[LOAD] SPM_HASH", None, exp["spm"],
+                 note="field absent: build predates the [LOAD] spm stamp")
+    elif str(fields.get("SPM_SRC", "")).strip().lower() == "loaded":
+        _verdict(res, "[LOAD] SPM_HASH", fields.get("SPM_HASH"), exp["spm"])
+    else:
+        _verdict(res, "[LOAD] SPM_HASH", None, exp["spm"],
+                 note="SPM_SRC=%s: value describes the file, not the loaded "
+                      "module ([PREFLIGHT] covers that)"
+                      % (fields.get("SPM_SRC") or "?"))
+
+    # WHICH FILE each module was imported from. A copy outside the bundle is a
+    # shadowed module, not a stale one, and a matching tag from the wrong copy is
+    # still the wrong code. Both modules are checked because Aimsun caches them
+    # independently and each can be shadowed independently.
+    for _label, _field, _want in (("engine_file", "engine_file", ENG_PY),
+                                  ("spm_file", "SPM_FILE", SPM_PY)):
+        _seen = str(fields.get(_field, "") or "").strip()
+        if _field not in fields:
+            _verdict(res, _label, None, "bundle",
+                     note="field absent: pre-SPM_FILE build")
+        elif _seen in ("", "?"):
+            _verdict(res, _label, None, "bundle",
+                     note="path unavailable: __file__ was unset at import")
+        else:
+            _verdict(res, _label,
+                     "bundle" if is_bundle_copy(_seen, _want) else _seen, "bundle",
+                     note="imported from OUTSIDE the bundle: a foreign copy "
+                          "shadowed it on sys.path")
 
     console = os.path.join(logs_dir, "runner_console.txt")
     ptext = read(console)
@@ -230,6 +293,24 @@ def evaluate(log_path, logs_dir=None, since=0.0):
         _verdict(res, "[PREFLIGHT] engine content", preflight(ptext, "engine"), exp["eng"])
         _verdict(res, "[PREFLIGHT] specialized_modes",
                  preflight(ptext, "specialized_modes"), exp["spm"])
+
+        # CROSS-CHECK (2026-11-09): both stamps claim to describe the module
+        # THIS session loaded, so they must be equal. Each can look plausible
+        # while disagreeing -- a console line borrowed from the previous
+        # session inside the 120 s slack, or a foreign specialized_modes
+        # shadowing the bundle -- and independent verdicts would not catch it.
+        # Only comparable when the [LOAD] hash came from the loaded module; a
+        # SPM_SRC=disk value describes a file, so it may legitimately differ.
+        _load_spm = str(fields.get("SPM_HASH") or "").strip()
+        _load_spm_src = str(fields.get("SPM_SRC") or "").strip().lower()
+        _pf_spm = preflight(ptext, "specialized_modes")
+        if (_load_spm_src == "loaded" and _load_spm not in ("", "?")
+                and _pf_spm):
+            _verdict(res, "[LOAD] vs [PREFLIGHT] spm", _load_spm, _pf_spm,
+                     note="the run log and the runner console describe "
+                          "DIFFERENT specialized_modes bytes: one of them "
+                          "belongs to another session, or a foreign copy "
+                          "of the module was imported")
 
     for name in _EMITS:
         res["counts"][name] = len(re.findall(r"\[%s\]" % name, text))
@@ -252,8 +333,8 @@ def check_or_raise(logs_dir, since=0.0, log=print):
         raise RuntimeError(
             "[POSTRUN] ABORTING sweep at the first completed run: it did NOT "
             "execute the build on disk (%d check(s) failed). Quit Aimsun "
-            "completely, reopen the model, re-run. Expected %s / %s."
-            % (res["fails"], res["tag"], res["eng"]))
+            "completely, reopen the %s model, re-run. Expected %s / %s."
+            % (res["fails"], corridor_label(logs_dir), res["tag"], res["eng"]))
     if res["unmeasured"]:
         log("[POSTRUN] build gate INCONCLUSIVE (%d check(s) not measured) -- "
             "continuing; see [POSTRUN] lines above." % res["unmeasured"])
@@ -343,7 +424,8 @@ def main(argv=None):
     if res["fails"]:
         print("RESULT: %d FAILED, %d not measured -> this run did NOT execute the"
               " build on disk." % (res["fails"], res["unmeasured"]))
-        print("  Quit Aimsun COMPLETELY, reopen the KG model, and re-run.")
+        print("  Quit Aimsun COMPLETELY, reopen the %s model, and re-run."
+              % corridor_label(logs_dir))
         print("=" * 78)
         return 1
     if res["unmeasured"]:

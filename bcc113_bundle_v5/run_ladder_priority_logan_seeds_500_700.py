@@ -22,8 +22,31 @@ import os as _os
 
 _HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
 
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# This launcher sets FIXED_SEEDS / FIXED_OUT itself and delegates to the Logan
+# ladder launcher. Without a stamp that delegate would treat these values as a
+# foreign launcher's leftover and throw them away; without dropping a stale
+# FIXED_ARMS the handover would launder a THIRD launcher's arm list into the
+# delegate as if it were ours.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_ladder_priority_logan_seeds_500_700.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _drop_foreign(key):
+    """Remove a foreign leftover this launcher does not set itself."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if _v and _foreign:
+        print("[ENV] %s left by %s -- DISCARDED, this launcher does not take it"
+              % (key, _prev_owner))
+        _os.environ.pop(key, None)
+
+
+_drop_foreign("FIXED_ARMS")
 _os.environ["FIXED_SEEDS"] = "500,600,700"
 _os.environ["FIXED_OUT"] = "paper_ladder_priority_logan_500_700.csv"
+_os.environ[_ENV_OWNER] = _MY_NAME
 
 print("=" * 72)
 print("LOGAN PRIORITY LADDER -- seeds 500,600,700 (500 = CTM connector A/B)")
@@ -31,8 +54,13 @@ print("  base launcher:", _os.path.join(_HERE, "run_ladder_priority_on_dsw_logan
 print("  out          :", _os.path.join(_HERE, "paper_ladder_priority_logan_500_700.csv"))
 print("=" * 72)
 
-exec(compile(
-    open(_os.path.join(_HERE, "run_ladder_priority_on_dsw_logan.py"),
-         encoding="utf-8").read(),
-    _os.path.join(_HERE, "run_ladder_priority_on_dsw_logan.py"), "exec"),
-    {"__name__": "__main__"})
+# Hand the env over: FIXED_SEEDS / FIXED_OUT above are this launcher's.
+_os.environ[_ENV_OWNER] = "run_ladder_priority_on_dsw_logan.py"
+try:
+    exec(compile(
+        open(_os.path.join(_HERE, "run_ladder_priority_on_dsw_logan.py"),
+             encoding="utf-8").read(),
+        _os.path.join(_HERE, "run_ladder_priority_on_dsw_logan.py"), "exec"),
+        {"__name__": "__main__"})
+finally:
+    _os.environ[_ENV_OWNER] = _MY_NAME

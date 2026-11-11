@@ -216,6 +216,24 @@ BXT_ENABLE_OC = True   # offset correction (solved bus-phase alignment, 2026-09-
 # gate + cost veto (via _cross_cost_paxs) so harmful actions on a congested cross
 # approach get vetoed. Off by default; the champion pipeline turns it on globally.
 MEASURED_SIDE_COST       = True
+# MARGINAL-COMPETITOR side cost (2026-11-10): when True, the side-delay penalty
+# charges only the SINGLE highest-cost conflicting phase (the MaxPressure
+# opportunity cost) instead of summing every side movement. Correct for the
+# fixed-cycle coordinated plans all champion arms run; see
+# engine._marginal_competitor_side_delay. Off by default (champion unchanged).
+SIDE_COST_MARGINAL_COMPETITOR = False
+# BASE_PLAN controller family (2026-11-11): when CONTROL_MODE == "BASE_PLAN",
+# BASE_PLAN selects which LightSim base controller fills the no-grant ticks
+# under the TSP/game layer (engine.run_base_plan). One of FIXEDTIME (default,
+# commissioned plan), WEBSTER (add PLAN_OPTIMIZE for the Webster warm-start),
+# GREENWAVE (commissioned offsets), MAXPRESSURE (== LIGHTSIM_MP base), SOTL,
+# LT_MAXPRESSURE, EFF_MAXPRESSURE. Knobs below tune the three new rules; all
+# read with a default so an arm need only set the ones it changes.
+BASE_PLAN                = "FIXEDTIME"
+BASE_PLAN_HOLD_TO_PLAN   = True   # reactive bases (LT/Eff/pax-MP) switch only at the commissioned plan's points -> keep coordination (False = pure reactive, gridlocks a coordinated corridor)
+SOTL_THRESHOLD           = 1.0    # SOTL: hold current green while its measured demand (queue-row sum) exceeds this
+LT_MP_SWITCH_BAR         = 1.0    # LT-MaxPressure: switch only if pressure gain > this * intergreen (lost-time bar)
+EFF_MP_PRESSURE_GAIN_S   = 4.0    # Eff-MaxPressure: extra green seconds per unit of current-phase pressure
 MEASURED_SIDE_SPILL_GAIN = 3.0    # spillback severity gain: cost *= 1 + gain*sat/(1-sat)
 MEASURED_SIDE_FRESH_S    = 90.0   # max age (s) of a latest_section measurement to trust
 MEAS_MIN_SECTION_M       = 25.0   # min section length for a countÃƒÆ’Ã¢â‚¬â€speed flow estimate (shorter = connector stub -> unmeasurable)
@@ -4140,6 +4158,65 @@ GAME_TOL_CAR_FRAC = 0.25
 GAME_PAYOFF_MODEL = 'legacy'
 GAME_CTM2_HORIZON_S = 60.0
 GAME_CTM2_IG_S = 5.0
+# CASCADE PRICING: throttle each approach's CTM stop-line discharge by its
+# downstream receiving link's free space (1 - gamma*downstream_jam_frac), so the
+# game sees the arterial queue an action creates instead of free clearance.
+# Default off (byte-identical). GAMMA scales how hard spillback bites.
+GAME_CTM2_SPILLBACK = False
+GAME_CTM2_SPILLBACK_GAMMA = 1.0
+# Shared 2-hop network CTM rollout for the block term (2026-11-09). Off keeps
+# the scalar per-phase jam fraction byte-identical to before.
+GAME_CTM2_ROLLOUT = False
+# LightSim-style NETWORK CTM as the ALTERNATIVE model for the block term
+# (shared_tsp_engine/ctm_lightsim.py, after Su & Deng, arXiv:2602.21852): every
+# turning movement carries a turn ratio, is masked by the signal state, capped
+# at the saturation rate, and scaled proportionally on merge/diverge, instead of
+# the equal-split hop approximation. Implies GAME_CTM2_ROLLOUT (it replaces that
+# model, it does not stack on it). Default off (byte-identical).
+GAME_CTM2_LIGHTSIM = False
+GAME_CTM2_LIGHTSIM_MAX_CELLS = 12
+# Which cell decides "the receiver is full" for the LightSim block:
+#   'worst' busiest cell anywhere on the link (default, original behaviour;
+#           pessimistic -- a link whose OWN stop line is red fills it without
+#           blocking entry)
+#   'entry' cell 0, the cell a discharging movement enters, which is what the
+#           model itself gates on (recv[t][0])
+#   'mean'  link-average peak occupancy
+GAME_CTM2_LIGHTSIM_READOUT = 'worst'
+# CHAIN SEED (2026-11-08): seed the two-class CTM over the RESOLVED UPSTREAM CHAIN
+# (true vehicle positions on every chained section) instead of only the single
+# stop-line section, so a short-block approach (e.g. Logan 5-15 m stubs) gets its
+# proper multi-cell domain and the queue extending upstream is visible to the game.
+# Default off (byte-identical on long-block corridors like KG). REACH_M caps the
+# walk; the chain still stops honestly at dead/managed/main.
+GAME_CTM2_CHAIN_SEED = False
+GAME_CTM2_CHAIN_REACH_M = 200.0
+# BUS-IN-HORIZON GATE: only let the game commit when its pick actually helps the
+# bus (u_bus > GAME_MIN_BUS_BENEFIT_PAXS); otherwise HOLD. Stops the game acting
+# on car utility when the bus is not served within the CTM horizon. Default off.
+GAME_BUS_IN_HORIZON = False
+GAME_MIN_BUS_BENEFIT_PAXS = 0.0
+# CONGESTION BAND GATE: the game acts only when a junction has a real queue
+# (>= MIN_QUEUE) and is NOT over-saturated. Below the band the coordinated base
+# is already optimal (acting hurts); above it, acting steals unrecoverable cross
+# green and cascades (seed-300 +38% blowup). Default off.
+#   UPPER BOUND -- two signals, MAX_JAM preferred:
+#   * MAX_JAM (>0): cell-state jam fraction (vehicles present / physical storage,
+#     from _section_jam_frac) over the approach sections. TRUSTWORTHY -- a direct
+#     vehicle count, immune to the detector-sum DS inflation. USE THIS.
+#   * MAX_DS (legacy, used only when MAX_JAM<=0): _approach_ds_snapshot ds_max.
+#     On KG the DS estimator reads ~18x true (ds 3.7 for a true ~0.3 junction),
+#     so this phantom-holds 2/3 of solves -- do not use it as the upper bound.
+GAME_CONGESTION_GATE = False
+GAME_CONGESTION_MIN_QUEUE_VEH = 4.0
+GAME_CONGESTION_MAX_DS = 0.90
+GAME_CONGESTION_MAX_JAM = 0.0
+# CROSS-STARVATION COST MULTIPLIER: scale the CTM2 cross cost C (= car pax.s LOST
+# on the approaches that give up green to the action) the game solver trades
+# against, WITHOUT touching the benefit side B. >1 makes the game act only when
+# the bus+main benefit robustly beats a pessimistic cross cost; it reweights the
+# one cross term the CTM already computes (no double-count). 1.0 = unchanged.
+GAME_CROSS_STARVE_MULT = 1.0
 # CBQL_SHAPLEY controller mode (Qin & Zhang, arXiv:2404.19683): phase-selection
 # cooperative-game (Shapley) + Q-learning controller. Default off. The observe
 # increment derives the junction's phase structure from live data + runs the
@@ -9583,6 +9660,17 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
     _margin = 0.0
     _ctm2_B = None          # GAME_PAYOFF_MODEL='ctm2': the CTM phase benefit of the pick
     if _corridor_ran:
+        if _gsol:
+            # A named GAME_SOLUTION concept is decided by tsp_games below, but the
+            # corridor Tier-2 pre-empted it (NASH_CORRIDOR_MODE=True). Never let
+            # that be silent: every concept arm then returns byte-identical rows
+            # and the whole ladder looks inert (2026-11-06 ladder).
+            try:
+                _log_func(self, "[GAME_SOL] inter=%s t=%.0f BYPASSED game=%s "
+                            "(corridor tier ran; NASH_CORRIDOR_MODE must be False)"
+                          % (getattr(self, 'id', '?'), float(time), _gsol), force=True)
+            except Exception:
+                pass
         if _bi is None:                          # corridor equilibrium = do nothing
             # _corr_diag is keyed by junction (the solver may evaluate a slice);
             # the helper wants THIS junction's record.
@@ -9595,6 +9683,68 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
         # Payoffs exactly as the legacy Tier-1 frontier builds them: B = phase
         # total (bus + mainline; car-only on monitor ticks), C = cross cost,
         # b = bus-only benefit. See tsp_games for every concept's rule.
+        # CONGESTION BAND GATE (GAME_CONGESTION_GATE): act only when this junction
+        # has a real queue to relieve AND is not OVER-saturated. Seed analysis
+        # (2026-11-05): the game helps on congested-but-recoverable junctions
+        # (seed 500) but CASCADES when it reallocates/inserts at an already-
+        # saturated junction (seed 300: inter 39606 x=0.96 -> +38%). So HOLD both
+        # below MIN_QUEUE (free -> acting breaks coordination for no gain) and at
+        # or above MAX_DS (gridlocked -> acting steals unrecoverable cross green).
+        if bool(globals().get('GAME_CONGESTION_GATE', False)):
+            _cg_minq = float(globals().get('GAME_CONGESTION_MIN_QUEUE_VEH', 4.0) or 0.0)
+            _cg_maxds = float(globals().get('GAME_CONGESTION_MAX_DS', 0.90) or 0.0)
+            _cg_maxjam = float(globals().get('GAME_CONGESTION_MAX_JAM', 0.0) or 0.0)
+            _cg_q = 0.0
+            _cg_ds = 0.0
+            _cg_jam = 0.0
+            _cg_po = {}
+            try:
+                _cg_po = self._phase_origin_sections() or {}
+                for _cg_secs in _cg_po.values():
+                    try:
+                        _cg_qq = self._measured_sections_queue_veh(list(_cg_secs or []))
+                        if _cg_qq is not None:
+                            _cg_q = max(_cg_q, float(_cg_qq))
+                    except Exception:
+                        pass
+            except Exception:
+                _cg_q = _cg_minq + 1.0            # fail-open: do not suppress on error
+            # UPPER-BOUND saturation signal. Prefer the cell-state jam fraction
+            # (direct veh count / storage -- trustworthy); fall back to the DS
+            # estimator only when MAX_JAM is not configured.
+            if _cg_maxjam > 0.0:
+                try:
+                    for _cg_secs in _cg_po.values():
+                        for _cg_s in (_cg_secs or []):
+                            try:
+                                _cg_jam = max(_cg_jam,
+                                              float(self._section_jam_frac(int(_cg_s)) or 0.0))
+                            except Exception:
+                                pass
+                except Exception:
+                    _cg_jam = 0.0                 # fail-open
+            else:
+                try:
+                    _cg_ds = float((self._approach_ds_snapshot(timeSta) or {}).get(
+                        'ds_max', 0.0) or 0.0)
+                except Exception:
+                    _cg_ds = 0.0
+            _cg_hold = None
+            if _cg_q < _cg_minq:
+                _cg_hold = 'uncongested q=%.1f<%.1f' % (_cg_q, _cg_minq)
+            elif _cg_maxjam > 0.0 and _cg_jam >= _cg_maxjam:
+                _cg_hold = 'oversaturated jam=%.2f>=%.2f' % (_cg_jam, _cg_maxjam)
+            elif _cg_maxjam <= 0.0 and _cg_maxds > 0.0 and _cg_ds >= _cg_maxds:
+                _cg_hold = 'oversaturated ds=%.2f>=%.2f' % (_cg_ds, _cg_maxds)
+            if _cg_hold is not None:
+                try:
+                    _log_func(self, "[GAME_SOLVE] inter=%s t=%.0f HOLD(congestion) %s"
+                              % (getattr(self, 'id', '?'), float(time), _cg_hold),
+                              force=True)
+                except Exception as _ge:
+                    _note_swallow_spm(self, 'game_congestion_log', _ge)
+                _nash_held_log(self, time, veh_id, cand, _loc_diag, 'game:congestion')
+                return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
         _gc = []
         _pmodel = str(globals().get('GAME_PAYOFF_MODEL', 'legacy') or 'legacy').lower()
         _ctm2 = None
@@ -9662,6 +9812,26 @@ def dctsp_nash_bargain(self, time, timeSta, acycle, bus_eta_s, veh_id,
             _note_swallow_spm(self, 'game_solve_log', _ge)
         if _bi is None:
             _nash_held_log(self, time, veh_id, cand, _loc_diag, 'game:' + _gsol)
+            return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
+        # BUS-IN-HORIZON GATE (GAME_BUS_IN_HORIZON): on KG the CTM2 bus payoff is
+        # 0 on ~82% of solves because the detected bus is NOT within the
+        # approach-cell horizon at decision time, so the game would act on CAR
+        # utility alone (not transit priority) and cascade. When on, require the
+        # pick to ACTUALLY help the bus (u_bus > GAME_MIN_BUS_BENEFIT_PAXS); else
+        # HOLD. This is the robust form of "fire only when the bus is in the CTM
+        # horizon" -- it reads the realised CTM bus benefit, not an ETA proxy.
+        if (bool(globals().get('GAME_BUS_IN_HORIZON', False))
+                and float(_gc[_bi].u_bus) <= float(globals().get(
+                    'GAME_MIN_BUS_BENEFIT_PAXS', 0.0) or 0.0)):
+            try:
+                _log_func(self, "[GAME_SOLVE] inter=%s t=%.0f HOLD(bus_horizon) "
+                          "pick=%s_%gs u_bus=%.0f u_car=%.0f (bus not served in "
+                          "horizon)" % (getattr(self, 'id', '?'), float(time),
+                          _gc[_bi].family, _gc[_bi].duration,
+                          _gc[_bi].u_bus, _gc[_bi].u_car), force=True)
+            except Exception as _ge:
+                _note_swallow_spm(self, 'game_horizon_log', _ge)
+            _nash_held_log(self, time, veh_id, cand, _loc_diag, 'game:bus_horizon')
             return ('NO_ACTION', 0.0, 0.0, 0.0, so_na, tp_na, rows)
         if _pmodel == 'ctm2':
             _ctm2_B = float(_gc[_bi].B)
@@ -11836,6 +12006,15 @@ MODE_FLAGS = [
     'SW_INS_STRETCH', 'SW_INS_MAX_S',
     'GAME_SOLUTION', 'GAME_TOL_BUS_FRAC', 'GAME_TOL_CAR_FRAC',
     'GAME_PAYOFF_MODEL', 'GAME_CTM2_HORIZON_S', 'GAME_CTM2_IG_S',
+    'GAME_CTM2_SPILLBACK', 'GAME_CTM2_SPILLBACK_GAMMA',
+    'GAME_CTM2_ROLLOUT',
+    'GAME_CTM2_LIGHTSIM', 'GAME_CTM2_LIGHTSIM_MAX_CELLS',
+    'GAME_CTM2_LIGHTSIM_READOUT',
+    'GAME_CTM2_CHAIN_SEED', 'GAME_CTM2_CHAIN_REACH_M',
+    'GAME_BUS_IN_HORIZON', 'GAME_MIN_BUS_BENEFIT_PAXS',
+    'GAME_CONGESTION_GATE', 'GAME_CONGESTION_MIN_QUEUE_VEH',
+    'GAME_CONGESTION_MAX_DS', 'GAME_CONGESTION_MAX_JAM',
+    'GAME_CROSS_STARVE_MULT',
     'CBQL_SHAPLEY_MODE', 'CBQL_EXECUTE', 'CBQL_QUEUE_DELAY_S',
     'CBQL_MIN_GREEN_S', 'CBQL_MAX_GREEN_S', 'CBQL_DECISION_COOLDOWN_S',
     'CBQL_MAX_SWITCHES_PER_CYCLE', 'CBQL_ALPHA', 'CBQL_GAMMA',
@@ -11857,7 +12036,8 @@ MODE_FLAGS = [
     'BXT_ER_OFFPHASE_CREDIT', 'BXT_ER_OFFPHASE_GAIN_WEIGHT',
     'BXT_CELL_BUS_OCC_ONLY_IF_ARRIVING',
     'BXT_ENABLE_OC',
-    'MEASURED_SIDE_COST', 'MEASURED_SIDE_SPILL_GAIN', 'MEASURED_SIDE_FRESH_S', 'MEAS_MIN_SECTION_M',
+    'MEASURED_SIDE_COST', 'SIDE_COST_MARGINAL_COMPETITOR', 'MEASURED_SIDE_SPILL_GAIN', 'MEASURED_SIDE_FRESH_S', 'MEAS_MIN_SECTION_M',
+    'BASE_PLAN', 'BASE_PLAN_HOLD_TO_PLAN', 'SOTL_THRESHOLD', 'LT_MP_SWITCH_BAR', 'EFF_MP_PRESSURE_GAIN_S',
     'DELAY_CALIBRATION', 'DELAY_CAL_REF_S', 'DELAY_CAL_ALPHA',
     'DELAY_CAL_ALPHA_UP', 'DELAY_CAL_ALPHA_DOWN', 'DELAY_CAL_MIN', 'DELAY_CAL_MAX',
     'DELAY_CAL_DIAG', 'DELAY_CAL_DIAG_PERIOD_S',

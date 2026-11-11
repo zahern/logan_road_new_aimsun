@@ -35,7 +35,7 @@ import importlib.util as _importlib_util
 # can be verified from the [LOAD] line in the run log. If the log shows an older
 # stamp than this, Aimsun is running a CACHED copy of the module (re-running the
 # script alone does NOT reload it — the whole Aimsun process must be quit).
-ENGINE_BUILD = "2026-11-06T1200-sumo-game-ladder"
+ENGINE_BUILD = "2026-11-10T2300-sumo-schedmatch"
 try:
     from AAPI import *
 except Exception:
@@ -24364,6 +24364,8 @@ _SCHED_DEPARTURES = {}
 # Sim wall-clock start (seconds-since-midnight) mapping sim-time -> wall time
 # for departure matching; None when unresolvable (headway fallback used).
 _SCHED_WALL_START = [None]
+_SCHED_MATCH_MIN_WINDOW_S = 120.0   # never narrower than this (s)
+_SCHED_MATCH_MAX_WINDOW_S = 900.0   # never wider than this (s)
 
 # Per-STOP scheduled times (2026-10-12, user: measure adherence AT each stop,
 # not just the origin departure). Extracted once from the Aimsun PT plan:
@@ -24941,28 +24943,68 @@ def _sched_spacing_load():
                 force=True)
 
 
-def _match_departure_dev(line_id, observed_wall_s):
-    """Per-bus schedule deviation from the timetable: observed wall entry
-    minus the nearest scheduled initial departure for the line (early
-    negative, late positive). Returns None when the line has no fixed
-    departures (interval lines, unknown wall-start) so callers fall back
-    to the headway method. Never raises."""
+def _sched_match_window_s(line_id):
+    """Half-headway match window for one line, clamped to [120, 900] s.
+
+    A bus more than half a headway from a departure cannot be told apart from
+    the bus on the NEXT departure, so this is the largest deviation the
+    timetable can still attribute to a specific run.
+    """
     try:
-        _deps = _SCHED_DEPARTURES.get(int(line_id))
+        _h = float(_SCHED_SPACING.get(int(line_id)) or 0.0)
+    except Exception:
+        _h = 0.0
+    _w = 0.5 * _h if _h > 0.0 else _SCHED_MATCH_MAX_WINDOW_S
+    return max(_SCHED_MATCH_MIN_WINDOW_S, min(_SCHED_MATCH_MAX_WINDOW_S, _w))
+
+
+def _match_departure_dev(line_id, observed_wall_s, stop_offset_s=0.0):
+    """Attribute one bus observation to a scheduled departure of ITS line.
+
+    Returns (deviation_s, intended_s, confidence, mode):
+      'window'    matched inside the line's half-headway window; confidence is
+                  1 - |dev|/window.
+      'unmatched' the nearest departure is further than any bus on that line
+                  could plausibly be; the deviation is still returned so the
+                  caller penalises it (at the clamp), but it is counted as
+                  unattributed instead of being reported as lateness.
+      None        the line has no timetable; caller uses the headway method.
+
+    stop_offset_s shifts the departure to the scheduled time at a downstream
+    stop, so the same window works per stop rather than only at line entry.
+
+    2026-11-10: ported from the Aimsun twin. The unbounded nearest departure
+    produced mean |dev| 877 s on a corridor whose headway makes that
+    physically impossible -- the match was landing about half a headway away
+    and reporting the gap as lateness.
+    """
+    try:
+        _lid = int(line_id)
+        _deps = _SCHED_DEPARTURES.get(_lid)
         if not _deps:
-            return None
+            return (None, None, 0.0, None)
         _obs = float(observed_wall_s)
+        _off = float(stop_offset_s or 0.0)
+        _win = _sched_match_window_s(_lid)
         _best_d = None
+        _best_t = None
         for _t in _deps:
             try:
-                _d = _obs - float(_t)
+                _tt = float(_t) + _off
             except Exception:
                 continue
+            _d = _obs - _tt
             if _best_d is None or abs(_d) < abs(_best_d):
                 _best_d = _d
-        return _best_d
+                _best_t = _tt
+        if _best_d is None:
+            return (None, None, 0.0, None)
+        if abs(_best_d) <= _win:
+            return (_best_d, _best_t,
+                    max(0.0, min(1.0, 1.0 - abs(_best_d) / _win)), "window")
+        return (_best_d, _best_t, 0.0, "unmatched")
     except Exception:
-        return None
+        return (None, None, 0.0, None)
 
 
 def _sched_mult_from_dev(dev):
@@ -25134,14 +25176,20 @@ def _pt_sigwait_tick(time):
                 # skip: their true entry predates the sim.
                 dev = None
                 _intended = None
+                _match_mode = None
+                _match_conf = 0.0
+                _match_win = None
                 if _PT_FIRST_SEEN.get(_vid, 1e9) > WARMUP_GRACE_S:
                     try:
                         _w0 = _SCHED_WALL_START[0]
                         if _w0 is not None:
-                            dev = _match_departure_dev(
+                            _match_win = _sched_match_window_s(int(_lid))
+                            dev, _intended, _match_conf, _match_mode = _match_departure_dev(
                                 int(_lid), float(_w0) + float(time))
                     except Exception:
-                        dev = None
+                        dev, _intended = None, None
+                        _match_mode = None
+                        _match_conf = 0.0
                 if dev is None:
                     # FALLBACK: headway method (interval lines / unknown wall
                     # / pre-existing bus). Needs a previous genuine entry.
@@ -25165,13 +25213,17 @@ def _pt_sigwait_tick(time):
                         _pt_inj.MANAGER, "scalar", 1.0) or 1.0))
                     _intended = _last + (_H / _s_eff)
                     dev = float(time) - _intended
+                    _match_mode = 'headway'
                 else:
                     _PT_LAST_ENTRY[int(_lid)] = float(time)
                     _PT_LAST_VID[int(_lid)] = _vid
                 try:
                     stats.add_schedule_dev(
                         int(_lid), dev, veh_id=_vid,
-                        observed_time_s=float(time), intended_time_s=_intended)
+                        observed_time_s=float(time), intended_time_s=_intended,
+                        headway_s=_H, match_mode=_match_mode,
+                        match_confidence=_match_conf, match_window_s=_match_win,
+                        stop_offset_s=0.0)
                 except Exception:
                     pass
     except Exception:
@@ -25347,13 +25399,19 @@ def _record_schedule_entry(veh_id, line_ids, now_s):
             continue
         dev = None
         _intended = None
+        _match_mode = None
+        _match_conf = 0.0
+        _match_win = None
         if (_PT_FIRST_SEEN.get(vid, 1e9) > WARMUP_GRACE_S
                 and _w0 is not None):
             try:
-                dev = _match_departure_dev(
+                _match_win = _sched_match_window_s(lid)
+                dev, _intended, _match_conf, _match_mode = _match_departure_dev(
                     lid, float(_w0) + float(now_s))
             except Exception:
-                dev = None
+                dev, _intended = None, None
+                _match_mode = None
+                _match_conf = 0.0
         if dev is None:
             prev_vid = _PT_LAST_VID.get(lid)
             last = _PT_LAST_ENTRY.get(lid)
@@ -25368,13 +25426,16 @@ def _record_schedule_entry(veh_id, line_ids, now_s):
                 continue
             _intended = last + (headway / scalar)
             dev = float(now_s) - _intended
+            _match_mode = 'headway'
         else:
             _PT_LAST_ENTRY[lid] = float(now_s)
             _PT_LAST_VID[lid] = vid
         try:
             stats.add_schedule_dev(
                 lid, dev, veh_id=vid, observed_time_s=float(now_s),
-                intended_time_s=_intended)
+                intended_time_s=_intended, headway_s=headway,
+                match_mode=_match_mode, match_confidence=_match_conf,
+                match_window_s=_match_win, stop_offset_s=0.0)
         except Exception:
             pass
 

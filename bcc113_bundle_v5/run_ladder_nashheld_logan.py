@@ -81,6 +81,27 @@ import os as _os
 _HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
 _BASE = "run_ladder_priority_on_dsw_logan.py"
 
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# FIXED_ARMS / FIXED_OUT / FIXED_SEEDS outlive a launcher: os.environ belongs to
+# the Aimsun process, not the exec. This launcher SETS FIXED_OUT itself, so it
+# stamps ownership and hands the env to the delegate below, which would
+# otherwise discard its own values as a foreign leftover. FIXED_ARMS it does
+# not set, so a leftover from a different launcher is dropped instead of
+# riding the handover into the delegate as if it were ours.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_ladder_nashheld_logan.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _drop_foreign(key):
+    """Remove a foreign leftover this launcher does not set itself."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if _v and _foreign:
+        print("[ENV] %s left by %s -- DISCARDED, this launcher does not take it"
+              % (key, _prev_owner))
+        _os.environ.pop(key, None)
+
 # The published ladder. Never a valid target for this launcher.
 _PROTECTED = _os.path.abspath(_os.path.join(_HERE, "paper_ladder_priority_logan.csv"))
 
@@ -150,14 +171,21 @@ if _os.environ.get("NASHHELD_DRYRUN", "").strip() not in ("", "0"):
     print("[NASHHELD] NASHHELD_DRYRUN set: plan printed, nothing executed.")
     raise SystemExit(0)
 
+_drop_foreign("FIXED_ARMS")
 _os.environ["FIXED_SEEDS"] = _SEEDS
 _os.environ["FIXED_OUT"] = _OUT
+_os.environ[_ENV_OWNER] = _MY_NAME
 # Abort the sweep after the first completed run if it did not execute this build.
 _os.environ["CHAMPION_POSTRUN_BUILD_CHECK"] = "1"
 
 _launcher = _os.path.join(_HERE, _BASE)
-exec(compile(open(_launcher, encoding="utf-8").read(), _launcher, "exec"),
-     {"__name__": "__main__"})
+# Hand the env over: FIXED_SEEDS / FIXED_OUT above are this launcher's.
+_os.environ[_ENV_OWNER] = _BASE
+try:
+    exec(compile(open(_launcher, encoding="utf-8").read(), _launcher, "exec"),
+         {"__name__": "__main__"})
+finally:
+    _os.environ[_ENV_OWNER] = _MY_NAME
 
 print("=" * 78)
 print("LADDER DONE -> %s" % _out_abs)

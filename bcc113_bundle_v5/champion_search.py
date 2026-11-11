@@ -1,4 +1,4 @@
-"""
+﻿"""
 champion_search.py -- Phase 1 of the BCC113 simulation matrix.
 
 CHAMPION SEARCH: 11 strategy arms x 5 evaluation seeds at x1.0 demand;
@@ -6293,6 +6293,10 @@ if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
             ARMS.append(_with_overrides(
                 "CHAMP_ADAPTIVE_DSW_GAME_COOP", _gname,
                 {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
                  "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25}))
     # _CTM2 twins: the same game decided on two-class (bus / car) CTM payoffs
     # for every term (GAME_PAYOFF_MODEL='ctm2'), so legacy vs CTM2 separates the
@@ -6303,9 +6307,257 @@ if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
             ARMS.append(_with_overrides(
                 "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
                 {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
                  "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
                  "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0}))
+    # _CTM2_SPILL twins (2026-11-05): same CTM2 game but the payoff THROTTLES each
+    # approach's stop-line discharge by its downstream receiving link's free space
+    # (GAME_CTM2_SPILLBACK) -- the game can no longer bank the benefit of pushing a
+    # platoon into a jammed arterial link, so it should stop the net-harmful grabs
+    # (NASH/UTIL lost on the 2026-11-05 ladder via that cascade).
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _cname = _gname + "_CTM2_SPILL"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+                 "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0,
+                 "GAME_CTM2_SPILLBACK": True, "GAME_CTM2_SPILLBACK_GAMMA": 1.0,
+                 "GAME_BUS_IN_HORIZON": True,
+                 "GAME_CONGESTION_GATE": True,
+                 "GAME_CONGESTION_MIN_QUEUE_VEH": 4.0,
+                 "GAME_CONGESTION_MAX_DS": 0.90}))
+    # _CTM2_SPILL2 twins (2026-11-06): the productive-action variant. The first
+    # SPILL ladder (2026-11-05) defanged the game into the NULL baseline because
+    # (a) its upper bound used the detector-sum DS estimator, which reads ~18x
+    # true (ds 3.7 at a ~0.3 junction) and phantom-held 2/3 of all solves, and
+    # (b) it had no sharpened cross cost, so even the few actions that got through
+    # hurt. SPILL2: UPPER BOUND now from the CELL-STATE jam fraction
+    # (GAME_CONGESTION_MAX_JAM, trustworthy veh-count/storage, MAX_DS off), and the
+    # EXISTING CTM cross cost C scaled by GAME_CROSS_STARVE_MULT=1.5 so the game
+    # acts only when bus+main robustly beats a pessimistic cross cost. Spillback +
+    # bus-gate still on.
+    #   LOWER BOUND DROPPED (MIN_QUEUE=0): the old car-queue floor (<3 veh -> HOLD)
+    #   was WRONG for transit priority -- a bus approaching a near-empty junction is
+    #   the cheapest, best case for TSP (cross cost ~0, bus sails through), not a
+    #   case to suppress. The BUS-IN-HORIZON gate (u_bus>0) is already the primary
+    #   "act only when the bus benefits" filter, so it blocks the u_bus=0 car-utility
+    #   actions that broke coordination on the free seeds; the car-queue floor only
+    #   added harm (it blocked legitimate light-traffic bus priority).
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _cname = _gname + "_CTM2_SPILL2"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+                 "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0,
+                 "GAME_CTM2_SPILLBACK": True, "GAME_CTM2_SPILLBACK_GAMMA": 1.0,
+                 "GAME_BUS_IN_HORIZON": True,
+                 "GAME_CONGESTION_GATE": True,
+                 "GAME_CONGESTION_MIN_QUEUE_VEH": 0.0,
+                 "GAME_CONGESTION_MAX_DS": 0.0,
+                 "GAME_CONGESTION_MAX_JAM": 0.90,
+                 "GAME_CROSS_STARVE_MULT": 1.5}))
+    # _CTM2_SPILL2_CHAIN twins (2026-11-08): identical to _CTM2_SPILL2 but the
+    # two-class CTM is SEEDED OVER THE RESOLVED UPSTREAM CHAIN (true vehicle
+    # positions on every chained section), not just the single stop-line section
+    # (GAME_CTM2_CHAIN_SEED). On short-block corridors (Logan 5-15 m stop-line
+    # stubs) the single-section seed collapses the approach to ~1 cell and the
+    # queue extending upstream is invisible to the game; the chain seed restores
+    # its proper multi-cell domain. Byte-identical to _CTM2_SPILL2 on long-block
+    # KG. A/B = does the fuller spatial seed buy the last 1-2% on Logan.
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _cname = _gname + "_CTM2_SPILL2_CHAIN"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+                 "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0,
+                 "GAME_CTM2_SPILLBACK": True, "GAME_CTM2_SPILLBACK_GAMMA": 1.0,
+                 "GAME_BUS_IN_HORIZON": True,
+                 "GAME_CONGESTION_GATE": True,
+                 "GAME_CONGESTION_MIN_QUEUE_VEH": 0.0,
+                 "GAME_CONGESTION_MAX_DS": 0.0,
+                 "GAME_CONGESTION_MAX_JAM": 0.90,
+                 "GAME_CROSS_STARVE_MULT": 1.5,
+                 "GAME_CTM2_CHAIN_SEED": True,
+                 "GAME_CTM2_CHAIN_REACH_M": 200.0}))
 
+    # _CTM2_SPILL2_LIGHTSIM twins (2026-11-09): the SPILL2 flag set with the
+    # BLOCK term priced by the LightSim-style NETWORK CTM
+    # (shared_tsp_engine/ctm_lightsim.py, after Su & Deng arXiv:2602.21852)
+    # instead of the scalar per-phase jam fraction: per-movement turn ratios,
+    # saturation cap, and proportional merge/diverge resolution over the same
+    # 2-hop subnet the inline rollout uses. GAME_CTM2_LIGHTSIM IMPLIES
+    # GAME_CTM2_ROLLOUT (it replaces that model, it does not stack on it).
+    #   READOUT='entry' is deliberate. 'worst' (the SUMO default) reads the
+    #   busiest cell ANYWHERE on the receiving link, which saturates at 1.0
+    #   whenever that link's OWN stop line is red: measured 33% of decisions at
+    #   1.0 vs 5% for the inline rollout, with median entry occupancy 0.04.
+    #   'entry' is cell 0, the cell a discharging movement enters and the one
+    #   the CTM itself gates on.
+    # The congestion gate and the corridor branch stay ON here: the SUMO port
+    # had to switch them off only because its detector queue reads 0.0.
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _cname = _gname + "_CTM2_SPILL2_LIGHTSIM"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                "CHAMP_ADAPTIVE_DSW_GAME_COOP", _cname,
+                {"GAME_SOLUTION": _gsol, "NASH_COOPERATIVE": False,
+                # 2026-11-09: see _patch_lightsim_arm.py -- GAME_COOP pins this
+                # True, which returns before `elif _gsol:` and renders the
+                # concept inert (every twin byte-identical).
+                "NASH_CORRIDOR_MODE": False,
+                 "GAME_TOL_BUS_FRAC": 0.25, "GAME_TOL_CAR_FRAC": 0.25,
+                 "GAME_PAYOFF_MODEL": "ctm2", "GAME_CTM2_HORIZON_S": 60.0,
+                 "GAME_CTM2_SPILLBACK": True, "GAME_CTM2_SPILLBACK_GAMMA": 1.0,
+                 "GAME_BUS_IN_HORIZON": True,
+                 "GAME_CONGESTION_GATE": True,
+                 "GAME_CONGESTION_MIN_QUEUE_VEH": 0.0,
+                 "GAME_CONGESTION_MAX_DS": 0.0,
+                 "GAME_CONGESTION_MAX_JAM": 0.90,
+                 "GAME_CROSS_STARVE_MULT": 1.5,
+                 "GAME_CTM2_ROLLOUT": True,
+                 "GAME_CTM2_LIGHTSIM": True,
+                 # 24, not the old 12: 12 truncates every approach at ~133 m and
+                 # 7 KG sections are longer (21546 needs 24). An arm value is
+                 # written into run_config AFTER the writer's own caps line, so
+                 # leaving 12 here would override run_config's 24.
+                 "GAME_CTM2_LIGHTSIM_MAX_CELLS": 24,
+                 "GAME_CTM2_LIGHTSIM_READOUT": "entry"}))
+
+    # _CTM2_SPILL2_LIGHTSIM_MP (2026-11-10): the same twins with the BASE
+    # signal plan switched from the model fixed plan to the ported LightSim
+    # MaxPressure controller (engine CONTROL_MODE == "LIGHTSIM_MP"). Nothing
+    # else changes, so a paired run isolates the base plan.
+    # CONTROL_MODE rides in reward_overrides: write_run_config emits the
+    # arm reward_cfg lines AFTER its own CONTROL_MODE line, so the override
+    # is the last assignment and wins per replication.
+    for _gname, _gsol in GAME_SOL_ARMS:
+        _bname = _gname + "_CTM2_SPILL2_LIGHTSIM"
+        _cname = _bname + "_MP"
+        if _cname not in {a["name"] for a in ARMS}:
+            ARMS.append(_with_overrides(
+                _bname, _cname, {"CONTROL_MODE": "LIGHTSIM_MP"}))
+
+# CTM CELL-CAP A/B (2026-11-09): two clones of the LightSim NASH arm that differ
+# ONLY in the CTM cell caps, so a same-seed paired difference is attributable to
+# the cap and nothing else. Cap 12 truncates every approach at 12 * cell_len
+# (~133 m at KG's ~11 m cell) and 7 KG sections are longer -- section 21546
+# (263.2 m) needs 24. bench_ctm_max_cells.py measured 24 at +20.8 ms per
+# corridor-wide game solve (+9.3%). CAP12 is the pre-2026-11-09 behaviour and
+# exists only as this A/B's control.
+# NOTE: run_config's own caps line is emitted BEFORE an arm's reward_cfg block,
+# so these overrides win (see batch_runner.write_run_config).
+_LS_CAP_BASE = "CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH_CTM2_SPILL2_LIGHTSIM"
+if _LS_CAP_BASE in {a["name"] for a in ARMS}:
+    if _LS_CAP_BASE + "_CAP12" not in {a["name"] for a in ARMS}:
+        ARMS.append(_with_overrides(
+            _LS_CAP_BASE, _LS_CAP_BASE + "_CAP12",
+            {"CBQL_CTM_MAX_CELLS": 12, "GAME_CTM2_LIGHTSIM_MAX_CELLS": 12}))
+    if _LS_CAP_BASE + "_CAP24" not in {a["name"] for a in ARMS}:
+        ARMS.append(_with_overrides(
+            _LS_CAP_BASE, _LS_CAP_BASE + "_CAP24",
+            {"CBQL_CTM_MAX_CELLS": 24, "GAME_CTM2_LIGHTSIM_MAX_CELLS": 24}))
+
+# MARGINAL-COMPETITOR SIDE-COST A/B (2026-11-10): clones of the SPILL2 champion
+# games with SIDE_COST_MARGINAL_COMPETITOR on. The side-delay penalty then
+# charges only the SINGLE worst conflicting phase (the MaxPressure opportunity
+# cost) instead of summing every side movement -- the correct model for a
+# fixed-cycle coordinated plan, where a bus/main hold displaces one competing
+# phase at a time, not all of them (engine._marginal_competitor_side_delay and
+# the _dctsp_cross_traffic_delay_s _worst branch). Pair each _MARGINAL twin
+# against its plain SPILL2 base on the same seeds. Default off keeps the
+# champion unchanged.
+for _mk in ("NASH", "UTIL"):
+    _mc_base = "CHAMP_ADAPTIVE_DSW_GAME_SOL_%s_CTM2_SPILL2" % _mk
+    _mc_name = _mc_base + "_MARGINAL"
+    if (_mc_base in {a["name"] for a in ARMS}
+            and _mc_name not in {a["name"] for a in ARMS}):
+        ARMS.append(_with_overrides(
+            _mc_base, _mc_name, {"SIDE_COST_MARGINAL_COMPETITOR": True}))
+
+# BASE_PLAN CONTROLLER FAMILY (2026-11-11): the LightSim controller set
+# (Su & Deng, arXiv:2602.21852) as the BASE signal plan, with the SPILL2 NASH
+# game layer unchanged on top (engine CONTROL_MODE == "BASE_PLAN", which runs
+# run_reward_tsp first then run_base_plan on no-grant ticks). Each clone of the
+# plain SPILL2 NASH champion differs ONLY in which base controller fills the
+# no-grant ticks, so a same-seed paired set isolates the base plan. BASE_FIXEDTIME
+# == the plain champion (commissioned plan) and is the sanity control; BASE_MAX
+# == the LIGHTSIM_MP base reached through the registry. WEBSTER also turns on
+# PLAN_OPTIMIZE so the plan is Webster-retimed at init.
+_BASE_PLAN_FAMILY = [
+    ("FIXEDTIME",       "BASE_FIXEDTIME", {}),
+    ("WEBSTER",         "BASE_WEBSTER",   {"PLAN_OPTIMIZE": True}),
+    ("GREENWAVE",       "BASE_GREENWAVE", {}),
+    ("MAXPRESSURE",     "BASE_MAXPRESS",  {}),
+    # Passenger-weighted MaxPressure: pressure in PEOPLE, a queued bus adds
+    # ~(BusOcc-CarOcc) pax -> transit priority emerges with no trigger. Low
+    # switch bar so it tracks the pax-pressure argmax.
+    ("MAXPRESSURE_PAX", "BASE_PAXMP",     {"LT_MP_SWITCH_BAR": 0.15}),
+    ("SOTL",            "BASE_SOTL",      {}),
+    # RETUNE (2026-11-11, seed-300 smoke): the defaults gridlocked. LT-MP with
+    # bar=1.0 (=5 pressure-s) held every phase to MAX_GREEN -> 93 loops,
+    # car delay 866s. Drop the bar to 0.15 (~0.75 pressure-s) so it switches
+    # near-MaxPressure but still skips lost-time churn. Eff-MP with gain=4.0
+    # pinned the main at MAX_GREEN (target=6+4*P, P>13 -> 60s) and starved the
+    # side (484 h); gain=0.5 keeps targets ~10-25 s.
+    ("LT_MAXPRESSURE",  "BASE_LTMP",      {"LT_MP_SWITCH_BAR": 0.15}),
+    ("EFF_MAXPRESSURE", "BASE_EFFMP",     {"EFF_MP_PRESSURE_GAIN_S": 0.5}),
+    # RL base plan: shared linear-Q policy trained in the SUMO gym env
+    # (flow_marl_scaffold/train_numpyq.py -> kg_numpyq.npz, deployed into the
+    # corridor dir). Keep/advance per tick; same hold-to-plan coordination guard
+    # as the MaxPressure bases. A missing weights file degrades to FIXEDTIME.
+    ("RL_NUMPYQ",       "BASE_RLQ",       {}),
+]
+_bp_base = "CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH_CTM2_SPILL2"
+if _bp_base in {a["name"] for a in ARMS}:
+    for _bp_sel, _bp_suf, _bp_extra in _BASE_PLAN_FAMILY:
+        _bp_name = _bp_base + "_" + _bp_suf
+        if _bp_name not in {a["name"] for a in ARMS}:
+            _ov = {"CONTROL_MODE": "BASE_PLAN", "BASE_PLAN": _bp_sel}
+            _ov.update(_bp_extra)
+            ARMS.append(_with_overrides(_bp_base, _bp_name, _ov))
+
+# LIVE-COST A/B (2026-11-06): the legacy Nash games (M4 GAME_BUS, M5 GAME_COOP)
+# commit pred_side=0 on EVERY decision -> no cross-street cost -> they over-act
+# and cascade (M4 +55%, M5 +2.8% on the same-build full ladder). Root cause: the
+# measured-side penalty (_compute_side_delay_penalty) that WOULD price the live
+# side vehicle counts is only consulted in the fallback branch of
+# _reward_evaluate_ge, gated behind `LIVE_COST_ALWAYS or abs(other_inc)<1`.
+# MEASURED_SIDE_COST is globally True, but LIVE_COST_ALWAYS is only a module
+# default (never in any arm's reward_overrides), and the engine reads it with a
+# False default -- so with other_inc!=0 the measured side cost is never applied.
+# LIVE_COST_ALWAYS twins of the legacy games (GAME_BUS/GAME_COOP) were DROPPED
+# 2026-11-07 as a confirmed dead end. Run game_ladder_kg_20261106_194642 came back
+# BYTE-IDENTICAL to the control (071259) on all 5 seeds. The trace shows why it
+# never could change the decision: for committed modes (NASH_BARGAIN included) the
+# reward-row builder (engine.py:25229) hardcodes the side_inc slot to 0.0 and packs
+# the FULL cross+side cost into cpc=pred_other, so the side cost is ALREADY priced;
+# LIVE_COST_ALWAYS gates _reward_evaluate_ge on the generic non-committed path
+# (engine.py:25784, `if not _mode_committed`) that these games never take. The
+# legacy GAME_BUS +55% is single-junction/60s-horizon under-pricing of the
+# downstream cascade, not a missing cost term. Do not re-add these twins.
+
+if "CHAMP_ADAPTIVE_DSW_GAME_COOP" in {a["name"] for a in ARMS}:
     # NULL-GAME CONTROL (2026-11-05): the game arms run on the adaptive DSW
     # plan (cycle planner, plan library, MAIN_KEEP_FRAC 0.90), which retimes
     # the corridor by itself -- the KG ladder of 2026-11-05 shows main greens
@@ -7178,6 +7430,22 @@ def main(arms=None, results_csv=None, resume=False):
     except Exception:
         log("[PREFLIGHT] aborting batch -- engine failed preflight")
         raise
+
+    # Arm toggle: set CHAMPION_ONLY_ARM to a substring, or a comma-separated
+    # list of substrings, to run ONLY matching arms -- a quick test of one arm
+    # (e.g. "BASE_RLQ") or a cheap paired comparison ("NO_TSP,BASE_RLQ")
+    # without the full ~2 h sweep. Unset = run every arm.
+    _only = _os.environ.get("CHAMPION_ONLY_ARM", "").strip()
+    if _only:
+        _pats = [p.strip() for p in _only.split(",") if p.strip()]
+        _sel = [a for a in arms if any(p in a["name"] for p in _pats)]
+        if _sel:
+            log(f"[CHAMPION_ONLY_ARM] filtering to {len(_sel)} arm(s) matching "
+                f"{_pats}: {[a['name'] for a in _sel]}")
+            arms = _sel
+        else:
+            log(f"[CHAMPION_ONLY_ARM] WARNING: no arm matches {_pats} -- "
+                f"running all arms")
 
     # Count only RUNNABLE arms -- parked arms (PARKED_ARMS) are skipped in the
     # run loop, so counting them here made the [run_num/n_total] progress line

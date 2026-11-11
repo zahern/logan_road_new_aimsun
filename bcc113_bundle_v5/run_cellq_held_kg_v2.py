@@ -54,8 +54,41 @@ import time as _time
 
 _HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
 
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# FIXED_ARMS / FIXED_OUT are CALLER knobs and os.environ lives for the whole
+# Aimsun process, so exec'ing a DIFFERENT launcher in the same session leaves
+# its arm list and output name behind. Each launcher stamps the env with its
+# own name, and a value left by a DIFFERENT launcher is discarded; an explicit
+# value in a clean session -- or a re-run of this same launcher -- is honoured.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_cellq_held_kg_v2.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _knob(key, default):
+    """The caller's value, unless a DIFFERENT launcher left it in the env."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if not _v or not _foreign:
+        return _v or default
+    _shown = ("%d arms" % len(_v.split(","))) if key == "FIXED_ARMS" else _v
+    print("[ENV] %s = %s was left by %s -- DISCARDED, this launcher's value wins"
+          % (key, _shown, _prev_owner))
+    _os.environ.pop(key, None)   # gone from the env, so a re-run cannot revive it
+    return default
+
+
+def _drop_foreign(key):
+    """Remove a foreign leftover this launcher does not set itself."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if _v and _foreign:
+        print("[ENV] %s left by %s -- DISCARDED, this launcher does not take it"
+              % (key, _prev_owner))
+        _os.environ.pop(key, None)
+
+
 # --- what this run writes ----------------------------------------------------
-_OUT_NAME = _os.environ.get(
+_OUT_NAME = _knob(
     "FIXED_OUT",
     "cellq_held_kg_run_%s.csv" % _time.strftime("%Y%m%d_%H%M%S"))
 _SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
@@ -73,6 +106,7 @@ if _os.path.exists(_out_path):
 
 _os.environ["FIXED_OUT"] = _OUT_NAME
 _os.environ["FIXED_SEEDS"] = _SEEDS
+_os.environ[_ENV_OWNER] = _MY_NAME
 _os.environ.setdefault("FIXED_CORRIDOR", "kg")
 
 print("=" * 78)
@@ -86,9 +120,17 @@ print("  NOTE: full Aimsun restart required -- engine.py and")
 print("        specialized_modes.py both changed on 2026-11-02.")
 print("=" * 78)
 
+# This launcher does not set FIXED_ARMS, so a leftover from a different
+# launcher must not ride the handover into the base launcher as if it were ours.
+_drop_foreign("FIXED_ARMS")
 _base = _os.path.join(_HERE, "run_cellq_held_kg.py")
-exec(compile(open(_base, encoding="utf-8").read(), _base, "exec"),
-     {"__name__": "__main__"})
+# Hand the env over: FIXED_OUT above is this launcher's, not a leftover.
+_os.environ[_ENV_OWNER] = "run_cellq_held_kg.py"
+try:
+    exec(compile(open(_base, encoding="utf-8").read(), _base, "exec"),
+         {"__name__": "__main__"})
+finally:
+    _os.environ[_ENV_OWNER] = _MY_NAME
 
 print("=" * 78)
 print("CELLQ HELD A/B DONE -> %s" % _out_path)

@@ -3272,6 +3272,14 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         # the CSVs carry the same numbers and the render costs tens of
         # seconds per run at high event counts.
         "SKIP_PER_RUN_PLOTS = True\n"
+        # CTM CELL CAPS (2026-11-09): written every run because this function
+        # rebuilds run_config.py from scratch -- a hand edit to that file is
+        # lost on the next sweep. 24 is the smallest cap with zero KG
+        # truncation (bench_ctm_max_cells.py: +20.8 ms per corridor-wide
+        # solve, +9.3%). An arm's reward_cfg line is emitted after this one
+        # and still wins, so a per-arm cap stays possible.
+        "CBQL_CTM_MAX_CELLS = 24\n"
+        "GAME_CTM2_LIGHTSIM_MAX_CELLS = 24\n"
     )
     # MODE-LEAK FIX (2026-10-31): the SCATS / DS-adaptation toggles must be written
     # EXPLICITLY every run (default False), or a flag turned True by one arm (the
@@ -5026,6 +5034,54 @@ def collect_run_metrics(project_dir, strategy, seed, scalar,
     except Exception as e:
         log(f"  INFO: Aimsun network stats not available: {e}")
 
+    # ── 4b. aimsun_* from section_stats.csv when the model scan measured nothing.
+    # _collect_aimsun_network_stats scans GKSection MODEL objects, which carry no
+    # live replication stats in the orchestrator context -> 0/all sections -> the
+    # provenance stamp NaNs every aimsun_* column. The engine writes
+    # section_stats.csv with the REAL per-section stats (AKIEst at AAPIFinish), so
+    # rebuild the network aggregates from it (corridor sections = the right KPI
+    # scope). Guaranteed path; AAPI tier above upgrades to full coverage if live.
+    try:
+        if int(float(meta.get('aimsun_flow_sections_ok', 0) or 0)) <= 0:
+            _ss = _os.path.join(folder, "section_stats.csv")
+            if _os.path.isfile(_ss):
+                with open(_ss, 'r', newline='', encoding='utf-8') as _f:
+                    _rows_ss = list(csv.DictReader(_f))
+                _last = {}
+                for _r in _rows_ss:
+                    _sid = str(_r.get('SectionID', '') or '')
+                    if _sid:
+                        _last[_sid] = _r       # append-only -> keep last (this run)
+                _L = _D = _S = _F = _Q = 0.0
+                _N = 0
+                _Fok = 0
+                for _r in _last.values():
+                    try:
+                        _l = float(_r.get('Length_km', 0) or 0)
+                        _d = float(_r.get('AvgDensity_vkm', 0) or 0)
+                        _s = float(_r.get('AvgSpeed_kmh', 0) or 0)
+                        _fl = float(_r.get('AvgFlow_veh_h', 0) or 0)
+                        _q = float(_r.get('AvgQueue_veh', 0) or 0)
+                    except Exception:
+                        continue
+                    if _l > 0:
+                        _L += _l; _D += _d * _l; _S += _s * _l; _F += _fl * _l
+                        _Q += _q; _N += 1
+                        if _fl > 0:
+                            _Fok += 1
+                if _L > 0 and _N > 0:
+                    meta['aimsun_n_sections']       = _N
+                    meta['aimsun_flow_sections_ok'] = _Fok
+                    meta['aimsun_total_veh_km_h']   = round(_F, 1)
+                    meta['aimsun_total_flow_veh']   = round(_F / _L, 2)
+                    meta['aimsun_avg_density_vkm']  = round(_D / _L, 4)
+                    meta['aimsun_avg_speed_kmh']    = round(_S / _L, 4)
+                    meta['aimsun_src']              = 'section_stats'
+                    log("  aimsun_* rebuilt from section_stats.csv "
+                        "(%d sections, %d with flow)" % (_N, _Fok))
+    except Exception as _e:
+        log(f"  INFO: aimsun_* section_stats rebuild failed: {_e}")
+
     # ── 5. Fallback: section_stats.csv for density/speed/flow ─────────────────
     # When simulation_results.csv is missing or has empty/unreasonable network
     # stats, read from section_stats.csv which is always written by save_results().
@@ -5437,6 +5493,60 @@ def _collect_aimsun_network_stats():
     return out
 
 
+def _aki_section_field(section, field, type_pos=0):
+    """Read a per-section REPLICATION statistic via the AAPI
+    (AKIEstGetGlobalStatisticsSection) -- the SAME whole-run aggregate the engine
+    reads. The model GKSection methods (getFlow/... below) carry NO live sim
+    stats, so they returned 0 for every section (the '0/217 sections returned
+    flow -> NaN' provenance). AKI* are Aimsun interpreter builtins, so call bare;
+    returns None when the AAPI, the section id or the stat is unavailable."""
+    try:
+        _sid = int(section.getId())
+    except Exception:
+        return None
+    try:
+        from AAPI import AKIEstGetGlobalStatisticsSection as _aki_sec
+    except Exception:
+        _aki_sec = globals().get("AKIEstGetGlobalStatisticsSection")
+        if _aki_sec is None:
+            return None
+    try:
+        _st = _aki_sec(_sid, int(type_pos))
+        if int(getattr(_st, "report", -1)) != 0:
+            return None
+        return float(getattr(_st, field, 0.0) or 0.0)
+    except Exception:
+        return None
+
+
+def _veh_type_pos(name):
+    """Aimsun internal vehicle-type position for a name ('Car'/'Bus'/'Truck'),
+    cached. None when it cannot be resolved (caller then keeps the old 0.0)."""
+    _cache = globals().get("_VEH_TYPE_POS_CACHE")
+    if _cache is None:
+        _cache = {}
+        try:
+            _n = int(AKIVehGetNbVehTypes())                      # noqa: F821
+            for _i in range(1, _n + 1):
+                try:
+                    _nm = AKIConvertToAsciiString(                # noqa: F821
+                        AKIVehGetVehTypeName(_i))                 # noqa: F821
+                except Exception:
+                    _nm = None
+                if _nm:
+                    _cache[str(_nm).strip().lower()] = _i
+        except Exception:
+            pass
+        globals()["_VEH_TYPE_POS_CACHE"] = _cache
+    _key = str(name).strip().lower()
+    if _key in _cache:
+        return _cache[_key]
+    for _k, _v in _cache.items():
+        if _key in _k or _k in _key:
+            return _v
+    return None
+
+
 def _safe_stat_v2(section, stat_name: str) -> float:
     """
     Try multiple Aimsun API patterns to read a per-section aggregate statistic.
@@ -5447,6 +5557,16 @@ def _safe_stat_v2(section, stat_name: str) -> float:
       • getDataValueString(col_id, rep, interval, vehtype) — Aimsun 25+
       • Direct attribute access (rarely used but included as fallback)
     """
+    # AAPI tier FIRST: the real replication statistic (the model methods below
+    # do not carry live sim stats -> 0/217 flow). Flow veh/h, Density veh/km,
+    # Speed km/h, DTa = delay-time-average s.
+    _fld = {"flow": "Flow", "density": "Density",
+            "speed": "Speed", "delay": "DTa"}.get(stat_name)
+    if _fld is not None:
+        _av = _aki_section_field(section, _fld, 0)
+        if _av is not None and _av >= 0.0:
+            return _av
+
     # Map stat name → common zero-arg method names and attribute names
     _method_map = {
         "flow":    ("getFlow",     "flow"),
@@ -5510,6 +5630,15 @@ def _safe_stat_v2_typed(section, stat_name: str, veh_type_name: str) -> float:
     veh_type_name: 'Car', 'Bus', 'Truck' (or lowercase)
     Returns 0.0 if unavailable.
     """
+    # AAPI tier FIRST: per-type replication stat via the vehicle-type position.
+    _fld = {"flow": "Flow", "density": "Density",
+            "speed": "Speed", "delay": "DTa"}.get(stat_name)
+    _tp = _veh_type_pos(veh_type_name)
+    if _fld is not None and _tp is not None:
+        _av = _aki_section_field(section, _fld, _tp)
+        if _av is not None and _av >= 0.0:
+            return _av
+
     # Try method variants: getCarFlow, getBusFlow, etc.
     vtn = veh_type_name.capitalize()
     stat_cap = stat_name.capitalize()

@@ -2843,6 +2843,14 @@ def write_run_config(experiment_name, strategy, seed, scalar,
         # the CSVs carry the same numbers and the render costs tens of
         # seconds per run at high event counts.
         "SKIP_PER_RUN_PLOTS = True\n"
+        # CTM CELL CAPS (2026-11-09): written every run because this function
+        # rebuilds run_config.py from scratch -- a hand edit to that file is
+        # lost on the next sweep. 24 is the smallest cap with zero KG
+        # truncation (bench_ctm_max_cells.py: +20.8 ms per corridor-wide
+        # solve, +9.3%). An arm's reward_cfg line is emitted after this one
+        # and still wins, so a per-arm cap stays possible.
+        "CBQL_CTM_MAX_CELLS = 24\n"
+        "GAME_CTM2_LIGHTSIM_MAX_CELLS = 24\n"
     )
     # ── Explicit mode toggles (always written, default False) ────────────────
     # Each experiment's reward_cfg only lists the flags it turns ON.  The engine
@@ -4785,6 +4793,57 @@ def _collect_aimsun_network_stats(meta=None):
     return out
 
 
+def _aki_section_field(section, field, type_pos=0):
+    """Per-section REPLICATION statistic via the AAPI
+    (AKIEstGetGlobalStatisticsSection) -- the whole-run aggregate the engine
+    reads. The model GKSection methods carry no live sim stats (0/N flow -> NaN).
+    AKI* are Aimsun interpreter builtins; None when unavailable."""
+    try:
+        _sid = int(section.getId())
+    except Exception:
+        return None
+    try:
+        from AAPI import AKIEstGetGlobalStatisticsSection as _aki_sec
+    except Exception:
+        _aki_sec = globals().get("AKIEstGetGlobalStatisticsSection")
+        if _aki_sec is None:
+            return None
+    try:
+        _st = _aki_sec(_sid, int(type_pos))
+        if int(getattr(_st, "report", -1)) != 0:
+            return None
+        return float(getattr(_st, field, 0.0) or 0.0)
+    except Exception:
+        return None
+
+
+def _veh_type_pos(name):
+    """Aimsun internal vehicle-type position for 'Car'/'Bus'/'Truck', cached."""
+    _cache = globals().get("_VEH_TYPE_POS_CACHE")
+    if _cache is None:
+        _cache = {}
+        try:
+            _n = int(AKIVehGetNbVehTypes())                      # noqa: F821
+            for _i in range(1, _n + 1):
+                try:
+                    _nm = AKIConvertToAsciiString(                # noqa: F821
+                        AKIVehGetVehTypeName(_i))                 # noqa: F821
+                except Exception:
+                    _nm = None
+                if _nm:
+                    _cache[str(_nm).strip().lower()] = _i
+        except Exception:
+            pass
+        globals()["_VEH_TYPE_POS_CACHE"] = _cache
+    _key = str(name).strip().lower()
+    if _key in _cache:
+        return _cache[_key]
+    for _k, _v in _cache.items():
+        if _key in _k or _k in _key:
+            return _v
+    return None
+
+
 def _safe_stat_v2(section, stat_name: str) -> float:
     """
     Try multiple Aimsun API patterns to read a per-section aggregate statistic.
@@ -4795,6 +4854,15 @@ def _safe_stat_v2(section, stat_name: str) -> float:
       • getDataValueString(col_id, rep, interval, vehtype) — Aimsun 25+
       • Direct attribute access (rarely used but included as fallback)
     """
+    # AAPI tier FIRST: the real replication statistic (model methods below carry
+    # no live sim stats -> the 0/N flow NaN). Flow veh/h, Density veh/km, Speed
+    # km/h, DTa = delay-time-average s.
+    _fld = {"flow": "Flow", "density": "Density",
+            "speed": "Speed", "delay": "DTa"}.get(stat_name)
+    if _fld is not None:
+        _av = _aki_section_field(section, _fld, 0)
+        if _av is not None and _av >= 0.0:
+            return _av
     # Map stat name → common zero-arg method names and attribute names
     _method_map = {
         "flow":    ("getFlow",     "flow"),
@@ -4858,6 +4926,14 @@ def _safe_stat_v2_typed(section, stat_name: str, veh_type_name: str) -> float:
     veh_type_name: 'Car', 'Bus', 'Truck' (or lowercase)
     Returns 0.0 if unavailable.
     """
+    # AAPI tier FIRST: per-type replication stat via the vehicle-type position.
+    _fld = {"flow": "Flow", "density": "Density",
+            "speed": "Speed", "delay": "DTa"}.get(stat_name)
+    _tp = _veh_type_pos(veh_type_name)
+    if _fld is not None and _tp is not None:
+        _av = _aki_section_field(section, _fld, _tp)
+        if _av is not None and _av >= 0.0:
+            return _av
     # Try method variants: getCarFlow, getBusFlow, etc.
     vtn = veh_type_name.capitalize()
     stat_cap = stat_name.capitalize()

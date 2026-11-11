@@ -1,0 +1,646 @@
+"""check_batch.py -- one command: is the batch running now worth reading?
+
+    python -I check_batch.py                  # newest [LOAD] across corridors
+    python -I check_batch.py --corridor kg
+    python -I check_batch.py --csv <batch csv>
+    python -I check_batch.py --log <log>
+    python -I check_batch.py --by MeanLoopTT_s   # rank the arms on another metric
+
+Prints, in one screen and in this order:
+
+  1. BUILD      show_load's verdict for the newest [LOAD]: identity fields
+                against the bundle on disk, plus whether any bundle file was
+                written after the model load (its STALE check). Delegated, not
+                reimplemented, so the two can never disagree.
+  2. BATCH      how many runs the batch has recorded, how many succeeded, which
+                arms and seeds, how many slots that fills, and how many of those
+                runs belong to THIS Aimsun session rather than an earlier one.
+  3. METRICS    the corridor metrics per arm from the batch's own CSV, paired
+                against NO_TSP on the SAME seed (RULE 3), with each metric's
+                direction, its per-seed spread, and a paired t-test, so a delta
+                is judged as signal or noise before it is read as a result.
+                Before any of that, it checks that every seed of an arm
+                classified the SAME main approach sections: PaxEquivPassages --
+                and therefore the objective -- is summed over MAIN sections
+                only, so a run whose main set drifted is not measuring the same
+                thing as its sibling seeds, whatever its mean says.
+                The block opens with an arm RANKING by effect size (dz) with a
+                p-value and a distinguishable/noise verdict, because the arm
+                with the highest mean is not necessarily the one that is
+                separated from noise.
+                N_BusTrips is printed but marked reference-only
+                (RULE 4: it sums per-junction detection-window clearances, so it
+                scales with junction count and is not throughput).
+  4. RESULT     TRUSTWORTHY / NOT TRUSTWORTHY, with every reason listed.
+
+Why the recency gate matters: a batch record full of matching hashes can still
+be last session's numbers, and Aimsun caches its modules, so code edits land only
+on a full quit and relaunch (RULE 2).
+
+Read-only. It never deletes, moves or rewrites a result folder (RULE 5), so it is
+safe to run while a batch is in progress.
+
+Exit codes: 0 trustworthy, 1 not trustworthy (reasons printed), 2 no log to judge.
+"""
+import argparse
+import csv
+import os
+import statistics as st
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# Import the siblings even under `python -I`, which does not put the script's own
+# directory on sys.path. Every command in the runbook uses -I.
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import show_load as S        # noqa: E402  (build verdict, log discovery)
+import verify_kg_build as V  # noqa: E402  (log_start)
+from summarize_overnight import _paired_t  # noqa: E402  (project's t-test)
+
+# (column, label, higher_is_better -- None means "reference only")
+METRICS = (
+    ("stats_Objective_PaxPerDelayHr", "Objective_PaxPerDelayHr", True),
+    ("stats_TotalPassDelay_hrs", "TotalPassDelay_hrs", False),
+    ("stats_N_LoopCompletions", "N_LoopCompletions", True),
+    ("stats_MeanLoopTT_s", "MeanLoopTT_s", False),
+    ("stats_LoopsPerBus", "LoopsPerBus", True),
+    ("stats_N_BusTrips", "N_BusTrips", None),
+)
+ARM_COLS = ("run_experiment", "run_strategy", "arm")
+SEED_COLS = ("run_seed", "seed")
+OK_COLS = ("run_success", "success")
+BASE = "NO_TSP"
+SECTION_CSV = "simulation_results_per_intersection.csv"
+
+
+def _f(v):
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _ok(v):
+    return str(v).strip().lower() in ("true", "1", "yes", "y")
+
+
+def _when(t):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+
+def find_record(corridor_dir, explicit=""):
+    """The newest game_ladder_*.csv for this corridor: the batch's own record.
+
+    *_summary.csv files are aggregates written afterwards, not the per-run rows
+    this needs. A corridor-name match beats a newer file from the other corridor,
+    because the log and the numbers must describe the same batch.
+    """
+    if explicit:
+        return os.path.abspath(explicit)
+    hint = ""
+    if corridor_dir:
+        lab = os.path.basename(os.path.abspath(corridor_dir)).lower()
+        hint = "logan" if "logan" in lab else lab
+    best = None
+    try:
+        names = os.listdir(HERE)
+    except OSError:
+        return None
+    for name in names:
+        if not name.startswith("game_ladder_") or not name.endswith(".csv"):
+            continue
+        if name.endswith("_summary.csv"):
+            continue
+        path = os.path.join(HERE, name)
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            continue
+        score = (1 if hint and hint in name.lower() else 0, mt)
+        if best is None or score > best[0]:
+            best = (score, path)
+    return best[1] if best else None
+
+
+def load_rows(path):
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+        rows = list(csv.DictReader(fh))
+    return [r for r in rows if any((v or "").strip() for v in r.values())]
+
+
+def pick(cols, names):
+    for n in names:
+        if n in cols:
+            return n
+    return None
+
+
+def run_folders_since(results_dir, start):
+    """(finished, in progress) run folders written after the load.
+
+    Filesystem truth, independent of whether the batch rewrites its CSV per run.
+    Finished means simulation_results.csv exists (the convention run_all_checks
+    and check_timeseries use), so a folder still simulating is not counted.
+    """
+    done = prog = 0
+    if start is None or not os.path.isdir(results_dir):
+        return 0, 0
+    try:
+        names = os.listdir(results_dir)
+    except OSError:
+        return 0, 0
+    for name in names:
+        folder = os.path.join(results_dir, name)
+        if not os.path.isdir(folder):
+            continue
+        fin = os.path.join(folder, "simulation_results.csv")
+        try:
+            if os.path.isfile(fin):
+                done += os.path.getmtime(fin) >= start + 1.0
+            else:
+                prog += os.path.getmtime(folder) >= start + 1.0
+        except OSError:
+            continue
+    return done, prog
+
+
+def _run_dir(v):
+    """The run folder a batch row points at, or None when it is not on disk."""
+    p = (v or "").strip().strip('"')
+    if not p or p.lower() == "none":
+        return None
+    if not os.path.isabs(p):
+        p = os.path.join(HERE, p)
+    return p if os.path.isdir(p) else None
+
+
+def main_section_sets(row):
+    """{junction: main section ids} from this run's per-intersection CSV.
+
+    None when the row has no readable folder -- a missing per-intersection CSV
+    is a gap in the evidence, not a difference to report.
+    """
+    folder = _run_dir(row.get("stats_results_folder"))
+    if not folder:
+        return None
+    path = os.path.join(folder, SECTION_CSV)
+    if not os.path.isfile(path):
+        return None
+    sig = {}
+    try:
+        with open(path, newline="", encoding="utf-8-sig",
+                  errors="replace") as fh:
+            for r in csv.DictReader(fh):
+                ids = tuple(sorted(
+                    int(x) for x in
+                    (r.get("MainSectionIDs") or "").replace("|", " ").split()
+                    if x.strip()))
+                if not ids:
+                    continue
+                try:
+                    junction = int(r.get("IntersectionID"))
+                except (TypeError, ValueError):
+                    continue
+                sig[junction] = ids
+    except OSError:
+        return None
+    return sig or None
+
+
+def section_splits(rows, ac, sc):
+    """(runs_checked, [(arm, seeds, ref_seeds, [(junc, ref_ids, ids)])]).
+
+    PaxEquivPassages is summed over MAIN approach sections only, so two seeds of
+    the same arm that classified different sections as main are not comparable
+    even though they share a build and a demand level. The largest group of
+    identical runs is the reference; every other distinct signature is reported.
+    """
+    by_arm = {}
+    checked = 0
+    for r in rows:
+        arm = (r.get(ac) or "").strip()
+        seed = (r.get(sc) or "").strip()
+        if not arm or not seed:
+            continue
+        sig = main_section_sets(r)
+        if not sig:
+            continue
+        checked += 1
+        by_arm.setdefault(arm, []).append((seed, sig))
+
+    out = []
+    for arm in sorted(by_arm):
+        items = by_arm[arm]
+        if len(items) < 2:
+            continue
+        groups = {}
+        for seed, sig in items:
+            groups.setdefault(tuple(sorted(sig.items())), []).append(seed)
+        if len(groups) == 1:
+            continue
+        ref_key = max(groups, key=lambda k: (len(groups[k]), k))
+        ref = dict(ref_key)
+        for key, seeds in groups.items():
+            if key == ref_key:
+                continue
+            sig = dict(key)
+            diffs = [(j, ref.get(j), sig.get(j))
+                     for j in sorted(set(ref) | set(sig))
+                     if ref.get(j) != sig.get(j)]
+            out.append((arm, sorted(seeds, key=lambda s: (len(s), s)),
+                        sorted(groups[ref_key], key=lambda s: (len(s), s)),
+                        diffs))
+    return checked, out
+
+
+def _ids_txt(ids):
+    return ",".join(str(x) for x in ids) if ids else "(none)"
+
+
+def print_section_splits(rows, ac, sc):
+    """The pre-ranking gate: is every seed measuring the same objective?"""
+    checked, warns = section_splits(rows, ac, sc)
+    print("")
+    print("SECTION SPLIT -- main approach sections behind PaxEquivPassages")
+    if not checked:
+        print("  not checkable: no run folder has %s" % SECTION_CSV)
+        return
+    if not warns:
+        print("  identical across seeds for every arm (%d run(s) checked)."
+              % checked)
+        return
+    print("  [!] WARNING: the main/side split is not stable across seeds.")
+    print("  PaxEquivPassages counts MAIN sections only, so the objective of a")
+    print("  deviating run is NOT comparable with its sibling seeds -- treat the")
+    print("  ranking below as provisional (it is not a build or recency fault).")
+    for arm, seeds, ref_seeds, diffs in warns:
+        print("  %s: seed %s differs from seed %s"
+              % (arm, ",".join(seeds), ",".join(ref_seeds)))
+        for j, ref_ids, ids in diffs[:6]:
+            print("    junction %-8d reference %-26s differs %s"
+                  % (j, _ids_txt(ref_ids), _ids_txt(ids)))
+        if len(diffs) > 6:
+            print("    ... and %d more junction(s)" % (len(diffs) - 6))
+
+
+def collect(rows, ac, sc):
+    """{column: {(arm, seed): value}} for every metric column that exists."""
+    out = {}
+    for col, _label, _higher in METRICS:
+        d = {}
+        for r in rows:
+            arm, seed = (r.get(ac) or "").strip(), (r.get(sc) or "").strip()
+            if not arm or not seed:
+                continue
+            v = _f(r.get(col))
+            if v is not None:
+                d[(arm, seed)] = v
+        out[col] = d
+    return out
+
+
+def _p_txt(pv, n):
+    """A p-value a human can act on without a stats table."""
+    if n < 2 or pv != pv:
+        return "n/a (n=%d)" % n
+    if pv < 0.001:
+        return "<0.001 (p<0.05)"
+    return "%.3f (%s)" % (pv, "p<0.05" if pv < 0.05 else "ns")
+
+
+def _p_val(pv, n):
+    """Compact p for a table cell: 'n/a', '<0.001', or three decimals."""
+    if n < 2 or pv != pv:
+        return "n/a"
+    return "<0.001" if pv < 0.001 else "%.3f" % pv
+
+
+def rank_arms(data, arms, seeds, metric):
+    """Rank every strategy arm on one metric, best first.
+
+    Effect size is dz = mean paired difference / sd of those differences. It is
+    scale-free, so arms can be ordered even when the metric's raw delta is small,
+    and a small-but-consistent gain outranks a big mean shift that swings seed to
+    seed. dz is oriented so + is an improvement for that metric.
+    """
+    col, _label, higher = metric
+    d = data[col]
+    rows = []
+    for arm in arms:
+        pairs = [(d[(arm, s)], d[(BASE, s)]) for s in seeds
+                 if (arm, s) in d and (BASE, s) in d]
+        if not pairs:
+            continue
+        sign = 1.0 if higher else -1.0
+        diffs = [sign * (a - b) for a, b in pairs]
+        md = sum(diffs) / len(diffs)
+        dsd = st.stdev(diffs) if len(diffs) > 1 else 0.0
+        if dsd == 0.0:
+            dz = float("inf") if md > 0 else (float("-inf") if md < 0 else 0.0)
+        else:
+            dz = md / dsd
+        _t, pv = _paired_t([sign * a for a, _b in pairs],
+                           [sign * b for _a, b in pairs])
+        av = sum(a for a, _b in pairs) / len(pairs)
+        bv = sum(b for _a, b in pairs) / len(pairs)
+        rows.append({
+            "arm": arm, "n": len(pairs), "md": md, "dz": dz, "p": pv,
+            "delta": (100.0 * (av - bv) / bv) if bv else None,
+            "better": sum(1 for x in diffs if x > 0),
+        })
+    rows.sort(key=lambda r: (-r["dz"], r["arm"]))
+    return rows
+
+
+def print_ranking(data, arms, seeds, metric):
+    """The decision summary: which arms are separable from NO_TSP at all."""
+    col, label, higher = metric
+    rows = rank_arms(data, arms, seeds, metric)
+    print("")
+    print("  ARM RANKING -- %s (%s is better), best first"
+          % (label, "higher" if higher else "lower"))
+    if not rows:
+        print("    nothing to rank: no strategy arm has a same-seed %s row"
+              % BASE)
+        return
+    w = max(30, min(max(len(r["arm"]) for r in rows), 60))
+    print("    %-4s %-*s %9s %6s %8s %7s %6s  %s"
+          % ("rank", w, "arm", "diff", "dz", "delta", "p", "better",
+             "verdict"))
+    for i, r in enumerate(rows, 1):
+        if r["n"] < 2:
+            verdict = "untestable (n=1)"
+        elif r["p"] == r["p"] and r["p"] < 0.05:
+            verdict = "distinguishable"
+        else:
+            verdict = "noise"
+        dz = r["dz"]
+        dz_txt = ("inf" if dz == float("inf") else
+                  "-inf" if dz == float("-inf") else "%.2f" % dz)
+        print("    %-4d %-*s %+9.3f %6s %8s %7s %5d/%d  %s"
+              % (i, w, r["arm"], r["md"], dz_txt,
+                 "%+.1f%%" % r["delta"] if r["delta"] is not None else "-",
+                 _p_val(r["p"], r["n"]), r["better"], r["n"], verdict))
+    sep = []
+    for r in rows:
+        others = []
+        for ocol, olabel, ohigher in METRICS:
+            if ocol == col or ohigher is None or r["n"] < 2:
+                continue
+            od = data[ocol]
+            pairs = [(od[(r["arm"], s)], od[(BASE, s)]) for s in seeds
+                     if (r["arm"], s) in od and (BASE, s) in od]
+            if len(pairs) < 2:
+                continue
+            sign = 1.0 if ohigher else -1.0
+            _t, pv = _paired_t([sign * a for a, _b in pairs],
+                               [sign * b for _a, b in pairs])
+            if pv == pv and pv < 0.05:
+                others.append(olabel)
+        if others:
+            sep.append("%s (%s)" % (r["arm"], ", ".join(others)))
+    print("    dz = mean paired difference / its sd (+ = better): about 0.2 is")
+    print("    small, 0.8 large. Sorting by dz rather than by mean is why a")
+    print("    small steady gain can outrank a bigger mean shift that swings")
+    print("    seed to seed. %d metric%s x %d arm%s were tested separately."
+          % (len(METRICS) - 1, "s" if len(METRICS) > 2 else "",
+             len(rows), "s" if len(rows) > 1 else ""))
+    if sep:
+        print("    Also p<0.05 on: %s" % "; ".join(sep))
+
+
+def print_arm(data, arm, seeds):
+    """One block: this arm's means beside NO_TSP on the same seeds.
+
+    For each metric the second line carries the information needed to decide
+    whether the delta is real: how far the arm's own seeds scatter, and a paired
+    t-test on the same-seed differences. Differences are oriented so that + is
+    always an improvement for that metric, so the sign of diff agrees with the
+    direction of delta (RULE 3 -- higher is not better for every metric).
+    """
+    obj = data[METRICS[0][0]]
+    paired = [s for s in seeds if (arm, s) in obj and (BASE, s) in obj]
+    print("")
+    print("  arm: %s   (paired seeds %d/%d)" % (arm, len(paired), len(seeds)))
+    if not paired:
+        print("    no seed has both this arm and NO_TSP -- RULE 3 comparison "
+              "not possible yet")
+        return []
+    print("    %-32s %10s %10s %9s  %s"
+          % ("metric", BASE, "THIS ARM", "delta", "better"))
+    for col, label, higher in METRICS:
+        d = data[col]
+        pairs = [(d[(arm, s)], d[(BASE, s)]) for s in paired
+                 if (arm, s) in d and (BASE, s) in d]
+        if not pairs:
+            print("    %-32s %s" % (label, "(no numeric values)"))
+            continue
+        av = sum(a for a, _b in pairs) / len(pairs)
+        bv = sum(b for _a, b in pairs) / len(pairs)
+        vals = [a for a, _b in pairs]
+        sd = st.stdev(vals) if len(vals) > 1 else 0.0
+        spread = "%.3f..%.3f (sd %.3f)" % (min(vals), max(vals), sd)
+        if higher is None:
+            print("    %-32s %10.3f %10.3f %9s  %s"
+                  % (label + " (ref)", bv, av, "-", "-"))
+            print("      per-seed %s   no test: reference only (RULE 4)"
+                  % spread)
+            continue
+        delta = (100.0 * (av - bv) / bv) if bv else None
+        better = sum(1 for a, b in pairs
+                     if (a > b if higher else a < b))
+        print("    %-32s %10.3f %10.3f %8s%%  %d/%d"
+              % (label + (" (high)" if higher else " (low)"), bv, av,
+                 "%+.1f" % delta if delta is not None else "-",
+                 better, len(pairs)))
+        sign = 1.0 if higher else -1.0
+        diffs = [sign * (a - b) for a, b in pairs]
+        _t, pv = _paired_t([sign * a for a, _b in pairs],
+                           [sign * b for _a, b in pairs])
+        md = sum(diffs) / len(diffs)
+        dsd = st.stdev(diffs) if len(diffs) > 1 else 0.0
+        print("      per-seed %s   diff %+.3f +- %.3f (+ = better)   p %s"
+              % (spread, md, dsd, _p_txt(pv, len(diffs))))
+    print("    The p-value is a two-sided paired t on %d seed(s): it asks "
+          "whether" % len(paired))
+    print("    this seed set's differences could be noise. p<0.05 on %d seeds "
+          "is a hint," % len(paired))
+    print("    not a result -- and it tests each metric separately (%d tests)."
+          % (len(METRICS) - 1))
+    print("    N_BusTrips is reference only: it sums per-junction detection "
+          "windows,")
+    print("    so it scales with junction count and is not throughput (RULE 4).")
+    return paired
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--corridor", default="",
+                    help="kg or logan_road_new (default: newest log anywhere)")
+    ap.add_argument("--logs", action="append", default=[],
+                    help="log directory (repeatable)")
+    ap.add_argument("--log", default="", help="a specific run log")
+    ap.add_argument("--csv", default="", help="a specific batch CSV")
+    ap.add_argument("--by", default="",
+                    help="metric to rank the arms on (default: the objective)")
+    a = ap.parse_args(argv)
+
+    by_metric = None
+    want = (a.by or METRICS[0][1]).lower()
+    for col, label, higher in METRICS:
+        if label.lower() == want:
+            by_metric = (col, label, higher)
+    if by_metric is None:
+        ap.error("unknown --by %r; choose from: %s"
+                 % (a.by, ", ".join(m[1] for m in METRICS)))
+    if by_metric[2] is None:
+        ap.error("--by %s is reference only (RULE 4: it scales with junction "
+                 "count); rank on a real metric" % a.by)
+
+    if a.log:
+        log = os.path.abspath(a.log)
+    else:
+        if a.corridor:
+            dirs = [(a.corridor, os.path.join(HERE, a.corridor, "logs"))]
+        elif a.logs:
+            dirs = [(os.path.basename(os.path.abspath(d)).lower(), d) for d in a.logs]
+        else:
+            dirs = S.DEFAULT_DIRS
+        dirs = [(lab, os.path.abspath(d)) for lab, d in dirs]
+        got = S._newest(dirs)
+        if not got:
+            print("NO EVIDENCE: no Aimsun_TSP_Log_*.txt in %s"
+                  % ", ".join(d for _, d in dirs))
+            print("  Start a run in Aimsun, or pass --log <path>.")
+            return 2
+        log = got[2]
+
+    if not os.path.isfile(log):
+        print("NO EVIDENCE: cannot read %s" % log)
+        return 2
+
+    # ---- 1. BUILD: show_load prints the identity table and returns its code ---
+    rc = S.main(["--log", log])
+    corridor_dir = S._corridor_dir(log)
+    start = V.log_start(log)
+
+    # ---- 2. BATCH ------------------------------------------------------------
+    print("")
+    print("=" * 78)
+    rec = find_record(corridor_dir, a.csv)
+    if not rec or not os.path.isfile(rec):
+        print("BATCH -- no game_ladder_*.csv in the bundle root")
+        print("")
+        print("RESULT: NOT TRUSTWORTHY -- there is no batch record to read yet.")
+        return 1
+
+    rows = load_rows(rec)
+    cols = list(rows[0].keys()) if rows else []
+    ac, sc, kc = (pick(cols, ARM_COLS), pick(cols, SEED_COLS),
+                  pick(cols, OK_COLS))
+    results_dir = os.path.join(corridor_dir, "results")
+    done, prog = run_folders_since(results_dir, start)
+    mtime = os.path.getmtime(rec)
+    session_record = (start is not None and mtime >= start + 1.0)
+
+    print("BATCH -- %s" % os.path.basename(rec))
+    if start is None:
+        print("  record written          %s  (load time unknown: the log name "
+              "carries no timestamp)" % _when(mtime))
+    else:
+        print("  record written          %s  (%s)"
+              % (_when(mtime), S._delta(mtime - start)))
+    print("  runs recorded           %d" % len(rows))
+    print("  run folders since load  %d finished, %d in progress" % (done, prog))
+
+    reasons = []
+    if rc != 0:
+        reasons.append("the build verdict is not MATCHES (see above): the code "
+                       "that ran is not the code on disk")
+
+    if not rows or not ac or not sc:
+        print("  columns                 cannot locate arm/seed columns; "
+              "columns are: %s" % ", ".join(cols[:12]))
+        reasons.append("the batch record has no usable arm/seed rows")
+        arms, seeds, failed = [], [], []
+    else:
+        arms = sorted({(r.get(ac) or "").strip() for r in rows} - {""})
+        seeds = sorted({(r.get(sc) or "").strip() for r in rows} - {""},
+                       key=lambda s: (len(s), s))
+        failed = [((r.get(ac) or "").strip(), (r.get(sc) or "").strip())
+                  for r in rows if kc and not _ok(r.get(kc))]
+        ok_n = len(rows) - len(failed)
+        slots = len(arms) * len(seeds)
+        print("  ok / failed             %d / %d" % (ok_n, len(failed)))
+        print("  arms                    %s" % ", ".join(arms))
+        print("  seeds                   %s" % " ".join(seeds))
+        print("  slots filled            %d/%d (%d arms x %d seeds)%s"
+              % (len(rows), slots, len(arms), len(seeds),
+                 "" if len(rows) >= slots else "  -- batch still filling"))
+        if failed:
+            print("  failed runs             %s"
+                  % ", ".join("%s seed %s" % f for f in failed[:6]))
+            reasons.append("%d run(s) did not report success" % len(failed))
+        if not kc:
+            print("  [!] no run_success column -- failures cannot be counted")
+
+    if start is None:
+        reasons.append("cannot tell when this session loaded (no timestamp in "
+                       "the log name), so recency is unproven")
+    elif not session_record and not done:
+        reasons.append("no run has landed since this Aimsun session loaded "
+                       "(record written %s, %d folder(s) finished since)"
+                       % (S._delta(mtime - start), done))
+
+    # ---- 3. METRICS ----------------------------------------------------------
+    if rows and ac and sc:
+        data = collect(rows, ac, sc)
+        obj = data[METRICS[0][0]]
+        strategies = [x for x in arms if x != BASE]
+        if not obj:
+            reasons.append("no numeric Objective_PaxPerDelayHr in the record")
+        if BASE not in arms:
+            reasons.append("no %s rows at all -- nothing to compare against "
+                           "(RULE 3)" % BASE)
+        else:
+            print_section_splits(rows, ac, sc)
+            print("")
+            print("CORRIDOR METRICS -- same-seed pairing against %s (RULE 3)"
+                  % BASE)
+            print_ranking(data, strategies, seeds, by_metric)
+            print("")
+            print("  Per-arm detail:")
+            unpaired = []
+            for arm in strategies:
+                if not print_arm(data, arm, seeds):
+                    unpaired.append(arm)
+            if unpaired:
+                reasons.append("%d arm(s) have no seed with both the arm and "
+                               "%s: %s" % (len(unpaired), BASE,
+                                           ", ".join(unpaired[:3])))
+            if not strategies:
+                reasons.append("no strategy arm has run yet (only %s)" % BASE)
+
+    # ---- 4. RESULT -----------------------------------------------------------
+    print("")
+    print("=" * 78)
+    if reasons:
+        print("RESULT: NOT TRUSTWORTHY -- %d reason(s):" % len(reasons))
+        for r in reasons:
+            print("  - %s" % r)
+        print("")
+        print("  Do not read the means yet. A build reason needs a full Aimsun")
+        print("  quit and relaunch (RULE 2); a recency reason needs run 1 of")
+        print("  THIS session to finish; a pairing reason needs the %s run on" % BASE)
+        print("  the same seed (RULE 3).")
+        return 1
+    print("RESULT: TRUSTWORTHY -- current build, %d run(s), %d failed, and every"
+          % (len(rows), 0))
+    print("  arm has a same-seed %s for comparison." % BASE)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -37,6 +37,10 @@
 \citation{Hao2026Subcycles}
 \citation{Long2022PhaseSkipping,Yu2022PhaseRotation}
 \citation{Abdelfatah1998SystemOptimal}
+\citation{Little1981MAXBAND:Networks,Gartner1991AMULTIBAND}
+\citation{Liu2009Real-timeIntersections,Bao2026AnControl}
+\citation{Christofa2013Person-BasedOptimization}
+\citation{Furth2000ConditionalPriority}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Literature: bus priority at signalised intersections}{2}{subsection.2.1}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Coordinated TSP literature by modelled action (review vocabulary: early green/red truncation, offset correction/optimization, split/cycle timing adjustment). \text  {$\mathsurround \z@ \mathchar "458$}~= modelled, Partial $=$ present in some studies of the cluster, -- $=$ absent. Asterisks on the Proposed row mark online candidate generators evaluated in microsimulation but outside the exact program.}}{3}{table.caption.1}\protected@file@percent }
 \providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
@@ -49,7 +53,7 @@
 \newlabel{eq:Q_end}{{1}{3}{Bus Delay (LWR Kinematic Wave Model)}{equation.3.1}{}}
 \newlabel{eq:Q_end@cref}{{[equation][1][]1}{[1][3][]3}}
 \newlabel{eq:t_clear}{{2}{4}{Bus Delay (LWR Kinematic Wave Model)}{equation.3.2}{}}
-\newlabel{eq:t_clear@cref}{{[equation][2][]2}{[1][3][]4}}
+\newlabel{eq:t_clear@cref}{{[equation][2][]2}{[1][4][]4}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Cross-Traffic Delay (Deterministic D/D/1 Shockwave Model)}{4}{subsection.3.2}\protected@file@percent }
 \citation{Varaiya2013MaxPressure,Tassiulas1992Stability}
 \@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Moving-Bottleneck Effect}{5}{subsection.3.3}\protected@file@percent }
@@ -58,18 +62,14 @@
 \newlabel{sec:maxpressure@cref}{{[subsection][4][3]3.4}{[1][5][]5}}
 \newlabel{eq:mp_movement}{{7}{5}{Max-Pressure Control: the Queue-Balancing Baseline}{equation.3.7}{}}
 \newlabel{eq:mp_movement@cref}{{[equation][7][]7}{[1][5][]5}}
-\newlabel{eq:mp_phase}{{8}{5}{Max-Pressure Control: the Queue-Balancing Baseline}{equation.3.8}{}}
-\newlabel{eq:mp_phase@cref}{{[equation][8][]8}{[1][5][]5}}
-\citation{Kobeissi2026MPTSPLB}
 \citation{Lin2015ReviewTSP,Ma2008IsolatedEfficiency}
 \citation{Mucsi2008QueueJumps,Maddu2024QueueJumpVISSIM}
+\newlabel{eq:mp_phase}{{8}{6}{Max-Pressure Control: the Queue-Balancing Baseline}{equation.3.8}{}}
+\newlabel{eq:mp_phase@cref}{{[equation][8][]8}{[1][5][]6}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}TSP Action Space}{6}{section.4}\protected@file@percent }
 \newlabel{sec:actions}{{4}{6}{TSP Action Space}{section.4}{}}
 \newlabel{sec:actions@cref}{{[section][4][]4}{[1][6][]6}}
 \@writefile{toc}{\contentsline {paragraph}{Terminology.}{6}{paragraph*.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Variable Phase Action and Phase Skipping}{6}{subsection.4.1}\protected@file@percent }
-\newlabel{sec:phase_skip}{{4.1}{6}{Variable Phase Action and Phase Skipping}{subsection.4.1}{}}
-\newlabel{sec:phase_skip@cref}{{[subsection][1][4]4.1}{[1][6][]6}}
 \@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Effect of each action on traffic flow. Each panel is one junction seen top-down, the arterial running left to right with the cross street joining from above. In every panel the left of the stop line is the state at the decision instant (\textit  {now}: hollow glyphs) and the right is the same stream after the action (\textit  {after}: filled glyphs); the light pair at the top right is the \textit  {current aspect}, main then cross, so the reader can see the light the action is taken on together with the flow it changes. (a) With no intervention the bus waits out the red and the queue behind it grows. (b) \texttt  {GE} widens the arterial's green window by $\delta $, so the bus clears without stopping. (c) \texttt  {GR} truncates the cross-street green by $\delta $, bringing the bus green forward. (d) \texttt  {INS} adds a bus phase to the ring, so the bus is served this cycle instead of the next. (e) \texttt  {ER} ends the bus phase once the bus has cleared, handing green to the cross street early. (f) \texttt  {VP} drops an empty phase from the ring, removing two lost reds per cycle. (g) \texttt  {PT} re-sequences the ring so the bus phase is served first. (h) Offset correction shifts the upstream green band by $\Delta $ so the bus arrives on green. Panels are schematic and carry no measured values. Panel (b) is enlarged in \cref  {fig:ge_wave}.}}{7}{figure.caption.3}\protected@file@percent }
 \newlabel{fig:action_mech}{{1}{7}{Effect of each action on traffic flow. Each panel is one junction seen top-down, the arterial running left to right with the cross street joining from above. In every panel the left of the stop line is the state at the decision instant (\textit {now}: hollow glyphs) and the right is the same stream after the action (\textit {after}: filled glyphs); the light pair at the top right is the \textit {current aspect}, main then cross, so the reader can see the light the action is taken on together with the flow it changes. (a) With no intervention the bus waits out the red and the queue behind it grows. (b) \texttt {GE} widens the arterial's green window by $\delta $, so the bus clears without stopping. (c) \texttt {GR} truncates the cross-street green by $\delta $, bringing the bus green forward. (d) \texttt {INS} adds a bus phase to the ring, so the bus is served this cycle instead of the next. (e) \texttt {ER} ends the bus phase once the bus has cleared, handing green to the cross street early. (f) \texttt {VP} drops an empty phase from the ring, removing two lost reds per cycle. (g) \texttt {PT} re-sequences the ring so the bus phase is served first. (h) Offset correction shifts the upstream green band by $\Delta $ so the bus arrives on green. Panels are schematic and carry no measured values. Panel (b) is enlarged in \cref {fig:ge_wave}}{figure.caption.3}{}}
 \newlabel{fig:action_mech@cref}{{[figure][1][]1}{[1][6][]7}}
@@ -77,21 +77,24 @@
 \citation{Long2022PhaseSkipping}
 \@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces What the green extension does to the coordinated band (schematic, one cycle repeated). Green bars are the coordinated main-street green at three junctions in route order; red is the rest of the cycle. Dots mark the bus at each junction, coloured by the aspect it meets. (a) Without action the bus arrives at J1 after its green, is held for the red, and then meets the next band at each downstream junction, losing time at every stop. (b) With the extension the bus passes J1 inside the current band and crosses J2 and J3 without stopping. The downstream bands are unchanged: the extension removes the stop and keeps the bus in the wave, which is the time it saves.}}{8}{figure.caption.4}\protected@file@percent }
 \newlabel{fig:ge_wave}{{2}{8}{What the green extension does to the coordinated band (schematic, one cycle repeated). Green bars are the coordinated main-street green at three junctions in route order; red is the rest of the cycle. Dots mark the bus at each junction, coloured by the aspect it meets. (a) Without action the bus arrives at J1 after its green, is held for the red, and then meets the next band at each downstream junction, losing time at every stop. (b) With the extension the bus passes J1 inside the current band and crosses J2 and J3 without stopping. The downstream bands are unchanged: the extension removes the stop and keeps the bus in the wave, which is the time it saves}{figure.caption.4}{}}
-\newlabel{fig:ge_wave@cref}{{[figure][2][]2}{[1][6][]8}}
+\newlabel{fig:ge_wave@cref}{{[figure][2][]2}{[1][7][]8}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Variable Phase Action and Phase Skipping}{8}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:phase_skip}{{4.1}{8}{Variable Phase Action and Phase Skipping}{subsection.4.1}{}}
+\newlabel{sec:phase_skip@cref}{{[subsection][1][4]4.1}{[1][8][]8}}
 \@writefile{toc}{\contentsline {paragraph}{Formal definition.}{8}{paragraph*.5}\protected@file@percent }
 \newlabel{eq:vp_action}{{9}{8}{Formal definition}{equation.4.9}{}}
 \newlabel{eq:vp_action@cref}{{[equation][9][]9}{[1][8][]8}}
 \@writefile{toc}{\contentsline {paragraph}{Phase-skipping guards (invalid-action masking).}{8}{paragraph*.6}\protected@file@percent }
-\newlabel{eq:skip_queue}{{10}{8}{Phase-skipping guards (invalid-action masking)}{equation.4.10}{}}
-\newlabel{eq:skip_queue@cref}{{[equation][10][]10}{[1][8][]8}}
-\newlabel{eq:skip_consec}{{11}{8}{Phase-skipping guards (invalid-action masking)}{equation.4.11}{}}
-\newlabel{eq:skip_consec@cref}{{[equation][11][]11}{[1][8][]8}}
-\newlabel{eq:skip_admissible}{{12}{8}{Phase-skipping guards (invalid-action masking)}{equation.4.12}{}}
-\newlabel{eq:skip_admissible@cref}{{[equation][12][]12}{[1][8][]8}}
 \citation{Long2022PhaseSkipping}
 \citation{Yu2022PhaseRotation}
 \citation{Yu2022PhaseRotation}
 \citation{Webster1958Traffic}
+\newlabel{eq:skip_queue}{{10}{9}{Phase-skipping guards (invalid-action masking)}{equation.4.10}{}}
+\newlabel{eq:skip_queue@cref}{{[equation][10][]10}{[1][9][]9}}
+\newlabel{eq:skip_consec}{{11}{9}{Phase-skipping guards (invalid-action masking)}{equation.4.11}{}}
+\newlabel{eq:skip_consec@cref}{{[equation][11][]11}{[1][9][]9}}
+\newlabel{eq:skip_admissible}{{12}{9}{Phase-skipping guards (invalid-action masking)}{equation.4.12}{}}
+\newlabel{eq:skip_admissible@cref}{{[equation][12][]12}{[1][9][]9}}
 \newlabel{eq:must_serve}{{13}{9}{Phase-skipping guards (invalid-action masking)}{equation.4.13}{}}
 \newlabel{eq:must_serve@cref}{{[equation][13][]13}{[1][9][]9}}
 \newlabel{eq:iam}{{14}{9}{Phase-skipping guards (invalid-action masking)}{equation.4.14}{}}
@@ -103,536 +106,575 @@
 \newlabel{eq:rot_select}{{15}{9}{Binary sequence selection}{equation.4.15}{}}
 \newlabel{eq:rot_select@cref}{{[equation][15][]15}{[1][9][]9}}
 \@writefile{toc}{\contentsline {paragraph}{Joint green-split optimisation.}{9}{paragraph*.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Key Notation}{9}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Key Notation}{10}{subsection.4.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {5}The Exact Scheduling Program (MILP)}{10}{section.5}\protected@file@percent }
 \newlabel{sec:milp}{{5}{10}{The Exact Scheduling Program (MILP)}{section.5}{}}
-\newlabel{sec:milp@cref}{{[section][5][]5}{[1][9][]10}}
+\newlabel{sec:milp@cref}{{[section][5][]5}{[1][10][]10}}
 \@writefile{toc}{\contentsline {paragraph}{Formulation overview.}{10}{paragraph*.9}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces The exact program by family. Every row fixes a \emph  {signal setting over time} or a consequence of one; every constraint and objective term in \cref  {sec:milp} belongs to exactly one row.}}{10}{table.caption.10}\protected@file@percent }
 \newlabel{tab:program_map}{{2}{10}{The exact program by family. Every row fixes a \emph {signal setting over time} or a consequence of one; every constraint and objective term in \cref {sec:milp} belongs to exactly one row}{table.caption.10}{}}
 \newlabel{tab:program_map@cref}{{[table][2][]2}{[1][10][]10}}
 \@writefile{toc}{\contentsline {paragraph}{Decision variable.}{10}{paragraph*.11}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Integer time.}{10}{paragraph*.12}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Scope of the formulation.}{10}{paragraph*.13}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Time-Expanded Interpretation}{10}{subsection.5.1}\protected@file@percent }
-\newlabel{sec:sched_interp}{{5.1}{10}{Time-Expanded Interpretation}{subsection.5.1}{}}
-\newlabel{sec:sched_interp@cref}{{[subsection][1][5]5.1}{[1][10][]10}}
-\@writefile{toc}{\contentsline {paragraph}{Definition of the traffic model.}{10}{paragraph*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Scope of the formulation.}{11}{paragraph*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Time-Expanded Interpretation}{11}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:sched_interp}{{5.1}{11}{Time-Expanded Interpretation}{subsection.5.1}{}}
+\newlabel{sec:sched_interp@cref}{{[subsection][1][5]5.1}{[1][11][]11}}
+\@writefile{toc}{\contentsline {paragraph}{Definition of the traffic model.}{11}{paragraph*.14}\protected@file@percent }
 \gdef \LT@i {\LT@entry 
     {3}{102.50674pt}\LT@entry 
     {1}{296.52756pt}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Sets and Indices}{11}{subsection.5.2}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Time-expanded controller schedule produced by the exact program. Each row is an intersection; each block is a signal setting in effect at time $t$ (80\,s cycle, 35\,s bus-phase green, offsets staggered by 10\,s per intersection to form the green wave for the timetabled direction). Overlays show how the schedule \emph  {changes the controller settings in time}; the five numbered callouts are keyed beneath the axis (1 Green Extension $+10$\,s, 2 Phase Insertion $+15$\,s, 3 Early Red $-10$\,s, 4 Green Reallocation $\pm 10$\,s, 5 offset correction $-5$\,s). Callouts 1--3 steer the actual bus trajectory (red) back onto the timetable arrivals (circles) after a $+25$\,s queue delay. The opposing-direction bus (orange) cannot use the one-way stagger, so the strategy rotates the phase order wherever the stagger strands it (ROT windows at intersections 10, 7, 6 and 3, white tags): the bus approach takes the cross-street slot and the cross phase is deferred, cutting the return-trip red waits from 75\,s (gray counterfactual: held to 170 at row 10 and to 230 at row 8) to short slowdowns, and the bus rejoins regular greens at rows 8, 5 and 4. Callout~4 (violet) starts the bus green 10\,s early at intersection 5 while shortening the donor cross phase by the same amount, leaving the cycle sum unchanged; callout~5 shifts the downstream green start 5\,s earlier at intersection 11 to restore progression.}}{12}{figure.caption.15}\protected@file@percent }
+\newlabel{fig:sched}{{3}{12}{Time-expanded controller schedule produced by the exact program. Each row is an intersection; each block is a signal setting in effect at time $t$ (80\,s cycle, 35\,s bus-phase green, offsets staggered by 10\,s per intersection to form the green wave for the timetabled direction). Overlays show how the schedule \emph {changes the controller settings in time}; the five numbered callouts are keyed beneath the axis (1 Green Extension $+10$\,s, 2 Phase Insertion $+15$\,s, 3 Early Red $-10$\,s, 4 Green Reallocation $\pm 10$\,s, 5 offset correction $-5$\,s). Callouts 1--3 steer the actual bus trajectory (red) back onto the timetable arrivals (circles) after a $+25$\,s queue delay. The opposing-direction bus (orange) cannot use the one-way stagger, so the strategy rotates the phase order wherever the stagger strands it (ROT windows at intersections 10, 7, 6 and 3, white tags): the bus approach takes the cross-street slot and the cross phase is deferred, cutting the return-trip red waits from 75\,s (gray counterfactual: held to 170 at row 10 and to 230 at row 8) to short slowdowns, and the bus rejoins regular greens at rows 8, 5 and 4. Callout~4 (violet) starts the bus green 10\,s early at intersection 5 while shortening the donor cross phase by the same amount, leaving the cycle sum unchanged; callout~5 shifts the downstream green start 5\,s earlier at intersection 11 to restore progression}{figure.caption.15}{}}
+\newlabel{fig:sched@cref}{{[figure][3][]3}{[1][11][]12}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Sets and Indices}{12}{subsection.5.2}\protected@file@percent }
 \gdef \LT@ii {\LT@entry 
     {3}{62.39696pt}\LT@entry 
     {3}{87.07193pt}\LT@entry 
     {1}{239.62204pt}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Parameters}{12}{subsection.5.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Parameters}{13}{subsection.5.3}\protected@file@percent }
 \gdef \LT@iii {\LT@entry 
     {3}{42.96779pt}\LT@entry 
     {1}{111.58464pt}\LT@entry 
     {1}{211.16928pt}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Decision Variables}{13}{subsection.5.4}\protected@file@percent }
-\newlabel{sec:dvars}{{5.4}{13}{Decision Variables}{subsection.5.4}{}}
-\newlabel{sec:dvars@cref}{{[subsection][4][5]5.4}{[1][13][]13}}
-\@writefile{toc}{\contentsline {paragraph}{Decision variables.}{13}{paragraph*.16}\protected@file@percent }
-\newlabel{eq:x_main_reading}{{16}{13}{Decision variables}{equation.5.16}{}}
-\newlabel{eq:x_main_reading@cref}{{[equation][16][]16}{[1][13][]13}}
-\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Time-expanded controller schedule produced by the exact program. Each row is an intersection; each block is a signal setting in effect at time $t$ (80\,s cycle, 35\,s bus-phase green, offsets staggered by 10\,s per intersection to form the green wave for the timetabled direction). Overlays show how the schedule \emph  {changes the controller settings in time}; the five numbered callouts are keyed beneath the axis (1 Green Extension $+10$\,s, 2 Phase Insertion $+15$\,s, 3 Early Red $-10$\,s, 4 Green Reallocation $\pm 10$\,s, 5 offset correction $-5$\,s). Callouts 1--3 steer the actual bus trajectory (red) back onto the timetable arrivals (circles) after a $+25$\,s queue delay. The opposing-direction bus (orange) cannot use the one-way stagger, so the strategy rotates the phase order wherever the stagger strands it (ROT windows at intersections 10, 7, 6 and 3, white tags): the bus approach takes the cross-street slot and the cross phase is deferred, cutting the return-trip red waits from 75\,s (gray counterfactual: held to 170 at row 10 and to 230 at row 8) to short slowdowns, and the bus rejoins regular greens at rows 8, 5 and 4. Callout~4 (violet) starts the bus green 10\,s early at intersection 5 while shortening the donor cross phase by the same amount, leaving the cycle sum unchanged; callout~5 shifts the downstream green start 5\,s earlier at intersection 11 to restore progression.}}{14}{figure.caption.15}\protected@file@percent }
-\newlabel{fig:sched}{{3}{14}{Time-expanded controller schedule produced by the exact program. Each row is an intersection; each block is a signal setting in effect at time $t$ (80\,s cycle, 35\,s bus-phase green, offsets staggered by 10\,s per intersection to form the green wave for the timetabled direction). Overlays show how the schedule \emph {changes the controller settings in time}; the five numbered callouts are keyed beneath the axis (1 Green Extension $+10$\,s, 2 Phase Insertion $+15$\,s, 3 Early Red $-10$\,s, 4 Green Reallocation $\pm 10$\,s, 5 offset correction $-5$\,s). Callouts 1--3 steer the actual bus trajectory (red) back onto the timetable arrivals (circles) after a $+25$\,s queue delay. The opposing-direction bus (orange) cannot use the one-way stagger, so the strategy rotates the phase order wherever the stagger strands it (ROT windows at intersections 10, 7, 6 and 3, white tags): the bus approach takes the cross-street slot and the cross phase is deferred, cutting the return-trip red waits from 75\,s (gray counterfactual: held to 170 at row 10 and to 230 at row 8) to short slowdowns, and the bus rejoins regular greens at rows 8, 5 and 4. Callout~4 (violet) starts the bus green 10\,s early at intersection 5 while shortening the donor cross phase by the same amount, leaving the cycle sum unchanged; callout~5 shifts the downstream green start 5\,s earlier at intersection 11 to restore progression}{figure.caption.15}{}}
-\newlabel{fig:sched@cref}{{[figure][3][]3}{[1][11][]14}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Timing Outcomes: Cycle, Green, and Offsets}{14}{subsection.5.5}\protected@file@percent }
-\newlabel{sec:stage_a}{{5.5}{14}{Timing Outcomes: Cycle, Green, and Offsets}{subsection.5.5}{}}
-\newlabel{sec:stage_a@cref}{{[subsection][5][5]5.5}{[1][14][]14}}
-\@writefile{toc}{\contentsline {paragraph}{Timing inputs.}{14}{paragraph*.17}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Cycle and its bounds.}{14}{paragraph*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Decision Variables}{14}{subsection.5.4}\protected@file@percent }
+\newlabel{sec:dvars}{{5.4}{14}{Decision Variables}{subsection.5.4}{}}
+\newlabel{sec:dvars@cref}{{[subsection][4][5]5.4}{[1][14][]14}}
+\@writefile{toc}{\contentsline {paragraph}{Decision variables.}{14}{paragraph*.16}\protected@file@percent }
+\newlabel{eq:x_main_reading}{{16}{14}{Decision variables}{equation.5.16}{}}
+\newlabel{eq:x_main_reading@cref}{{[equation][16][]16}{[1][14][]14}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Timing Outcomes: Cycle, Green, and Offsets}{15}{subsection.5.5}\protected@file@percent }
+\newlabel{sec:stage_a}{{5.5}{15}{Timing Outcomes: Cycle, Green, and Offsets}{subsection.5.5}{}}
+\newlabel{sec:stage_a@cref}{{[subsection][5][5]5.5}{[1][15][]15}}
+\@writefile{toc}{\contentsline {paragraph}{Timing inputs.}{15}{paragraph*.17}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Cycle and its bounds.}{15}{paragraph*.18}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Green splits.}{15}{paragraph*.19}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Offsets.}{15}{paragraph*.20}\protected@file@percent }
 \@writefile{toc}{\contentsline {paragraph}{Lane capacity.}{15}{paragraph*.21}\protected@file@percent }
 \newlabel{eq:mu_lanes}{{17}{15}{Lane capacity}{equation.5.17}{}}
 \newlabel{eq:mu_lanes@cref}{{[equation][17][]17}{[1][15][]15}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Objective Function}{15}{subsection.5.6}\protected@file@percent }
-\newlabel{sec:objectives}{{5.6}{15}{Objective Function}{subsection.5.6}{}}
-\newlabel{sec:objectives@cref}{{[subsection][6][5]5.6}{[1][15][]15}}
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces The objective outline. Exactly one term ($Z_1$) is minimised; $Z_2$ is an optional linear term at a fixed coefficient; $Z_3$ is an exact-penalty cap; $Z_4$ is a post-run reported metric, not a constraint of this program.}}{15}{table.caption.22}\protected@file@percent }
-\newlabel{tab:objective_terms}{{6}{15}{The objective outline. Exactly one term ($Z_1$) is minimised; $Z_2$ is an optional linear term at a fixed coefficient; $Z_3$ is an exact-penalty cap; $Z_4$ is a post-run reported metric, not a constraint of this program}{table.caption.22}{}}
-\newlabel{tab:objective_terms@cref}{{[table][6][]6}{[1][15][]15}}
-\@writefile{toc}{\contentsline {paragraph}{Minimised: total person delay ($Z_1$).}{15}{paragraph*.23}\protected@file@percent }
-\newlabel{eq:person_delay}{{18}{15}{Minimised: total person delay ($Z_1$)}{equation.5.18}{}}
-\newlabel{eq:person_delay@cref}{{[equation][18][]18}{[1][15][]15}}
-\newlabel{eq:Z1}{{19}{15}{Minimised: total person delay ($Z_1$)}{equation.5.19}{}}
-\newlabel{eq:Z1@cref}{{[equation][19][]19}{[1][15][]15}}
-\@writefile{toc}{\contentsline {paragraph}{Progression term ($Z_2$).}{15}{paragraph*.24}\protected@file@percent }
-\newlabel{eq:Z2}{{20}{15}{Progression term ($Z_2$)}{equation.5.20}{}}
-\newlabel{eq:Z2@cref}{{[equation][20][]20}{[1][15][]15}}
-\@writefile{toc}{\contentsline {paragraph}{Capped: schedule adherence ($Z_3$).}{16}{paragraph*.25}\protected@file@percent }
-\newlabel{eq:Z3}{{21}{16}{Capped: schedule adherence ($Z_3$)}{equation.5.21}{}}
-\newlabel{eq:Z3@cref}{{[equation][21][]21}{[1][15][]16}}
-\@writefile{toc}{\contentsline {paragraph}{Reported: corridor travel time ($Z_4$).}{16}{paragraph*.26}\protected@file@percent }
-\newlabel{eq:Z4}{{22}{16}{Reported: corridor travel time ($Z_4$)}{equation.5.22}{}}
-\newlabel{eq:Z4@cref}{{[equation][22][]22}{[1][16][]16}}
-\@writefile{toc}{\contentsline {subsubsection}{Optimality Criterion}{16}{subsubsection*.27}\protected@file@percent }
-\newlabel{sec:objective_crit}{{5.6}{16}{Optimality Criterion}{subsubsection*.27}{}}
-\newlabel{sec:objective_crit@cref}{{[subsection][6][5]5.6}{[1][16][]16}}
-\newlabel{eq:opt_crit}{{23}{16}{Optimality Criterion}{equation.5.23}{}}
-\newlabel{eq:opt_crit@cref}{{[equation][23][]23}{[1][16][]16}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.7}Constraints}{16}{subsection.5.7}\protected@file@percent }
-\newlabel{sec:milp_constraints}{{5.7}{16}{Constraints}{subsection.5.7}{}}
-\newlabel{sec:milp_constraints@cref}{{[subsection][7][5]5.7}{[1][16][]16}}
-\@writefile{toc}{\contentsline {paragraph}{Index conventions.}{16}{paragraph*.28}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Signal-switching physics.}{16}{paragraph*.29}\protected@file@percent }
-\newlabel{eq:gate_excl}{{24}{16}{Signal-switching physics}{equation.5.24}{}}
-\newlabel{eq:gate_excl@cref}{{[equation][24][]24}{[1][16][]16}}
-\newlabel{eq:gate_dwell}{{25}{16}{Signal-switching physics}{equation.5.25}{}}
-\newlabel{eq:gate_dwell@cref}{{[equation][25][]25}{[1][16][]16}}
-\newlabel{eq:gate_clear}{{26}{16}{Signal-switching physics}{equation.5.26}{}}
-\newlabel{eq:gate_clear@cref}{{[equation][26][]26}{[1][16][]16}}
-\@writefile{toc}{\contentsline {paragraph}{Green and cycle bounds.}{16}{paragraph*.30}\protected@file@percent }
-\newlabel{eq:g_bounds}{{27}{16}{Green and cycle bounds}{equation.5.27}{}}
-\newlabel{eq:g_bounds@cref}{{[equation][27][]27}{[1][16][]16}}
-\newlabel{eq:c_bounds}{{29}{16}{Green and cycle bounds}{equation.5.29}{}}
-\newlabel{eq:c_bounds@cref}{{[equation][29][]29}{[1][16][]16}}
-\@writefile{toc}{\contentsline {paragraph}{Flow and storage.}{17}{paragraph*.31}\protected@file@percent }
-\newlabel{eq:mv_q}{{31}{17}{Flow and storage}{equation.5.31}{}}
-\newlabel{eq:mv_q@cref}{{[equation][31][]31}{[1][16][]17}}
-\newlabel{eq:mv_dcap}{{32}{17}{Flow and storage}{equation.5.32}{}}
-\newlabel{eq:mv_dcap@cref}{{[equation][32][]32}{[1][16][]17}}
-\newlabel{eq:mv_wait}{{34}{17}{Flow and storage}{equation.5.34}{}}
-\newlabel{eq:mv_wait@cref}{{[equation][34][]34}{[1][16][]17}}
-\newlabel{eq:mv_waitsum}{{37}{17}{Flow and storage}{equation.5.37}{}}
-\newlabel{eq:mv_waitsum@cref}{{[equation][37][]37}{[1][16][]17}}
-\newlabel{eq:storage_cap}{{38}{17}{Flow and storage}{equation.5.38}{}}
-\newlabel{eq:storage_cap@cref}{{[equation][38][]38}{[1][16][]17}}
-\newlabel{eq:discharge_space}{{39}{17}{Flow and storage}{equation.5.39}{}}
-\newlabel{eq:discharge_space@cref}{{[equation][39][]39}{[1][16][]17}}
-\@writefile{toc}{\contentsline {paragraph}{Network conservation.}{17}{paragraph*.32}\protected@file@percent }
-\newlabel{eq:cons_link}{{40}{17}{Network conservation}{equation.5.40}{}}
-\newlabel{eq:cons_link@cref}{{[equation][40][]40}{[1][17][]17}}
-\newlabel{eq:cons_phase}{{41}{17}{Network conservation}{equation.5.41}{}}
-\newlabel{eq:cons_phase@cref}{{[equation][41][]41}{[1][17][]17}}
-\@writefile{toc}{\contentsline {paragraph}{Corridor coordination (lagged progression).}{17}{paragraph*.33}\protected@file@percent }
-\newlabel{eq:band_min}{{42}{17}{Corridor coordination (lagged progression)}{equation.5.42}{}}
-\newlabel{eq:band_min@cref}{{[equation][42][]42}{[1][17][]17}}
-\@writefile{toc}{\contentsline {paragraph}{Bus clocks and schedule adherence.}{18}{paragraph*.34}\protected@file@percent }
-\newlabel{eq:arr_assign}{{46}{18}{Bus clocks and schedule adherence}{equation.5.46}{}}
-\newlabel{eq:arr_assign@cref}{{[equation][46][]46}{[1][17][]18}}
-\newlabel{eq:arr_link}{{47}{18}{Bus clocks and schedule adherence}{equation.5.47}{}}
-\newlabel{eq:arr_link@cref}{{[equation][47][]47}{[1][17][]18}}
-\newlabel{eq:prog_bus}{{48}{18}{Bus clocks and schedule adherence}{equation.5.48}{}}
-\newlabel{eq:prog_bus@cref}{{[equation][48][]48}{[1][17][]18}}
-\newlabel{eq:arr_prop}{{49}{18}{Bus clocks and schedule adherence}{equation.5.49}{}}
-\newlabel{eq:arr_prop@cref}{{[equation][49][]49}{[1][17][]18}}
-\newlabel{eq:arr_init}{{50}{18}{Bus clocks and schedule adherence}{equation.5.50}{}}
-\newlabel{eq:arr_init@cref}{{[equation][50][]50}{[1][17][]18}}
-\newlabel{eq:sched_split}{{51}{18}{Bus clocks and schedule adherence}{equation.5.51}{}}
-\newlabel{eq:sched_split@cref}{{[equation][51][]51}{[1][17][]18}}
-\newlabel{eq:sched_cap}{{52}{18}{Bus clocks and schedule adherence}{equation.5.52}{}}
-\newlabel{eq:sched_cap@cref}{{[equation][52][]52}{[1][17][]18}}
-\@writefile{toc}{\contentsline {paragraph}{Domains.}{18}{paragraph*.35}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Re-optimisation: defined, not executed.}{18}{paragraph*.36}\protected@file@percent }
-\newlabel{sec:offset_recourse}{{5.7}{18}{Re-optimisation: defined, not executed}{paragraph*.36}{}}
-\newlabel{sec:offset_recourse@cref}{{[subsection][7][5]5.7}{[1][18][]18}}
-\newlabel{eq:reopt}{{53}{18}{Re-optimisation: defined, not executed}{equation.5.53}{}}
-\newlabel{eq:reopt@cref}{{[equation][53][]53}{[1][18][]18}}
-\@writefile{toc}{\contentsline {paragraph}{Reported (non-constraint) quantities.}{18}{paragraph*.37}\protected@file@percent }
-\newlabel{eq:gate_green}{{54}{18}{Reported (non-constraint) quantities}{equation.5.54}{}}
-\newlabel{eq:gate_green@cref}{{[equation][54][]54}{[1][18][]18}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.8}Equivalent Markovian Formulation}{19}{subsection.5.8}\protected@file@percent }
-\newlabel{sec:markovian}{{5.8}{19}{Equivalent Markovian Formulation}{subsection.5.8}{}}
-\newlabel{sec:markovian@cref}{{[subsection][8][5]5.8}{[1][19][]19}}
-\@writefile{toc}{\contentsline {paragraph}{State: the model's memory.}{19}{paragraph*.38}\protected@file@percent }
-\newlabel{eq:markov_state}{{55}{19}{State: the model's memory}{equation.5.55}{}}
-\newlabel{eq:markov_state@cref}{{[equation][55][]55}{[1][19][]19}}
-\@writefile{toc}{\contentsline {paragraph}{Transition and stage cost.}{19}{paragraph*.39}\protected@file@percent }
-\newlabel{eq:service_closure}{{56}{19}{Transition and stage cost}{equation.5.56}{}}
-\newlabel{eq:service_closure@cref}{{[equation][56][]56}{[1][19][]19}}
-\newlabel{eq:markov_trans}{{57}{19}{Transition and stage cost}{equation.5.57}{}}
-\newlabel{eq:markov_trans@cref}{{[equation][57][]57}{[1][19][]19}}
-\newlabel{eq:stage_cost}{{58}{19}{Transition and stage cost}{equation.5.58}{}}
-\newlabel{eq:stage_cost@cref}{{[equation][58][]58}{[1][19][]19}}
-\@writefile{toc}{\contentsline {paragraph}{The full criterion.}{20}{paragraph*.40}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Determinism of the auxiliary variables.}{20}{paragraph*.41}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.9}Arrival Uncertainty}{20}{subsection.5.9}\protected@file@percent }
-\newlabel{sec:stochastic}{{5.9}{20}{Arrival Uncertainty}{subsection.5.9}{}}
-\newlabel{sec:stochastic@cref}{{[subsection][9][5]5.9}{[1][20][]20}}
-\@writefile{toc}{\contentsline {paragraph}{What is observed, and what is not.}{20}{paragraph*.42}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Buses: measured, not predicted.}{20}{paragraph*.43}\protected@file@percent }
-\newlabel{eq:bus_entry}{{59}{20}{Buses: measured, not predicted}{equation.5.59}{}}
-\newlabel{eq:bus_entry@cref}{{[equation][59][]59}{[1][20][]20}}
-\@writefile{toc}{\contentsline {paragraph}{Cars: one generalised arrival bound.}{20}{paragraph*.44}\protected@file@percent }
-\newlabel{eq:arr_bound}{{60}{20}{Cars: one generalised arrival bound}{equation.5.60}{}}
-\newlabel{eq:arr_bound@cref}{{[equation][60][]60}{[1][20][]20}}
-\@writefile{toc}{\contentsline {paragraph}{The null observation is a constraint, not a number.}{21}{paragraph*.45}\protected@file@percent }
-\newlabel{eq:null_cut}{{61}{21}{The null observation is a constraint, not a number}{equation.5.61}{}}
-\newlabel{eq:null_cut@cref}{{[equation][61][]61}{[1][21][]21}}
-\@writefile{toc}{\contentsline {paragraph}{Why this keeps the program linear.}{21}{paragraph*.46}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Three kinds of quantity, three treatments. Only the car arrival count is uncertain; the bus is measured, and the null observation is a constraint. No row adds a variable, a scenario, or a probability.}}{21}{table.caption.47}\protected@file@percent }
-\newlabel{tab:uncertainty}{{7}{21}{Three kinds of quantity, three treatments. Only the car arrival count is uncertain; the bus is measured, and the null observation is a constraint. No row adds a variable, a scenario, or a probability}{table.caption.47}{}}
-\newlabel{tab:uncertainty@cref}{{[table][7][]7}{[1][21][]21}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.10}How the Program Changes as Knowledge Arrives}{21}{subsection.5.10}\protected@file@percent }
-\newlabel{sec:knowledge}{{5.10}{21}{How the Program Changes as Knowledge Arrives}{subsection.5.10}{}}
-\newlabel{sec:knowledge@cref}{{[subsection][10][5]5.10}{[1][21][]21}}
-\newlabel{eq:prog_family}{{62}{21}{How the Program Changes as Knowledge Arrives}{equation.5.62}{}}
-\newlabel{eq:prog_family@cref}{{[equation][62][]62}{[1][21][]21}}
-\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces What each arrival of knowledge replaces, and which part of the instance moves with it. No row changes the constraint matrix; each changes a right-hand side or an arrival sequence.}}{22}{table.caption.48}\protected@file@percent }
-\newlabel{tab:knowledge}{{8}{22}{What each arrival of knowledge replaces, and which part of the instance moves with it. No row changes the constraint matrix; each changes a right-hand side or an arrival sequence}{table.caption.48}{}}
-\newlabel{tab:knowledge@cref}{{[table][8][]8}{[1][22][]22}}
-\@writefile{toc}{\contentsline {paragraph}{Two things this does not license.}{22}{paragraph*.49}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Worked illustration: one approach, three knowledge states.}{22}{paragraph*.50}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.11}One junction, then the corridor: an exact linear composition}{22}{subsection.5.11}\protected@file@percent }
-\newlabel{sec:isolated_joint}{{5.11}{22}{One junction, then the corridor: an exact linear composition}{subsection.5.11}{}}
-\newlabel{sec:isolated_joint@cref}{{[subsection][11][5]5.11}{[1][22][]22}}
-\@writefile{toc}{\contentsline {paragraph}{The isolated instance.}{22}{paragraph*.51}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{What connecting junctions adds, and what it does not.}{22}{paragraph*.52}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{The joint program is one MILP, and it is block-angular.}{23}{paragraph*.53}\protected@file@percent }
-\newlabel{eq:block_angular}{{63}{23}{The joint program is one MILP, and it is block-angular}{equation.5.63}{}}
-\newlabel{eq:block_angular@cref}{{[equation][63][]63}{[1][22][]23}}
-\newlabel{prop:compose}{{5.1}{23}{Exact composition}{proposition.5.1}{}}
-\newlabel{prop:compose@cref}{{[proposition][1][5]5.1}{[1][23][]23}}
-\newlabel{eq:compose}{{64}{23}{Exact composition}{equation.5.64}{}}
-\newlabel{eq:compose@cref}{{[equation][64][]64}{[1][23][]23}}
-\newlabel{cor:decomp}{{5.1}{23}{}{corollary.5.1}{}}
-\newlabel{cor:decomp@cref}{{[corollary][1][5]5.1}{[1][23][]23}}
-\@writefile{toc}{\contentsline {paragraph}{What the gap would cost on Kelvin Grove, and why the reported numbers cannot price it.}{23}{paragraph*.54}\protected@file@percent }
-\newlabel{eq:regret}{{65}{23}{What the gap would cost on Kelvin Grove, and why the reported numbers cannot price it}{equation.5.65}{}}
-\newlabel{eq:regret@cref}{{[equation][65][]65}{[1][23][]23}}
-\@writefile{toc}{\contentsline {paragraph}{Where the linearity comes from, and where it would stop.}{24}{paragraph*.55}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Knowledge travels on the same rows.}{24}{paragraph*.56}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.12}Computational Status}{24}{subsection.5.12}\protected@file@percent }
-\newlabel{sec:milp_status}{{5.12}{24}{Computational Status}{subsection.5.12}{}}
-\newlabel{sec:milp_status@cref}{{[subsection][12][5]5.12}{[1][24][]24}}
-\@writefile{toc}{\contentsline {paragraph}{Computational scale.}{24}{paragraph*.57}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Role of the formulation.}{24}{paragraph*.58}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.13}Model Boundary}{24}{subsection.5.13}\protected@file@percent }
-\newlabel{sec:milp_boundary}{{5.13}{24}{Model Boundary}{subsection.5.13}{}}
-\newlabel{sec:milp_boundary@cref}{{[subsection][13][5]5.13}{[1][24][]24}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.14}What the program fixes exactly, and what an algorithm must supply}{25}{subsection.5.14}\protected@file@percent }
-\newlabel{sec:exact_vs_algo}{{5.14}{25}{What the program fixes exactly, and what an algorithm must supply}{subsection.5.14}{}}
-\newlabel{sec:exact_vs_algo@cref}{{[subsection][14][5]5.14}{[1][25][]25}}
-\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Division of labour between the exact program and the online algorithms. Rows 1--3 are controlled by the MILP; rows 4--8 are what a solution algorithm supplies, and none of them is imposed inside the program.}}{25}{table.caption.59}\protected@file@percent }
-\newlabel{tab:exact_algo}{{9}{25}{Division of labour between the exact program and the online algorithms. Rows 1--3 are controlled by the MILP; rows 4--8 are what a solution algorithm supplies, and none of them is imposed inside the program}{table.caption.59}{}}
-\newlabel{tab:exact_algo@cref}{{[table][9][]9}{[1][25][]25}}
-\@writefile{toc}{\contentsline {section}{\numberline {6}Evaluated Methods}{25}{section.6}\protected@file@percent }
-\newlabel{sec:comparison}{{6}{25}{Evaluated Methods}{section.6}{}}
-\newlabel{sec:comparison@cref}{{[section][6][]6}{[1][25][]25}}
-\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces The six scored methods. Every rung is the same DSW adaptive plan base; only the bus-priority layer and its admission rule change. \texttt  {NO\_TSP} is the fixed-time reference. Learners (M2, M3) pre-train on seeds 800--1100 and are frozen; all methods are scored at demand $\times 1.0$ on seeds 300--700 on both corridors.}}{25}{table.caption.60}\protected@file@percent }
-\newlabel{tab:methods}{{10}{25}{The six scored methods. Every rung is the same DSW adaptive plan base; only the bus-priority layer and its admission rule change. \texttt {NO\_TSP} is the fixed-time reference. Learners (M2, M3) pre-train on seeds 800--1100 and are frozen; all methods are scored at demand $\times 1.0$ on seeds 300--700 on both corridors}{table.caption.60}{}}
-\newlabel{tab:methods@cref}{{[table][10][]10}{[1][25][]25}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Experimental Setup}{25}{section.7}\protected@file@percent }
-\newlabel{sec:setup}{{7}{25}{Experimental Setup}{section.7}{}}
-\newlabel{sec:setup@cref}{{[section][7][]7}{[1][25][]25}}
+\citation{Little1981MAXBAND:Networks,Gartner1991AMULTIBAND}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Notation map for \cref  {sec:milp}, in the order the program moves a vehicle: arrivals enter a queue, the queue discharges through the green, discharge becomes delay, buses ride that same flow with their own clocks, and delay is weighted into the one objective. Each card lists the symbols met in the body and points to the equation that fixes them; Appendix~\ref {sec:stochastic} states the arrival bound used here. The bars below give the single decision, the state recursion behind \cref  {thm:bellman}, and the indices used throughout.}}{16}{figure.caption.22}\protected@file@percent }
+\newlabel{fig:notation_map}{{4}{16}{Notation map for \cref {sec:milp}, in the order the program moves a vehicle: arrivals enter a queue, the queue discharges through the green, discharge becomes delay, buses ride that same flow with their own clocks, and delay is weighted into the one objective. Each card lists the symbols met in the body and points to the equation that fixes them; Appendix~\ref {sec:stochastic} states the arrival bound used here. The bars below give the single decision, the state recursion behind \cref {thm:bellman}, and the indices used throughout}{figure.caption.22}{}}
+\newlabel{fig:notation_map@cref}{{[figure][4][]4}{[1][15][]16}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.6}Objective Function}{16}{subsection.5.6}\protected@file@percent }
+\newlabel{sec:objectives}{{5.6}{16}{Objective Function}{subsection.5.6}{}}
+\newlabel{sec:objectives@cref}{{[subsection][6][5]5.6}{[1][16][]16}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces The objective outline. Exactly one term ($Z_1$) is minimised; $Z_2$ is an optional linear term at a fixed coefficient; $Z_3$ is an exact-penalty cap; $Z_4$ is a post-run reported metric, not a constraint of this program.}}{16}{table.caption.23}\protected@file@percent }
+\newlabel{tab:objective_terms}{{6}{16}{The objective outline. Exactly one term ($Z_1$) is minimised; $Z_2$ is an optional linear term at a fixed coefficient; $Z_3$ is an exact-penalty cap; $Z_4$ is a post-run reported metric, not a constraint of this program}{table.caption.23}{}}
+\newlabel{tab:objective_terms@cref}{{[table][6][]6}{[1][16][]16}}
+\@writefile{toc}{\contentsline {paragraph}{Minimised: total person delay ($Z_1$).}{16}{paragraph*.24}\protected@file@percent }
+\newlabel{eq:person_delay}{{18}{16}{Minimised: total person delay ($Z_1$)}{equation.5.18}{}}
+\newlabel{eq:person_delay@cref}{{[equation][18][]18}{[1][16][]16}}
+\newlabel{eq:Z1}{{19}{16}{Minimised: total person delay ($Z_1$)}{equation.5.19}{}}
+\newlabel{eq:Z1@cref}{{[equation][19][]19}{[1][16][]16}}
+\@writefile{toc}{\contentsline {paragraph}{Progression term ($Z_2$).}{16}{paragraph*.25}\protected@file@percent }
+\newlabel{eq:Z2}{{20}{16}{Progression term ($Z_2$)}{equation.5.20}{}}
+\newlabel{eq:Z2@cref}{{[equation][20][]20}{[1][16][]16}}
+\@writefile{toc}{\contentsline {paragraph}{Capped: schedule adherence ($Z_3$).}{17}{paragraph*.26}\protected@file@percent }
+\newlabel{eq:Z3}{{21}{17}{Capped: schedule adherence ($Z_3$)}{equation.5.21}{}}
+\newlabel{eq:Z3@cref}{{[equation][21][]21}{[1][17][]17}}
+\@writefile{toc}{\contentsline {paragraph}{Reported: corridor travel time ($Z_4$).}{17}{paragraph*.27}\protected@file@percent }
+\newlabel{eq:Z4}{{22}{17}{Reported: corridor travel time ($Z_4$)}{equation.5.22}{}}
+\newlabel{eq:Z4@cref}{{[equation][22][]22}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsubsection}{Optimality Criterion}{17}{subsubsection*.28}\protected@file@percent }
+\newlabel{sec:objective_crit}{{5.6}{17}{Optimality Criterion}{subsubsection*.28}{}}
+\newlabel{sec:objective_crit@cref}{{[subsection][6][5]5.6}{[1][17][]17}}
+\newlabel{eq:opt_crit}{{23}{17}{Optimality Criterion}{equation.5.23}{}}
+\newlabel{eq:opt_crit@cref}{{[equation][23][]23}{[1][17][]17}}
+\@writefile{toc}{\contentsline {paragraph}{The priced slack equals the excess lateness.}{17}{paragraph*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{A computable price makes the cap exact.}{17}{paragraph*.30}\protected@file@percent }
+\newlabel{eq:z1max}{{24}{17}{A computable price makes the cap exact}{equation.5.24}{}}
+\newlabel{eq:z1max@cref}{{[equation][24][]24}{[1][17][]17}}
+\newlabel{prop:cap_exact}{{5.1}{17}{Exactness of the lateness cap}{proposition.5.1}{}}
+\newlabel{prop:cap_exact@cref}{{[proposition][1][5]5.1}{[1][17][]17}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.7}Constraints}{18}{subsection.5.7}\protected@file@percent }
+\newlabel{sec:milp_constraints}{{5.7}{18}{Constraints}{subsection.5.7}{}}
+\newlabel{sec:milp_constraints@cref}{{[subsection][7][5]5.7}{[1][18][]18}}
+\@writefile{toc}{\contentsline {paragraph}{Index conventions.}{18}{paragraph*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Signal-switching physics.}{18}{paragraph*.32}\protected@file@percent }
+\newlabel{eq:gate_excl}{{25}{18}{Signal-switching physics}{equation.5.25}{}}
+\newlabel{eq:gate_excl@cref}{{[equation][25][]25}{[1][18][]18}}
+\newlabel{eq:gate_dwell}{{26}{18}{Signal-switching physics}{equation.5.26}{}}
+\newlabel{eq:gate_dwell@cref}{{[equation][26][]26}{[1][18][]18}}
+\newlabel{eq:gate_clear}{{27}{18}{Signal-switching physics}{equation.5.27}{}}
+\newlabel{eq:gate_clear@cref}{{[equation][27][]27}{[1][18][]18}}
+\@writefile{toc}{\contentsline {paragraph}{Green and cycle bounds.}{18}{paragraph*.33}\protected@file@percent }
+\newlabel{eq:g_bounds}{{28}{18}{Green and cycle bounds}{equation.5.28}{}}
+\newlabel{eq:g_bounds@cref}{{[equation][28][]28}{[1][18][]18}}
+\newlabel{eq:c_bounds}{{30}{18}{Green and cycle bounds}{equation.5.30}{}}
+\newlabel{eq:c_bounds@cref}{{[equation][30][]30}{[1][18][]18}}
+\@writefile{toc}{\contentsline {paragraph}{Flow and storage.}{18}{paragraph*.34}\protected@file@percent }
+\newlabel{eq:mv_q}{{32}{18}{Flow and storage}{equation.5.32}{}}
+\newlabel{eq:mv_q@cref}{{[equation][32][]32}{[1][18][]18}}
+\newlabel{eq:mv_dcap}{{33}{18}{Flow and storage}{equation.5.33}{}}
+\newlabel{eq:mv_dcap@cref}{{[equation][33][]33}{[1][18][]18}}
+\newlabel{eq:mv_wait}{{35}{18}{Flow and storage}{equation.5.35}{}}
+\newlabel{eq:mv_wait@cref}{{[equation][35][]35}{[1][18][]18}}
+\newlabel{eq:wait_off}{{36}{18}{Flow and storage}{equation.5.36}{}}
+\newlabel{eq:wait_off@cref}{{[equation][36][]36}{[1][18][]18}}
+\newlabel{eq:wait_hold}{{37}{18}{Flow and storage}{equation.5.37}{}}
+\newlabel{eq:wait_hold@cref}{{[equation][37][]37}{[1][18][]18}}
+\newlabel{eq:mv_waitsum}{{38}{18}{Flow and storage}{equation.5.38}{}}
+\newlabel{eq:mv_waitsum@cref}{{[equation][38][]38}{[1][18][]18}}
+\newlabel{eq:storage_cap}{{39}{18}{Flow and storage}{equation.5.39}{}}
+\newlabel{eq:storage_cap@cref}{{[equation][39][]39}{[1][18][]18}}
+\newlabel{eq:discharge_space}{{40}{18}{Flow and storage}{equation.5.40}{}}
+\newlabel{eq:discharge_space@cref}{{[equation][40][]40}{[1][18][]18}}
+\citation{Little1981MAXBAND:Networks}
+\citation{Gartner1991AMULTIBAND}
+\@writefile{toc}{\contentsline {paragraph}{Saturation is data, not a variable.}{19}{paragraph*.35}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why the model needs $Q^w$, and not $Q$ alone.}{19}{paragraph*.36}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Network conservation.}{19}{paragraph*.37}\protected@file@percent }
+\newlabel{eq:cons_link}{{41}{19}{Network conservation}{equation.5.41}{}}
+\newlabel{eq:cons_link@cref}{{[equation][41][]41}{[1][19][]19}}
+\newlabel{eq:cons_phase}{{42}{19}{Network conservation}{equation.5.42}{}}
+\newlabel{eq:cons_phase@cref}{{[equation][42][]42}{[1][19][]19}}
+\@writefile{toc}{\contentsline {paragraph}{Corridor coordination (lagged progression).}{19}{paragraph*.38}\protected@file@percent }
+\newlabel{eq:band_min}{{43}{19}{Corridor coordination (lagged progression)}{equation.5.43}{}}
+\newlabel{eq:band_min@cref}{{[equation][43][]43}{[1][19][]19}}
+\newlabel{eq:band_lag}{{44}{19}{Corridor coordination (lagged progression)}{equation.5.44}{}}
+\newlabel{eq:band_lag@cref}{{[equation][44][]44}{[1][19][]19}}
+\newlabel{eq:band_and}{{45}{19}{Corridor coordination (lagged progression)}{equation.5.45}{}}
+\newlabel{eq:band_and@cref}{{[equation][45][]45}{[1][19][]19}}
+\newlabel{eq:band_req}{{46}{19}{Corridor coordination (lagged progression)}{equation.5.46}{}}
+\newlabel{eq:band_req@cref}{{[equation][46][]46}{[1][19][]19}}
+\citation{Fortet1960Applications,Glover1974Converting}
+\citation{Padberg1989BooleanQuadric}
+\@writefile{toc}{\contentsline {paragraph}{Bus clocks and schedule adherence.}{20}{paragraph*.39}\protected@file@percent }
+\newlabel{eq:arr_assign}{{47}{20}{Bus clocks and schedule adherence}{equation.5.47}{}}
+\newlabel{eq:arr_assign@cref}{{[equation][47][]47}{[1][19][]20}}
+\newlabel{eq:arr_link}{{48}{20}{Bus clocks and schedule adherence}{equation.5.48}{}}
+\newlabel{eq:arr_link@cref}{{[equation][48][]48}{[1][19][]20}}
+\newlabel{eq:prog_bus}{{49}{20}{Bus clocks and schedule adherence}{equation.5.49}{}}
+\newlabel{eq:prog_bus@cref}{{[equation][49][]49}{[1][19][]20}}
+\newlabel{eq:arr_prop}{{50}{20}{Bus clocks and schedule adherence}{equation.5.50}{}}
+\newlabel{eq:arr_prop@cref}{{[equation][50][]50}{[1][19][]20}}
+\newlabel{eq:arr_init}{{51}{20}{Bus clocks and schedule adherence}{equation.5.51}{}}
+\newlabel{eq:arr_init@cref}{{[equation][51][]51}{[1][19][]20}}
+\newlabel{eq:sched_split}{{52}{20}{Bus clocks and schedule adherence}{equation.5.52}{}}
+\newlabel{eq:sched_split@cref}{{[equation][52][]52}{[1][19][]20}}
+\newlabel{eq:sched_cap}{{53}{20}{Bus clocks and schedule adherence}{equation.5.53}{}}
+\newlabel{eq:sched_cap@cref}{{[equation][53][]53}{[1][19][]20}}
+\@writefile{toc}{\contentsline {paragraph}{Domains.}{20}{paragraph*.40}\protected@file@percent }
+\newlabel{thm:band_exact}{{5.1}{20}{The band rows are exact and complete}{theorem.5.1}{}}
+\newlabel{thm:band_exact@cref}{{[theorem][1][5]5.1}{[1][20][]20}}
+\newlabel{prop:priority}{{5.2}{21}{When the program grants priority}{proposition.5.2}{}}
+\newlabel{prop:priority@cref}{{[proposition][2][5]5.2}{[1][21][]21}}
+\@writefile{toc}{\contentsline {paragraph}{No method solves the program.}{22}{paragraph*.41}\protected@file@percent }
+\newlabel{sec:offset_recourse}{{5.7}{22}{No method solves the program}{paragraph*.41}{}}
+\newlabel{sec:offset_recourse@cref}{{[subsection][7][5]5.7}{[1][21][]22}}
+\newlabel{eq:reopt}{{54}{22}{No method solves the program}{equation.5.54}{}}
+\newlabel{eq:reopt@cref}{{[equation][54][]54}{[1][22][]22}}
+\@writefile{toc}{\contentsline {paragraph}{Reported (non-constraint) quantities.}{22}{paragraph*.42}\protected@file@percent }
+\newlabel{eq:gate_green}{{55}{22}{Reported (non-constraint) quantities}{equation.5.55}{}}
+\newlabel{eq:gate_green@cref}{{[equation][55][]55}{[1][22][]22}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.8}Equivalent Markovian Formulation}{22}{subsection.5.8}\protected@file@percent }
+\newlabel{sec:markovian}{{5.8}{22}{Equivalent Markovian Formulation}{subsection.5.8}{}}
+\newlabel{sec:markovian@cref}{{[subsection][8][5]5.8}{[1][22][]22}}
+\@writefile{toc}{\contentsline {paragraph}{State: the model's memory.}{22}{paragraph*.43}\protected@file@percent }
+\newlabel{eq:markov_state}{{56}{22}{State: the model's memory}{equation.5.56}{}}
+\newlabel{eq:markov_state@cref}{{[equation][56][]56}{[1][22][]22}}
+\@writefile{toc}{\contentsline {paragraph}{Transition and stage cost.}{23}{paragraph*.44}\protected@file@percent }
+\newlabel{eq:service_closure}{{57}{23}{Transition and stage cost}{equation.5.57}{}}
+\newlabel{eq:service_closure@cref}{{[equation][57][]57}{[1][23][]23}}
+\newlabel{eq:markov_trans}{{58}{23}{Transition and stage cost}{equation.5.58}{}}
+\newlabel{eq:markov_trans@cref}{{[equation][58][]58}{[1][23][]23}}
+\newlabel{eq:stage_cost}{{59}{23}{Transition and stage cost}{equation.5.59}{}}
+\newlabel{eq:stage_cost@cref}{{[equation][59][]59}{[1][23][]23}}
+\newlabel{thm:bellman}{{5.2}{23}{Bellman equivalence}{theorem.5.2}{}}
+\newlabel{thm:bellman@cref}{{[theorem][2][5]5.2}{[1][23][]23}}
+\newlabel{eq:bellman_sum}{{60}{23}{Bellman equivalence}{equation.5.60}{}}
+\newlabel{eq:bellman_sum@cref}{{[equation][60][]60}{[1][23][]23}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.9}Computational Status}{24}{subsection.5.9}\protected@file@percent }
+\newlabel{sec:milp_status}{{5.9}{24}{Computational Status}{subsection.5.9}{}}
+\newlabel{sec:milp_status@cref}{{[subsection][9][5]5.9}{[1][23][]24}}
+\@writefile{toc}{\contentsline {paragraph}{Computational scale.}{24}{paragraph*.45}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Role of the formulation.}{24}{paragraph*.46}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.10}Model Boundary}{24}{subsection.5.10}\protected@file@percent }
+\newlabel{sec:milp_boundary}{{5.10}{24}{Model Boundary}{subsection.5.10}{}}
+\newlabel{sec:milp_boundary@cref}{{[subsection][10][5]5.10}{[1][24][]24}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.11}What the program fixes exactly, and what an algorithm must supply}{24}{subsection.5.11}\protected@file@percent }
+\newlabel{sec:exact_vs_algo}{{5.11}{24}{What the program fixes exactly, and what an algorithm must supply}{subsection.5.11}{}}
+\newlabel{sec:exact_vs_algo@cref}{{[subsection][11][5]5.11}{[1][24][]24}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Evaluated Methods}{24}{section.6}\protected@file@percent }
+\newlabel{sec:comparison}{{6}{24}{Evaluated Methods}{section.6}{}}
+\newlabel{sec:comparison@cref}{{[section][6][]6}{[1][24][]24}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Experimental Setup}{24}{section.7}\protected@file@percent }
+\newlabel{sec:setup}{{7}{24}{Experimental Setup}{section.7}{}}
+\newlabel{sec:setup@cref}{{[section][7][]7}{[1][24][]24}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Division of labour between the exact program and the online algorithms. Rows 1--3 are controlled by the MILP; rows 4--8 are what a solution algorithm supplies, and none of them is imposed inside the program.}}{25}{table.caption.47}\protected@file@percent }
+\newlabel{tab:exact_algo}{{7}{25}{Division of labour between the exact program and the online algorithms. Rows 1--3 are controlled by the MILP; rows 4--8 are what a solution algorithm supplies, and none of them is imposed inside the program}{table.caption.47}{}}
+\newlabel{tab:exact_algo@cref}{{[table][7][]7}{[1][24][]25}}
+\@writefile{lot}{\contentsline {table}{\numberline {8}{\ignorespaces The six scored methods. Every rung is the same DSW adaptive plan base; only the bus-priority layer and its admission rule change. \texttt  {NO\_TSP} is the fixed-time reference. Learners (M2, M3) pre-train on seeds 800--1100 and are frozen; all methods are scored at demand $\times 1.0$ on seeds 300--700 on both corridors.}}{25}{table.caption.48}\protected@file@percent }
+\newlabel{tab:methods}{{8}{25}{The six scored methods. Every rung is the same DSW adaptive plan base; only the bus-priority layer and its admission rule change. \texttt {NO\_TSP} is the fixed-time reference. Learners (M2, M3) pre-train on seeds 800--1100 and are frozen; all methods are scored at demand $\times 1.0$ on seeds 300--700 on both corridors}{table.caption.48}{}}
+\newlabel{tab:methods@cref}{{[table][8][]8}{[1][24][]25}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Kelvin Grove Corridor}{25}{subsection.7.1}\protected@file@percent }
 \newlabel{sec:network}{{7.1}{25}{Kelvin Grove Corridor}{subsection.7.1}{}}
 \newlabel{sec:network@cref}{{[subsection][1][7]7.1}{[1][25][]25}}
-\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Kelvin Grove corridor schematic in route order: 12 managed signalised junctions (Aimsun IDs from the corridor configuration) on a 3.2\,km arterial, bus route 345 (red) with the four named cross streets, and the approach/exit/side-street detector layout (magnified inset at J1). Geographic context is shown in \cref  {fig:kg_corridor}.}}{26}{figure.caption.61}\protected@file@percent }
-\newlabel{fig:corridor}{{4}{26}{Kelvin Grove corridor schematic in route order: 12 managed signalised junctions (Aimsun IDs from the corridor configuration) on a 3.2\,km arterial, bus route 345 (red) with the four named cross streets, and the approach/exit/side-street detector layout (magnified inset at J1). Geographic context is shown in \cref {fig:kg_corridor}}{figure.caption.61}{}}
-\newlabel{fig:corridor@cref}{{[figure][4][]4}{[1][26][]26}}
-\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Measured per-junction mainline queue, overlaid on the route order of \cref  {fig:corridor}. Bars are the run-averaged mean mainline queue read from the controller's own \texttt  {queue\_snapshot} logs for a single campaign (2026-09-14: 21 \texttt  {NO\_TSP} runs and 36 \texttt  {CELLQLEARN\_GATED} runs at the same demand), with the percentage change per junction above each pair. The effect is real but heterogeneous and modest: the geometric mean of the per-junction ratio is $0.913$, i.e.\ about a $9\%$ reduction in mean mainline queue, and only 5 of 12 junctions improve individually. This is the \emph  {car-side} ledger and it is deliberately not the objective: the program's gain is bus-passenger-weighted (\cref  {tab:kg_results}), and the junctions where queue rises (J2, J3, J11) are where green is taken from conflicting traffic to serve a bus. That the corridor-wide car cost stays within this band is the work of the balance guard of \cref  {sec:actions}, not an accident. We report the per-junction spread because averaging it away is what makes a priority scheme look free.}}{26}{figure.caption.62}\protected@file@percent }
-\newlabel{fig:kg_queue}{{5}{26}{Measured per-junction mainline queue, overlaid on the route order of \cref {fig:corridor}. Bars are the run-averaged mean mainline queue read from the controller's own \texttt {queue\_snapshot} logs for a single campaign (2026-09-14: 21 \texttt {NO\_TSP} runs and 36 \texttt {CELLQLEARN\_GATED} runs at the same demand), with the percentage change per junction above each pair. The effect is real but heterogeneous and modest: the geometric mean of the per-junction ratio is $0.913$, i.e.\ about a $9\%$ reduction in mean mainline queue, and only 5 of 12 junctions improve individually. This is the \emph {car-side} ledger and it is deliberately not the objective: the program's gain is bus-passenger-weighted (\cref {tab:kg_results}), and the junctions where queue rises (J2, J3, J11) are where green is taken from conflicting traffic to serve a bus. That the corridor-wide car cost stays within this band is the work of the balance guard of \cref {sec:actions}, not an accident. We report the per-junction spread because averaging it away is what makes a priority scheme look free}{figure.caption.62}{}}
-\newlabel{fig:kg_queue@cref}{{[figure][5][]5}{[1][26][]26}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Kelvin Grove corridor schematic in route order: 12 managed signalised junctions (Aimsun IDs from the corridor configuration) on a 3.2\,km arterial, bus route 345 (red) with the four named cross streets, and the approach/exit/side-street detector layout (magnified inset at J1). Geographic context is shown in \cref  {fig:kg_corridor}.}}{25}{figure.caption.49}\protected@file@percent }
+\newlabel{fig:corridor}{{5}{25}{Kelvin Grove corridor schematic in route order: 12 managed signalised junctions (Aimsun IDs from the corridor configuration) on a 3.2\,km arterial, bus route 345 (red) with the four named cross streets, and the approach/exit/side-street detector layout (magnified inset at J1). Geographic context is shown in \cref {fig:kg_corridor}}{figure.caption.49}{}}
+\newlabel{fig:corridor@cref}{{[figure][5][]5}{[1][25][]25}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Measured per-junction mainline queue, overlaid on the route order of \cref  {fig:corridor}. Bars are the run-averaged mean mainline queue read from the controller's own \texttt  {queue\_snapshot} logs for a single campaign (2026-09-14: 21 \texttt  {NO\_TSP} runs and 36 \texttt  {CELLQLEARN\_GATED} runs at the same demand), with the percentage change per junction above each pair. The effect is real but heterogeneous and modest: the geometric mean of the per-junction ratio is $0.913$, i.e.\ about a $9\%$ reduction in mean mainline queue, and only 5 of 12 junctions improve individually. This is the \emph  {car-side} ledger and it is deliberately not the objective: the program's gain is bus-passenger-weighted (\cref  {tab:kg_results}), and the junctions where queue rises (J2, J3, J11) are where green is taken from conflicting traffic to serve a bus. That the corridor-wide car cost stays within this band is the work of the balance guard of \cref  {sec:actions}, not an accident. We report the per-junction spread because averaging it away is what makes a priority scheme look free.}}{26}{figure.caption.50}\protected@file@percent }
+\newlabel{fig:kg_queue}{{6}{26}{Measured per-junction mainline queue, overlaid on the route order of \cref {fig:corridor}. Bars are the run-averaged mean mainline queue read from the controller's own \texttt {queue\_snapshot} logs for a single campaign (2026-09-14: 21 \texttt {NO\_TSP} runs and 36 \texttt {CELLQLEARN\_GATED} runs at the same demand), with the percentage change per junction above each pair. The effect is real but heterogeneous and modest: the geometric mean of the per-junction ratio is $0.913$, i.e.\ about a $9\%$ reduction in mean mainline queue, and only 5 of 12 junctions improve individually. This is the \emph {car-side} ledger and it is deliberately not the objective: the program's gain is bus-passenger-weighted (\cref {tab:kg_results}), and the junctions where queue rises (J2, J3, J11) are where green is taken from conflicting traffic to serve a bus. That the corridor-wide car cost stays within this band is the work of the balance guard of \cref {sec:actions}, not an accident. We report the per-junction spread because averaging it away is what makes a priority scheme look free}{figure.caption.50}{}}
+\newlabel{fig:kg_queue@cref}{{[figure][6][]6}{[1][25][]26}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Logan Road Corridor}{26}{subsection.7.2}\protected@file@percent }
 \newlabel{sec:logan}{{7.2}{26}{Logan Road Corridor}{subsection.7.2}{}}
 \newlabel{sec:logan@cref}{{[subsection][2][7]7.2}{[1][26][]26}}
-\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Logan Road corridor schematic in route order: 23 signalised junctions (Aimsun IDs from the corridor configuration), all TSP-controlled (green); 39 PT lines cross the corridor. Schematic, not to scale; left-to-right = route order.}}{27}{figure.caption.63}\protected@file@percent }
-\newlabel{fig:logan}{{6}{27}{Logan Road corridor schematic in route order: 23 signalised junctions (Aimsun IDs from the corridor configuration), all TSP-controlled (green); 39 PT lines cross the corridor. Schematic, not to scale; left-to-right = route order}{figure.caption.63}{}}
-\newlabel{fig:logan@cref}{{[figure][6][]6}{[1][26][]27}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Batch Experiment Design}{27}{subsection.7.3}\protected@file@percent }
-\newlabel{sec:batch}{{7.3}{27}{Batch Experiment Design}{subsection.7.3}{}}
-\newlabel{sec:batch@cref}{{[subsection][3][7]7.3}{[1][27][]27}}
-\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Batch experiment design: what was done. Every cell is a distinct random-seed replication of the full 1.25\,h corridor simulation at the stated demand; learners pre-train on four held-out seeds (800--1100) and are frozen before scoring, so no arm is scored on a seed it trained on.}}{27}{table.caption.64}\protected@file@percent }
-\newlabel{tab:batch_design}{{11}{27}{Batch experiment design: what was done. Every cell is a distinct random-seed replication of the full 1.25\,h corridor simulation at the stated demand; learners pre-train on four held-out seeds (800--1100) and are frozen before scoring, so no arm is scored on a seed it trained on}{table.caption.64}{}}
-\newlabel{tab:batch_design@cref}{{[table][11][]11}{[1][27][]27}}
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Logan Road corridor schematic in route order: 23 signalised junctions (Aimsun IDs from the corridor configuration), all TSP-controlled (green); 39 PT lines cross the corridor. Schematic, not to scale; left-to-right = route order. Geographic context is shown in \cref  {fig:logan_corridor}.}}{26}{figure.caption.51}\protected@file@percent }
+\newlabel{fig:logan}{{7}{26}{Logan Road corridor schematic in route order: 23 signalised junctions (Aimsun IDs from the corridor configuration), all TSP-controlled (green); 39 PT lines cross the corridor. Schematic, not to scale; left-to-right = route order. Geographic context is shown in \cref {fig:logan_corridor}}{figure.caption.51}{}}
+\newlabel{fig:logan@cref}{{[figure][7][]7}{[1][26][]26}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Logan Road corridor geographic context: the 23 TSP-controlled Aimsun junctions of \cref  {fig:logan}, plotted on the surrounding street network from OpenStreetMap. Because the model splits one road intersection across several Aimsun junctions, neighbouring IDs within 150\,m of each other share a single green map point---13 points cover all 23 junctions---and each point's label lists every Aimsun ID it contains. Functional schematic in \cref  {fig:logan}.}}{27}{figure.caption.52}\protected@file@percent }
+\newlabel{fig:logan_corridor}{{8}{27}{Logan Road corridor geographic context: the 23 TSP-controlled Aimsun junctions of \cref {fig:logan}, plotted on the surrounding street network from OpenStreetMap. Because the model splits one road intersection across several Aimsun junctions, neighbouring IDs within 150\,m of each other share a single green map point---13 points cover all 23 junctions---and each point's label lists every Aimsun ID it contains. Functional schematic in \cref {fig:logan}}{figure.caption.52}{}}
+\newlabel{fig:logan_corridor@cref}{{[figure][8][]8}{[1][26][]27}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Batch Experiment Design}{28}{subsection.7.3}\protected@file@percent }
+\newlabel{sec:batch}{{7.3}{28}{Batch Experiment Design}{subsection.7.3}{}}
+\newlabel{sec:batch@cref}{{[subsection][3][7]7.3}{[1][28][]28}}
+\@writefile{lot}{\contentsline {table}{\numberline {9}{\ignorespaces Batch experiment design: what was done. Every cell is a distinct random-seed replication of the full 1.25\,h corridor simulation at the stated demand; learners pre-train on four held-out seeds (800--1100) and are frozen before scoring, so no strategy is scored on a seed it trained on.}}{28}{table.caption.53}\protected@file@percent }
+\newlabel{tab:batch_design}{{9}{28}{Batch experiment design: what was done. Every cell is a distinct random-seed replication of the full 1.25\,h corridor simulation at the stated demand; learners pre-train on four held-out seeds (800--1100) and are frozen before scoring, so no strategy is scored on a seed it trained on}{table.caption.53}{}}
+\newlabel{tab:batch_design@cref}{{[table][9][]9}{[1][28][]28}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {7.4}Performance Metrics}{28}{subsection.7.4}\protected@file@percent }
 \newlabel{sec:metrics}{{7.4}{28}{Performance Metrics}{subsection.7.4}{}}
-\newlabel{sec:metrics@cref}{{[subsection][4][7]7.4}{[1][27][]28}}
-\@writefile{toc}{\contentsline {section}{\numberline {8}Results}{28}{section.8}\protected@file@percent }
-\newlabel{sec:results}{{8}{28}{Results}{section.8}{}}
-\newlabel{sec:results@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{tab:results}{{8}{28}{Results}{section*.65}{}}
-\newlabel{tab:results@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{tab:totaltime}{{8}{28}{Results}{section*.66}{}}
-\newlabel{tab:totaltime@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{sec:res_overall}{{8}{28}{Results}{section*.67}{}}
-\newlabel{sec:res_overall@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{sec:res_wobj}{{8}{28}{Results}{section*.68}{}}
-\newlabel{sec:res_wobj@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{sec:res_z4}{{8}{28}{Results}{section*.69}{}}
-\newlabel{sec:res_z4@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{sec:sol_meta}{{8}{28}{Results}{section*.70}{}}
-\newlabel{sec:sol_meta@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{sec:sol_prearm}{{8}{28}{Results}{section*.71}{}}
-\newlabel{sec:sol_prearm@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{eq:d_car}{{8}{28}{Results}{section*.72}{}}
-\newlabel{eq:d_car@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{eq:mb_delay}{{8}{28}{Results}{section*.73}{}}
-\newlabel{eq:mb_delay@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{eq:meta_weight}{{8}{28}{Results}{section*.74}{}}
-\newlabel{eq:meta_weight@cref}{{[section][8][]8}{[1][28][]28}}
-\newlabel{eq:milp_obj}{{8}{28}{Results}{section*.75}{}}
-\newlabel{eq:milp_obj@cref}{{[section][8][]8}{[1][28][]28}}
-\@writefile{toc}{\contentsline {paragraph}{Dispersion budget: none is applied to any reported run.}{28}{paragraph*.76}\protected@file@percent }
+\newlabel{sec:metrics@cref}{{[subsection][4][7]7.4}{[1][28][]28}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Results}{29}{section.8}\protected@file@percent }
+\newlabel{sec:results}{{8}{29}{Results}{section.8}{}}
+\newlabel{sec:results@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{tab:results}{{8}{29}{Results}{section*.54}{}}
+\newlabel{tab:results@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{tab:totaltime}{{8}{29}{Results}{section*.55}{}}
+\newlabel{tab:totaltime@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{sec:res_overall}{{8}{29}{Results}{section*.56}{}}
+\newlabel{sec:res_overall@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{sec:res_wobj}{{8}{29}{Results}{section*.57}{}}
+\newlabel{sec:res_wobj@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{sec:res_z4}{{8}{29}{Results}{section*.58}{}}
+\newlabel{sec:res_z4@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{sec:sol_meta}{{8}{29}{Results}{section*.59}{}}
+\newlabel{sec:sol_meta@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{sec:sol_prearm}{{8}{29}{Results}{section*.60}{}}
+\newlabel{sec:sol_prearm@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{eq:d_car}{{8}{29}{Results}{section*.61}{}}
+\newlabel{eq:d_car@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{eq:mb_delay}{{8}{29}{Results}{section*.62}{}}
+\newlabel{eq:mb_delay@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{eq:meta_weight}{{8}{29}{Results}{section*.63}{}}
+\newlabel{eq:meta_weight@cref}{{[section][8][]8}{[1][29][]29}}
+\newlabel{eq:milp_obj}{{8}{29}{Results}{section*.64}{}}
+\newlabel{eq:milp_obj@cref}{{[section][8][]8}{[1][29][]29}}
+\@writefile{toc}{\contentsline {paragraph}{Dispersion budget: none is applied to any reported run.}{29}{paragraph*.65}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Strategy Performance -- Kelvin Grove Corridor}{29}{subsection.8.1}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Kelvin Grove corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are relative to \texttt  {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay.}}{29}{table.caption.77}\protected@file@percent }
-\newlabel{tab:kg_results}{{12}{29}{Kelvin Grove corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are relative to \texttt {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay}{table.caption.77}{}}
-\newlabel{tab:kg_results@cref}{{[table][12][]12}{[1][29][]29}}
-\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Kelvin Grove corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, GR = green reallocation. M0--M1 run no bus-priority decider.}}{29}{table.caption.78}\protected@file@percent }
-\newlabel{tab:kg_tsp}{{13}{29}{Kelvin Grove corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, GR = green reallocation. M0--M1 run no bus-priority decider}{table.caption.78}{}}
-\newlabel{tab:kg_tsp@cref}{{[table][13][]13}{[1][29][]29}}
-\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces Kelvin Grove corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; Cycle $=$ mean operating cycle length (all adaptive rungs share the DSW plan library); $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt  {NO\_TSP}.}}{29}{table.caption.79}\protected@file@percent }
-\newlabel{tab:kg_secondary}{{14}{29}{Kelvin Grove corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; Cycle $=$ mean operating cycle length (all adaptive rungs share the DSW plan library); $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt {NO\_TSP}}{table.caption.79}{}}
-\newlabel{tab:kg_secondary@cref}{{[table][14][]14}{[1][29][]29}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}Where the Gain Occurs: Junction-Level Telemetry}{30}{subsection.8.2}\protected@file@percent }
-\newlabel{sec:kg_telemetry}{{8.2}{30}{Where the Gain Occurs: Junction-Level Telemetry}{subsection.8.2}{}}
-\newlabel{sec:kg_telemetry@cref}{{[subsection][2][8]8.2}{[1][30][]30}}
-\@writefile{toc}{\contentsline {paragraph}{Where the delay moves.}{30}{paragraph*.81}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Kelvin Grove corridor geographic context (12 signalised intersections, green dots with Aimsun IDs) with surrounding street network from OpenStreetMap. Functional schematic in \cref  {fig:corridor}.}}{31}{figure.caption.80}\protected@file@percent }
-\newlabel{fig:kg_corridor}{{7}{31}{Kelvin Grove corridor geographic context (12 signalised intersections, green dots with Aimsun IDs) with surrounding street network from OpenStreetMap. Functional schematic in \cref {fig:corridor}}{figure.caption.80}{}}
-\newlabel{fig:kg_corridor@cref}{{[figure][7][]7}{[1][30][]31}}
-\@writefile{toc}{\contentsline {paragraph}{When the gain appears.}{32}{paragraph*.82}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Kelvin Grove: where and when the five-seed delay change occurs. (a) Change in cumulative passenger delay at each junction in route order, relative to fixed-time on the same batch and seeds; M1 (grey) is from the companion batch, M5 (blue) and M4 (red) from the priority batch. J1 is Aimsun 39606, J5 is 39593, J12 is 38339. (b) Cumulative corridor-wide change through the run for every rung, each relative to its own batch baseline, with M0 on zero; M2 and M3 are the thin lines. The dotted line marks the plan application at 7\,min. Positive means more delay than fixed-time.}}{32}{figure.caption.83}\protected@file@percent }
-\newlabel{fig:kg_where}{{8}{32}{Kelvin Grove: where and when the five-seed delay change occurs. (a) Change in cumulative passenger delay at each junction in route order, relative to fixed-time on the same batch and seeds; M1 (grey) is from the companion batch, M5 (blue) and M4 (red) from the priority batch. J1 is Aimsun 39606, J5 is 39593, J12 is 38339. (b) Cumulative corridor-wide change through the run for every rung, each relative to its own batch baseline, with M0 on zero; M2 and M3 are the thin lines. The dotted line marks the plan application at 7\,min. Positive means more delay than fixed-time}{figure.caption.83}{}}
-\newlabel{fig:kg_where@cref}{{[figure][8][]8}{[1][32][]32}}
-\@writefile{toc}{\contentsline {paragraph}{The states behind the numbers.}{32}{paragraph*.84}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{What invites a grant.}{32}{paragraph*.86}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces Kelvin Grove measured queues through the run (five-seed mean, 3-min moving average). Top: absolute total queue at fixed-time and under the bus-first game. Bottom: change against fixed-time at the same junction and time; blue is a shorter queue than fixed-time, red a longer one. J5 is the persistent bottleneck in every arm; M5 shortens it in mid-run, while M4 shifts queue to J2--J3 from about 25\,min. The dark block at J12 in the final 15\,min appears in all arms, including fixed-time, and is an end-of-window boundary effect rather than a treatment effect.}}{33}{figure.caption.85}\protected@file@percent }
-\newlabel{fig:kg_states}{{9}{33}{Kelvin Grove measured queues through the run (five-seed mean, 3-min moving average). Top: absolute total queue at fixed-time and under the bus-first game. Bottom: change against fixed-time at the same junction and time; blue is a shorter queue than fixed-time, red a longer one. J5 is the persistent bottleneck in every arm; M5 shortens it in mid-run, while M4 shifts queue to J2--J3 from about 25\,min. The dark block at J12 in the final 15\,min appears in all arms, including fixed-time, and is an end-of-window boundary effect rather than a treatment effect}{figure.caption.85}{}}
-\newlabel{fig:kg_states@cref}{{[figure][9][]9}{[1][32][]33}}
-\@writefile{lot}{\contentsline {table}{\numberline {15}{\ignorespaces Kelvin Grove: state at each applied priority action, all five seeds. M0 and M1 apply no action. $x$ is the main-approach degree of saturation at the grant; side flow and queue are the controller's measured values; benefit, cost and net are its predicted passenger-seconds for the grant. Median over grants, except the last column. M2 applies one action in total, so its row is a single event rather than a distribution.}}{33}{table.caption.87}\protected@file@percent }
-\newlabel{tab:kg_triggers}{{15}{33}{Kelvin Grove: state at each applied priority action, all five seeds. M0 and M1 apply no action. $x$ is the main-approach degree of saturation at the grant; side flow and queue are the controller's measured values; benefit, cost and net are its predicted passenger-seconds for the grant. Median over grants, except the last column. M2 applies one action in total, so its row is a single event rather than a distribution}{table.caption.87}{}}
-\newlabel{tab:kg_triggers@cref}{{[table][15][]15}{[1][32][]33}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Strategy Performance -- Logan Road Corridor}{33}{subsection.8.3}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {10}{\ignorespaces Kelvin Grove: the state at each applied priority action (one marker per action, all five seeds). The dashed line is the median side-street flow over all decision epochs at which the controller declined to act. The winning layers act when the main approach is loaded and the side street is quiet; the bus-first game acts at the corridor's median state. Right: median predicted bus benefit and cost to others at the grant; 17\% of the bus-first game's grants had a non-positive predicted net.}}{34}{figure.caption.88}\protected@file@percent }
-\newlabel{fig:kg_triggers}{{10}{34}{Kelvin Grove: the state at each applied priority action (one marker per action, all five seeds). The dashed line is the median side-street flow over all decision epochs at which the controller declined to act. The winning layers act when the main approach is loaded and the side street is quiet; the bus-first game acts at the corridor's median state. Right: median predicted bus benefit and cost to others at the grant; 17\% of the bus-first game's grants had a non-positive predicted net}{figure.caption.88}{}}
-\newlabel{fig:kg_triggers@cref}{{[figure][10][]10}{[1][32][]34}}
-\@writefile{lot}{\contentsline {table}{\numberline {16}{\ignorespaces Logan Road corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are ratios of these seed means relative to \texttt  {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay.}}{34}{table.caption.89}\protected@file@percent }
-\newlabel{tab:logan_results}{{16}{34}{Logan Road corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are ratios of these seed means relative to \texttt {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay}{table.caption.89}{}}
-\newlabel{tab:logan_results@cref}{{[table][16][]16}{[1][33][]34}}
-\@writefile{lot}{\contentsline {table}{\numberline {17}{\ignorespaces Logan Road corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, ER = early red. M0--M1 run no bus-priority decider. Green reallocation, offset correction, variable phase, and phase rotation are committed zero times by every rung on this corridor.}}{34}{table.caption.90}\protected@file@percent }
-\newlabel{tab:logan_tsp}{{17}{34}{Logan Road corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, ER = early red. M0--M1 run no bus-priority decider. Green reallocation, offset correction, variable phase, and phase rotation are committed zero times by every rung on this corridor}{table.caption.90}{}}
-\newlabel{tab:logan_tsp@cref}{{[table][17][]17}{[1][34][]34}}
-\@writefile{lot}{\contentsline {table}{\numberline {18}{\ignorespaces Logan Road corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt  {NO\_TSP}.}}{35}{table.caption.91}\protected@file@percent }
-\newlabel{tab:logan_secondary}{{18}{35}{Logan Road corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt {NO\_TSP}}{table.caption.91}{}}
-\newlabel{tab:logan_secondary@cref}{{[table][18][]18}{[1][34][]35}}
-\@writefile{lot}{\contentsline {table}{\numberline {19}{\ignorespaces Seed-level uncertainty of the headline metric. Total passenger delay, mean over seeds with the 95\% $t$-interval: five seeds on Kelvin Grove (300--700) and five on Logan Road (300--700). The intervals, not the ranking, are the statistical statement: on Kelvin Grove the M1--M0 difference of 34\,pax$\cdot $h is smaller than either interval, and on Logan every adaptive interval overlaps the fixed-time one.}}{35}{table.caption.92}\protected@file@percent }
-\newlabel{tab:seed_uncertainty}{{19}{35}{Seed-level uncertainty of the headline metric. Total passenger delay, mean over seeds with the 95\% $t$-interval: five seeds on Kelvin Grove (300--700) and five on Logan Road (300--700). The intervals, not the ranking, are the statistical statement: on Kelvin Grove the M1--M0 difference of 34\,pax$\cdot $h is smaller than either interval, and on Logan every adaptive interval overlaps the fixed-time one}{table.caption.92}{}}
-\newlabel{tab:seed_uncertainty@cref}{{[table][19][]19}{[1][35][]35}}
-\@writefile{toc}{\contentsline {section}{\numberline {9}Discussion}{35}{section.9}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {10}{\ignorespaces Kelvin Grove corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are relative to \texttt  {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay.}}{30}{table.caption.66}\protected@file@percent }
+\newlabel{tab:kg_results}{{10}{30}{Kelvin Grove corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are relative to \texttt {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay}{table.caption.66}{}}
+\newlabel{tab:kg_results@cref}{{[table][10][]10}{[1][30][]30}}
+\@writefile{lot}{\contentsline {table}{\numberline {11}{\ignorespaces Kelvin Grove corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, GR = green reallocation. M0--M1 run no bus-priority decider.}}{30}{table.caption.67}\protected@file@percent }
+\newlabel{tab:kg_tsp}{{11}{30}{Kelvin Grove corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, GR = green reallocation. M0--M1 run no bus-priority decider}{table.caption.67}{}}
+\newlabel{tab:kg_tsp@cref}{{[table][11][]11}{[1][30][]30}}
+\@writefile{lot}{\contentsline {table}{\numberline {12}{\ignorespaces Kelvin Grove corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; Cycle $=$ mean operating cycle length (all adaptive rungs share the DSW plan library); $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt  {NO\_TSP}.}}{30}{table.caption.68}\protected@file@percent }
+\newlabel{tab:kg_secondary}{{12}{30}{Kelvin Grove corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; Cycle $=$ mean operating cycle length (all adaptive rungs share the DSW plan library); $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt {NO\_TSP}}{table.caption.68}{}}
+\newlabel{tab:kg_secondary@cref}{{[table][12][]12}{[1][30][]30}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.2}The Action--Delay Curve: Correct Gating Relocates a Strategy, It Does Not Bend the Curve}{31}{subsection.8.2}\protected@file@percent }
+\newlabel{sec:kg_gated}{{8.2}{31}{The Action--Delay Curve: Correct Gating Relocates a Strategy, It Does Not Bend the Curve}{subsection.8.2}{}}
+\newlabel{sec:kg_gated@cref}{{[subsection][2][8]8.2}{[1][31][]31}}
+\@writefile{lot}{\contentsline {table}{\numberline {13}{\ignorespaces Kelvin Grove: the two-class-CTM cooperative-game family across the gating spectrum, five-seed means (seeds 300--700), paired against \texttt  {NO\_TSP} on the same seeds. \texttt  {NO\_TSP} and the \texttt  {AIMSUN\_DSW} base are repeated from \cref  {tab:kg_results} as anchors. Obj $=$ passenger throughput per delay-hour (higher better); $\Delta $Delay $=$ total passenger delay vs.\ \texttt  {NO\_TSP} (lower better); BusDly $=$ bus delay per passenger; GE/INS/ER $=$ committed green-extension / insertion / early-red counts; Acts $=$ their sum per run. Rows ordered by action rate.}}{31}{table.caption.69}\protected@file@percent }
+\newlabel{tab:kg_gated}{{13}{31}{Kelvin Grove: the two-class-CTM cooperative-game family across the gating spectrum, five-seed means (seeds 300--700), paired against \texttt {NO\_TSP} on the same seeds. \texttt {NO\_TSP} and the \texttt {AIMSUN\_DSW} base are repeated from \cref {tab:kg_results} as anchors. Obj $=$ passenger throughput per delay-hour (higher better); $\Delta $Delay $=$ total passenger delay vs.\ \texttt {NO\_TSP} (lower better); BusDly $=$ bus delay per passenger; GE/INS/ER $=$ committed green-extension / insertion / early-red counts; Acts $=$ their sum per run. Rows ordered by action rate}{table.caption.69}{}}
+\newlabel{tab:kg_gated@cref}{{[table][13][]13}{[1][31][]31}}
+\@writefile{lof}{\contentsline {figure}{\numberline {9}{\ignorespaces Kelvin Grove extended ladder: five-seed mean total passenger delay (relative to \texttt  {NO\_TSP}) versus mean committed TSP actions per run, for all twelve rungs --- the six paper methods (M0--M5) and the six two-class-CTM cooperative-game variants (G0--G5). The green band improves on fixed-time, the red band worsens it. The dashed line traces the game family as its admission gate loosens (G0 off $\rightarrow $ G2 DS-gate $\rightarrow $ G4 cell-jam gate $\rightarrow $ G1 ungated): tightening the gate moves the strategy down the curve by reducing the action rate, not by making the actions pay. No rung that commits more than one action per run improves on the adaptive base.}}{33}{figure.caption.70}\protected@file@percent }
+\newlabel{fig:kg_monotonic}{{9}{33}{Kelvin Grove extended ladder: five-seed mean total passenger delay (relative to \texttt {NO\_TSP}) versus mean committed TSP actions per run, for all twelve rungs --- the six paper methods (M0--M5) and the six two-class-CTM cooperative-game variants (G0--G5). The green band improves on fixed-time, the red band worsens it. The dashed line traces the game family as its admission gate loosens (G0 off $\rightarrow $ G2 DS-gate $\rightarrow $ G4 cell-jam gate $\rightarrow $ G1 ungated): tightening the gate moves the strategy down the curve by reducing the action rate, not by making the actions pay. No rung that commits more than one action per run improves on the adaptive base}{figure.caption.70}{}}
+\newlabel{fig:kg_monotonic@cref}{{[figure][9][]9}{[1][32][]33}}
+\@writefile{lof}{\contentsline {figure}{\numberline {10}{\ignorespaces Kelvin Grove corridor geographic context (12 signalised intersections, green dots with Aimsun IDs) with surrounding street network from OpenStreetMap. Functional schematic in \cref  {fig:corridor}.}}{34}{figure.caption.71}\protected@file@percent }
+\newlabel{fig:kg_corridor}{{10}{34}{Kelvin Grove corridor geographic context (12 signalised intersections, green dots with Aimsun IDs) with surrounding street network from OpenStreetMap. Functional schematic in \cref {fig:corridor}}{figure.caption.71}{}}
+\newlabel{fig:kg_corridor@cref}{{[figure][10][]10}{[1][33][]34}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.3}Where the Gain Occurs: Junction-Level Telemetry}{34}{subsection.8.3}\protected@file@percent }
+\newlabel{sec:kg_telemetry}{{8.3}{34}{Where the Gain Occurs: Junction-Level Telemetry}{subsection.8.3}{}}
+\newlabel{sec:kg_telemetry@cref}{{[subsection][3][8]8.3}{[1][34][]34}}
+\@writefile{toc}{\contentsline {paragraph}{Where the delay moves.}{35}{paragraph*.72}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{When the gain appears.}{35}{paragraph*.73}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {11}{\ignorespaces Kelvin Grove: where and when the five-seed delay change occurs. (a) Change in cumulative passenger delay at each junction in route order, relative to fixed-time on the same batch and seeds; M1 (grey) is from the companion batch, M5 (blue) and M4 (red) from the priority batch. J1 is Aimsun 39606, J5 is 39593, J12 is 38339. (b) Cumulative corridor-wide change through the run for every rung, each relative to its own batch baseline, with M0 on zero; M2 and M3 are the thin lines. The dotted line marks the plan application at 7\,min. Positive means more delay than fixed-time.}}{35}{figure.caption.74}\protected@file@percent }
+\newlabel{fig:kg_where}{{11}{35}{Kelvin Grove: where and when the five-seed delay change occurs. (a) Change in cumulative passenger delay at each junction in route order, relative to fixed-time on the same batch and seeds; M1 (grey) is from the companion batch, M5 (blue) and M4 (red) from the priority batch. J1 is Aimsun 39606, J5 is 39593, J12 is 38339. (b) Cumulative corridor-wide change through the run for every rung, each relative to its own batch baseline, with M0 on zero; M2 and M3 are the thin lines. The dotted line marks the plan application at 7\,min. Positive means more delay than fixed-time}{figure.caption.74}{}}
+\newlabel{fig:kg_where@cref}{{[figure][11][]11}{[1][35][]35}}
+\@writefile{toc}{\contentsline {paragraph}{The states behind the numbers.}{35}{paragraph*.75}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {12}{\ignorespaces Kelvin Grove measured queues through the run (five-seed mean, 3-min moving average). Top: absolute total queue at fixed-time and under the bus-first game. Bottom: change against fixed-time at the same junction and time; blue is a shorter queue than fixed-time, red a longer one. J5 is the persistent bottleneck in every strategy; M5 shortens it in mid-run, while M4 shifts queue to J2--J3 from about 25\,min. The dark block at J12 in the final 15\,min appears in all strategies, including fixed-time, and is an end-of-window boundary effect rather than a treatment effect.}}{36}{figure.caption.76}\protected@file@percent }
+\newlabel{fig:kg_states}{{12}{36}{Kelvin Grove measured queues through the run (five-seed mean, 3-min moving average). Top: absolute total queue at fixed-time and under the bus-first game. Bottom: change against fixed-time at the same junction and time; blue is a shorter queue than fixed-time, red a longer one. J5 is the persistent bottleneck in every strategy; M5 shortens it in mid-run, while M4 shifts queue to J2--J3 from about 25\,min. The dark block at J12 in the final 15\,min appears in all strategies, including fixed-time, and is an end-of-window boundary effect rather than a treatment effect}{figure.caption.76}{}}
+\newlabel{fig:kg_states@cref}{{[figure][12][]12}{[1][36][]36}}
+\@writefile{toc}{\contentsline {paragraph}{What invites a grant.}{36}{paragraph*.77}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {14}{\ignorespaces Kelvin Grove: state at each applied priority action, all five seeds. M0 and M1 apply no action. $x$ is the main-approach degree of saturation at the grant; side flow and queue are the controller's measured values; benefit, cost and net are its predicted passenger-seconds for the grant. Median over grants, except the last column. M2 applies one action in total, so its row is a single event rather than a distribution.}}{36}{table.caption.78}\protected@file@percent }
+\newlabel{tab:kg_triggers}{{14}{36}{Kelvin Grove: state at each applied priority action, all five seeds. M0 and M1 apply no action. $x$ is the main-approach degree of saturation at the grant; side flow and queue are the controller's measured values; benefit, cost and net are its predicted passenger-seconds for the grant. Median over grants, except the last column. M2 applies one action in total, so its row is a single event rather than a distribution}{table.caption.78}{}}
+\newlabel{tab:kg_triggers@cref}{{[table][14][]14}{[1][36][]36}}
+\@writefile{lof}{\contentsline {figure}{\numberline {13}{\ignorespaces Kelvin Grove: the state at each applied priority action (one marker per action, all five seeds). The dashed line is the median side-street flow over all decision epochs at which the controller declined to act. The winning layers act when the main approach is loaded and the side street is quiet; the bus-first game acts at the corridor's median state. Right: median predicted bus benefit and cost to others at the grant; 17\% of the bus-first game's grants had a non-positive predicted net.}}{37}{figure.caption.79}\protected@file@percent }
+\newlabel{fig:kg_triggers}{{13}{37}{Kelvin Grove: the state at each applied priority action (one marker per action, all five seeds). The dashed line is the median side-street flow over all decision epochs at which the controller declined to act. The winning layers act when the main approach is loaded and the side street is quiet; the bus-first game acts at the corridor's median state. Right: median predicted bus benefit and cost to others at the grant; 17\% of the bus-first game's grants had a non-positive predicted net}{figure.caption.79}{}}
+\newlabel{fig:kg_triggers@cref}{{[figure][13][]13}{[1][36][]37}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {8.4}Strategy Performance -- Logan Road Corridor}{37}{subsection.8.4}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {15}{\ignorespaces Logan Road corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are ratios of these seed means relative to \texttt  {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay.}}{37}{table.caption.80}\protected@file@percent }
+\newlabel{tab:logan_results}{{15}{37}{Logan Road corridor performance for the six-method ladder, mean over five seeds (300--700), 1.25\,h each, demand scalar 1.0. Objective $=$ passenger throughput per delay-hour (higher is better); total passenger delay lower is better; throughput $=$ passenger-equivalent passages. Percentages are ratios of these seed means relative to \texttt {NO\_TSP} on the same seeds. Rows below the baseline are ordered by total delay}{table.caption.80}{}}
+\newlabel{tab:logan_results@cref}{{[table][15][]15}{[1][37][]37}}
+\@writefile{lot}{\contentsline {table}{\numberline {16}{\ignorespaces Logan Road corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, ER = early red. M0--M1 run no bus-priority decider. Green reallocation, offset correction, variable phase, and phase rotation are committed zero times by every rung on this corridor.}}{38}{table.caption.81}\protected@file@percent }
+\newlabel{tab:logan_tsp}{{16}{38}{Logan Road corridor: mean committed TSP action counts per run (five-seed mean). GE = green extension, INS = phase insertion, ER = early red. M0--M1 run no bus-priority decider. Green reallocation, offset correction, variable phase, and phase rotation are committed zero times by every rung on this corridor}{table.caption.81}{}}
+\newlabel{tab:logan_tsp@cref}{{[table][16][]16}{[1][38][]38}}
+\@writefile{lot}{\contentsline {table}{\numberline {17}{\ignorespaces Logan Road corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt  {NO\_TSP}.}}{38}{table.caption.82}\protected@file@percent }
+\newlabel{tab:logan_secondary}{{17}{38}{Logan Road corridor secondary metrics, five-seed means. BusTT $=$ mean bus travel time; LoopTT $=$ mean corridor loop travel time; $+$Grn $=$ green-seconds added per run by the priority layer (extensions $+$ insertions); GE/INS/ER $=$ committed green-extension / insertion / early-red counts; $\Delta $Sched $=$ change in mean bus schedule deviation vs.\ \texttt {NO\_TSP}}{table.caption.82}{}}
+\newlabel{tab:logan_secondary@cref}{{[table][17][]17}{[1][38][]38}}
 \citation{Abdelfatah1998SystemOptimal}
-\@writefile{toc}{\contentsline {paragraph}{Role of the full formulation.}{36}{paragraph*.93}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Statistical limits and calibration.}{37}{paragraph*.94}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {10}Conclusions and Recommendations}{37}{section.10}\protected@file@percent }
-\newlabel{sec:conclusions}{{10}{37}{Conclusions and Recommendations}{section.10}{}}
-\newlabel{sec:conclusions@cref}{{[section][10][]10}{[1][37][]37}}
-\@writefile{toc}{\contentsline {section}{\numberline {11}Author Contributions}{38}{section.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {12}Author Competing Interests}{38}{section.12}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {11}{\ignorespaces CTM structural representation, following the cell layout of Qin and Zhang (CBQL-TSP, arXiv:2404.19683). (a) A single intersection: each of the four approaches (Roads~1--4) is cut into cells grouped by movement (left/straight/right) that discharge through the central signal control unit; the dashed boxes mark the per-approach decision zone and the signal control unit. (b) A corridor of intersections joined by main-road cells, with boundary input/output nodes and the priority bus route threaded through.}}{39}{figure.caption.95}\protected@file@percent }
-\newlabel{fig:ctm_struct}{{11}{39}{CTM structural representation, following the cell layout of Qin and Zhang (CBQL-TSP, arXiv:2404.19683). (a) A single intersection: each of the four approaches (Roads~1--4) is cut into cells grouped by movement (left/straight/right) that discharge through the central signal control unit; the dashed boxes mark the per-approach decision zone and the signal control unit. (b) A corridor of intersections joined by main-road cells, with boundary input/output nodes and the priority bus route threaded through}{figure.caption.95}{}}
-\newlabel{fig:ctm_struct@cref}{{[figure][11][2147483647]11}{[1][39][]39}}
-\@writefile{toc}{\contentsline {section}{\numberline {Appendix~A}Cell Transmission Model}{39}{appendix.A}\protected@file@percent }
-\newlabel{sec:ctm}{{Appendix~A}{39}{Cell Transmission Model}{appendix.A}{}}
-\newlabel{sec:ctm@cref}{{[appendix][1][2147483647]Appendix~A}{[1][39][]39}}
-\newlabel{eq:ctm_cap}{{66}{39}{Cell Transmission Model}{equation.A.66}{}}
-\newlabel{eq:ctm_cap@cref}{{[equation][66][2147483647]66}{[1][39][]39}}
-\newlabel{eq:ctm_send}{{67}{39}{Cell Transmission Model}{equation.A.67}{}}
-\newlabel{eq:ctm_send@cref}{{[equation][67][2147483647]67}{[1][39][]39}}
-\newlabel{eq:ctm_recv}{{68}{39}{Cell Transmission Model}{equation.A.68}{}}
-\newlabel{eq:ctm_recv@cref}{{[equation][68][2147483647]68}{[1][39][]39}}
-\newlabel{eq:ctm_flow}{{69}{39}{Cell Transmission Model}{equation.A.69}{}}
-\newlabel{eq:ctm_flow@cref}{{[equation][69][2147483647]69}{[1][39][]39}}
-\newlabel{eq:ctm_update}{{70}{39}{Cell Transmission Model}{equation.A.70}{}}
-\newlabel{eq:ctm_update@cref}{{[equation][70][2147483647]70}{[1][39][]39}}
-\newlabel{eq:ctm_stopline}{{71}{39}{Cell Transmission Model}{equation.A.71}{}}
-\newlabel{eq:ctm_stopline@cref}{{[equation][71][2147483647]71}{[1][39][]39}}
-\newlabel{eq:ctm_sat}{{72}{39}{Cell Transmission Model}{equation.A.72}{}}
-\newlabel{eq:ctm_sat@cref}{{[equation][72][2147483647]72}{[1][39][]39}}
-\newlabel{eq:ctm_platoon}{{73}{39}{Cell Transmission Model}{equation.A.73}{}}
-\newlabel{eq:ctm_platoon@cref}{{[equation][73][2147483647]73}{[1][39][]39}}
-\newlabel{eq:ctm_proj}{{74}{39}{Cell Transmission Model}{equation.A.74}{}}
-\newlabel{eq:ctm_proj@cref}{{[equation][74][2147483647]74}{[1][39][]39}}
-\newlabel{eq:ctm_severity}{{75}{39}{Cell Transmission Model}{equation.A.75}{}}
-\newlabel{eq:ctm_severity@cref}{{[equation][75][2147483647]75}{[1][39][]39}}
-\newlabel{eq:ctm_cascade}{{76}{39}{Cell Transmission Model}{equation.A.76}{}}
-\newlabel{eq:ctm_cascade@cref}{{[equation][76][2147483647]76}{[1][39][]39}}
-\newlabel{eq:ctm_carry}{{77}{39}{Cell Transmission Model}{equation.A.77}{}}
-\newlabel{eq:ctm_carry@cref}{{[equation][77][2147483647]77}{[1][39][]39}}
+\@writefile{lot}{\contentsline {table}{\numberline {18}{\ignorespaces Seed-level uncertainty of the headline metric. Total passenger delay, mean over seeds with the 95\% $t$-interval: five seeds on Kelvin Grove (300--700) and five on Logan Road (300--700). The intervals, not the ranking, are the statistical statement: on Kelvin Grove the M1--M0 difference of 34\,pax$\cdot $h is smaller than either interval, and on Logan every adaptive interval overlaps the fixed-time one.}}{39}{table.caption.83}\protected@file@percent }
+\newlabel{tab:seed_uncertainty}{{18}{39}{Seed-level uncertainty of the headline metric. Total passenger delay, mean over seeds with the 95\% $t$-interval: five seeds on Kelvin Grove (300--700) and five on Logan Road (300--700). The intervals, not the ranking, are the statistical statement: on Kelvin Grove the M1--M0 difference of 34\,pax$\cdot $h is smaller than either interval, and on Logan every adaptive interval overlaps the fixed-time one}{table.caption.83}{}}
+\newlabel{tab:seed_uncertainty@cref}{{[table][18][]18}{[1][39][]39}}
+\@writefile{toc}{\contentsline {paragraph}{A game-solver strategy on the same five seeds.}{39}{paragraph*.84}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {9}Discussion}{39}{section.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Role of the full formulation.}{40}{paragraph*.85}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Statistical limits and calibration.}{41}{paragraph*.86}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {10}Conclusions and Recommendations}{41}{section.10}\protected@file@percent }
+\newlabel{sec:conclusions}{{10}{41}{Conclusions and Recommendations}{section.10}{}}
+\newlabel{sec:conclusions@cref}{{[section][10][]10}{[1][41][]41}}
+\@writefile{toc}{\contentsline {section}{\numberline {11}Author Contributions}{42}{section.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {12}Author Competing Interests}{42}{section.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~A}Cell Transmission Model}{43}{appendix.A}\protected@file@percent }
+\newlabel{sec:ctm}{{Appendix~A}{43}{Cell Transmission Model}{appendix.A}{}}
+\newlabel{sec:ctm@cref}{{[appendix][1][2147483647]Appendix~A}{[1][43][]43}}
+\@writefile{lof}{\contentsline {figure}{\numberline {14}{\ignorespaces CTM structural representation, following the cell layout of Qin and Zhang (CBQL-TSP, arXiv:2404.19683). (a) A single intersection: each of the four approaches (Roads~1--4) is cut into cells grouped by movement (left/straight/right) that discharge through the central signal control unit; the dashed boxes mark the per-approach decision zone and the signal control unit. (b) A corridor of intersections joined by main-road cells, with boundary input/output nodes and the priority bus route threaded through.}}{43}{figure.caption.87}\protected@file@percent }
+\newlabel{fig:ctm_struct}{{14}{43}{CTM structural representation, following the cell layout of Qin and Zhang (CBQL-TSP, arXiv:2404.19683). (a) A single intersection: each of the four approaches (Roads~1--4) is cut into cells grouped by movement (left/straight/right) that discharge through the central signal control unit; the dashed boxes mark the per-approach decision zone and the signal control unit. (b) A corridor of intersections joined by main-road cells, with boundary input/output nodes and the priority bus route threaded through}{figure.caption.87}{}}
+\newlabel{fig:ctm_struct@cref}{{[figure][14][2147483647]14}{[1][43][]43}}
+\newlabel{eq:ctm_cap}{{61}{43}{Cell Transmission Model}{equation.A.61}{}}
+\newlabel{eq:ctm_cap@cref}{{[equation][61][2147483647]61}{[1][43][]43}}
+\newlabel{eq:ctm_send}{{62}{43}{Cell Transmission Model}{equation.A.62}{}}
+\newlabel{eq:ctm_send@cref}{{[equation][62][2147483647]62}{[1][43][]43}}
+\newlabel{eq:ctm_recv}{{63}{43}{Cell Transmission Model}{equation.A.63}{}}
+\newlabel{eq:ctm_recv@cref}{{[equation][63][2147483647]63}{[1][43][]43}}
+\newlabel{eq:ctm_flow}{{64}{43}{Cell Transmission Model}{equation.A.64}{}}
+\newlabel{eq:ctm_flow@cref}{{[equation][64][2147483647]64}{[1][43][]43}}
+\newlabel{eq:ctm_update}{{65}{43}{Cell Transmission Model}{equation.A.65}{}}
+\newlabel{eq:ctm_update@cref}{{[equation][65][2147483647]65}{[1][43][]43}}
+\newlabel{eq:ctm_stopline}{{66}{43}{Cell Transmission Model}{equation.A.66}{}}
+\newlabel{eq:ctm_stopline@cref}{{[equation][66][2147483647]66}{[1][43][]43}}
+\newlabel{eq:ctm_sat}{{67}{43}{Cell Transmission Model}{equation.A.67}{}}
+\newlabel{eq:ctm_sat@cref}{{[equation][67][2147483647]67}{[1][43][]43}}
+\newlabel{eq:ctm_platoon}{{68}{43}{Cell Transmission Model}{equation.A.68}{}}
+\newlabel{eq:ctm_platoon@cref}{{[equation][68][2147483647]68}{[1][43][]43}}
+\newlabel{eq:ctm_proj}{{69}{43}{Cell Transmission Model}{equation.A.69}{}}
+\newlabel{eq:ctm_proj@cref}{{[equation][69][2147483647]69}{[1][43][]43}}
+\newlabel{eq:ctm_severity}{{70}{43}{Cell Transmission Model}{equation.A.70}{}}
+\newlabel{eq:ctm_severity@cref}{{[equation][70][2147483647]70}{[1][43][]43}}
+\newlabel{eq:ctm_cascade}{{71}{43}{Cell Transmission Model}{equation.A.71}{}}
+\newlabel{eq:ctm_cascade@cref}{{[equation][71][2147483647]71}{[1][43][]43}}
 \citation{Webster1958Traffic}
-\@writefile{toc}{\contentsline {section}{\numberline {Appendix~B}Solution Methods}{40}{appendix.B}\protected@file@percent }
-\newlabel{sec:solutions}{{Appendix~B}{40}{Solution Methods}{appendix.B}{}}
-\newlabel{sec:solutions@cref}{{[appendix][2][2147483647]Appendix~B}{[1][40][]40}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.1}Candidate generation: the Webster split rule}{40}{subsection.B.1}\protected@file@percent }
-\newlabel{app:webster}{{Appendix~B.1}{40}{Candidate generation: the Webster split rule}{subsection.B.1}{}}
-\newlabel{app:webster@cref}{{[subappendix][1][2147483647,2]Appendix~B.1}{[1][40][]40}}
-\newlabel{eq:rot_green}{{78}{40}{Candidate generation: the Webster split rule}{equation.B.78}{}}
-\newlabel{eq:rot_green@cref}{{[equation][78][2147483647]78}{[1][40][]40}}
-\newlabel{eq:webster_waterfill}{{79}{40}{Candidate generation: the Webster split rule}{equation.B.79}{}}
-\newlabel{eq:webster_waterfill@cref}{{[equation][79][2147483647]79}{[1][40][]40}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.2}Relation to the exact program}{40}{subsection.B.2}\protected@file@percent }
-\newlabel{sec:milp_online_map}{{Appendix~B.2}{40}{Relation to the exact program}{subsection.B.2}{}}
-\newlabel{sec:milp_online_map@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][40][]40}}
-\@writefile{lot}{\contentsline {table}{\numberline {20}{\ignorespaces The six-rung ladder: what each method proposes and how it commits. All rungs share the DSW plan base and the guard set; only the layer in the middle column differs.}}{40}{table.caption.96}\protected@file@percent }
-\newlabel{tab:method_map}{{20}{40}{The six-rung ladder: what each method proposes and how it commits. All rungs share the DSW plan base and the guard set; only the layer in the middle column differs}{table.caption.96}{}}
-\newlabel{tab:method_map@cref}{{[table][20][2147483647]20}{[1][40][]40}}
-\@writefile{lot}{\contentsline {table}{\numberline {21}{\ignorespaces The estimated state in detail: what the online branches observe. Top: the shared estimated state $\hat  {X}_t$ built at each epoch (Sec.~\ref {sec:online_guards}); bottom: the binned states the three learners quantise from it.}}{41}{table.caption.97}\protected@file@percent }
-\newlabel{tab:state_space}{{21}{41}{The estimated state in detail: what the online branches observe. Top: the shared estimated state $\hat {X}_t$ built at each epoch (Sec.~\ref {sec:online_guards}); bottom: the binned states the three learners quantise from it}{table.caption.97}{}}
-\newlabel{tab:state_space@cref}{{[table][21][2147483647]21}{[1][40][]41}}
-\@writefile{lof}{\contentsline {figure}{\numberline {12}{\ignorespaces The estimated state space at a glance. Left: the four measurement feeds that assemble the shared estimated state $\hat  {X}_t$ (middle) at each epoch. Right, top: the guard set every candidate must clear. Right, below: the three binned states the learners quantise from $\hat  {X}_t$, drawn as their bin factorisation ($3{\times }3{\times }3{\times }2{=}54$; $4{\times }4{\times }2{\times }4{=}128$; $3^5{\times }3{\times }2{=}1458$). \cref  {tab:state_space} lists every component with its source and consumers.}}{41}{figure.caption.98}\protected@file@percent }
-\newlabel{fig:state_space}{{12}{41}{The estimated state space at a glance. Left: the four measurement feeds that assemble the shared estimated state $\hat {X}_t$ (middle) at each epoch. Right, top: the guard set every candidate must clear. Right, below: the three binned states the learners quantise from $\hat {X}_t$, drawn as their bin factorisation ($3{\times }3{\times }3{\times }2{=}54$; $4{\times }4{\times }2{\times }4{=}128$; $3^5{\times }3{\times }2{=}1458$). \cref {tab:state_space} lists every component with its source and consumers}{figure.caption.98}{}}
-\newlabel{fig:state_space@cref}{{[figure][12][2147483647]12}{[1][40][]41}}
-\@writefile{toc}{\contentsline {paragraph}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact).}{41}{paragraph*.99}\protected@file@percent }
-\newlabel{eq:pog_ewma}{{80}{41}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.80}{}}
-\newlabel{eq:pog_ewma@cref}{{[equation][80][2147483647]80}{[1][41][]41}}
-\newlabel{eq:pog_init}{{81}{41}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.81}{}}
-\newlabel{eq:pog_init@cref}{{[equation][81][2147483647]81}{[1][41][]41}}
-\newlabel{eq:pog_shift}{{82}{41}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.82}{}}
-\newlabel{eq:pog_shift@cref}{{[equation][82][2147483647]82}{[1][41][]41}}
-\newlabel{eq:pog_loss}{{83}{41}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.83}{}}
-\newlabel{eq:pog_loss@cref}{{[equation][83][2147483647]83}{[1][41][]41}}
-\newlabel{eq:pog_loss_zero}{{84}{41}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.84}{}}
-\newlabel{eq:pog_loss_zero@cref}{{[equation][84][2147483647]84}{[1][41][]41}}
-\@writefile{toc}{\contentsline {subsubsection}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{41}{subsubsection*.100}\protected@file@percent }
-\newlabel{sec:bus_optional}{{Appendix~B.2}{41}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{subsubsection*.100}{}}
-\newlabel{sec:bus_optional@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][41][]41}}
-\newlabel{eq:bus_present}{{85}{42}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.85}{}}
-\newlabel{eq:bus_present@cref}{{[equation][85][2147483647]85}{[1][41][]42}}
-\newlabel{eq:trig_epoch}{{86}{42}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.86}{}}
-\newlabel{eq:trig_epoch@cref}{{[equation][86][2147483647]86}{[1][41][]42}}
-\newlabel{eq:trig_source}{{87}{42}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.87}{}}
-\newlabel{eq:trig_source@cref}{{[equation][87][2147483647]87}{[1][41][]42}}
-\@writefile{toc}{\contentsline {subsubsection}{TSP Philosophy: Traditional Rules as Policy Constraints}{42}{subsubsection*.101}\protected@file@percent }
-\newlabel{sec:rule_tsp}{{Appendix~B.2}{42}{TSP Philosophy: Traditional Rules as Policy Constraints}{subsubsection*.101}{}}
-\newlabel{sec:rule_tsp@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][42][]42}}
-\@writefile{toc}{\contentsline {paragraph}{R1 Conditional priority (balance).}{42}{paragraph*.102}\protected@file@percent }
-\newlabel{eq:rule_balance_def}{{88}{42}{R1 Conditional priority (balance)}{equation.B.88}{}}
-\newlabel{eq:rule_balance_def@cref}{{[equation][88][2147483647]88}{[1][42][]42}}
-\newlabel{eq:rule_balance}{{89}{42}{R1 Conditional priority (balance)}{equation.B.89}{}}
-\newlabel{eq:rule_balance@cref}{{[equation][89][2147483647]89}{[1][42][]42}}
-\@writefile{toc}{\contentsline {paragraph}{R2 Wrong-phase rejection.}{43}{paragraph*.103}\protected@file@percent }
-\newlabel{eq:rule_phase_ge}{{90}{43}{R2 Wrong-phase rejection}{equation.B.90}{}}
-\newlabel{eq:rule_phase_ge@cref}{{[equation][90][2147483647]90}{[1][42][]43}}
-\newlabel{eq:rule_phase_pi}{{91}{43}{R2 Wrong-phase rejection}{equation.B.91}{}}
-\newlabel{eq:rule_phase_pi@cref}{{[equation][91][2147483647]91}{[1][42][]43}}
-\@writefile{toc}{\contentsline {paragraph}{R3 Cooldown.}{43}{paragraph*.104}\protected@file@percent }
-\newlabel{eq:rule_cool}{{92}{43}{R3 Cooldown}{equation.B.92}{}}
-\newlabel{eq:rule_cool@cref}{{[equation][92][2147483647]92}{[1][43][]43}}
-\@writefile{toc}{\contentsline {paragraph}{R4 Spillback protection.}{43}{paragraph*.105}\protected@file@percent }
-\newlabel{eq:rule_spill_agg}{{93}{43}{R4 Spillback protection}{equation.B.93}{}}
-\newlabel{eq:rule_spill_agg@cref}{{[equation][93][2147483647]93}{[1][43][]43}}
-\newlabel{eq:rule_spill_jam}{{94}{43}{R4 Spillback protection}{equation.B.94}{}}
-\newlabel{eq:rule_spill_jam@cref}{{[equation][94][2147483647]94}{[1][43][]43}}
-\newlabel{eq:rule_spill_zero}{{95}{43}{R4 Spillback protection}{equation.B.95}{}}
-\newlabel{eq:rule_spill_zero@cref}{{[equation][95][2147483647]95}{[1][43][]43}}
-\newlabel{eq:rule_spill_block_ge}{{96}{43}{R4 Spillback protection}{equation.B.96}{}}
-\newlabel{eq:rule_spill_block_ge@cref}{{[equation][96][2147483647]96}{[1][43][]43}}
-\newlabel{eq:rule_spill_block}{{97}{43}{R4 Spillback protection}{equation.B.97}{}}
-\newlabel{eq:rule_spill_block@cref}{{[equation][97][2147483647]97}{[1][43][]43}}
-\newlabel{eq:rule_spill_block_all}{{98}{43}{R4 Spillback protection}{equation.B.98}{}}
-\newlabel{eq:rule_spill_block_all@cref}{{[equation][98][2147483647]98}{[1][43][]43}}
-\@writefile{toc}{\contentsline {paragraph}{R5 Detection horizon (bus-optional).}{43}{paragraph*.106}\protected@file@percent }
-\newlabel{eq:rule_horizon}{{99}{43}{R5 Detection horizon (bus-optional)}{equation.B.99}{}}
-\newlabel{eq:rule_horizon@cref}{{[equation][99][2147483647]99}{[1][43][]43}}
-\@writefile{toc}{\contentsline {paragraph}{R6 Schedule takeover.}{43}{paragraph*.107}\protected@file@percent }
-\newlabel{eq:rule_take}{{100}{43}{R6 Schedule takeover}{equation.B.100}{}}
-\newlabel{eq:rule_take@cref}{{[equation][100][2147483647]100}{[1][43][]43}}
-\newlabel{eq:rule_take_zero}{{101}{43}{R6 Schedule takeover}{equation.B.101}{}}
-\newlabel{eq:rule_take_zero@cref}{{[equation][101][2147483647]101}{[1][43][]43}}
-\newlabel{eq:rule_cool_take}{{102}{44}{R6 Schedule takeover}{equation.B.102}{}}
-\newlabel{eq:rule_cool_take@cref}{{[equation][102][2147483647]102}{[1][43][]44}}
-\newlabel{eq:rule_horizon_take}{{103}{44}{R6 Schedule takeover}{equation.B.103}{}}
-\newlabel{eq:rule_horizon_take@cref}{{[equation][103][2147483647]103}{[1][43][]44}}
-\@writefile{toc}{\contentsline {paragraph}{R8 Purdue progression preservation (controller dvar).}{44}{paragraph*.108}\protected@file@percent }
-\newlabel{eq:rule_prog}{{104}{44}{R8 Purdue progression preservation (controller dvar)}{equation.B.104}{}}
-\newlabel{eq:rule_prog@cref}{{[equation][104][2147483647]104}{[1][44][]44}}
-\@writefile{toc}{\contentsline {paragraph}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain.}{44}{paragraph*.109}\protected@file@percent }
-\newlabel{eq:rule_minactive}{{105}{44}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.105}{}}
-\newlabel{eq:rule_minactive@cref}{{[equation][105][2147483647]105}{[1][44][]44}}
-\newlabel{eq:rule_hold}{{106}{44}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.106}{}}
-\newlabel{eq:rule_hold@cref}{{[equation][106][2147483647]106}{[1][44][]44}}
-\newlabel{eq:rule_empty}{{107}{44}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.107}{}}
-\newlabel{eq:rule_empty@cref}{{[equation][107][2147483647]107}{[1][44][]44}}
-\newlabel{eq:monitor_gain}{{108}{44}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.108}{}}
-\newlabel{eq:monitor_gain@cref}{{[equation][108][2147483647]108}{[1][44][]44}}
-\@writefile{toc}{\contentsline {paragraph}{R10 Opposing-direction window arbitration.}{44}{paragraph*.110}\protected@file@percent }
-\newlabel{eq:rule_arbitrate}{{109}{44}{R10 Opposing-direction window arbitration}{equation.B.109}{}}
-\newlabel{eq:rule_arbitrate@cref}{{[equation][109][2147483647]109}{[1][44][]44}}
-\@writefile{toc}{\contentsline {paragraph}{R11 Multi-bus headway coupling.}{44}{paragraph*.111}\protected@file@percent }
-\newlabel{eq:rule_headway}{{110}{44}{R11 Multi-bus headway coupling}{equation.B.110}{}}
-\newlabel{eq:rule_headway@cref}{{[equation][110][2147483647]110}{[1][44][]44}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.3}Runtime admissibility rules: which actions the live controller is allowed to take each tick}{45}{subsection.B.3}\protected@file@percent }
-\newlabel{sec:online_guards}{{Appendix~B.3}{45}{Runtime admissibility rules: which actions the live controller is allowed to take each tick}{subsection.B.3}{}}
-\newlabel{sec:online_guards@cref}{{[subappendix][3][2147483647,2]Appendix~B.3}{[1][44][]45}}
-\@writefile{toc}{\contentsline {paragraph}{Online causality axioms (declared).}{45}{paragraph*.112}\protected@file@percent }
-\newlabel{eq:online_causal}{{111}{45}{Online causality axioms (declared)}{equation.B.111}{}}
-\newlabel{eq:online_causal@cref}{{[equation][111][2147483647]111}{[1][45][]45}}
-\newlabel{eq:online_det}{{112}{45}{Online causality axioms (declared)}{equation.B.112}{}}
-\newlabel{eq:online_det@cref}{{[equation][112][2147483647]112}{[1][45][]45}}
-\newlabel{eq:online_cool}{{113}{45}{Online causality axioms (declared)}{equation.B.113}{}}
-\newlabel{eq:online_cool@cref}{{[equation][113][2147483647]113}{[1][45][]45}}
-\newlabel{eq:online_spill}{{114}{45}{Online causality axioms (declared)}{equation.B.114}{}}
-\newlabel{eq:online_spill@cref}{{[equation][114][2147483647]114}{[1][45][]45}}
-\newlabel{eq:online_phase}{{115}{45}{Online causality axioms (declared)}{equation.B.115}{}}
-\newlabel{eq:online_phase@cref}{{[equation][115][2147483647]115}{[1][45][]45}}
-\newlabel{eq:online_recover}{{116}{45}{Online causality axioms (declared)}{equation.B.116}{}}
-\newlabel{eq:online_recover@cref}{{[equation][116][2147483647]116}{[1][45][]45}}
-\newlabel{eq:online_minactive}{{117}{45}{Online causality axioms (declared)}{equation.B.117}{}}
-\newlabel{eq:online_minactive@cref}{{[equation][117][2147483647]117}{[1][45][]45}}
-\newlabel{eq:online_hold}{{118}{45}{Online causality axioms (declared)}{equation.B.118}{}}
-\newlabel{eq:online_hold@cref}{{[equation][118][2147483647]118}{[1][45][]45}}
-\newlabel{eq:online_purdue}{{119}{45}{Online causality axioms (declared)}{equation.B.119}{}}
-\newlabel{eq:online_purdue@cref}{{[equation][119][2147483647]119}{[1][45][]45}}
-\newlabel{eq:online_monitor}{{120}{45}{Online causality axioms (declared)}{equation.B.120}{}}
-\newlabel{eq:online_monitor@cref}{{[equation][120][2147483647]120}{[1][45][]45}}
-\newlabel{eq:online_spill_def}{{121}{45}{Online causality axioms (declared)}{equation.B.121}{}}
-\newlabel{eq:online_spill_def@cref}{{[equation][121][2147483647]121}{[1][45][]45}}
-\newlabel{eq:recoverable}{{122}{46}{Online causality axioms (declared)}{equation.B.122}{}}
-\newlabel{eq:recoverable@cref}{{[equation][122][2147483647]122}{[1][46][]46}}
-\@writefile{toc}{\contentsline {paragraph}{Purdue (POG) phase, timing conditions, and bus-free operation (what the new lines do).}{46}{paragraph*.113}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Recovered-cycle plan (bounded multi-cycle transition).}{46}{paragraph*.114}\protected@file@percent }
-\newlabel{eq:recover_cycles}{{123}{46}{Recovered-cycle plan (bounded multi-cycle transition)}{equation.B.123}{}}
-\newlabel{eq:recover_cycles@cref}{{[equation][123][2147483647]123}{[1][46][]46}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.4}Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{46}{subsection.B.4}\protected@file@percent }
-\newlabel{sec:layered_control}{{Appendix~B.4}{46}{Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{subsection.B.4}{}}
-\newlabel{sec:layered_control@cref}{{[subappendix][4][2147483647,2]Appendix~B.4}{[1][46][]46}}
-\newlabel{eq:timetable}{{124}{47}{Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{equation.B.124}{}}
-\newlabel{eq:timetable@cref}{{[equation][124][2147483647]124}{[1][46][]47}}
-\@writefile{toc}{\contentsline {paragraph}{Two update frequencies, one closed loop.}{47}{paragraph*.115}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Layer 1 --- coordinated-actuated base (\texttt  {ACTUATED\_BASE\_MODE}).}{47}{paragraph*.116}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Layer 2 --- algorithm overlay, bus-triggered and continuous.}{47}{paragraph*.117}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Purdue coordination in the learner's reward.}{47}{paragraph*.118}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.5}Commit Rules: the Z1 Selection Layer Is One of Five, Not a Universal Selector}{47}{subsection.B.5}\protected@file@percent }
-\newlabel{sec:selection_layer}{{Appendix~B.5}{47}{Commit Rules: the Z1 Selection Layer Is One of Five, Not a Universal Selector}{subsection.B.5}{}}
-\newlabel{sec:selection_layer@cref}{{[subappendix][5][2147483647,2]Appendix~B.5}{[1][47][]47}}
-\@writefile{toc}{\contentsline {paragraph}{The $Z_1$ commit (Type~A): the program's objective applied to one action.}{47}{paragraph*.119}\protected@file@percent }
-\newlabel{eq:net_pick}{{125}{47}{The $Z_1$ commit (Type~A): the program's objective applied to one action}{equation.B.125}{}}
-\newlabel{eq:net_pick@cref}{{[equation][125][2147483647]125}{[1][47][]47}}
-\@writefile{toc}{\contentsline {paragraph}{The three commits used in the ladder (why $Z_1$ alone cannot explain the paper).}{47}{paragraph*.120}\protected@file@percent }
-\@writefile{lof}{\contentsline {figure}{\numberline {13}{\ignorespaces The six evaluated methods relative to the exact program. The program (top) defines the objective and constraints but is not solved; each rung approximates it at runtime. M1 applies the adaptive plan alone; M2--M5 each add one priority layer, and the boxes state what the layer adds and how its candidate is committed, which is where the rungs differ: M2 commits the $Q$-argmax under a cost veto, M3 requires the net-benefit and cascade test, M4 maximises the Nash product, and M5 maximises the coalition (team) product. All rungs use the same measured state, guards, and $Z_4$ cap; M0 is the fixed-time reference.}}{48}{figure.caption.121}\protected@file@percent }
-\newlabel{fig:objectives}{{13}{48}{The six evaluated methods relative to the exact program. The program (top) defines the objective and constraints but is not solved; each rung approximates it at runtime. M1 applies the adaptive plan alone; M2--M5 each add one priority layer, and the boxes state what the layer adds and how its candidate is committed, which is where the rungs differ: M2 commits the $Q$-argmax under a cost veto, M3 requires the net-benefit and cascade test, M4 maximises the Nash product, and M5 maximises the coalition (team) product. All rungs use the same measured state, guards, and $Z_4$ cap; M0 is the fixed-time reference}{figure.caption.121}{}}
-\newlabel{fig:objectives@cref}{{[figure][13][2147483647]13}{[1][48][]48}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.6}The paper method ladder: one adaptive base, four priority layers}{48}{subsection.B.6}\protected@file@percent }
-\newlabel{sec:sol_ladder}{{Appendix~B.6}{48}{The paper method ladder: one adaptive base, four priority layers}{subsection.B.6}{}}
-\newlabel{sec:sol_ladder@cref}{{[subappendix][6][2147483647,2]Appendix~B.6}{[1][48][]48}}
-\@writefile{toc}{\contentsline {paragraph}{The shared base (M1).}{48}{paragraph*.122}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{M0 -- fixed-time reference.}{48}{paragraph*.123}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{M2 -- learned bus priority (\texttt  {MARL\_BUS}).}{48}{paragraph*.124}\protected@file@percent }
-\newlabel{eq:cpd_reward}{{126}{48}{M2 -- learned bus priority (\texttt {MARL\_BUS})}{equation.B.126}{}}
-\newlabel{eq:cpd_reward@cref}{{[equation][126][2147483647]126}{[1][48][]48}}
-\@writefile{toc}{\contentsline {paragraph}{M3 -- admission-controlled priority (\texttt  {CELLQ\_GATED}).}{49}{paragraph*.125}\protected@file@percent }
-\newlabel{eq:cellq_reward}{{127}{49}{M3 -- admission-controlled priority (\texttt {CELLQ\_GATED})}{equation.B.127}{}}
-\newlabel{eq:cellq_reward@cref}{{[equation][127][2147483647]127}{[1][48][]49}}
-\newlabel{eq:ladder_gate}{{128}{49}{M3 -- admission-controlled priority (\texttt {CELLQ\_GATED})}{equation.B.128}{}}
-\newlabel{eq:ladder_gate@cref}{{[equation][128][2147483647]128}{[1][49][]49}}
-\@writefile{toc}{\contentsline {subsubsection}{Net-benefit test and projected-saturation cascade cost}{49}{subsubsection*.126}\protected@file@percent }
-\newlabel{sec:gate_cascade}{{Appendix~B.6}{49}{Net-benefit test and projected-saturation cascade cost}{subsubsection*.126}{}}
-\newlabel{sec:gate_cascade@cref}{{[subappendix][6][2147483647,2]Appendix~B.6}{[1][49][]49}}
-\@writefile{toc}{\contentsline {paragraph}{M4 -- game-theoretic priority (\texttt  {GAME\_BUS}).}{49}{paragraph*.127}\protected@file@percent }
-\newlabel{eq:ladder_nash}{{129}{49}{M4 -- game-theoretic priority (\texttt {GAME\_BUS})}{equation.B.129}{}}
-\newlabel{eq:ladder_nash@cref}{{[equation][129][2147483647]129}{[1][49][]49}}
-\@writefile{toc}{\contentsline {paragraph}{M5 -- cooperative game priority (\texttt  {GAME\_COOP}).}{49}{paragraph*.128}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Differences between the ladder methods.}{49}{paragraph*.129}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Lateness is not a decision variable.}{49}{paragraph*.130}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Methods excluded from the evaluation.}{49}{paragraph*.131}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {Appendix~C}Solution-Algorithm Pseudocode}{49}{appendix.C}\protected@file@percent }
-\newlabel{sec:appendix_pseudo}{{Appendix~C}{49}{Solution-Algorithm Pseudocode}{appendix.C}{}}
-\newlabel{sec:appendix_pseudo@cref}{{[appendix][3][2147483647]Appendix~C}{[1][49][]49}}
+\newlabel{eq:ctm_carry}{{72}{44}{Cell Transmission Model}{equation.A.72}{}}
+\newlabel{eq:ctm_carry@cref}{{[equation][72][2147483647]72}{[1][43][]44}}
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~B}Solution Methods}{44}{appendix.B}\protected@file@percent }
+\newlabel{sec:solutions}{{Appendix~B}{44}{Solution Methods}{appendix.B}{}}
+\newlabel{sec:solutions@cref}{{[appendix][2][2147483647]Appendix~B}{[1][44][]44}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.1}Candidate generation: the Webster split rule}{44}{subsection.B.1}\protected@file@percent }
+\newlabel{app:webster}{{Appendix~B.1}{44}{Candidate generation: the Webster split rule}{subsection.B.1}{}}
+\newlabel{app:webster@cref}{{[subappendix][1][2147483647,2]Appendix~B.1}{[1][44][]44}}
+\newlabel{eq:rot_green}{{73}{44}{Candidate generation: the Webster split rule}{equation.B.73}{}}
+\newlabel{eq:rot_green@cref}{{[equation][73][2147483647]73}{[1][44][]44}}
+\newlabel{eq:webster_waterfill}{{74}{44}{Candidate generation: the Webster split rule}{equation.B.74}{}}
+\newlabel{eq:webster_waterfill@cref}{{[equation][74][2147483647]74}{[1][44][]44}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.2}Relation to the exact program}{44}{subsection.B.2}\protected@file@percent }
+\newlabel{sec:milp_online_map}{{Appendix~B.2}{44}{Relation to the exact program}{subsection.B.2}{}}
+\newlabel{sec:milp_online_map@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][44][]44}}
+\@writefile{lot}{\contentsline {table}{\numberline {19}{\ignorespaces The six-rung ladder: what each method proposes and how it commits. All rungs share the DSW plan base and the guard set; only the layer in the middle column differs.}}{45}{table.caption.88}\protected@file@percent }
+\newlabel{tab:method_map}{{19}{45}{The six-rung ladder: what each method proposes and how it commits. All rungs share the DSW plan base and the guard set; only the layer in the middle column differs}{table.caption.88}{}}
+\newlabel{tab:method_map@cref}{{[table][19][2147483647]19}{[1][44][]45}}
+\@writefile{lot}{\contentsline {table}{\numberline {20}{\ignorespaces The estimated state in detail: what the online branches observe. Top: the shared estimated state $\hat  {X}_t$ built at each epoch (Sec.~\ref {sec:online_guards}); bottom: the binned states the three learners quantise from it.}}{45}{table.caption.89}\protected@file@percent }
+\newlabel{tab:state_space}{{20}{45}{The estimated state in detail: what the online branches observe. Top: the shared estimated state $\hat {X}_t$ built at each epoch (Sec.~\ref {sec:online_guards}); bottom: the binned states the three learners quantise from it}{table.caption.89}{}}
+\newlabel{tab:state_space@cref}{{[table][20][2147483647]20}{[1][44][]45}}
+\@writefile{lof}{\contentsline {figure}{\numberline {15}{\ignorespaces The estimated state space at a glance. Left: the four measurement feeds that assemble the shared estimated state $\hat  {X}_t$ (middle) at each epoch. Right, top: the guard set every candidate must clear. Right, below: the three binned states the learners quantise from $\hat  {X}_t$, drawn as their bin factorisation ($3{\times }3{\times }3{\times }2{=}54$; $4{\times }4{\times }2{\times }4{=}128$; $3^5{\times }3{\times }2{=}1458$). \cref  {tab:state_space} lists every component with its source and consumers.}}{45}{figure.caption.90}\protected@file@percent }
+\newlabel{fig:state_space}{{15}{45}{The estimated state space at a glance. Left: the four measurement feeds that assemble the shared estimated state $\hat {X}_t$ (middle) at each epoch. Right, top: the guard set every candidate must clear. Right, below: the three binned states the learners quantise from $\hat {X}_t$, drawn as their bin factorisation ($3{\times }3{\times }3{\times }2{=}54$; $4{\times }4{\times }2{\times }4{=}128$; $3^5{\times }3{\times }2{=}1458$). \cref {tab:state_space} lists every component with its source and consumers}{figure.caption.90}{}}
+\newlabel{fig:state_space@cref}{{[figure][15][2147483647]15}{[1][44][]45}}
+\@writefile{toc}{\contentsline {paragraph}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact).}{45}{paragraph*.91}\protected@file@percent }
+\newlabel{eq:pog_ewma}{{75}{45}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.75}{}}
+\newlabel{eq:pog_ewma@cref}{{[equation][75][2147483647]75}{[1][45][]45}}
+\newlabel{eq:pog_init}{{76}{45}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.76}{}}
+\newlabel{eq:pog_init@cref}{{[equation][76][2147483647]76}{[1][45][]45}}
+\newlabel{eq:pog_shift}{{77}{45}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.77}{}}
+\newlabel{eq:pog_shift@cref}{{[equation][77][2147483647]77}{[1][45][]45}}
+\newlabel{eq:pog_loss}{{78}{45}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.78}{}}
+\newlabel{eq:pog_loss@cref}{{[equation][78][2147483647]78}{[1][45][]45}}
+\newlabel{eq:pog_loss_zero}{{79}{45}{Purdue coordination (arrivals-on-green) state and progression-loss phase (exact)}{equation.B.79}{}}
+\newlabel{eq:pog_loss_zero@cref}{{[equation][79][2147483647]79}{[1][45][]45}}
+\@writefile{toc}{\contentsline {subsubsection}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{46}{subsubsection*.92}\protected@file@percent }
+\newlabel{sec:bus_optional}{{Appendix~B.2}{46}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{subsubsection*.92}{}}
+\newlabel{sec:bus_optional@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][46][]46}}
+\newlabel{eq:bus_present}{{80}{46}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.80}{}}
+\newlabel{eq:bus_present@cref}{{[equation][80][2147483647]80}{[1][46][]46}}
+\newlabel{eq:trig_epoch}{{81}{46}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.81}{}}
+\newlabel{eq:trig_epoch@cref}{{[equation][81][2147483647]81}{[1][46][]46}}
+\newlabel{eq:trig_source}{{82}{46}{Bus-Optional (Trigger-Agnostic) Operation: the Program Does Not Need Buses}{equation.B.82}{}}
+\newlabel{eq:trig_source@cref}{{[equation][82][2147483647]82}{[1][46][]46}}
+\@writefile{toc}{\contentsline {subsubsection}{TSP Philosophy: Traditional Rules as Policy Constraints}{46}{subsubsection*.93}\protected@file@percent }
+\newlabel{sec:rule_tsp}{{Appendix~B.2}{46}{TSP Philosophy: Traditional Rules as Policy Constraints}{subsubsection*.93}{}}
+\newlabel{sec:rule_tsp@cref}{{[subappendix][2][2147483647,2]Appendix~B.2}{[1][46][]46}}
+\@writefile{toc}{\contentsline {paragraph}{R1 Conditional priority (balance).}{46}{paragraph*.94}\protected@file@percent }
+\newlabel{eq:rule_balance_def}{{83}{46}{R1 Conditional priority (balance)}{equation.B.83}{}}
+\newlabel{eq:rule_balance_def@cref}{{[equation][83][2147483647]83}{[1][46][]46}}
+\newlabel{eq:rule_balance}{{84}{47}{R1 Conditional priority (balance)}{equation.B.84}{}}
+\newlabel{eq:rule_balance@cref}{{[equation][84][2147483647]84}{[1][46][]47}}
+\@writefile{toc}{\contentsline {paragraph}{R2 Wrong-phase rejection.}{47}{paragraph*.95}\protected@file@percent }
+\newlabel{eq:rule_phase_ge}{{85}{47}{R2 Wrong-phase rejection}{equation.B.85}{}}
+\newlabel{eq:rule_phase_ge@cref}{{[equation][85][2147483647]85}{[1][47][]47}}
+\newlabel{eq:rule_phase_pi}{{86}{47}{R2 Wrong-phase rejection}{equation.B.86}{}}
+\newlabel{eq:rule_phase_pi@cref}{{[equation][86][2147483647]86}{[1][47][]47}}
+\@writefile{toc}{\contentsline {paragraph}{R3 Cooldown.}{47}{paragraph*.96}\protected@file@percent }
+\newlabel{eq:rule_cool}{{87}{47}{R3 Cooldown}{equation.B.87}{}}
+\newlabel{eq:rule_cool@cref}{{[equation][87][2147483647]87}{[1][47][]47}}
+\@writefile{toc}{\contentsline {paragraph}{R4 Spillback protection.}{47}{paragraph*.97}\protected@file@percent }
+\newlabel{eq:rule_spill_agg}{{88}{47}{R4 Spillback protection}{equation.B.88}{}}
+\newlabel{eq:rule_spill_agg@cref}{{[equation][88][2147483647]88}{[1][47][]47}}
+\newlabel{eq:rule_spill_jam}{{89}{47}{R4 Spillback protection}{equation.B.89}{}}
+\newlabel{eq:rule_spill_jam@cref}{{[equation][89][2147483647]89}{[1][47][]47}}
+\newlabel{eq:rule_spill_zero}{{90}{47}{R4 Spillback protection}{equation.B.90}{}}
+\newlabel{eq:rule_spill_zero@cref}{{[equation][90][2147483647]90}{[1][47][]47}}
+\newlabel{eq:rule_spill_block_ge}{{91}{47}{R4 Spillback protection}{equation.B.91}{}}
+\newlabel{eq:rule_spill_block_ge@cref}{{[equation][91][2147483647]91}{[1][47][]47}}
+\newlabel{eq:rule_spill_block}{{92}{47}{R4 Spillback protection}{equation.B.92}{}}
+\newlabel{eq:rule_spill_block@cref}{{[equation][92][2147483647]92}{[1][47][]47}}
+\newlabel{eq:rule_spill_block_all}{{93}{47}{R4 Spillback protection}{equation.B.93}{}}
+\newlabel{eq:rule_spill_block_all@cref}{{[equation][93][2147483647]93}{[1][47][]47}}
+\@writefile{toc}{\contentsline {paragraph}{R5 Detection horizon (bus-optional).}{47}{paragraph*.98}\protected@file@percent }
+\newlabel{eq:rule_horizon}{{94}{47}{R5 Detection horizon (bus-optional)}{equation.B.94}{}}
+\newlabel{eq:rule_horizon@cref}{{[equation][94][2147483647]94}{[1][47][]47}}
+\@writefile{toc}{\contentsline {paragraph}{R6 Schedule takeover.}{48}{paragraph*.99}\protected@file@percent }
+\newlabel{eq:rule_take}{{95}{48}{R6 Schedule takeover}{equation.B.95}{}}
+\newlabel{eq:rule_take@cref}{{[equation][95][2147483647]95}{[1][47][]48}}
+\newlabel{eq:rule_take_zero}{{96}{48}{R6 Schedule takeover}{equation.B.96}{}}
+\newlabel{eq:rule_take_zero@cref}{{[equation][96][2147483647]96}{[1][47][]48}}
+\newlabel{eq:rule_cool_take}{{97}{48}{R6 Schedule takeover}{equation.B.97}{}}
+\newlabel{eq:rule_cool_take@cref}{{[equation][97][2147483647]97}{[1][48][]48}}
+\newlabel{eq:rule_horizon_take}{{98}{48}{R6 Schedule takeover}{equation.B.98}{}}
+\newlabel{eq:rule_horizon_take@cref}{{[equation][98][2147483647]98}{[1][48][]48}}
+\@writefile{toc}{\contentsline {paragraph}{R8 Purdue progression preservation (controller dvar).}{48}{paragraph*.100}\protected@file@percent }
+\newlabel{eq:rule_prog}{{99}{48}{R8 Purdue progression preservation (controller dvar)}{equation.B.99}{}}
+\newlabel{eq:rule_prog@cref}{{[equation][99][2147483647]99}{[1][48][]48}}
+\@writefile{toc}{\contentsline {paragraph}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain.}{48}{paragraph*.101}\protected@file@percent }
+\newlabel{eq:rule_minactive}{{100}{48}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.100}{}}
+\newlabel{eq:rule_minactive@cref}{{[equation][100][2147483647]100}{[1][48][]48}}
+\newlabel{eq:rule_hold}{{101}{48}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.101}{}}
+\newlabel{eq:rule_hold@cref}{{[equation][101][2147483647]101}{[1][48][]48}}
+\newlabel{eq:rule_empty}{{102}{48}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.102}{}}
+\newlabel{eq:rule_empty@cref}{{[equation][102][2147483647]102}{[1][48][]48}}
+\newlabel{eq:monitor_gain}{{103}{48}{R9 When-to-apply timing: phase-active dwell, no-action hold, empty-skip, monitor gain}{equation.B.103}{}}
+\newlabel{eq:monitor_gain@cref}{{[equation][103][2147483647]103}{[1][48][]48}}
+\@writefile{toc}{\contentsline {paragraph}{R10 Opposing-direction window arbitration.}{48}{paragraph*.102}\protected@file@percent }
+\newlabel{eq:rule_arbitrate}{{104}{48}{R10 Opposing-direction window arbitration}{equation.B.104}{}}
+\newlabel{eq:rule_arbitrate@cref}{{[equation][104][2147483647]104}{[1][48][]48}}
+\@writefile{toc}{\contentsline {paragraph}{R11 Multi-bus headway coupling.}{49}{paragraph*.103}\protected@file@percent }
+\newlabel{eq:rule_headway}{{105}{49}{R11 Multi-bus headway coupling}{equation.B.105}{}}
+\newlabel{eq:rule_headway@cref}{{[equation][105][2147483647]105}{[1][48][]49}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.3}Runtime admissibility rules: which actions the live controller is allowed to take each tick}{49}{subsection.B.3}\protected@file@percent }
+\newlabel{sec:online_guards}{{Appendix~B.3}{49}{Runtime admissibility rules: which actions the live controller is allowed to take each tick}{subsection.B.3}{}}
+\newlabel{sec:online_guards@cref}{{[subappendix][3][2147483647,2]Appendix~B.3}{[1][49][]49}}
+\@writefile{toc}{\contentsline {paragraph}{Online causality axioms (declared).}{49}{paragraph*.104}\protected@file@percent }
+\newlabel{eq:online_causal}{{106}{49}{Online causality axioms (declared)}{equation.B.106}{}}
+\newlabel{eq:online_causal@cref}{{[equation][106][2147483647]106}{[1][49][]49}}
+\newlabel{eq:online_det}{{107}{49}{Online causality axioms (declared)}{equation.B.107}{}}
+\newlabel{eq:online_det@cref}{{[equation][107][2147483647]107}{[1][49][]49}}
+\newlabel{eq:online_cool}{{108}{49}{Online causality axioms (declared)}{equation.B.108}{}}
+\newlabel{eq:online_cool@cref}{{[equation][108][2147483647]108}{[1][49][]49}}
+\newlabel{eq:online_spill}{{109}{49}{Online causality axioms (declared)}{equation.B.109}{}}
+\newlabel{eq:online_spill@cref}{{[equation][109][2147483647]109}{[1][49][]49}}
+\newlabel{eq:online_phase}{{110}{49}{Online causality axioms (declared)}{equation.B.110}{}}
+\newlabel{eq:online_phase@cref}{{[equation][110][2147483647]110}{[1][49][]49}}
+\newlabel{eq:online_recover}{{111}{49}{Online causality axioms (declared)}{equation.B.111}{}}
+\newlabel{eq:online_recover@cref}{{[equation][111][2147483647]111}{[1][49][]49}}
+\newlabel{eq:online_minactive}{{112}{49}{Online causality axioms (declared)}{equation.B.112}{}}
+\newlabel{eq:online_minactive@cref}{{[equation][112][2147483647]112}{[1][49][]49}}
+\newlabel{eq:online_hold}{{113}{49}{Online causality axioms (declared)}{equation.B.113}{}}
+\newlabel{eq:online_hold@cref}{{[equation][113][2147483647]113}{[1][49][]49}}
+\newlabel{eq:online_purdue}{{114}{49}{Online causality axioms (declared)}{equation.B.114}{}}
+\newlabel{eq:online_purdue@cref}{{[equation][114][2147483647]114}{[1][49][]49}}
+\newlabel{eq:online_monitor}{{115}{49}{Online causality axioms (declared)}{equation.B.115}{}}
+\newlabel{eq:online_monitor@cref}{{[equation][115][2147483647]115}{[1][49][]49}}
+\newlabel{eq:online_spill_def}{{116}{50}{Online causality axioms (declared)}{equation.B.116}{}}
+\newlabel{eq:online_spill_def@cref}{{[equation][116][2147483647]116}{[1][49][]50}}
+\newlabel{eq:recoverable}{{117}{50}{Online causality axioms (declared)}{equation.B.117}{}}
+\newlabel{eq:recoverable@cref}{{[equation][117][2147483647]117}{[1][50][]50}}
+\@writefile{toc}{\contentsline {paragraph}{Purdue (POG) phase, timing conditions, and bus-free operation (what the new lines do).}{50}{paragraph*.105}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Recovered-cycle plan (bounded multi-cycle transition).}{50}{paragraph*.106}\protected@file@percent }
+\newlabel{eq:recover_cycles}{{118}{50}{Recovered-cycle plan (bounded multi-cycle transition)}{equation.B.118}{}}
+\newlabel{eq:recover_cycles@cref}{{[equation][118][2147483647]118}{[1][50][]50}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.4}Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{51}{subsection.B.4}\protected@file@percent }
+\newlabel{sec:layered_control}{{Appendix~B.4}{51}{Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{subsection.B.4}{}}
+\newlabel{sec:layered_control@cref}{{[subappendix][4][2147483647,2]Appendix~B.4}{[1][50][]51}}
+\newlabel{eq:timetable}{{119}{51}{Layered online control: fixed-time base, an actuated layer, and the algorithm overlay}{equation.B.119}{}}
+\newlabel{eq:timetable@cref}{{[equation][119][2147483647]119}{[1][51][]51}}
+\@writefile{toc}{\contentsline {paragraph}{Two update frequencies, one closed loop.}{51}{paragraph*.107}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Layer 1 --- coordinated-actuated base (\texttt  {ACTUATED\_BASE\_MODE}).}{51}{paragraph*.108}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Layer 2 --- algorithm overlay, bus-triggered and continuous.}{51}{paragraph*.109}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Purdue coordination in the learner's reward.}{51}{paragraph*.110}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.5}Commit Rules: the Z1 Selection Layer Is One of Five, Not a Universal Selector}{51}{subsection.B.5}\protected@file@percent }
+\newlabel{sec:selection_layer}{{Appendix~B.5}{51}{Commit Rules: the Z1 Selection Layer Is One of Five, Not a Universal Selector}{subsection.B.5}{}}
+\newlabel{sec:selection_layer@cref}{{[subappendix][5][2147483647,2]Appendix~B.5}{[1][51][]51}}
+\@writefile{toc}{\contentsline {paragraph}{The $Z_1$ commit (Type~A): the program's objective applied to one action.}{51}{paragraph*.111}\protected@file@percent }
+\newlabel{eq:net_pick}{{120}{51}{The $Z_1$ commit (Type~A): the program's objective applied to one action}{equation.B.120}{}}
+\newlabel{eq:net_pick@cref}{{[equation][120][2147483647]120}{[1][51][]51}}
+\@writefile{toc}{\contentsline {paragraph}{The three commits used in the ladder (why $Z_1$ alone cannot explain the paper).}{52}{paragraph*.112}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {16}{\ignorespaces The six evaluated methods relative to the exact program. The program (top) defines the objective and constraints but is not solved; each rung approximates it at runtime. M1 applies the adaptive plan alone; M2--M5 each add one priority layer, and the boxes state what the layer adds and how its candidate is committed, which is where the rungs differ: M2 commits the $Q$-argmax under a cost veto, M3 requires the net-benefit and cascade test, M4 maximises the Nash product, and M5 maximises the coalition (team) product. All rungs use the same measured state, guards, and $Z_4$ cap; M0 is the fixed-time reference.}}{52}{figure.caption.113}\protected@file@percent }
+\newlabel{fig:objectives}{{16}{52}{The six evaluated methods relative to the exact program. The program (top) defines the objective and constraints but is not solved; each rung approximates it at runtime. M1 applies the adaptive plan alone; M2--M5 each add one priority layer, and the boxes state what the layer adds and how its candidate is committed, which is where the rungs differ: M2 commits the $Q$-argmax under a cost veto, M3 requires the net-benefit and cascade test, M4 maximises the Nash product, and M5 maximises the coalition (team) product. All rungs use the same measured state, guards, and $Z_4$ cap; M0 is the fixed-time reference}{figure.caption.113}{}}
+\newlabel{fig:objectives@cref}{{[figure][16][2147483647]16}{[1][52][]52}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~B.6}The paper method ladder: one adaptive base, four priority layers}{52}{subsection.B.6}\protected@file@percent }
+\newlabel{sec:sol_ladder}{{Appendix~B.6}{52}{The paper method ladder: one adaptive base, four priority layers}{subsection.B.6}{}}
+\newlabel{sec:sol_ladder@cref}{{[subappendix][6][2147483647,2]Appendix~B.6}{[1][52][]52}}
+\@writefile{toc}{\contentsline {paragraph}{The shared base (M1).}{52}{paragraph*.114}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{M0 -- fixed-time reference.}{52}{paragraph*.115}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{M2 -- learned bus priority (\texttt  {MARL\_BUS}).}{53}{paragraph*.116}\protected@file@percent }
+\newlabel{eq:cpd_reward}{{121}{53}{M2 -- learned bus priority (\texttt {MARL\_BUS})}{equation.B.121}{}}
+\newlabel{eq:cpd_reward@cref}{{[equation][121][2147483647]121}{[1][52][]53}}
+\@writefile{toc}{\contentsline {paragraph}{M3 -- admission-controlled priority (\texttt  {CELLQ\_GATED}).}{53}{paragraph*.117}\protected@file@percent }
+\newlabel{eq:cellq_reward}{{122}{53}{M3 -- admission-controlled priority (\texttt {CELLQ\_GATED})}{equation.B.122}{}}
+\newlabel{eq:cellq_reward@cref}{{[equation][122][2147483647]122}{[1][53][]53}}
+\newlabel{eq:ladder_gate}{{123}{53}{M3 -- admission-controlled priority (\texttt {CELLQ\_GATED})}{equation.B.123}{}}
+\newlabel{eq:ladder_gate@cref}{{[equation][123][2147483647]123}{[1][53][]53}}
+\@writefile{toc}{\contentsline {subsubsection}{Net-benefit test and projected-saturation cascade cost}{53}{subsubsection*.118}\protected@file@percent }
+\newlabel{sec:gate_cascade}{{Appendix~B.6}{53}{Net-benefit test and projected-saturation cascade cost}{subsubsection*.118}{}}
+\newlabel{sec:gate_cascade@cref}{{[subappendix][6][2147483647,2]Appendix~B.6}{[1][53][]53}}
+\@writefile{toc}{\contentsline {paragraph}{M4 -- game-theoretic priority (\texttt  {GAME\_BUS}).}{53}{paragraph*.119}\protected@file@percent }
+\newlabel{eq:ladder_nash}{{124}{53}{M4 -- game-theoretic priority (\texttt {GAME\_BUS})}{equation.B.124}{}}
+\newlabel{eq:ladder_nash@cref}{{[equation][124][2147483647]124}{[1][53][]53}}
+\@writefile{toc}{\contentsline {paragraph}{M5 -- cooperative game priority (\texttt  {GAME\_COOP}).}{53}{paragraph*.120}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Differences between the ladder methods.}{53}{paragraph*.121}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Lateness is not a decision variable.}{53}{paragraph*.122}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Methods excluded from the evaluation.}{53}{paragraph*.123}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~C}Solution-Algorithm Pseudocode}{54}{appendix.C}\protected@file@percent }
+\newlabel{sec:appendix_pseudo}{{Appendix~C}{54}{Solution-Algorithm Pseudocode}{appendix.C}{}}
+\newlabel{sec:appendix_pseudo@cref}{{[appendix][3][2147483647]Appendix~C}{[1][53][]54}}
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~D}Mathematical Program at a Glance}{54}{appendix.D}\protected@file@percent }
+\newlabel{sec:appendix_program}{{Appendix~D}{54}{Mathematical Program at a Glance}{appendix.D}{}}
+\newlabel{sec:appendix_program@cref}{{[appendix][4][2147483647]Appendix~D}{[1][54][]54}}
+\@writefile{toc}{\contentsline {paragraph}{Problem summary.}{54}{paragraph*.124}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Decision variables.}{54}{paragraph*.125}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Constraint structure.}{54}{paragraph*.126}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {Appendix~E}Equivalent Markovian Formulation: Full Development}{54}{appendix.E}\protected@file@percent }
+\newlabel{sec:appendix_markov}{{Appendix~E}{54}{Equivalent Markovian Formulation: Full Development}{appendix.E}{}}
+\newlabel{sec:appendix_markov@cref}{{[appendix][5][2147483647]Appendix~E}{[1][54][]54}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~E.1}Stage cost, the progression term, and auxiliary determinism}{54}{subsection.E.1}\protected@file@percent }
+\newlabel{sec:appendix_markov_det}{{Appendix~E.1}{54}{Stage cost, the progression term, and auxiliary determinism}{subsection.E.1}{}}
+\newlabel{sec:appendix_markov_det@cref}{{[subappendix][1][2147483647,5]Appendix~E.1}{[1][54][]54}}
+\@writefile{toc}{\contentsline {paragraph}{The full criterion.}{54}{paragraph*.127}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Determinism of the auxiliary variables.}{54}{paragraph*.128}\protected@file@percent }
+\citation{Benders1962Partitioning}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~E.2}Arrival Uncertainty}{55}{subsection.E.2}\protected@file@percent }
+\newlabel{sec:stochastic}{{Appendix~E.2}{55}{Arrival Uncertainty}{subsection.E.2}{}}
+\newlabel{sec:stochastic@cref}{{[subappendix][2][2147483647,5]Appendix~E.2}{[1][54][]55}}
+\newlabel{eq:arr_bound}{{125}{55}{Arrival Uncertainty}{equation.E.125}{}}
+\newlabel{eq:arr_bound@cref}{{[equation][125][2147483647]125}{[1][55][]55}}
+\newlabel{eq:null_cut}{{126}{55}{Arrival Uncertainty}{equation.E.126}{}}
+\newlabel{eq:null_cut@cref}{{[equation][126][2147483647]126}{[1][55][]55}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~E.3}How the Program Changes as Knowledge Arrives}{55}{subsection.E.3}\protected@file@percent }
+\newlabel{sec:knowledge}{{Appendix~E.3}{55}{How the Program Changes as Knowledge Arrives}{subsection.E.3}{}}
+\newlabel{sec:knowledge@cref}{{[subappendix][3][2147483647,5]Appendix~E.3}{[1][55][]55}}
+\newlabel{eq:prog_family}{{127}{55}{How the Program Changes as Knowledge Arrives}{equation.E.127}{}}
+\newlabel{eq:prog_family@cref}{{[equation][127][2147483647]127}{[1][55][]55}}
+\@writefile{lot}{\contentsline {table}{\numberline {21}{\ignorespaces What each arrival of knowledge replaces, and which part of the instance moves with it. No row changes the constraint matrix; each changes a right-hand side or an arrival sequence.}}{55}{table.caption.129}\protected@file@percent }
+\newlabel{tab:knowledge}{{21}{55}{What each arrival of knowledge replaces, and which part of the instance moves with it. No row changes the constraint matrix; each changes a right-hand side or an arrival sequence}{table.caption.129}{}}
+\newlabel{tab:knowledge@cref}{{[table][21][2147483647]21}{[1][55][]55}}
+\@writefile{toc}{\contentsline {paragraph}{Two things this does not license.}{55}{paragraph*.130}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Worked illustration: one approach, three knowledge states.}{55}{paragraph*.131}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {Appendix~E.4}One junction, then the corridor: what composition adds}{55}{subsection.E.4}\protected@file@percent }
+\newlabel{sec:isolated_joint}{{Appendix~E.4}{55}{One junction, then the corridor: what composition adds}{subsection.E.4}{}}
+\newlabel{sec:isolated_joint@cref}{{[subappendix][4][2147483647,5]Appendix~E.4}{[1][55][]55}}
+\@writefile{toc}{\contentsline {paragraph}{The isolated instance.}{55}{paragraph*.132}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{What connecting junctions adds, and what it does not.}{55}{paragraph*.133}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The joint program is one MILP, and it is block-angular.}{55}{paragraph*.134}\protected@file@percent }
+\newlabel{eq:block_angular}{{128}{55}{The joint program is one MILP, and it is block-angular}{equation.E.128}{}}
+\newlabel{eq:block_angular@cref}{{[equation][128][2147483647]128}{[1][55][]55}}
 \bibcite{Balke2000DevelopmentConcept}{{1}{2000}{{Balke et al.}}{{}}}
 \bibcite{Ekeila2009DevelopmentStrategy}{{2}{2009}{{Ekeila et al.}}{{}}}
 \bibcite{Ma2010DevelopmentApproach}{{3}{2010}{{Ma et al.}}{{}}}
@@ -662,60 +704,68 @@
 \bibcite{He2014Multi-modalCoordination}{{27}{2014}{{He et al.}}{{}}}
 \bibcite{He2012PAMSCOD:Data}{{28}{2012}{{He et al.}}{{}}}
 \bibcite{Little1981MAXBAND:Networks}{{29}{1981}{{Little et al.}}{{}}}
-\@writefile{toc}{\contentsline {section}{\numberline {Appendix~D}Mathematical Program at a Glance}{50}{appendix.D}\protected@file@percent }
-\newlabel{sec:appendix_program}{{Appendix~D}{50}{Mathematical Program at a Glance}{appendix.D}{}}
-\newlabel{sec:appendix_program@cref}{{[appendix][4][2147483647]Appendix~D}{[1][49][]50}}
-\@writefile{toc}{\contentsline {paragraph}{Problem summary.}{50}{paragraph*.132}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Decision variables.}{50}{paragraph*.133}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Constraint structure.}{50}{paragraph*.134}\protected@file@percent }
 \bibcite{Gartner1991AMULTIBAND}{{30}{1991}{{Gartner et al.}}{{}}}
-\bibcite{Christofa2013Person-BasedOptimization}{{31}{2013}{{Christofa et al.}}{{}}}
-\bibcite{Xianmin2018OptimizationEnvironment}{{32}{2018}{{Xianmin et al.}}{{}}}
-\bibcite{Liang2022OptimalProcess}{{33}{2022}{{Liang et al.}}{{}}}
-\bibcite{Dion2004EvaluationArterial}{{34}{2004}{{Dion and Rakha}}{{}}}
-\bibcite{Arasan2010MicrosimulationFlow}{{35}{2010}{{Arasan and Vedagiri}}{{}}}
-\bibcite{Katsuragi1999MultilateralCity}{{36}{1999}{{Katsuragi et al.}}{{}}}
-\bibcite{Viegas2004TheArea}{{37}{2004}{{Viegas and Lu}}{{}}}
-\bibcite{Bayrak2021OptimizationDynamics}{{38}{2021}{{Bayrak and Guler}}{{}}}
-\bibcite{Qin2025GameReview}{{39}{2025}{{Qin et al.}}{{}}}
-\bibcite{Tian2022Game-TheoreticValidation}{{40}{2022}{{Tian et al.}}{{}}}
-\bibcite{Long2025Multi-AgentAdherence}{{41}{2025}{{Long et al.}}{{}}}
-\bibcite{Pan2021IntegratedApproach}{{42}{2021}{{Pan et al.}}{{}}}
-\bibcite{Zhou2026GTFSLatency}{{43}{2026}{{Zhou et al.}}{{}}}
-\bibcite{Ding2022AdaptiveKalman}{{44}{2022}{{Ding et al.}}{{}}}
-\bibcite{AnsariEsfeh2025TSPCV}{{45}{2025}{{Ansari Esfeh et al.}}{{}}}
-\bibcite{Cherukuri2025ParetoIRL}{{46}{2025}{{Cherukuri and Lala}}{{}}}
-\bibcite{Siddique2025FairMORL}{{47}{2025}{{Siddique et al.}}{{}}}
-\bibcite{Webster1958Traffic}{{48}{1958}{{Webster}}{{}}}
-\bibcite{Long2022PhaseSkipping}{{49}{2022}{{Long et al.}}{{}}}
-\bibcite{Yu2022PhaseRotation}{{50}{2022}{{Yu et al.}}{{}}}
-\bibcite{Varaiya2013MaxPressure}{{51}{2013}{{Varaiya}}{{}}}
-\bibcite{Tassiulas1992Stability}{{52}{1992}{{Tassiulas and Ephremides}}{{}}}
-\bibcite{Kobeissi2026MPTSPLB}{{53}{2026}{{Kobeissi et al.}}{{}}}
-\bibcite{Abdelghany2006BusPriority}{{54}{2006}{{Abdelghany et al.}}{{}}}
-\bibcite{Abdelghany2007BRT}{{55}{2007}{{Abdelghany et al.}}{{}}}
-\bibcite{Zhou2008MultimodalCorridor}{{56}{2008}{{Zhou et al.}}{{}}}
-\bibcite{Abdelfatah1998SystemOptimal}{{57}{1998}{{Abdelfatah and Mahmassani}}{{}}}
-\bibcite{Lin2015ReviewTSP}{{58}{2015}{{Lin et al.}}{{}}}
-\bibcite{Furth2000ConditionalPriority}{{59}{2000}{{Furth and Muller}}{{}}}
-\bibcite{Wu2018ArterialTSP}{{60}{2018}{{Wu and Guler}}{{}}}
-\bibcite{Bayrak2020LocationsTSP}{{61}{2020}{{Bayrak and Guler}}{{}}}
-\bibcite{Truong2017MultiplierTSP}{{62}{2017}{{Truong et al.}}{{}}}
-\bibcite{Ma2008IsolatedEfficiency}{{63}{2008}{{Ma and Yang}}{{}}}
-\bibcite{Ahn2006GreenExtension}{{64}{2006}{{Ahn and Rakha}}{{}}}
-\bibcite{Dion2003ArterialTSP}{{65}{2003}{{Dion et al.}}{{}}}
-\bibcite{Wolput2016CycleLength}{{66}{2016}{{Wolput et al.}}{{}}}
-\bibcite{Mucsi2008QueueJumps}{{67}{2008}{{Mucsi}}{{}}}
-\bibcite{Lahon2009QueueJumperBRT}{{68}{2009}{{Lahon}}{{}}}
-\bibcite{Maddu2024QueueJumpVISSIM}{{69}{2024}{{Maddu and Jena}}{{}}}
-\bibcite{Altun2009SchedulingTSP}{{70}{2009}{{Altun and Furth}}{{}}}
-\bibcite{Mohammadi2020ConnectedTSP}{{71}{2020}{{Mohammadi et al.}}{{}}}
-\bibcite{Skabardonis2000ControlStrategies}{{72}{2000}{{Skabardonis}}{{}}}
-\bibcite{Goh2013SafetyBenefits}{{73}{2013}{{Goh et al.}}{{}}}
-\bibcite{Song2019SafetyTSP}{{74}{2019}{{Song and Noyce}}{{}}}
-\bibcite{Cabe2026PedestrianDelay}{{75}{2026}{{Cabe et al.}}{{}}}
-\bibcite{Shapiro2014Lectures}{{76}{2014}{{Shapiro et al.}}{{}}}
-\bibcite{Cesme2014SelfOrganizing}{{77}{2014}{{Cesme and Furth}}{{}}}
-\bibcite{Kim2026OffsetSplit}{{78}{2026}{{Kim and Yeo}}{{}}}
-\bibcite{Hao2026Subcycles}{{79}{2026}{{Hao et al.}}{{}}}
-\gdef \@abspage@last{51}
+\bibcite{Fortet1960Applications}{{31}{1960}{{Fortet}}{{}}}
+\bibcite{Glover1974Converting}{{32}{1974}{{Glover and Woolsey}}{{}}}
+\bibcite{Padberg1989BooleanQuadric}{{33}{1989}{{Padberg}}{{}}}
+\bibcite{Benders1962Partitioning}{{34}{1962}{{Benders}}{{}}}
+\bibcite{Christofa2013Person-BasedOptimization}{{35}{2013}{{Christofa et al.}}{{}}}
+\bibcite{Xianmin2018OptimizationEnvironment}{{36}{2018}{{Xianmin et al.}}{{}}}
+\bibcite{Liang2022OptimalProcess}{{37}{2022}{{Liang et al.}}{{}}}
+\bibcite{Dion2004EvaluationArterial}{{38}{2004}{{Dion and Rakha}}{{}}}
+\bibcite{Arasan2010MicrosimulationFlow}{{39}{2010}{{Arasan and Vedagiri}}{{}}}
+\bibcite{Katsuragi1999MultilateralCity}{{40}{1999}{{Katsuragi et al.}}{{}}}
+\bibcite{Viegas2004TheArea}{{41}{2004}{{Viegas and Lu}}{{}}}
+\bibcite{Bayrak2021OptimizationDynamics}{{42}{2021}{{Bayrak and Guler}}{{}}}
+\bibcite{Qin2025GameReview}{{43}{2025}{{Qin et al.}}{{}}}
+\bibcite{Tian2022Game-TheoreticValidation}{{44}{2022}{{Tian et al.}}{{}}}
+\bibcite{Long2025Multi-AgentAdherence}{{45}{2025}{{Long et al.}}{{}}}
+\bibcite{Pan2021IntegratedApproach}{{46}{2021}{{Pan et al.}}{{}}}
+\bibcite{Zhou2026GTFSLatency}{{47}{2026}{{Zhou et al.}}{{}}}
+\bibcite{Ding2022AdaptiveKalman}{{48}{2022}{{Ding et al.}}{{}}}
+\newlabel{prop:compose}{{Appendix~E.1}{56}{Exact composition}{proposition.E.1}{}}
+\newlabel{prop:compose@cref}{{[proposition][1][2147483647,5]Appendix~E.1}{[1][55][]56}}
+\newlabel{eq:compose}{{129}{56}{Exact composition}{equation.E.129}{}}
+\newlabel{eq:compose@cref}{{[equation][129][2147483647]129}{[1][55][]56}}
+\newlabel{cor:decomp}{{Appendix~E.1}{56}{}{corollary.E.1}{}}
+\newlabel{cor:decomp@cref}{{[corollary][1][2147483647,5]Appendix~E.1}{[1][56][]56}}
+\@writefile{toc}{\contentsline {paragraph}{What the gap would cost on Kelvin Grove, and why the reported numbers cannot price it.}{56}{paragraph*.135}\protected@file@percent }
+\newlabel{eq:regret}{{130}{56}{What the gap would cost on Kelvin Grove, and why the reported numbers cannot price it}{equation.E.130}{}}
+\newlabel{eq:regret@cref}{{[equation][130][2147483647]130}{[1][56][]56}}
+\@writefile{toc}{\contentsline {paragraph}{Where the linearity comes from, and where it would stop.}{56}{paragraph*.136}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Knowledge travels on the same rows.}{56}{paragraph*.137}\protected@file@percent }
+\bibcite{AnsariEsfeh2025TSPCV}{{49}{2025}{{Ansari Esfeh et al.}}{{}}}
+\bibcite{Cherukuri2025ParetoIRL}{{50}{2025}{{Cherukuri and Lala}}{{}}}
+\bibcite{Siddique2025FairMORL}{{51}{2025}{{Siddique et al.}}{{}}}
+\bibcite{Webster1958Traffic}{{52}{1958}{{Webster}}{{}}}
+\bibcite{Long2022PhaseSkipping}{{53}{2022}{{Long et al.}}{{}}}
+\bibcite{Yu2022PhaseRotation}{{54}{2022}{{Yu et al.}}{{}}}
+\bibcite{Varaiya2013MaxPressure}{{55}{2013}{{Varaiya}}{{}}}
+\bibcite{Tassiulas1992Stability}{{56}{1992}{{Tassiulas and Ephremides}}{{}}}
+\bibcite{Abdelghany2006BusPriority}{{57}{2006}{{Abdelghany et al.}}{{}}}
+\bibcite{Abdelghany2007BRT}{{58}{2007}{{Abdelghany et al.}}{{}}}
+\bibcite{Zhou2008MultimodalCorridor}{{59}{2008}{{Zhou et al.}}{{}}}
+\bibcite{Abdelfatah1998SystemOptimal}{{60}{1998}{{Abdelfatah and Mahmassani}}{{}}}
+\bibcite{Lin2015ReviewTSP}{{61}{2015}{{Lin et al.}}{{}}}
+\bibcite{Furth2000ConditionalPriority}{{62}{2000}{{Furth and Muller}}{{}}}
+\bibcite{Wu2018ArterialTSP}{{63}{2018}{{Wu and Guler}}{{}}}
+\bibcite{Bayrak2020LocationsTSP}{{64}{2020}{{Bayrak and Guler}}{{}}}
+\bibcite{Truong2017MultiplierTSP}{{65}{2017}{{Truong et al.}}{{}}}
+\bibcite{Ma2008IsolatedEfficiency}{{66}{2008}{{Ma and Yang}}{{}}}
+\bibcite{Ahn2006GreenExtension}{{67}{2006}{{Ahn and Rakha}}{{}}}
+\bibcite{Dion2003ArterialTSP}{{68}{2003}{{Dion et al.}}{{}}}
+\bibcite{Wolput2016CycleLength}{{69}{2016}{{Wolput et al.}}{{}}}
+\bibcite{Mucsi2008QueueJumps}{{70}{2008}{{Mucsi}}{{}}}
+\bibcite{Lahon2009QueueJumperBRT}{{71}{2009}{{Lahon}}{{}}}
+\bibcite{Maddu2024QueueJumpVISSIM}{{72}{2024}{{Maddu and Jena}}{{}}}
+\bibcite{Altun2009SchedulingTSP}{{73}{2009}{{Altun and Furth}}{{}}}
+\bibcite{Mohammadi2020ConnectedTSP}{{74}{2020}{{Mohammadi et al.}}{{}}}
+\bibcite{Skabardonis2000ControlStrategies}{{75}{2000}{{Skabardonis}}{{}}}
+\bibcite{Goh2013SafetyBenefits}{{76}{2013}{{Goh et al.}}{{}}}
+\bibcite{Song2019SafetyTSP}{{77}{2019}{{Song and Noyce}}{{}}}
+\bibcite{Cabe2026PedestrianDelay}{{78}{2026}{{Cabe et al.}}{{}}}
+\bibcite{Shapiro2014Lectures}{{79}{2014}{{Shapiro et al.}}{{}}}
+\bibcite{Cesme2014SelfOrganizing}{{80}{2014}{{Cesme and Furth}}{{}}}
+\bibcite{Kim2026OffsetSplit}{{81}{2026}{{Kim and Yeo}}{{}}}
+\bibcite{Hao2026Subcycles}{{82}{2026}{{Hao et al.}}{{}}}
+\gdef \@abspage@last{57}

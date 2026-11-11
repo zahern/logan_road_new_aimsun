@@ -1,0 +1,91 @@
+#!/bin/bash
+# SUPERSEDED for game-ladder submits by qb_gamesol_gen.sh, which writes a
+# self-contained PBS per (arm, seed) with the parameters baked in -- no -v, so
+# nothing can be silently dropped. Keep this file only for reference.
+#PBS -N qbgamesol
+#PBS -l select=1:ncpus=4:mem=16gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#PBS -m be
+#
+# ONE (arm, seed) per job. The game arms do not learn, so there is no train job
+# and no Q-table guard; --keep-qtables stops run_sweep_hpc.py's startup wipe
+# from deleting another arm's trained table.
+#
+# Usage: ONE -v holding a comma-separated list. Repeating -v does NOT merge --
+# PBS keeps only the LAST one, so `-v ARM=X -v SEED=300` arrives with ARM unset
+# and this script aborts on line 51 (jobs 27677851/52/54/55 died exactly so).
+#   qsub -v ARM=CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH,SEED=300 qb_gamesol.pbs
+#   qsub -v ARM=CHAMP_ADAPTIVE_DSW_GAME_SOL_NASH,SEED=300,CORR=kg qb_gamesol.pbs
+#
+# Results: $BASE/parts/gamesol_<SHORT>_eval<SEED>.csv (one file per run, so two
+# jobs can never clobber each other's rows -- see champ9_seed.sh for why the
+# shared --out form is a lost-update race).
+if [ -z "${BASE:-}" ]; then
+  if [ -d /home/ahernz/tsp/sumo_hpc/sumo_bridge ]; then
+    BASE=/home/ahernz/tsp/sumo_hpc
+  else
+    BASE=/scratch/ki13/za6261/tsp/sumo_hpc
+  fi
+fi
+export BASE
+cd "$BASE/sumo_bridge" || exit 1
+
+if [ -z "${VENV:-}" ]; then
+  if [ -f "$BASE/venv-gadi/bin/activate" ]; then
+    VENV="$BASE/venv-gadi"
+  else
+    VENV="$BASE/venv"
+  fi
+fi
+export VENV
+source "$VENV/bin/activate"
+_GADI_SUMO=/scratch/ki13/za6261/sumo-gadi
+if [ -x "$_GADI_SUMO/bin/sumo" ]; then
+    export SUMO_HOME="$_GADI_SUMO/share/sumo"
+    export PATH="$_GADI_SUMO/bin:$PATH"
+else
+    export SUMO_HOME=${VENV:-$BASE/venv-gadi}/lib/python3.12/site-packages/sumo
+    export PATH=$SUMO_HOME/bin:$PATH
+fi
+unset _GADI_SUMO
+export PYTHONUTF8=1
+export MPLBACKEND=Agg
+
+CORR="${CORR:-kg}"
+ARM="${ARM:?need ARM=CHAMP_ADAPTIVE_DSW_GAME_SOL_...}"
+SEED="${SEED:?need SEED=300}"
+END="${END:-4500}"
+
+if [ "$CORR" = "kg" ]; then
+  SCEN=kg_scenario
+else
+  CORR=logan_road_new
+  SCEN=logan_scenario_realtls
+fi
+export CORRIDOR=$CORR
+
+SHORT=${ARM#CHAMP_ADAPTIVE_DSW_}
+OUT="$BASE/parts/gamesol_${SHORT}_eval${SEED}.csv"
+mkdir -p "$BASE/parts"
+
+echo "== $(hostname) $(date) arm=$ARM seed=$SEED corr=$CORR scen=$SCEN end=$END =="
+grep -m1 '^ENGINE_BUILD' "$BASE/shared_tsp_engine/engine.py"
+grep -m1 '^GAME_SOLUTION' "$BASE/shared_tsp_engine/specialized_modes.py"
+
+python run_sweep_hpc.py --corridor "$CORR" --scenario "$SCEN" \
+    --arms "$ARM" --seeds "$SEED" --skip-train --eval-seeds "$SEED" \
+    --end "$END" --jobs 1 --keep-qtables --resume --out "$OUT" \
+    || { echo "!! eval FAILED arm=$ARM seed=$SEED"; exit 1; }
+
+echo "== rows =="
+python - "$OUT" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1], encoding="utf-8")))
+for r in rows:
+    print("  %-34s seed=%s phase=%s ok=%s obj=%s paxh=%s"
+          % (r.get("arm"), r.get("seed"), r.get("phase"), r.get("ok"),
+             r.get("obj_pax_per_delay_hr"), r.get("avg_total_pass_delay_per_hr")))
+print("  %d row(s)" % len(rows))
+PY
+echo "== done $(date) =="

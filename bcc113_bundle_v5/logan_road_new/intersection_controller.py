@@ -47,20 +47,20 @@ del _venv_candidates, _venv_sp, _script_dir
 # =============================================================================
 
 # ── Core control modes ────────────────────────────────────────────────────────
-LOG_HARMONY   = False  # [HARMONY]    GE/insertion decisions in HARMONY mode
-LOG_URTSP     = False   # [URTSP]      detection/extension/insertion in URTSP mode
-LOG_REWARD    = False   # [REWARD]     action-reward evaluation in REWARD_TSP mode
-LOG_TSP_EVT   = False   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
-LOG_COST_VETO = False  # [COST VETO]  per-event decider cost-veto lines (the
+LOG_HARMONY   = True  # [HARMONY]    GE/insertion decisions in HARMONY mode
+LOG_URTSP     = True   # [URTSP]      detection/extension/insertion in URTSP mode
+LOG_REWARD    = True   # [REWARD]     action-reward evaluation in REWARD_TSP mode
+LOG_TSP_EVT   = True   # [TSP EVENT]  TSP start/end/cooldown markers (all modes)
+LOG_COST_VETO = True  # [COST VETO]  per-event decider cost-veto lines (the
                        #   veto still applies + is counted in TSP_Skipped_*;
                        #   _set_logging(False) silences this during batches)
 
 # ── Initialisation ────────────────────────────────────────────────────────────
-LOG_INIT      = False   # [INIT]       controller creation, phase list, veh types
-LOG_NODE_ID   = False   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
-LOG_SECTION   = False  # [SECTION]    incoming-section & topology init detail
-LOG_JUNC_XY   = False  # [JUNC_XY]   junction centroid coordinate resolution
-LOG_SIDE_DISC = False  # [SIDE_DISC]  side-street section discovery
+LOG_INIT      = True   # [INIT]       controller creation, phase list, veh types
+LOG_NODE_ID   = True   # [NODE_ID]    node-ID auto-resolution / AimsunNodeID hints
+LOG_SECTION   = True  # [SECTION]    incoming-section & topology init detail
+LOG_JUNC_XY   = True  # [JUNC_XY]   junction centroid coordinate resolution
+LOG_SIDE_DISC = True  # [SIDE_DISC]  side-street section discovery
 # Fix 3 (2026-10-18): price the engine-side cross cost on conflicting-SG origins
 # only. Note the caveat at engine._auto_discover_side_sections: the single side
 # set prices ALL action families, so conflicting-only can under-price INS-family
@@ -69,16 +69,16 @@ SIDE_CONFLICTING_SG_ONLY = True
 
 
 # ── PT / bus detection ────────────────────────────────────────────────────────
-LOG_PT_SCAN   = False  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
-LOG_DEMAND    = False  # [DEMAND]     vehicle-type position detection at startup
+LOG_PT_SCAN   = True  # [PT_SCAN]    PT-line periodic diagnostic (every 5 min)
+LOG_DEMAND    = True  # [DEMAND]     vehicle-type position detection at startup
 
 # ── Delay & statistics ────────────────────────────────────────────────────────
-LOG_STATS     = False   # [STATS]      end-of-simulation results summary
-LOG_DELAY     = False  # [DELAY]      IntersectionController collect_delay detail
+LOG_STATS     = True   # [STATS]      end-of-simulation results summary
+LOG_DELAY     = True  # [DELAY]      IntersectionController collect_delay detail
 
 # ── Diagnostic heartbeat ──────────────────────────────────────────────────────
-LOG_HEARTBEAT = False  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
-LOG_CORRIDOR  = False   # [CORRIDOR]   corridor-group coordination events and state
+LOG_HEARTBEAT = True  # [HEARTBEAT]  per-60s state dump (phase/flag/queue/flow)
+LOG_CORRIDOR  = True   # [CORRIDOR]   corridor-group coordination events and state
 
 # ── Per-intersection detection-level logging ──────────────────────────────────
 # List junction IDs to enable verbose per-step detection scans for those junctions.
@@ -97,7 +97,7 @@ LOG_DETECTION_INTERSECTIONS: list = []   # [] = disabled; add junction IDs to en
 #     The GeoJSON can be loaded via File → Import in Aimsun or opened in QGIS/ArcGIS
 #     to see coloured dots exactly where each bus was first detected.
 # Only the FIRST detection per (junction, vehicle) is marked to avoid duplicates.
-MARK_DETECTION_POINTS: bool = False
+MARK_DETECTION_POINTS: bool = True
 TRACK_BUS_POSITIONS: bool = True
 BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 
@@ -119,7 +119,7 @@ BUS_TRACK_SUPPLEMENT_NETWORK_SCAN: bool = True
 #
 # Set False to skip (e.g. if you only want the CSV / PNG outputs).
 # =============================================================================
-OVERLAY_DETECTIONS_ON_MAP: bool = False
+OVERLAY_DETECTIONS_ON_MAP: bool = True
 
 # PLOT_INTERSECTION_LAYOUT = True:
 #   AAPIFinish writes one per-junction phase/detector layout PNG per Aimsun
@@ -155,7 +155,7 @@ BUS_FREQ_INJECT_SCALAR = 0.0
 #
 #   Set to 0 to disable the dashboard.
 # =============================================================================
-STATUS_DASHBOARD_INTERVAL_S: float = 0.0
+STATUS_DASHBOARD_INTERVAL_S: float = 60.0
 
 # =============================================================================
 # MASTER CONSOLE SWITCH
@@ -164,7 +164,7 @@ STATUS_DASHBOARD_INTERVAL_S: float = 0.0
 #                   goes to the log file so you can review it after the run.
 #                   Critical errors (simulation halted) are always shown.
 # =============================================================================
-VERBOSE = False
+VERBOSE = True
 
 try:
     LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -575,7 +575,7 @@ else:
         "logan_south": [19196, 19363, 19474, 19882, 21895],
     }
 
-TSP_ACTIVE_INTERSECTIONS = [17249, 17383, 17498, 17628, 17963, 18044, 18942, 19185, 19196, 19363, 19474, 19882, 20270, 20280, 20283, 20844, 21197, 21553, 21847, 21895, 22232, 22603]
+TSP_ACTIVE_INTERSECTIONS = None
 _bus_type_needs_recheck = False   # set True at AAPIInit when bus_pos unresolved
 
 # DynaROPAC optimizer — imported lazily so controller loads even without it.

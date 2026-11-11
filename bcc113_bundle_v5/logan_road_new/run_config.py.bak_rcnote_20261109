@@ -1,0 +1,74 @@
+CURRENT_STRATEGY = 'NORMAL'
+CURRENT_EXPERIMENT = 'NO_TSP'
+TSP_STRATEGY = 'GENERIC'
+CURRENT_SEED = 300
+CURRENT_DEMAND_SCALAR = 1.0
+CURRENT_COORDINATED = False
+CURRENT_COORDINATION_ALGO = 'KALMAN'
+CONTROL_MODE = 'NORMAL'
+GROUP_BASED_BUS_PRIORITY = False
+TSP_ACTIVE_INTERSECTIONS = None
+COORDINATED_TSP = False
+COORDINATION_ALGO = 'KALMAN'
+COORD_PREARM_ENABLED = True
+BUS_PREDICTOR_TYPE = 'ADAPTIVE_KALMAN'
+GLOBAL_REWARD_MODE = False
+BARGAIN_SPM_MODE = False
+DCTSP_GREEN_REALLOC_MODE = False
+GREEN_REALLOC_RECOVER_FRACTION = 1.0
+RESULTS_CSV_NAME = 'game_ladder_logan_lightsim_20261109_082349.csv'
+SKIP_PER_RUN_PLOTS = True
+DCTSP_ZIG_MODE = False
+MP_ECTM_MODE = False
+BXT_MODE = False
+META_TSP_MODE = False
+MDN_DELAY_MODE = False
+HS_EXT_MODE = False
+REWARD_SELFORG_MODE = False
+REWARD_INV_DELAY_MODE = False
+REWARD_V2X_MODE = False
+CENTRALIZED_MODE = False
+DS_PLAN_ADAPT = False
+DS_SOLVE_PER_CYCLE = False
+DS_CYCLE_ADAPT = False
+DS_MASTER_CYCLE = False
+DS_MASTER_SPLITS = False
+DS_MASTER_OFFSETS = False
+MASTER_LINK_PRESSURE = False
+DS_SPLIT_DS_EQUAL = False
+DS_SPLIT_PROPORTIONAL = False
+DS_BALANCE_GATE = False
+SCATS_GAP_OUT = False
+SCATS_MAX_OUT = False
+ACTUATED_EXTEND = False
+SCATS_SEQUENCE_BY_Y = False
+SCATS_CRITICAL_INTERSECTION = False
+SCATS_PHASE_SKIP = False
+BUS_FREQ_INJECT_SCALAR = 0.0
+MEASURED_STATE_FEED = True
+MEASURED_QUEUE_FEED = True
+STATE_INCLUDE_SIGNAL_CLOCKS = True
+STATE_INCLUDE_FLOW_QUEUE = True
+MEASURED_SIDE_COST = True
+MEASURED_SIDE_COST_DIAG = True
+
+# ---------------------------------------------------------------------------
+# VEHICLE-TYPE POSITION PINS (2026-11-09)
+# Pins the internal position of each vehicle type so resolution no longer
+# depends on SWIG name decoding (returns reprs on this Aimsun build) or on the
+# corridor folder basename that keys VEH_TYPE_POS_OVERRIDE.
+# Source: Logan per-intersection result CSVs, unanimous across every run
+# since 2026-08-27 -- (car,bus,truck)=(1,3,2).
+# Precedence in Simulation_Stats._resolve_type:
+#     VEH_TYPE_ID_* (explicit ANG id) > VEH_TYPE_POS_* (these) > name > scan
+# A pin larger than the model's vehicle-type count is ignored with a warning,
+# so opening the wrong model cannot silently relabel a class.
+# To pin by ANG object id instead (wins over these), read it on the console:
+#     oid = ANGConnGetObjectIdByType(AKIConvertFromAsciiString("bus"),
+#                                    AKIConvertFromAsciiString("GKVehicle"), False)
+#     print(oid, AKIVehGetVehTypeInternalPosition(oid))
+# then set VEH_TYPE_ID_BUS = oid here. Never guess that id.
+# ---------------------------------------------------------------------------
+VEH_TYPE_POS_CAR = 1
+VEH_TYPE_POS_TRUCK = 2
+VEH_TYPE_POS_BUS = 3

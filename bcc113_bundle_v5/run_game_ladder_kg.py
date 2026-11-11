@@ -57,11 +57,38 @@ if _PAY in ("ctm2", "both"):
     _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_%s_CTM2" % k for k in _SOL]
     # control: same pipeline, the game never acts (game arm - NULL = game effect)
     _sol_arms += ["CHAMP_ADAPTIVE_DSW_GAME_SOL_NULL_CTM2"]
-_os.environ.setdefault("FIXED_ARMS", ",".join(
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# FIXED_ARMS / FIXED_OUT are CALLER knobs and os.environ lives for the whole
+# Aimsun process, so exec'ing a DIFFERENT launcher in the same session leaves
+# its arm list and output name behind; a bare setdefault() then silently reuses
+# them (measured: a ladder run inherited the CELLQ arms and wrote to
+# cellq_held_kg.csv). Each launcher stamps the env with its own name, and a
+# value left by a DIFFERENT launcher is discarded. An explicit value in a clean
+# session -- or a re-run of this same launcher -- is still honoured.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_game_ladder_kg.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _knob(key, default):
+    """The caller's value, unless a DIFFERENT launcher left it in the env."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if not _v or not _foreign:
+        return _v or default
+    _shown = ("%d arms" % len(_v.split(","))) if key == "FIXED_ARMS" else _v
+    print("[ENV] %s = %s was left by %s -- DISCARDED, this launcher's value wins"
+          % (key, _shown, _prev_owner))
+    _os.environ.pop(key, None)   # gone from the env, so a re-run cannot revive it
+    return default
+
+
+_os.environ["FIXED_ARMS"] = _knob("FIXED_ARMS", ",".join(
     ["CHAMP_ADAPTIVE_DSW_GAME_BUS", "CHAMP_ADAPTIVE_DSW_GAME_COOP"] + _sol_arms))
+_os.environ["FIXED_OUT"] = _knob(
+    "FIXED_OUT", "game_ladder_kg_%s.csv" % _time.strftime("%Y%m%d_%H%M%S"))
+_os.environ[_ENV_OWNER] = _MY_NAME
 _os.environ.setdefault("FIXED_TRAIN_SEEDS", "")          # games do not learn
-_os.environ.setdefault("FIXED_OUT", "game_ladder_kg_%s.csv"
-                       % _time.strftime("%Y%m%d_%H%M%S"))
 _os.environ["FIXED_HERE"] = _HERE
 
 print("=" * 76)
@@ -70,5 +97,12 @@ print("  arms :", _os.environ["FIXED_ARMS"].replace(",", "\n         "))
 print("=" * 76)
 
 _launcher = _os.path.join(_HERE, "run_cellq_held_kg.py")
-exec(compile(open(_launcher, encoding="utf-8").read(), _launcher, "exec"),
-     {"__name__": "__main__", "__file__": _launcher})
+# Hand the env to the delegate: the knobs set above are this launcher's, so the
+# delegate must keep them rather than treat them as a foreign leftover.
+_os.environ[_ENV_OWNER] = "run_cellq_held_kg.py"
+try:
+    exec(compile(open(_launcher, encoding="utf-8").read(), _launcher, "exec"),
+         {"__name__": "__main__", "__file__": _launcher})
+finally:
+    # Reclaim, so the NEXT launcher in this session sees a foreign owner.
+    _os.environ[_ENV_OWNER] = _MY_NAME

@@ -129,9 +129,16 @@ class CtmResult:
 
 
 def _step(geom: ApproachGeom, s: CellState, green: bool, car_in_pcu: float,
-          bus_pce: float) -> Tuple[CellState, Tuple[float, float]]:
+          bus_pce: float, out_cap_frac: float = 1.0) -> Tuple[CellState, Tuple[float, float]]:
     """One CTM step. Returns (new state, (car_held, bus_held)) where *_held
-    are vehicles that did NOT leave their cell this step (delayed dt each)."""
+    are vehicles that did NOT leave their cell this step (delayed dt each).
+
+    out_cap_frac in [0,1] throttles the STOP-LINE discharge by the DOWNSTREAM
+    receiving link's free space: 1.0 = free downstream (discharge into an
+    infinite sink, the original behaviour); 0.0 = the receiver is jammed, so a
+    green cannot actually move the platoon (spillback). This is how the game
+    prices the arterial queue an action creates instead of treating clearance
+    as free."""
     K = len(s.car)
     N = geom.storage_pcu
     Q = geom.cap_pcu_step
@@ -143,7 +150,8 @@ def _step(geom: ApproachGeom, s: CellState, green: bool, car_in_pcu: float,
     y = [0.0] * K                                                # out of cell i
     for i in range(K - 1):
         y[i] = min(S[i], R[i + 1])
-    y[K - 1] = S[K - 1] if green else 0.0
+    _ocf = min(max(float(out_cap_frac), 0.0), 1.0)
+    y[K - 1] = (S[K - 1] * _ocf) if green else 0.0
     inflow0 = min(max(0.0, car_in_pcu), R[0])
 
     def split(i, pcu_out):
@@ -173,12 +181,15 @@ def _step(geom: ApproachGeom, s: CellState, green: bool, car_in_pcu: float,
 
 
 def simulate(geom: ApproachGeom, cells: CellState, green_steps: Sequence[bool],
-             car_arrival_vph: float = 0.0, bus_pce: float = 2.0) -> CtmResult:
+             car_arrival_vph: float = 0.0, bus_pce: float = 2.0,
+             out_cap_frac: float = 1.0) -> CtmResult:
     """Run the two-class CTM over len(green_steps) steps.
 
     green_steps[k] is the stop-line signal at step k (True = green).
     car_arrival_vph: upstream car arrivals (veh/h) fed into cell 0. Bus
     arrivals are not predicted (buses are only those seeded from live data).
+    out_cap_frac in [0,1]: downstream receiving-capacity throttle on the
+    stop-line discharge (see _step); 1.0 keeps the original free-sink outflow.
     """
     dt = float(geom.dt_s)
     q_in = max(0.0, float(car_arrival_vph)) / 3600.0 * dt
@@ -187,7 +198,7 @@ def simulate(geom: ApproachGeom, cells: CellState, green_steps: Sequence[bool],
     d_car = d_bus = 0.0
     q_car = q_bus = 0.0
     for g in green_steps:
-        s, (hc, hb) = _step(geom, s, bool(g), q_in, bus_pce)
+        s, (hc, hb) = _step(geom, s, bool(g), q_in, bus_pce, out_cap_frac)
         if first:
             q_car, q_bus = hc, hb
             first = False
@@ -364,12 +375,16 @@ def evaluate_sections(sec_snap, steps: Dict[int, List[bool]], bus_pce: float = 2
     A section is green at step k if ANY phase it feeds is green then (a
     shared approach discharges whenever one of its movements runs)."""
     out = {}
-    for sec, (geom, cells, arr, phases) in sec_snap.items():
+    for sec, entry in sec_snap.items():
+        # entry is (geom, cells, arr, phases) or (geom, cells, arr, phases,
+        # out_cap_frac) when the caller prices downstream spillback.
+        geom, cells, arr, phases = entry[0], entry[1], entry[2], entry[3]
+        _ocf = float(entry[4]) if len(entry) > 4 else 1.0
         lists = [steps[p] for p in phases if p in steps]
         if not lists:
             continue
         prof = [any(col) for col in zip(*lists)]
-        r = simulate(geom, cells, prof, arr, bus_pce)
+        r = simulate(geom, cells, prof, arr, bus_pce, _ocf)
         out[int(sec)] = SectionOutcome(r.car_delay_vs, r.bus_delay_vs)
     return out
 
@@ -380,20 +395,76 @@ def _shift(tl, lead, horizon):
     return [(a + lead, min(b + lead, horizon), p) for a, b, p in tl if a + lead < horizon]
 
 
+# GAME_MARGINAL_DIAG: how often the marginal-competitor cost can differ from
+# the sum.  Where every non-main approach feeds the SAME competing phase,
+# min() over one key is identically the sum, so the flag can only be a no-op --
+# this counter is what separates a null A/B from an inert flag.
+_MARG_DIAG = {"calls": 0, "multi": 0, "maxph": 0, "gap": 0.0, "maxsec": 0}
+_MARG_PENDING = []
+
+
+def _marg_diag_note(nph, worst_saved, cc, nsec=0):
+    """Record one marginal-cost evaluation (one ACTION, not one junction).
+
+    nph  competing phases with NON-ZERO loss (only when two or more
+         of them carry loss can min() differ from the sum);
+    nsec  non-main sections priced;
+    worst_saved  pax.s of the worst phase (the cost charged);
+    cc  pax.s summed over every non-main section (what the flag replaces).
+    Queues a line every 25th call; engine.py drains it (Aimsun's print() does
+    not reach the run log)."""
+    d = _MARG_DIAG
+    d["calls"] += 1
+    if nph > 1:
+        d["multi"] += 1
+    if nph > d["maxph"]:
+        d["maxph"] = nph
+    if nsec > d["maxsec"]:
+        d["maxsec"] = nsec
+    d["gap"] += (cc - worst_saved)
+    if d["calls"] % 25 == 1:
+        _MARG_PENDING.append(
+            "[GAME_MARGINAL] calls=%d multi_phase=%d max_phases=%d "
+            "worst_vs_sum=%+.1f pax.s max_sec=%d"
+            % (d["calls"], d["multi"], d["maxph"], d["gap"], d["maxsec"]))
+
+
+def drain_marginal_diag():
+    """Return and clear the counter lines queued since the last drain."""
+    out = list(_MARG_PENDING)
+    del _MARG_PENDING[:]
+    return out
+
+
+def marginal_diag():
+    """Final snapshot, for a one-line summary at the end of a run."""
+    d = _MARG_DIAG
+    return ("calls=%d multi_phase=%d max_phases=%d worst_vs_sum=%+.1f pax.s "
+            "max_sec=%d" % (d["calls"], d["multi"], d["maxph"], d["gap"],
+                            d["maxsec"]))
+
+
 def game_payoffs(sec_snap, ring, cur, rem, greens, bus_phase, actions,
                  intergreen=5.0, horizon=60.0, dt=2.0, bus_pce=2.0,
-                 bus_occ=40.0, car_occ=1.2, lead=0.0):
+                 bus_occ=40.0, car_occ=1.2, lead=0.0, cross_mult=1.0,
+                 marginal=False):
     """Two-class CTM payoffs (B, C, b) in pax.s for each (type, seconds) in
     `actions`, against NO_ACTION over the horizon, in the convention the game
     solvers use:
         b = bus pax.s saved (all approaches)
         car_main  = car pax.s saved on approaches feeding the bus phase
         car_cross = car pax.s saved on the other approaches (usually < 0)
-        B = b + car_main + max(0, car_cross)      C = max(0, -car_cross)
+        B = b + car_main + max(0, car_cross)      C = max(0, -car_cross)*cross_mult
     Entries are None for action types this model does not time.
+    cross_mult > 1 sharpens the existing cross-starvation cost C (the car
+    pax.s LOST on approaches that give up green to this action) WITHOUT touching
+    the benefit side B, so the solver must clear a higher cross bar before it
+    acts. It reweights the one cross term already computed from the CTM -- it is
+    NOT a second parallel cost, so there is no double-count. 1.0 = unchanged.
     lead > 0: every approach is red for `lead` s first (the decision falls in
     an interphase / a phase with no modelled approaches); `cur` is then the
     next modelled phase and `rem` its full planned green."""
+    cross_mult = max(0.0, float(cross_mult))
     phases = list(ring)
     lead = max(0.0, float(lead))
     na_tl = _shift(action_timeline('NO_ACTION', 0.0, ring, cur, rem, greens, bus_phase,
@@ -413,10 +484,37 @@ def game_payoffs(sec_snap, ring, cur, rem, greens, bus_phase, actions,
         b = sum(base[s].bus_delay_vs - o[s].bus_delay_vs for s in o) * float(bus_occ)
         cm = sum(base[s].car_delay_vs - o[s].car_delay_vs for s in o if s in main_secs) \
             * float(car_occ)
-        cc = sum(base[s].car_delay_vs - o[s].car_delay_vs for s in o if s not in main_secs) \
-            * float(car_occ)
+        # Per non-main section: car pax.s SAVED by the action (negative = the
+        # action costs that competing approach). cc = net over all of them.
+        _cross = [(s, (base[s].car_delay_vs - o[s].car_delay_vs) * float(car_occ))
+                  for s in o if s not in main_secs]
+        cc = sum(_d for _s, _d in _cross)
+        if marginal:
+            # MARGINAL-COMPETITOR COST (SIDE_COST_MARGINAL_COMPETITOR): on a
+            # fixed-cycle coordinated plan the bus hold displaces ONE competing
+            # phase, not all of them at once, so the opportunity cost is the
+            # single WORST conflicting phase -- not the SUM over every non-main
+            # approach (which only matches a true floating-cycle extension where
+            # the whole downstream sequence slips). Group the per-section saved
+            # pax.s by the competing PHASE each section feeds and charge the
+            # phase with the largest net LOSS. Benefit B is unchanged (every
+            # approach that genuinely gains still gains); only the cost bar C
+            # drops from sum -> worst single phase.
+            _loss_by_phase = {}
+            for _s, _d in _cross:
+                for _p in sec_snap[_s][3]:
+                    if int(_p) == int(bus_phase):
+                        continue
+                    _loss_by_phase[int(_p)] = _loss_by_phase.get(int(_p), 0.0) + _d
+            _worst_saved = min(_loss_by_phase.values()) if _loss_by_phase else cc
+            _nz = [_v for _v in _loss_by_phase.values()
+                   if abs(_v) > 1e-9]
+            _marg_diag_note(len(_nz), _worst_saved, cc, len(_cross))
+            C = max(0.0, -_worst_saved) * cross_mult
+        else:
+            C = max(0.0, -cc) * cross_mult
         B = b + cm + max(0.0, cc)
-        res.append((B, max(0.0, -cc), b))
+        res.append((B, C, b))
     return res
 
 

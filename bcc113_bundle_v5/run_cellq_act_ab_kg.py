@@ -43,15 +43,44 @@ import os as _os
 
 _HERE = r"C:\Users\ahernz\github_for_aimsun\bcc113_bundle_v5"
 
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# FIXED_ARMS / FIXED_OUT are CALLER knobs and os.environ lives for the whole
+# Aimsun process, so exec'ing a DIFFERENT launcher in the same session leaves
+# its arm list and output name behind. Each launcher stamps the env with its
+# own name, and a value left by a DIFFERENT launcher is discarded; an explicit
+# value in a clean session -- or a re-run of this same launcher -- is honoured.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_cellq_act_ab_kg.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _knob(key, default):
+    """The caller's value, unless a DIFFERENT launcher left it in the env."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if not _v or not _foreign:
+        return _v or default
+    _shown = ("%d arms" % len(_v.split(","))) if key == "FIXED_ARMS" else _v
+    print("[ENV] %s = %s was left by %s -- DISCARDED, this launcher's value wins"
+          % (key, _shown, _prev_owner))
+    _os.environ.pop(key, None)   # gone from the env, so a re-run cannot revive it
+    return default
+
+
 SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
 
-ARMS = _os.environ.get(
+ARMS = _knob(
     "FIXED_ARMS",
     "CHAMP_ADAPTIVE_DSW_CELLQ_GATED,"
     "CHAMP_ADAPTIVE_DSW_CELLQ_ACT")
 
 CORRIDOR = _os.environ.get("FIXED_CORRIDOR", "kg")
-OUT = _os.environ.get("FIXED_OUT", "cellq_act_ab_kg.csv")
+OUT = _knob("FIXED_OUT", "cellq_act_ab_kg.csv")
+# Publish the resolved knobs: the env always reflects what actually runs,
+# so a same-owner re-run reads these back instead of reviving a leftover.
+_os.environ["FIXED_ARMS"] = ARMS
+_os.environ["FIXED_OUT"] = OUT
+_os.environ[_ENV_OWNER] = _MY_NAME
 
 _os.environ["ARM_SUITE_SEEDS"] = SEEDS
 _os.environ["ARM_SUITE_ARMS"] = ARMS

@@ -32,6 +32,19 @@ import glob
 import json
 import importlib.util as _importlib_util
 
+# MaxPressure base-plan rule (kg_lightsim_base.max_pressure_phase). OPTIONAL:
+# Aimsun's embedded interpreter does not necessarily carry this project on
+# sys.path, so a failed import must not break the simulation -- run_lightsim_mp
+# falls back to the corridor's own plan when it is None.
+try:
+    _ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+    for _p in (os.path.dirname(_ENGINE_DIR), _ENGINE_DIR):
+        if _p and _p not in sys.path:
+            sys.path.insert(0, _p)
+    from kg_lightsim_base import max_pressure_phase as _max_pressure_phase
+except Exception:
+    _max_pressure_phase = None
+
 # Bump this stamp whenever engine.py is edited so a full-Aimsun-restart reload
 # can be verified from the [LOAD] line in the run log. If the log shows an older
 # stamp than this, Aimsun is running a CACHED copy of the module (re-running the
@@ -49,7 +62,7 @@ import importlib.util as _importlib_util
 # Names BOTH headline groups: 'cascade-units' and 'nashheld'. A tag naming
 # only the last edit would let a reader attribute the cascade fixes to the
 # previous build -- the stale-tag trap this comment block warns about.
-ENGINE_BUILD = "2026-11-06T1200-no-prearm-no-wave-lock"
+ENGINE_BUILD = "2026-11-11T1700-rl-numpyq+spill-phys-cap"
 
 # CASCADE saturation threshold (retuned 2026-11-02 for the per-lane cascade).
 # The projected fill is now a TRUE per-lane occupancy / storage ratio, so 1.0
@@ -85,6 +98,57 @@ def _source_hash():
 
 
 SOURCE_HASH = _source_hash()
+# -- [SPM_STAMP] --
+def _spm_stamp():
+    """(sha1[:12], source, file) identifying the specialized_modes module that ran.
+
+    engine.py and specialized_modes.py are cached by Aimsun INDEPENDENTLY, so a
+    process can execute a fresh engine.py with a STALE specialized_modes.py
+    (the 11:09 Logan abort: spm 9be1e01e3fbb loaded vs 01fc5654addb on disk).
+    specialized_modes stamps its own SOURCE_HASH at ITS import, so that value
+    identifies the bytes actually imported, not the bytes sitting on disk.
+
+    Returns (hash, source) where source says what the hash describes:
+      'loaded' -- the bytes this process imported; diff against disk to spot a
+                  stale module.
+      'disk'   -- spm was not importable, so this is the file on disk and
+                  proves NOTHING about what executed.
+      'absent' -- neither was available; hash is '?'.
+    The third item is the file it was imported from, so the log answers a
+    different question than the hash: a copy OUTSIDE the bundle is a shadowed
+    module, not a stale one, and no hash comparison can tell those apart.
+    Emitted on the [LOAD] banner and the [FLAGS] audit line.
+    """
+    _spm_hash, _spm_src, _spm_file = '?', 'absent', '?'
+    try:
+        _spm_mod = globals().get('_spm')
+        if _spm_mod is None:
+            _sys_m = __import__('sys').modules
+            _spm_mod = (_sys_m.get('shared_tsp_engine.specialized_modes')
+                        or _sys_m.get('specialized_modes'))
+        _spm_h = str(getattr(_spm_mod, 'SOURCE_HASH', '?'))
+        if _spm_mod is not None and _spm_h not in ('', '?'):
+            _spm_hash, _spm_src = _spm_h, 'loaded'
+            _spm_file = str(getattr(_spm_mod, '__file__', '') or '?')
+        else:
+            _spm_path = str(getattr(_spm_mod, '__file__', '') or '')
+            if not _spm_path:
+                _self = globals().get('__file__') or ''
+                if _self:
+                    _spm_path = os.path.join(os.path.dirname(
+                        os.path.abspath(_self)), 'specialized_modes.py')
+            if _spm_path and os.path.isfile(_spm_path):
+                import hashlib as _hl
+                with open(_spm_path, 'rb') as _fh:
+                    _spm_hash = _hl.sha1(_fh.read()).hexdigest()[:12]
+                _spm_src = 'disk'
+                _spm_file = _spm_path
+    except Exception:
+        pass
+    return _spm_hash, _spm_src, _spm_file
+# -- [/SPM_STAMP] --
+
+
 try:
     from AAPI import *          # noqa: F401,F403
 except Exception:
@@ -13307,10 +13371,92 @@ class IntersectionController:
                 _delay += _veh * extra_red * _car_occ
         return _delay
 
+    def _marginal_competitor_side_delay(self, extra_red, _suppress_log=False):
+        """Side cost = the SINGLE highest-cost CONFLICTING PHASE, not the sum.
+
+        Theory (SIDE_COST_MARGINAL_COMPETITOR): in a ring with >2 phases the
+        main/bus hold does not pay every side movement at once -- you can only
+        hand green to ONE phase next, so the opportunity cost of holding is the
+        delay to the single worst competing phase (the MaxPressure argmax), and
+        an early-red / fixed-cycle reallocation only displaces the one phase it
+        cuts. Summing over all side phases (the aggregate path below) is the
+        realized cost ONLY for a TRUE floating-cycle extension, where the whole
+        downstream sequence genuinely shifts by extra_red. Every champion arm
+        runs a coordinated FIXED-cycle base (ADAPTIVE_DSW), whose plan
+        re-converges each cycle, so none of its actions is a true floating
+        extension -- the marginal competitor is the right model there.
+
+        Returns (delay_pax_s, veh_h) for the worst conflicting phase, or None
+        when the phase->movement map is unavailable (caller falls back to the
+        aggregate). Occupancy is applied ONCE here, matching the aggregate's
+        own convention, so a caller that post-multiplies CarOcc is unaffected."""
+        extra_red = max(safe_float(extra_red), 0.0)
+        if extra_red <= 0.0:
+            return 0.0, 0.0
+        _bp = int(getattr(self, 'BusPhase', -1) or -1)
+        _occ = max(safe_float(getattr(self, 'CarOcc', 1.6)), 1.0)
+        try:
+            _pm = self._phase_movement_map()
+        except Exception as _swx:
+            _note_swallow('_marginal_competitor#pm', _swx); _pm = None
+        _per_phase = []            # (phase_id, delay_pax_s, veh)
+        if _pm:
+            for _ph, _e in (_pm or {}).items():
+                if int(_ph) == _bp:
+                    continue
+                _secs = set(_f for (_f, _t) in _e.get("turns", []))
+                _pveh = 0.0
+                for _f in _secs:
+                    try:
+                        _n, _L, _why = self._zone_queue_count(_f)
+                    except Exception:
+                        _n = 0
+                    if _n > 0:
+                        _pveh += float(_n)
+                if _pveh > 0.0:
+                    _per_phase.append((int(_ph), _pveh * extra_red * _occ, _pveh))
+        if not _per_phase:
+            # No movement map: treat each side SECTION as its own competitor and
+            # keep the worst (still a single-competitor, not a sum).
+            _best_d, _best_v = 0.0, 0.0
+            for _ss in (self._get_side_sections() or []):
+                try:
+                    _n, _L, _why = self._zone_queue_count(_ss)
+                except Exception:
+                    _n = 0
+                if _n > 0:
+                    _d = float(_n) * extra_red * _occ
+                    if _d > _best_d:
+                        _best_d, _best_v = _d, float(_n)
+            if _best_d <= 0.0:
+                return None        # nothing measurable -> let caller aggregate
+            return _best_d, _best_v * extra_red / 3600.0
+        _ph_sel, _d_sel, _v_sel = max(_per_phase, key=lambda _r: _r[1])
+        if not _suppress_log:
+            log_to_file(
+                "[SIDE_MARGINAL] inter=%s extra_red=%.2f worst_phase=%s "
+                "delay=%.1f pax-s (worst of %d competing phases; sum would be "
+                "%.1f)" % (self.id, extra_red, _ph_sel, _d_sel, len(_per_phase),
+                          sum(_r[1] for _r in _per_phase)))
+        return _d_sel, _v_sel * extra_red / 3600.0
+
     def _compute_side_delay_penalty(self, extra_red, _suppress_log=False):
         extra_red = max(safe_float(extra_red), 0.0)
         if extra_red <= 0.0:
             return 0.0, 0.0
+        # MARGINAL-COMPETITOR side cost (SIDE_COST_MARGINAL_COMPETITOR, off by
+        # default): charge only the single worst conflicting phase instead of
+        # summing every side movement. Correct for the fixed-cycle coordinated
+        # plans all current arms run; see _marginal_competitor_side_delay. Falls
+        # through to the aggregate when the marginal cannot be measured.
+        if bool(globals().get('SIDE_COST_MARGINAL_COMPETITOR', False)):
+            try:
+                _mc = self._marginal_competitor_side_delay(
+                    extra_red, _suppress_log=_suppress_log)
+                if _mc is not None:
+                    return _mc
+            except Exception as _swx:
+                _note_swallow('_compute_side_delay_penalty#marginal', _swx)
         # MEASURED-congestion side cost: computed once here and blended (max) into
         # every substantive return below so a congested cross approach is never
         # under-priced. Off unless MEASURED_SIDE_COST is set.
@@ -19388,7 +19534,23 @@ class IntersectionController:
             _lanes = 1
         _sp = float(globals().get('JAM_VEH_SPACING_M', 7.0) or 7.0)
         _cap = max((float(_len) * _lanes) / max(_sp, 1.0), 1.0)
-        return float(_n) / _cap
+        _frac = float(_n) / _cap
+        # GAME_CTM2_SPILLCLIP: a ratio above 1.0 is not a fraction -- log
+        # the count and the storage it was divided by, so the basis
+        # mismatch is visible (lane under-count vs trimmed length).
+        try:
+            if _frac > 1.0 and os.environ.get("SPILL_BLOCK_LOG"):
+                _jf = int(getattr(self, "_jamfrac_logged", 0) or 0)
+                if _jf < 12:
+                    self._jamfrac_logged = _jf + 1
+                    log_to_file("[JAMFRAC] jct=%s sec=%s n=%d len=%.1f "
+                                "lanes=%d cap=%.1f frac=%.3f"
+                                % (getattr(self, "id", "?"), int(sec),
+                                   int(_n), float(_len), int(_lanes),
+                                   float(_cap), _frac), force=True)
+        except Exception:
+            pass
+        return _frac
 
     def _phase_downstream_block(self, phase):
         """Worst downstream jam fraction over a phase's turning TO-sections.
@@ -19408,9 +19570,341 @@ class IntersectionController:
                 _tos = set(int(t) for t in (_tt.get(int(phase)) or [])) - _own
             if not _tos:
                 return 0.0
-            return max((self._section_jam_frac(int(t)) for t in _tos), default=0.0)
+            # GAME_CTM2_SPILLCLIP: keep the raw (unclipped) ratio for the
+            # trace, then clip to the 0..1 contract that the CTM rollout
+            # (_ctm2_rollout_block) already enforces. A live count/storage
+            # ratio is NOT bounded by 1, yet both consumers read it as a
+            # fraction:
+            #   out_cap_frac = 1 - gamma*block   (clamped -> >1 just floors)
+            #   1 - block      (BELLMAN_CTM_DOWNSTREAM, unclamped -> >1
+            #                   became negative spare capacity)
+            _fr = [(float(self._section_jam_frac(int(t))), int(t))
+                   for t in _tos]
+            _raw = max((f for f, _ in _fr), default=0.0)
+            _blk = min(max(_raw, 0.0), 1.0)
+            _wt = max(_fr, key=lambda _x: _x[0])[1] if _fr else -1
+            # Gated proof trace (SPILL_BLOCK_LOG=1): the first few NON-ZERO
+            # blocks per junction, so one short run shows the spillback term
+            # is live instead of 0.0. The env read is guarded so nothing here
+            # can take the block down with it.
+            _trace = False
+            try:
+                _trace = bool(os.environ.get('SPILL_BLOCK_LOG'))
+            except Exception:
+                _trace = False
+            if _blk > 0.0 and _trace:
+                try:
+                    _nl = int(getattr(self, '_spillblk_logged', 0) or 0)
+                    if _nl < 4:
+                        self._spillblk_logged = _nl + 1
+                        log_to_file("[SPILLBLK] jct=%s ph=%s n_to=%d blk=%.3f raw=%.3f wt=%s tos=%s"
+                                    % (getattr(self, 'id', '?'), int(phase),
+                                       len(_tos), _blk, _raw, _wt,
+                                       sorted(int(t) for t in _tos)[:6]),
+                                    force=True)
+                except Exception:
+                    pass
+            return _blk
         except Exception:
             return 0.0
+
+    def _ctm2_rollout_block(self, ring, cur, rem, greens):
+        """{phase: downstream block 0..1} from a SHARED 2-hop CTM rollout.
+
+        One rollout of the current plan per decision, read out for every
+        phase and reused by every candidate action (GAME_CTM2_ROLLOUT).
+
+        Subnet: this junction's approaches (hop 0), their turning TO sections
+        (hop 1) and the sections those discharge into (hop 2), from
+        _turning_adjacency() -- the network's own connection table. Sections
+        are modelled at section level (vehicles vs jam storage); hop 0 -> 1
+        is signal-gated by the plan's green timeline, hop 1 -> 2 flows free.
+        Cell state seeds from the LIVE counts, so an empty subnet returns {}
+        and the caller keeps out_cap_frac = 1.0.
+
+        Costs ~1 ms: 30 steps x ~30 sections. Never raises.
+        """
+
+        def _na(_why):
+            try:
+                if os.environ.get('SPILL_BLOCK_LOG'):
+                    _n = int(getattr(self, '_spillroll_na', 0) or 0)
+                    if _n < 4:
+                        self._spillroll_na = _n + 1
+                        log_to_file("[SPILLROLL-NA] jct=%s why=%s"
+                                    % (getattr(self, 'id', '?'), _why),
+                                    force=True)
+            except Exception:
+                pass
+            return {}
+
+        try:
+            _ring = [int(p) for p in (ring or [])]
+            if not _ring:
+                return _na('no ring')
+            _po = self._phase_origin_sections() or {}
+            if not _po:
+                return _na('no phase origins')
+            _tt = self._phase_turn_targets() or {}
+            if not _tt:
+                _tt = self._phase_origin_dests() or {}
+            _adj = _turning_adjacency() or {}
+            if not _adj:
+                # No global turn table (under SUMO the AAPI junction
+                # enumeration resolves nothing), so build the 1-hop
+                # adjacency from this junction's own plans: a phase
+                # serves its ORIGINS into its turning TO sections.
+                for _p in _ring:
+                    _ps = [int(s) for s in (_po.get(_p) or [])]
+                    _pt = [int(t) for t in (_tt.get(_p) or [])]
+                    for _o in _ps:
+                        for _t in _pt:
+                            if _o != _t:
+                                _adj.setdefault(_o, set()).add(_t)
+                if not _adj:
+                    return _na('no adjacency (global or plan)')
+            _dt = float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0)
+            _h = float(globals().get('GAME_CTM2_HORIZON_S', 60.0) or 60.0)
+            _steps = max(1, int(round(_h / max(_dt, 1e-6))))
+            _orig = set()
+            _hop1 = set()
+            for _p in _ring:
+                _orig |= set(int(s) for s in (_po.get(_p) or []))
+                _hop1 |= set(int(t) for t in (_tt.get(_p) or []))
+            if not _orig:
+                return _na('no origin sections')
+            _hop2 = set()
+            for _t in _hop1:
+                _hop2 |= set(int(v) for v in (_adj.get(int(_t)) or []))
+            _ct_t0 = None
+            try:
+                import time as _ct_tm
+                _ct_t0 = _ct_tm.perf_counter()
+            except Exception:
+                _ct_t0 = None
+            _sub = sorted(_orig) + [s for s in sorted(_hop1) if s not in _orig]
+            _sub += [s for s in sorted(_hop2 - _orig - _hop1)][:24]
+            _n = {}
+            _stor = {}
+            _qs = {}
+            _lenm = {}
+            for _s in _sub:
+                try:
+                    _g = self._cbql_ctm_geom(int(_s))
+                    _lanes = max(int(getattr(_g, 'lanes', 1) or 1), 1)
+                    _len = max(float(getattr(_g, 'length_m', 0.0) or 0.0), 1.0)
+                    _qsat = float(getattr(_g, 'q_sat_vph_lane', 1800.0) or 1800.0)
+                except Exception:
+                    continue
+                _stor[_s] = max(_len * _lanes / 7.0, 1.0)
+                _lenm[_s] = _len
+                _qs[_s] = max(_qsat * _lanes / 3600.0 * _dt, 1e-6)
+                try:
+                    _n[_s] = float(max(int(AKIVehStateGetNbVehiclesSection(int(_s), False)), 0))
+                except Exception:
+                    _n[_s] = 0.0
+            if not _n or sum(_n.values()) <= 0.0:
+                return _na('subnet empty of vehicles')
+            _serving = {}
+            for _p in _ring:
+                for _s in (_po.get(_p) or []):
+                    _serving.setdefault(int(_s), set()).add(int(_p))
+            _gseq = None
+            try:
+                if int(cur) in _ring:
+                    _tl = _ctm2.action_timeline(
+                        'NA', 0.0, _ring, int(cur), float(rem or 0.0),
+                        {int(p): float((greens or {}).get(p, 0.0))
+                         for p in _ring},
+                        -1,
+                        float(globals().get('GAME_CTM2_IG_S', 5.0) or 5.0), _h)
+                    if _tl:
+                        _gseq = _ctm2.green_steps(_tl, _ring, _h, _dt)
+            except Exception:
+                _gseq = None
+            if not _gseq:
+                _gseq = {int(p): [True] * _steps for p in _ring}
+            # GAME_CTM2_LIGHTSIM: LightSim-style NETWORK CTM as the alternative
+            # model for this block term (ctm_lightsim.py). Same subnet, same
+            # seeded live counts and same green timeline as the inline rollout
+            # below; the difference is the flow resolution -- per-movement turn
+            # ratios, saturation cap, and proportional merge/diverge scaling --
+            # instead of the equal-split hop approximation.
+            if bool(globals().get('GAME_CTM2_LIGHTSIM', False)):
+                _ls_rb = None
+                try:
+                    from ctm_lightsim import rollout_block_detail as _ls_rb
+                except Exception:
+                    try:
+                        import sys as _lsys
+                        _lsdir = os.path.dirname(os.path.abspath(__file__))
+                        if _lsdir and _lsdir not in _lsys.path:
+                            _lsys.path.insert(0, _lsdir)
+                        from ctm_lightsim import rollout_block_detail as _ls_rb
+                    except Exception:
+                        _ls_rb = None
+                if _ls_rb is not None:
+                    try:
+                        _ct_t0 = None
+                        try:
+                            import time as _ct_tm
+                            _ct_t0 = _ct_tm.perf_counter()
+                        except Exception:
+                            _ct_t0 = None
+                        _gmap = {}
+                        for _ls in _n:
+                            try:
+                                _gmap[int(_ls)] = self._cbql_ctm_geom(int(_ls))
+                            except Exception:
+                                pass
+                        _ls_det = _ls_rb(
+                            _gmap, _n, _adj, _serving, _gseq or {},
+                            _ring, _tt, _steps, _dt,
+                            int(globals().get('GAME_CTM2_LIGHTSIM_MAX_CELLS', 12) or 12))
+                        # GAME_CTM2_LIGHTSIM_READOUT picks which cell decides
+                        # "full": worst (busiest cell anywhere, pessimistic),
+                        # entry (cell 0, what the model itself gates on) or mean.
+                        _blk_ls = {}
+                        _ls_mode = str(globals().get('GAME_CTM2_LIGHTSIM_READOUT',
+                                                     'worst') or 'worst')
+                        if _ls_mode not in ('worst', 'entry', 'mean'):
+                            _ls_mode = 'worst'
+                        for _ls_p, _ls_v in (_ls_det or {}).items():
+                            try:
+                                _blk_ls[int(_ls_p)] = min(max(float(
+                                    _ls_v.get(_ls_mode, _ls_v.get('worst', 0.0))),
+                                    0.0), 1.0)
+                            except Exception:
+                                continue
+                        if _ls_det:
+                            try:
+                                if os.environ.get('SPILL_BLOCK_LOG'):
+                                    _lsn = int(getattr(self, '_lsblk_n', 0) or 0)
+                                    if _lsn < 60:
+                                        self._lsblk_n = _lsn + 1
+                                        log_to_file(
+                                            "[LSBLK] jct=%s mode=%s %s"
+                                            % (getattr(self, 'id', '?'), _ls_mode,
+                                               ' '.join(
+                                                   'ph%d:worst=%.2f,entry=%.2f,mean=%.2f,k=%d,seed=%.2f'
+                                                   % (int(_ls_p),
+                                                      float(_ls_v.get('worst', 0.0)),
+                                                      float(_ls_v.get('entry', 0.0)),
+                                                      float(_ls_v.get('mean', 0.0)),
+                                                      int(_ls_v.get('k', 0)),
+                                                      float(_ls_v.get('seeded', 0.0)))
+                                                   for _ls_p, _ls_v in sorted(_ls_det.items()))),
+                                            force=True)
+                            except Exception:
+                                pass
+                        if _ct_t0 is not None and os.environ.get('CTMTIME_LOG'):
+                            try:
+                                import time as _ct_tm2
+                                _ct_us = (_ct_tm2.perf_counter() - _ct_t0) * 1e6
+                                _ct_n = int(getattr(self, '_ctmtime_n', 0) or 0)
+                                if _ct_n < 400:
+                                    self._ctmtime_n = _ct_n + 1
+                                    log_to_file("[CTMTIME] jct=%s model=lightsim "
+                                                "us=%.0f n_link=%d n_step=%d"
+                                                % (getattr(self, 'id', '?'), _ct_us,
+                                                   len(_gmap), _steps), force=True)
+                            except Exception:
+                                pass
+                        if _blk_ls:
+                            try:
+                                if os.environ.get('SPILL_BLOCK_LOG'):
+                                    _nls = int(getattr(self, '_lightsim_logged', 0) or 0)
+                                    if _nls < 4:
+                                        self._lightsim_logged = _nls + 1
+                                        log_to_file(
+                                            "[LIGHTSIM] jct=%s n_link=%d blk=%s"
+                                            % (getattr(self, 'id', '?'), len(_gmap),
+                                               ','.join('%d:%.2f' % (int(_p), float(_v))
+                                                        for _p, _v in sorted(_blk_ls.items()))),
+                                            force=True)
+                            except Exception:
+                                pass
+                            return _blk_ls
+                    except Exception:
+                        pass
+            _nsub = set(_n)
+            _peak = {s: 0.0 for s in _n}
+            for _k in range(_steps):
+                _moves = []
+                for _s in list(_n):
+                    _outs = [t for t in (_adj.get(int(_s)) or []) if t in _nsub]
+                    if not _outs:
+                        continue
+                    if _s in _orig:
+                        _go = False
+                        for _p in _serving.get(_s, ()):
+                            _seq = _gseq.get(int(_p)) or []
+                            if _k < len(_seq) and _seq[_k]:
+                                _go = True
+                                break
+                        if not _go:
+                            continue
+                    _d = min(_n[_s], _qs.get(_s, 0.0))
+                    if _d <= 0.0:
+                        continue
+                    _moves.append((_s, _outs, _d / float(len(_outs))))
+                for _s, _outs, _share in _moves:
+                    for _t in _outs:
+                        _sp = _stor[_t] - _n[_t]
+                        if _sp <= 0.0:
+                            continue
+                        _mv = min(_share, _sp)
+                        if _mv <= 0.0:
+                            continue
+                        _n[int(_t)] += _mv
+                        _n[int(_s)] -= _mv
+                for _s in _n:
+                    _occ = _n[_s] / max(_stor[_s], 1.0)
+                    if _occ > _peak[_s]:
+                        _peak[_s] = _occ
+            _out = {}
+            for _p in _ring:
+                _tos = [int(t) for t in (_tt.get(_p) or [])
+                        if int(t) in _peak
+                        and _lenm.get(int(t), 0.0) >= 5.0]
+                if not _tos:
+                    continue
+                _out[int(_p)] = min(max(max(_peak[t] for t in _tos), 0.0), 1.0)
+            if _ct_t0 is not None and os.environ.get('CTMTIME_LOG'):
+                try:
+                    import time as _ct_tm2
+                    _ct_us = (_ct_tm2.perf_counter() - _ct_t0) * 1e6
+                    _ct_n = int(getattr(self, '_ctmtime_n', 0) or 0)
+                    if _ct_n < 400:
+                        self._ctmtime_n = _ct_n + 1
+                        log_to_file("[CTMTIME] jct=%s model=rollout "
+                                    "us=%.0f n_link=%d n_step=%d"
+                                    % (getattr(self, 'id', '?'), _ct_us,
+                                       len(_n), _steps), force=True)
+                except Exception:
+                    pass
+            _trace = False
+            try:
+                _trace = bool(os.environ.get('SPILL_BLOCK_LOG'))
+            except Exception:
+                _trace = False
+            if _out and _trace:
+                try:
+                    _nl = int(getattr(self, '_spillroll_logged', 0) or 0)
+                    if _nl < 4:
+                        self._spillroll_logged = _nl + 1
+                        log_to_file("[SPILLROLL] jct=%s n_sub=%d n_veh=%.0f "
+                                    "blk=%s" % (
+                                        getattr(self, 'id', '?'), len(_n),
+                                        sum(_n.values()),
+                                        ','.join('%d:%.2f' % (p, v)
+                                                 for p, v in sorted(_out.items()))),
+                                    force=True)
+                except Exception:
+                    pass
+            return _out
+        except Exception:
+            return {}
 
     def _apply_cell_backpressure(self, time, timeSta, acycle):
         """CELL-STATE BACK-PRESSURE RELEASE (flag CELL_BACKPRESSURE): store-and-
@@ -21372,6 +21866,27 @@ class IntersectionController:
         except Exception:
             pass
 
+    def _no_action_reason(self, reason, time=0.0):
+        """Bucket a NO_ACTION outcome by cause (2026-11-10).
+
+        The reward path has ~25 early returns but only the debounce gates
+        called _gate_hit, so a run reporting 805 detections, 973 evaluations
+        and 0 actions could not say WHERE the decision died. Every return on
+        the path now names its own cause and the [GATE SUMMARY] line carries
+        an na:<cause>=<n> distribution, so the unaccounted mass is measured.
+
+        First named cause per detection wins: the marker is reset at the top
+        of run_reward_tsp, so a detection that walks through several stages
+        is booked once, at the stage that actually stopped it.
+        """
+        try:
+            if getattr(self, '_na_cause', None) is not None:
+                return
+            self._na_cause = str(reason)
+            self._gate_hit('na:' + str(reason), time)
+        except Exception:
+            pass
+
     def _record_detection(self, time, veh_id=None, inter_id=None):
         """Edge-triggered detection stat: one event per (junction, bus) approach.
 
@@ -21568,6 +22083,38 @@ class IntersectionController:
                         continue
 
                     self.MaxQueueLength[i][j]     = abs(w2 * w1 * red_duration / denom)
+                    # PHYSICAL CTM CAP (2026-11-11): denom=|w2|-|w1| only has to be
+                    # SMALL (arrival density near jam), not < 1e-6, for this LWR
+                    # shockwave queue to explode -- observed MaxQueueLength ~4.8e5
+                    # "veh", which pins _detect_regime to JAM (queue>=12), poisons
+                    # the reward/cost, and makes the analytic predicted delay
+                    # diverge wildly from the measured .DTa. A queue cannot exceed
+                    # the approach's jam-packed storage = lanes * L_km * k_jam (the
+                    # CTM cells' holding capacity), so clamp the loop/shockwave
+                    # estimate to it -- i.e. make the detector-loop queue respect
+                    # the CTM model size. Cap cached per controller (geometry is
+                    # fixed). Flag SPILLBACK_QUEUE_PHYS_CAP (default True); False
+                    # restores the uncapped shockwave value.
+                    if bool(globals().get('SPILLBACK_QUEUE_PHYS_CAP', True)):
+                        _qcap = getattr(self, '_maxq_phys_cap', None)
+                        if _qcap is None:
+                            try:
+                                _kj = max(float(getattr(self, 'JamDensity', 150.0)
+                                                or 150.0), 1.0)
+                                # use the larger (main) detection reach so a
+                                # legitimate main queue is never clipped; the cap
+                                # is only meant to kill the small-denom explosion
+                                _zm = max(float(self._queue_zone_m(True)),
+                                          float(self._queue_zone_m(False)), 1.0)
+                                _ln = max(int(getattr(self, 'NumberOfLanes', 1)
+                                              or 1), 1)
+                                _qcap = max(1.0, _kj * (_zm / 1000.0) * _ln)
+                            except Exception:
+                                _qcap = float(globals().get(
+                                    'MAXQ_PHYS_CAP_VEH', 80.0) or 80.0)
+                            self._maxq_phys_cap = _qcap
+                        if self.MaxQueueLength[i][j] > _qcap:
+                            self.MaxQueueLength[i][j] = _qcap
                     self.MaxQueueLengthTime[i][j] = (
                         self.RedStartTimeList[i][j] + abs(w2) * red_duration / denom)
 
@@ -21655,6 +22202,536 @@ class IntersectionController:
             target_phase = self.phase_list[action]
             if target_phase != current_phase:
                 ECIChangeDirectPhase(self.node_id, target_phase, timeSta, time, acycle, 0)
+
+    def run_lightsim_mp(self, time, timeSta, acycle):
+        """LightSim MaxPressure as the BASE plan, TSP/game layer on top.
+
+        The CONTROL_MODE == "LIGHTSIM_MP" dispatch runs run_reward_tsp() -- the
+        full TSP + GAME_SOLUTION (NASH / utilitarian) layer -- first, then calls
+        this method only when no grant was issued within the last second, so a
+        grant always wins over the base plan.  Ported from
+        lightsim/core/signal.py MaxPressureController: serve the stage with the
+        largest approach queues, hold to MIN_GREEN and rotate at MAX_GREEN
+        (apply_action enforces both).
+
+        self.MaxQueueLength is (n_phases, n_cols) -- one ROW PER STAGE -- so a
+        stage's pressure is its row sum and no detector->phase map is needed.
+        Any failure falls back to run_normal rather than leaving the junction
+        uncontrolled for the tick.
+        """
+        if _max_pressure_phase is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        try:
+            _phs = list(getattr(self, 'phase_list', []) or [])
+            _mq = getattr(self, 'MaxQueueLength', None)
+            if not _phs or _mq is None:
+                self.run_normal(time, timeSta, acycle)
+                return
+
+            try:
+                _cur_id = int(ECIGetCurrentPhase(self.node_id))
+            except Exception:
+                _cur_id = None
+            _cur = _phs.index(_cur_id) if _cur_id in _phs else None
+
+            try:
+                _elapsed = max(0.0, float(time)
+                               - float(ECIGetStartingTimePhase(self.node_id)))
+            except Exception:
+                _elapsed = 0.0
+
+            # Serve only REAL GREEN phases -- NEVER an interphase. phase_list is
+            # range(1, n+1), which INCLUDES the yellow/all-red interphases, and
+            # max_pressure_phase's MAX_GREEN branch is a blind (cur+1) % n that
+            # can rotate onto one, injecting all-red as "green" -> the documented
+            # MP gridlock (_mp_phase_ring docstring, engine ~34343). Restrict the
+            # candidate set to the green ring -- the SAME set the DS / Nash MP
+            # path uses. MaxQueueLength rows are aligned to phase_list POSITION,
+            # so a green phase id p reads row _phs.index(p).
+            _ring = _mp_phase_ring(self)
+            _green = [p for p in _ring if p in _phs and _phs.index(p) < len(_mq)]
+            if len(_green) < 2:
+                self.run_normal(time, timeSta, acycle)
+                return
+            _rows = [[float(v) for v in _mq[_phs.index(p)][:]] for p in _green]
+            _ring_cur = _green.index(_cur_id) if _cur_id in _green else None
+            _sel = int(_max_pressure_phase(_rows, current=_ring_cur,
+                                           elapsed_green=_elapsed))
+            _sel = max(0, min(_sel, len(_green) - 1))
+            # Back to a phase_list index for apply_action / the hold-to-plan gate.
+            _idx = _phs.index(_green[_sel])
+            # HOLD-TO-PLAN (2026-11-10): [ASSUME] rem_green_nextred_s showed
+            # the served green ending 31 s before plan on average, and at
+            # some junctions by an exact constant EVERY cycle (39578:
+            # -66.8 s x43 of 49 cycles, sd 0.3). That is apply_action firing
+            # the moment argmax moves, which shreds the coordinated plan.
+            # Consult the rule only when the phase is DUE to end -- at or
+            # after its NextRedStartTime, or past the MAX_GREEN backstop --
+            # and hold the plan otherwise. run_config can set
+            # LIGHTSIM_MP_HOLD_TO_PLAN = False to restore cut-on-argmax.
+            _hold = False
+            if (bool(globals().get('LIGHTSIM_MP_HOLD_TO_PLAN', True))
+                    and _cur_id is not None and 0 <= _idx < len(_phs)):
+                _due = True
+                try:
+                    _row = int((getattr(self, 'PhaseIndex', None) or {}).get(_cur_id, 0))
+                    _nrs = float(self.NextRedStartTime[_row][0])
+                    _due = float(time) >= _nrs - 0.1
+                except Exception:
+                    _due = True
+                if not _due and _elapsed < float(globals().get('MAX_GREEN', 60.0)):
+                    self._gate_hit('mp_hold_to_plan', time)
+                    _hold = True
+            if _hold:
+                pass
+            elif 0 <= _idx < len(_phs):
+                self.apply_action(_idx, timeSta, time, acycle)
+            else:
+                self.run_normal(time, timeSta, acycle)
+
+            # Throttled trace: the first GUI run must be verifiable from the log.
+            _n = int(getattr(self, '_lightsim_mp_logged', 0) or 0) + 1
+            self._lightsim_mp_logged = _n
+            if globals().get('LOG_TSP_EVT', False) and _n <= 20:
+                _vprint("[LIGHTSIM_MP] inter=%s t=%.1f cur=%s pick=%s P=%s" % (
+                    getattr(self, 'id', '?'), float(time), _cur, _idx,
+                    [round(sum(_r), 1) for _r in _rows]))
+        except Exception as _e:
+            log_to_file("[LIGHTSIM_MP] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
+
+    # ------------------------------------------------------------------ #
+    # BASE_PLAN controller family (LightSim set), TSP/game layer on top.  #
+    # CONTROL_MODE == "BASE_PLAN" runs run_reward_tsp() first (the grant   #
+    # always wins) and run_base_plan() only on no-grant ticks -- the same  #
+    # stack as LIGHTSIM_MP, but BASE_PLAN selects WHICH base controller     #
+    # fills the no-grant ticks. Every base shares _base_plan_rows() for     #
+    # measurement and apply_action() for switches (so MIN_GREEN / MAX_GREEN #
+    # and a fresh grant's 5 s protection still hold). A base NEVER drives an #
+    # interphase: candidates come from _mp_phase_ring (green phases only).   #
+    # Mirrors LightSim core/signal.py (Su & Deng, arXiv:2602.21852).        #
+    # ------------------------------------------------------------------ #
+    def _base_plan_rows(self, time):
+        """Shared MaxPressure-style measurement for the BASE_PLAN family.
+
+        Returns (phs, green, rows, cur_id, ring_cur, elapsed) or None (the
+        caller then falls back to run_normal). green = real GREEN phase ids
+        (interphases excluded); rows[i] is green[i]'s MaxQueueLength row, so
+        pressure(i) = sum(rows[i]); ring_cur = green-index of the current
+        phase or None (on an interphase). A green id p maps back to its
+        phase_list index with phs.index(p) for apply_action."""
+        _phs = list(getattr(self, 'phase_list', []) or [])
+        _mq = getattr(self, 'MaxQueueLength', None)
+        if not _phs or _mq is None:
+            return None
+        try:
+            _cur_id = int(ECIGetCurrentPhase(self.node_id))
+        except Exception:
+            _cur_id = None
+        try:
+            _elapsed = max(0.0, float(time)
+                           - float(ECIGetStartingTimePhase(self.node_id)))
+        except Exception:
+            _elapsed = 0.0
+        _ring = _mp_phase_ring(self)
+        _green = [p for p in _ring if p in _phs and _phs.index(p) < len(_mq)]
+        if len(_green) < 2:
+            return None
+        _rows = [[float(v) for v in _mq[_phs.index(p)][:]] for p in _green]
+        _ring_cur = _green.index(_cur_id) if _cur_id in _green else None
+        return (_phs, _green, _rows, _cur_id, _ring_cur, _elapsed)
+
+    def run_sotl(self, time, timeSta, acycle):
+        """Self-Organizing Traffic Lights (Gershenson 2005) as the base plan.
+
+        Hold the current green while a platoon is still arriving on it (its
+        measured demand stays above SOTL_THRESHOLD) and MIN_GREEN <= elapsed
+        < MAX_GREEN; otherwise advance to the next green phase in the ring.
+        Holding lets the plan tick (apply_action is only issued on a switch)."""
+        _m = self._base_plan_rows(time)
+        if _m is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        _phs, _green, _rows, _cur_id, _ring_cur, _elapsed = _m
+        try:
+            if _ring_cur is None:       # on an interphase -> let the plan run
+                self.run_normal(time, timeSta, acycle)
+                return
+            _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+            _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+            _thr = float(globals().get('SOTL_THRESHOLD', 1.0) or 0.0)
+            _cur_demand = sum(_rows[_ring_cur])
+            if _elapsed < _min_g or (_cur_demand > _thr and _elapsed < _max_g):
+                self._gate_hit('sotl_hold', time)
+                return
+            _nxt = _green[(_ring_cur + 1) % len(_green)]
+            _idx = _phs.index(_nxt)
+            if 0 <= _idx < len(_phs):
+                self.apply_action(_idx, timeSta, time, acycle)
+        except Exception as _e:
+            log_to_file("[SOTL] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
+
+    def run_maxpressure_lt(self, time, timeSta, acycle):
+        """Lost-Time-Aware MaxPressure: switch to the MaxPressure argmax only
+        when the pressure gain over the current phase clears a switching-cost
+        bar (the yellow + all-red lost green paid on every switch). Standard
+        MaxPressure ignores lost time and collapses capacity by switching on
+        any argmax flicker; the bar (LT_MP_SWITCH_BAR * intergreen) holds the
+        current phase until the gain is real. MAX_GREEN forces a switch."""
+        _m = self._base_plan_rows(time)
+        if _m is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        _phs, _green, _rows, _cur_id, _ring_cur, _elapsed = _m
+        try:
+            _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+            _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+            if _elapsed < _min_g:               # protect MIN_GREEN
+                self._gate_hit('lt_mp_hold', time)
+                return
+            _press = [sum(_r) for _r in _rows]
+            _best = max(range(len(_press)), key=lambda _i: _press[_i])
+            _cur_p = _press[_ring_cur] if _ring_cur is not None else -1.0
+            _ig = float(globals().get('INS_INTERGREEN_S',
+                                      globals().get('GAME_CTM2_IG_S', 5.0)) or 5.0)
+            _bar = float(globals().get('LT_MP_SWITCH_BAR', 1.0) or 0.0) * _ig
+            _force = _elapsed >= _max_g
+            if _best != _ring_cur and ((_press[_best] - _cur_p) > _bar or _force):
+                if not self._base_plan_due_to_switch(time, _cur_id, _elapsed):
+                    self._gate_hit('lt_mp_hold_to_plan', time)   # keep coordination
+                    return
+                _idx = _phs.index(_green[_best])
+                if 0 <= _idx < len(_phs):
+                    self.apply_action(_idx, timeSta, time, acycle)
+            else:
+                self._gate_hit('lt_mp_hold', time)
+        except Exception as _e:
+            log_to_file("[LT_MAXPRESSURE] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
+
+    def run_maxpressure_eff(self, time, timeSta, acycle):
+        """Efficient MaxPressure: green duration scales with pressure. Instead
+        of switching the moment the argmax moves, extend a high-pressure
+        current phase -- its target green grows linearly with its own pressure
+        between MIN_GREEN and MAX_GREEN (EFF_MP_PRESSURE_GAIN_S s per pressure
+        unit). Once the target elapses, switch to the MaxPressure argmax."""
+        _m = self._base_plan_rows(time)
+        if _m is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        _phs, _green, _rows, _cur_id, _ring_cur, _elapsed = _m
+        try:
+            _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+            _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+            _press = [sum(_r) for _r in _rows]
+            _best = max(range(len(_press)), key=lambda _i: _press[_i])
+            _cur_p = _press[_ring_cur] if _ring_cur is not None else 0.0
+            _k = float(globals().get('EFF_MP_PRESSURE_GAIN_S', 4.0) or 0.0)
+            _target = max(_min_g, min(_max_g, _min_g + _k * _cur_p))
+            if _ring_cur is not None and _elapsed < _target:
+                self._gate_hit('eff_mp_extend', time)
+                return
+            if _best != _ring_cur:
+                if not self._base_plan_due_to_switch(time, _cur_id, _elapsed):
+                    self._gate_hit('eff_mp_hold_to_plan', time)   # keep coordination
+                    return
+                _idx = _phs.index(_green[_best])
+                if 0 <= _idx < len(_phs):
+                    self.apply_action(_idx, timeSta, time, acycle)
+        except Exception as _e:
+            log_to_file("[EFF_MAXPRESSURE] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
+
+    def _phase_bus_pax(self, green_ids):
+        """Per-green-phase EXTRA passengers carried by QUEUED BUSES:
+        n_bus(phase) * (BusOcc - CarOcc). Buses on each phase's origin sections
+        are counted via bus_type_pos; aligned to green_ids. Returns zeros when
+        the bus type or the phase->section map is unavailable, so the pax
+        pressure then degrades gracefully to car-weighted vehicle pressure."""
+        _extra = [0.0] * len(green_ids)
+        try:
+            _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+            if _btp <= 0:
+                return _extra
+            _pmap = self._phase_origin_sections()
+            if not _pmap:
+                return _extra
+            _bocc = float(getattr(self, 'BusOcc', 40.0) or 40.0)
+            _cocc = float(getattr(self, 'CarOcc', 1.2) or 1.2)
+            _w = max(_bocc - _cocc, 0.0)
+            if _w <= 0.0:
+                return _extra
+            for _i, _p in enumerate(green_ids):
+                _nb = 0
+                for _s in _pmap.get(int(_p), ()):
+                    try:
+                        _tot = max(int(AKIVehStateGetNbVehiclesSection(int(_s), True)), 0)
+                    except Exception:
+                        _tot = 0
+                    for _vi in range(_tot):
+                        try:
+                            if int(AKIVehStateGetVehicleInfSection(int(_s), _vi).type) == _btp:
+                                _nb += 1
+                        except Exception:
+                            pass
+                _extra[_i] = _w * _nb
+        except Exception as _e:
+            _note_swallow('_phase_bus_pax', _e)
+        return _extra
+
+    def run_maxpressure_pax(self, time, timeSta, acycle):
+        """Passenger-weighted MaxPressure: the stage pressure is in PEOPLE, not
+        vehicles --
+            P(s) = CarOcc * (queued vehicles on s) + (BusOcc-CarOcc) * (queued buses on s)
+        so a single queued bus adds ~(BusOcc-CarOcc) ~= 39 pax of pressure. The
+        stage carrying a bus therefore wins argmax whenever the competing car
+        stage's queue DEFICIT is under ~BusOcc/CarOcc (~33) cars -- transit
+        priority EMERGES from the pressure metric, with NO explicit bus trigger
+        and NO preemption rule. Switching obeys the same MIN/MAX_GREEN and the
+        LT_MP_SWITCH_BAR lost-time bar (now in pax units) as run_maxpressure_lt.
+        """
+        _m = self._base_plan_rows(time)
+        if _m is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        _phs, _green, _rows, _cur_id, _ring_cur, _elapsed = _m
+        try:
+            _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+            _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+            _cocc = float(getattr(self, 'CarOcc', 1.2) or 1.2)
+            _extra = self._phase_bus_pax(_green)
+            _press = [_cocc * sum(_rows[_i]) + _extra[_i] for _i in range(len(_green))]
+            if _elapsed < _min_g:
+                self._gate_hit('pax_mp_hold', time)
+                return
+            _best = max(range(len(_press)), key=lambda _i: _press[_i])
+            _cur_p = _press[_ring_cur] if _ring_cur is not None else -1.0
+            _ig = float(globals().get('INS_INTERGREEN_S',
+                                      globals().get('GAME_CTM2_IG_S', 5.0)) or 5.0)
+            _bar = float(globals().get('LT_MP_SWITCH_BAR', 0.0) or 0.0) * _ig
+            _force = _elapsed >= _max_g
+            if _best != _ring_cur and ((_press[_best] - _cur_p) > _bar or _force):
+                if not self._base_plan_due_to_switch(time, _cur_id, _elapsed):
+                    self._gate_hit('pax_mp_hold_to_plan', time)   # keep coordination
+                    return
+                _idx = _phs.index(_green[_best])
+                if 0 <= _idx < len(_phs):
+                    self.apply_action(_idx, timeSta, time, acycle)
+                    if globals().get('LOG_TSP_EVT', False) and _extra[_best] > 0.0:
+                        _vprint("[MAXPRESS_PAX] inter=%s t=%.1f serve P=%s bus_pax=%s" % (
+                            getattr(self, 'id', '?'), float(time),
+                            [round(_v, 1) for _v in _press],
+                            [round(_v, 1) for _v in _extra]))
+            else:
+                self._gate_hit('pax_mp_hold', time)
+        except Exception as _e:
+            log_to_file("[MAXPRESS_PAX] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
+
+    def _base_plan_committed_green_s(self, time):
+        """Remaining green the engine can COMMIT to for the current phase under a
+        reactive BASE_PLAN controller -- the horizon the TSP/game layer ON TOP
+        must size its actions against.
+
+        The commissioned plan duration is NOT a commitment here: the base
+        controller (MaxPressure / pax-MaxPressure / SOTL / LT-MP / Eff-MP)
+        switches on LIVE pressure, so it holds only the MIN_GREEN floor and at
+        most MAX_GREEN; the planned duration it is replacing is meaningless
+        (this is the -42 s `rem_green` bias on BASE_PLAN runs: the engine
+        predicted the planned end, the controller ended early). The only thing
+        guaranteed is that the phase will not switch before start + MIN_GREEN,
+        so that floor is what an on-top GE/INS may rely on. Returns the floored
+        remaining green (s), or None when CONTROL_MODE is not BASE_PLAN (the
+        caller then keeps the plan-based estimate -- NORMAL / LIGHTSIM_MP /
+        champion are untouched)."""
+        if str(globals().get('CONTROL_MODE', '')).upper() != 'BASE_PLAN':
+            return None
+        try:
+            _start = float(ECIGetStartingTimePhase(self.node_id))
+        except Exception:
+            return None
+        _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+        return max(0.0, _start + _min_g - float(time))
+
+    def _base_plan_due_to_switch(self, time, cur_id, elapsed):
+        """HOLD-TO-PLAN anchor for the reactive BASE_PLAN controllers. Returns
+        True only when the current phase is DUE to end per the commissioned plan
+        (at/after its NextRedStartTime) or past the MAX_GREEN backstop -- i.e.
+        when a switch is allowed.
+
+        Switching ONLY at the plan's natural points lets a controller CHOOSE the
+        next phase by its rule while KEEPING the commissioned corridor
+        coordination (offsets / green wave). Without this the argmax controllers
+        (LT-/Eff-/pax-MaxPressure) jump phases mid-cycle, shred the progression
+        and gridlock KG -- the documented pre-hold-fix MaxPressure failure
+        (see run_lightsim_mp, which already gates this way). SOTL keeps phase
+        order so it is exempt. Flag BASE_PLAN_HOLD_TO_PLAN (default True);
+        set False for pure reactive control (LightSim-faithful, but gridlocks a
+        tightly coordinated corridor)."""
+        if not bool(globals().get('BASE_PLAN_HOLD_TO_PLAN', True)):
+            return True
+        _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+        if float(elapsed) >= _max_g:
+            return True
+        if cur_id is None:
+            return True
+        try:
+            _row = int((getattr(self, 'PhaseIndex', None) or {}).get(int(cur_id), 0))
+            _nrs = float(self.NextRedStartTime[_row][0])
+            return float(time) >= _nrs - 0.1
+        except Exception:
+            return True
+
+    def run_base_plan(self, time, timeSta, acycle):
+        """BASE_PLAN registry: the LightSim controller family as the base
+        signal plan on no-grant ticks (the TSP/game layer is applied first by
+        the CONTROL_MODE == 'BASE_PLAN' dispatch). BASE_PLAN selects the base:
+
+          FIXEDTIME  commissioned fixed plan (run_normal).
+          WEBSTER    fixed plan with Webster-optimal cycle/splits -- set
+                     PLAN_OPTIMIZE=True on the arm so the warm-start retimes
+                     the plan at init; per-tick action is then run_normal.
+          GREENWAVE  commissioned coordinated plan (its professional offsets
+                     ARE a green wave); per-tick action is run_normal. A
+                     free-flow offset_i = d_i/v_f recompute is a follow-up.
+          MAXPRESSURE      Varaiya MaxPressure (run_lightsim_mp).
+          SOTL             Self-Organizing Traffic Lights.
+          LT_MAXPRESSURE   lost-time-aware MaxPressure.
+          EFF_MAXPRESSURE  pressure-proportional green MaxPressure.
+        """
+        _bp = str(globals().get('BASE_PLAN', 'FIXEDTIME') or 'FIXEDTIME').upper()
+        if _bp == 'MAXPRESSURE':
+            self.run_lightsim_mp(time, timeSta, acycle)
+        elif _bp in ('MAXPRESSURE_PAX', 'MAXPRESS_PAX', 'PAX', 'MP_PAX'):
+            self.run_maxpressure_pax(time, timeSta, acycle)
+        elif _bp == 'SOTL':
+            self.run_sotl(time, timeSta, acycle)
+        elif _bp in ('LT_MAXPRESSURE', 'LTMP'):
+            self.run_maxpressure_lt(time, timeSta, acycle)
+        elif _bp in ('EFF_MAXPRESSURE', 'EFFMP'):
+            self.run_maxpressure_eff(time, timeSta, acycle)
+        elif _bp in ('RL_NUMPYQ', 'RLQ', 'RL_NUMPY_Q'):
+            self.run_rl_numpyq(time, timeSta, acycle)
+        else:
+            # FIXEDTIME / WEBSTER / GREENWAVE and any unknown value: the plan
+            # (optionally Webster-retimed or green-wave-offset at init) ticks.
+            self.run_normal(time, timeSta, acycle)
+
+    def _rl_numpyq_weights(self):
+        """Lazy-load the shared linear-Q weights W (n_actions x n_features)
+        trained in the SUMO gym env (flow_marl_scaffold/train_numpyq.py ->
+        kg_numpyq.npz). Cached in a module global. Path override:
+        RL_NUMPYQ_WEIGHTS; else search the corridor dir then the engine dir.
+        A load failure yields an all-zero W (argmax -> action 0 -> hold the
+        commissioned plan), so the arm degrades to FIXEDTIME, never crashes."""
+        _W = globals().get('_RL_NUMPYQ_W', None)
+        if _W is not None:
+            return _W
+        import numpy as _np, os as _os
+        _path = str(globals().get('RL_NUMPYQ_WEIGHTS', '') or '')
+        _cands = [_path] if _path else []
+        _cd = globals().get('_CORRIDOR_DIR', None)
+        if _cd:
+            _cands.append(_os.path.join(str(_cd), 'kg_numpyq.npz'))
+        _ed = _os.path.dirname(_os.path.abspath(__file__))
+        _cands += [_os.path.join(_ed, 'kg_numpyq.npz'),
+                   _os.path.join(_os.path.dirname(_ed), 'kg_numpyq.npz')]
+        _W = None
+        for _c in _cands:
+            try:
+                if _c and _os.path.exists(_c):
+                    _d = _np.load(_c)
+                    _W = _np.asarray(_d['W'], dtype=float)
+                    log_to_file('[RL_NUMPYQ] loaded weights %s shape %s'
+                                % (_c, _W.shape))
+                    break
+            except Exception as _e:
+                log_to_file('[RL_NUMPYQ] weight load failed at %s: %r' % (_c, _e))
+        if _W is None:
+            log_to_file('[RL_NUMPYQ] NO weights found -> zero policy (holds plan)')
+            _W = _np.zeros((2, 12))
+        globals()['_RL_NUMPYQ_W'] = _W
+        return _W
+
+    def _rl_numpyq_obs(self, _phs, _cur_id, _elapsed):
+        """Build the 11-feature observation + bias (12-vector) matching the
+        SUMO KGMultiAgentEnv exactly:
+          [q0/40, v0/20, ..., q3/40, v3/20,            # up to 4 incoming approaches
+           phase_idx/n_phases, min(1, tts/HZ), min(1, n_phases/10), 1.0(bias)]
+        Queue = section avg long-queue (veh); speed = section mean speed, Aimsun
+        km/h -> m/s. Fewer than 4 approaches zero-pad. Semantics mirror the gym
+        env's edge halting-count + mean speed per controlled approach."""
+        import numpy as _np
+        _MAXQ, _MAXV = 40.0, 20.0
+        _secs = list(getattr(self, 'incoming_sections', None) or [])[:4]
+        _vals = []
+        for _s in _secs:
+            _q, _v = 0.0, 0.0
+            try:
+                _st = AKIEstGetCurrentStatisticsSection(int(_s), 0)
+                if getattr(_st, 'report', -1) != 0:
+                    _st = AKIEstGetGlobalStatisticsSection(int(_s), 0)
+                if getattr(_st, 'report', -1) == 0:
+                    _q = max(0.0, float(getattr(_st, 'LongQueueAvg', 0.0) or 0.0))
+                    _v = max(0.0, float(getattr(_st, 'Sp', 0.0) or 0.0)) / 3.6
+            except Exception:
+                pass
+            _vals += [min(1.0, _q / _MAXQ), min(1.0, _v / _MAXV)]
+        while len(_vals) < 8:
+            _vals.append(0.0)
+        _n = max(1, len(_phs))
+        try:
+            _pi = _phs.index(_cur_id) if _cur_id in _phs else 0
+        except Exception:
+            _pi = 0
+        _hz = float(globals().get('RL_NUMPYQ_HORIZON_S', 1200.0) or 1200.0)
+        _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+        _tts = max(0.0, _max_g - float(_elapsed))
+        _vals += [_pi / _n, min(1.0, _tts / max(1.0, _hz)),
+                  min(1.0, _n / 10.0), 1.0]
+        return _np.asarray(_vals, dtype=float)
+
+    def run_rl_numpyq(self, time, timeSta, acycle):
+        """RL base plan: a shared linear-Q policy (trained in the SUMO gym env)
+        picks keep (0) / advance-to-next-green (1) each tick. Same MIN/MAX_GREEN
+        floors and the _base_plan_due_to_switch hold-to-plan coordination guard
+        as the MaxPressure bases, so switches land only at the plan's natural
+        points and the commissioned corridor progression is preserved. Weights
+        load from kg_numpyq.npz; a missing file degrades to holding the plan."""
+        _m = self._base_plan_rows(time)
+        if _m is None:
+            self.run_normal(time, timeSta, acycle)
+            return
+        _phs, _green, _rows, _cur_id, _ring_cur, _elapsed = _m
+        try:
+            import numpy as _np
+            if _ring_cur is None:                # on an interphase -> let plan run
+                self.run_normal(time, timeSta, acycle)
+                return
+            _min_g = float(globals().get('MIN_GREEN', 6.0) or 6.0)
+            _max_g = float(globals().get('MAX_GREEN', 60.0) or 60.0)
+            if _elapsed < _min_g:                # protect MIN_GREEN
+                self._gate_hit('rlq_hold_min', time)
+                return
+            _W = self._rl_numpyq_weights()
+            _f = self._rl_numpyq_obs(_phs, _cur_id, _elapsed)
+            _act = int(_np.argmax(_W @ _f))
+            _force = _elapsed >= _max_g
+            if _act == 1 or _force:
+                if not self._base_plan_due_to_switch(time, _cur_id, _elapsed):
+                    self._gate_hit('rlq_hold_to_plan', time)   # keep coordination
+                    return
+                _nxt = _green[(_ring_cur + 1) % len(_green)]
+                _idx = _phs.index(_nxt)
+                if 0 <= _idx < len(_phs):
+                    self.apply_action(_idx, timeSta, time, acycle)
+            else:
+                self._gate_hit('rlq_hold', time)
+        except Exception as _e:
+            log_to_file("[RL_NUMPYQ] fallback to normal: %r" % (_e,))
+            self.run_normal(time, timeSta, acycle)
 
     def run_rl(self, time, timeSta, acycle):
         state  = self.build_state()
@@ -21991,6 +23068,7 @@ class IntersectionController:
             _n_steps = max(1, int(round(_horizon / _dt)))
             _extra_red_steps = max(0, int(round(float(action_s) / _dt)))
             _total = 0.0
+            _worst = 0.0        # single worst conflicting approach (marginal mode)
             _vf0, _w0, _kj0, _sat0 = _vf_kmh, _w_kmh, _kj, _sat_h
             for _sec in _secs:
                 _vf_kmh, _w_kmh, _kj, _sat_h = _vf0, _w0, _kj0, _sat0
@@ -22097,10 +23175,22 @@ class IntersectionController:
                             d += sum(n) * _dt
                         return d
 
-                    _total += max(0.0, _sim(_extra_red_steps) - _sim(0)) * _car_occ
+                    _dsec = max(0.0, _sim(_extra_red_steps) - _sim(0)) * _car_occ
+                    _total += _dsec
+                    if _dsec > _worst:
+                        _worst = _dsec
                 except Exception:
                     continue
             _nf = float(getattr(_spm, 'NETWORK_FACTOR', 1.0) or 1.0)
+            # MARGINAL-COMPETITOR side cost (SIDE_COST_MARGINAL_COMPETITOR, off by
+            # default): the main/bus hold displaces ONE competing phase at a time,
+            # so charge only the single worst conflicting approach, not the sum
+            # over all of them. Per-SECTION granularity here (the committed-game
+            # cross path iterates sections); _compute_side_delay_penalty does the
+            # same at per-PHASE granularity. Correct for the fixed-cycle
+            # coordinated plans all champion arms run.
+            if bool(globals().get('SIDE_COST_MARGINAL_COMPETITOR', False)):
+                return max(0.0, _worst * _nf)
             return max(0.0, _total * _nf)
         except Exception:
             return 0.0
@@ -23787,9 +24877,15 @@ class IntersectionController:
             _jid_r = int(getattr(self, 'node_id', 0) or 0) or int(self.id)
             _bp_r = int(getattr(self, 'BusPhase', -1) or -1)
             if int(ECIGetCurrentPhase(_jid_r)) == _bp_r:
-                _rem = max(0.0, float(ECIGetStartingTimePhase(_jid_r))
-                           + float(GetPhaseDuration(_jid_r, _bp_r, 0.0))
-                           - float(time))
+                # BASE_PLAN: the reactive controller commits only to MIN_GREEN,
+                # so the layer-on-top sizes against that floor, NOT the plan.
+                _bp_rem = self._base_plan_committed_green_s(time)
+                if _bp_rem is not None:
+                    _rem = _bp_rem
+                else:
+                    _rem = max(0.0, float(ECIGetStartingTimePhase(_jid_r))
+                               + float(GetPhaseDuration(_jid_r, _bp_r, 0.0))
+                               - float(time))
             else:
                 _rem = 0.0
         except Exception as _swx:
@@ -23942,6 +25038,9 @@ class IntersectionController:
             q_sat_vph_lane=float(_cal.get('q_max_vph_lane', _qs) or _qs),
             dt_s=float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0),
             max_cells=int(globals().get('CBQL_CTM_MAX_CELLS', 12) or 12))
+        _ctm_cap_note(int(sec), _g)
+        _c[int(sec)] = _g
+        return _g
         _c[int(sec)] = _g
         return _g
 
@@ -23998,6 +25097,72 @@ class IntersectionController:
             _pri_secs |= {int(x) for x in (_po.get(_ph, []) or [])}
         _n_bus = sum(_seeded[_s][3] for _s in _pri_secs if _s in _seeded)
         return _snap, _n_bus
+
+    def _game_ctm2_chain_geom_veh(self, s):
+        """(ApproachGeom, [(dist_to_stopline_m, is_bus)]) for the CTM2 game,
+        seeded over the RESOLVED UPSTREAM CHAIN rather than the single stop-line
+        section. GAME_CTM2_CHAIN_SEED path.
+
+        The default seed (_cbql_ctm_geom + single-section vehicle enumeration)
+        models only the stop-line section's own length. On short-block corridors
+        (e.g. Logan, 5-15 m stop-line stubs) that collapses the approach to ~1
+        cell and the standing queue that extends upstream across the connector
+        chain is invisible to the game -- the cell model cannot see the backlog
+        it is about to grant green into. This reuses the same upstream-chain walk
+        the queue-counter and the virtual-detector reach already use (honest
+        stops at dead/managed/main), and places each LIVE vehicle (true position,
+        no estimator) at its real distance to the stop line:
+            dist_to_stop = dist_base + (seg_len - CurrentPos)
+        where dist_base is the chain metres downstream of the segment the vehicle
+        is on. Geometry length is the resolved chain length (capped by the plant
+        reach), so the CTM gets its proper multi-cell domain. Falls back to the
+        single-section geometry whenever the walk yields nothing.
+        """
+        _base = self._cbql_ctm_geom(int(s))
+        _reach = float(globals().get('GAME_CTM2_CHAIN_REACH_M', 200.0) or 200.0)
+        try:
+            _segs, _why = self._upstream_chain(int(s), _reach)
+        except Exception as _swx:
+            _note_swallow('_game_ctm2_chain#walk', _swx)
+            _segs = None
+        if not _segs:
+            _segs = [(int(s), 0.0, float(_base.length_m))]
+        _chain_len = 0.0
+        for (_sec, _db, _sl) in _segs:
+            try:
+                _chain_len = max(_chain_len, float(_db) + float(_sl))
+            except Exception:
+                continue
+        _chain_len = max(min(_chain_len, _reach), float(_base.length_m))
+        try:
+            _g = _ctm2.ApproachGeom(
+                length_m=_chain_len, lanes=_base.lanes,
+                v_free_kmh=_base.v_free_kmh, w_back_kmh=_base.w_back_kmh,
+                k_jam_vkm_lane=_base.k_jam_vkm_lane,
+                q_sat_vph_lane=_base.q_sat_vph_lane,
+                dt_s=_base.dt_s, max_cells=_base.max_cells)
+        except Exception as _swx:
+            _note_swallow('_game_ctm2_chain#geom', _swx)
+            _g = _base
+        _btp = int(getattr(self, 'bus_type_pos', -1) or -1)
+        _veh = []
+        for (_sec, _db, _sl) in _segs:
+            try:
+                _n = max(int(AKIVehStateGetNbVehiclesSection(int(_sec), True)), 0)
+            except Exception as _swx:
+                _note_swallow('_game_ctm2_chain#nveh', _swx)
+                _n = 0
+            for _vi in range(_n):
+                try:
+                    _inf = AKIVehStateGetVehicleInfSection(int(_sec), _vi)
+                    _pos = float(getattr(_inf, 'CurrentPos', 0.0) or 0.0)
+                    _d = float(_db) + (float(_sl) - _pos)
+                    if _d < 0.0:
+                        continue
+                    _veh.append((_d, _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
+                except Exception:
+                    continue
+        return _g, _veh
 
     def _game_ctm2_payoffs(self, actions, time, timeSta=0.0):
         """Two-class CTM payoffs (B, C, b) pax.s for each (type, seconds) in
@@ -24057,17 +25222,79 @@ class IntersectionController:
         for _p, _secs in _po.items():
             for _s in (_secs or []):
                 _sec_ph.setdefault(int(_s), set()).add(int(_p))
+        # CASCADE PRICING (GAME_CTM2_SPILLBACK): throttle each approach's stop-
+        # line discharge by its DOWNSTREAM receiving link's free space, so the
+        # game cannot bank the benefit of pushing a platoon into a jammed
+        # arterial link -- it imports the downstream (arterial) queue into the
+        # single-junction payoff through the CTM supply boundary. out_cap_frac =
+        # max(0, 1 - gamma*downstream_block); 1.0 (off) keeps the free-sink CTM.
+        _spill = bool(globals().get('GAME_CTM2_SPILLBACK', False))
+        _spill_g = float(globals().get('GAME_CTM2_SPILLBACK_GAMMA', 1.0) or 1.0)
+        _blk = {}
+        if _spill:
+            _roll_on = bool(globals().get('GAME_CTM2_ROLLOUT', False) or globals().get('GAME_CTM2_LIGHTSIM', False))
+            if not getattr(self, '_roll_env_logged', False):
+                self._roll_env_logged = True
+                try:
+                    if os.environ.get('SPILL_BLOCK_LOG'):
+                        log_to_file(
+                            "[SPILLROLL-ENV] jct=%s rollout=%r spill=%r"
+                            % (getattr(self, 'id', '?'), _roll_on, _spill),
+                            force=True)
+                except Exception:
+                    pass
+            if _roll_on:
+                # Shared 2-hop network CTM rollout (GAME_CTM2_ROLLOUT): ONE
+                # rollout of the current plan per decision, read out per phase
+                # and reused by every candidate. {} => fail open (1.0).
+                try:
+                    _blk = dict(self._ctm2_rollout_block(
+                        _ring, _cur, _rem, _greens) or {})
+                except Exception as _swx:
+                    _note_swallow('_game_ctm2_payoffs#rollout', _swx)
+                    _blk = {}
+            else:
+                for _p in _ring:
+                    try:
+                        _blk[int(_p)] = max(0.0, float(self._phase_downstream_block(int(_p)) or 0.0))
+                    except Exception:
+                        _blk[int(_p)] = 0.0
+        if _spill:
+            # Payoff-scoped proof trace (SPILL_BLOCK_LOG): the block term as
+            # the payoff actually computed it, per decision. Capped per
+            # junction so the log stays readable.
+            try:
+                if os.environ.get('SPILL_BLOCK_LOG'):
+                    _nlg = int(getattr(self, '_spillpay_n', 0) or 0)
+                    if _nlg < 400:
+                        self._spillpay_n = _nlg + 1
+                        _posv = [float(v) for v in _blk.values()
+                                 if float(v) > 0.0]
+                        log_to_file(
+                            "[SPILLPAY] jct=%s mode=%s n_ph=%d "
+                            "n_pos=%d max=%.3f"
+                            % (getattr(self, 'id', '?'),
+                               'lightsim' if bool(globals().get('GAME_CTM2_LIGHTSIM', False)) else ('rollout' if bool(globals().get('GAME_CTM2_ROLLOUT', False)) else 'scalar'),
+                               len(_blk), len(_posv),
+                               max(_posv) if _posv else 0.0),
+                            force=True)
+            except Exception:
+                pass
+        _chain_seed = bool(globals().get('GAME_CTM2_CHAIN_SEED', False))
         _snap = {}
         for _s, _phs in _sec_ph.items():
-            _g = self._cbql_ctm_geom(_s)
-            _veh = []
-            try:
-                for _vi in range(max(int(AKIVehStateGetNbVehiclesSection(_s, True)), 0)):
-                    _inf = AKIVehStateGetVehicleInfSection(_s, _vi)
-                    _veh.append((_g.length_m - float(getattr(_inf, 'CurrentPos', 0.0) or 0.0),
-                                 _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
-            except Exception as _swx:
-                _note_swallow('_game_ctm2_payoffs#veh', _swx)
+            if _chain_seed:
+                _g, _veh = self._game_ctm2_chain_geom_veh(_s)
+            else:
+                _g = self._cbql_ctm_geom(_s)
+                _veh = []
+                try:
+                    for _vi in range(max(int(AKIVehStateGetNbVehiclesSection(_s, True)), 0)):
+                        _inf = AKIVehStateGetVehicleInfSection(_s, _vi)
+                        _veh.append((_g.length_m - float(getattr(_inf, 'CurrentPos', 0.0) or 0.0),
+                                     _btp > 0 and int(getattr(_inf, 'type', -1)) == _btp))
+                except Exception as _swx:
+                    _note_swallow('_game_ctm2_payoffs#veh', _swx)
             _arr = None
             try:
                 _arr = self._vlt_advance_vph(_s)
@@ -24079,12 +25306,78 @@ class IntersectionController:
                 except Exception as _swx:
                     _note_swallow('_game_ctm2_payoffs#arr', _swx)
                     _arr = 0.0
-            _snap[_s] = (_g, _ctm2.seed_cells(_g, _veh), _arr, tuple(sorted(_phs)))
+            if _spill:
+                _bk = max((_blk.get(int(_p), 0.0) for _p in _phs), default=0.0)
+                _ocf = min(max(1.0 - _spill_g * _bk, 0.0), 1.0)
+                try:
+                    if os.environ.get('SPILL_BLOCK_LOG'):
+                        _no = int(getattr(self, '_spillocf_n', 0) or 0)
+                        if _no < 200:
+                            self._spillocf_n = _no + 1
+                            log_to_file(
+                                "[SPILLOCF] jct=%s sec=%s phases=%s blk=%.4f "
+                                "gamma=%.3f ocf=%.4f"
+                                % (getattr(self, 'id', '?'), _s,
+                                   ','.join(str(int(p)) for p in sorted(_phs)),
+                                   float(_bk), float(_spill_g), float(_ocf)),
+                                force=True)
+                except Exception:
+                    pass
+                _snap[_s] = (_g, _ctm2.seed_cells(_g, _veh), _arr,
+                             tuple(sorted(_phs)), _ocf)
+            else:
+                _snap[_s] = (_g, _ctm2.seed_cells(_g, _veh), _arr, tuple(sorted(_phs)))        # BUS-IN-HORIZON PROOF TRACE (2026-11-09): b (the bus payoff the
+        # GAME_BUS_IN_HORIZON gate tests) is
+        #   b = sum_s(base[s].bus_delay_vs - act[s].bus_delay_vs) * bus_occ
+        # so it is EXACTLY 0 when no bus is seeded into the modelled cells:
+        # seed_cells() drops vehicles beyond n_cells*cell_len_m and marks a bus
+        # only when bus_type_pos > 0 and type == bus_type_pos. This logs the
+        # seeding facts, so a u_bus=0 pick can be attributed:
+        #   seeded_bus=0, btp<=0   -> bus class unresolved (BUS_TYPE_POS config)
+        #   seeded_bus=0, btp>0    -> no bus on the modelled approaches/beyond reach
+        #   seeded_bus>0           -> bus IS modelled; the zero comes from the
+        #                             action not changing its discharge in the
+        #                             horizon (green already sufficient / bus past
+        #                             the stop line / saturated cell)
+        try:
+            if os.environ.get('CTM2BUS_LOG') or os.environ.get('SPILL_BLOCK_LOG'):
+                _nbus_c = 0.0
+                _ncar_c = 0.0
+                _reach_m = 0.0
+                for _e in _snap.values():
+                    try:
+                        _nbus_c += float(sum(_e[1].bus))
+                        _ncar_c += float(sum(_e[1].car))
+                        _reach_m = max(_reach_m, float(_e[0].length_m))
+                    except Exception:
+                        continue
+                _nlgb = int(getattr(self, '_ctm2bus_n', 0) or 0)
+                if _nlgb < 60:
+                    self._ctm2bus_n = _nlgb + 1
+                    log_to_file(
+                        "[CTM2BUS] jct=%s t=%.0f btp=%d bus_occ=%.0f n_sec=%d "
+                        "seeded_cars=%.0f seeded_bus=%.0f reach_m=%.0f "
+                        "chain_seed=%r"
+                        % (getattr(self, 'id', '?'), float(time),
+                           int(getattr(self, 'bus_type_pos', -1) or -1),
+                           float(getattr(self, 'BusOcc', 40.0) or 40.0),
+                           len(_snap), _ncar_c, _nbus_c, _reach_m,
+                           bool(globals().get('GAME_CTM2_CHAIN_SEED', False))),
+                        force=True)
+        except Exception:
+            pass
+
         _dt = float(globals().get('CBQL_CTM_DT_S', 2.0) or 2.0)
         if not _snap:
             self._game_ctm2_na('no modelled approach sections')
             return None
-        return _ctm2.game_payoffs(
+        _gmarg = bool(globals().get('SIDE_COST_MARGINAL_COMPETITOR', False))
+        if _gmarg and not getattr(self, '_game_marginal_logged', False):
+            self._game_marginal_logged = True
+            log_to_file("[GAME_MARGINAL] CTM2 game cross-cost = WORST single "
+                        "competing phase (SIDE_COST_MARGINAL_COMPETITOR on), "
+                        "not the sum over all non-main approaches", force=True)
+        _pay = _ctm2.game_payoffs(
             _snap, _ring, _cur, _rem, _greens,
             int(getattr(self, 'BusPhase', -1) or -1), list(actions),
             intergreen=float(globals().get('GAME_CTM2_IG_S',
@@ -24092,7 +25385,18 @@ class IntersectionController:
             horizon=float(globals().get('GAME_CTM2_HORIZON_S', 60.0) or 60.0),
             dt=_dt, bus_pce=float(globals().get('CBQL_CTM_BUS_PCE', 2.0) or 2.0),
             bus_occ=float(getattr(self, 'BusOcc', 40.0) or 40.0),
-            car_occ=float(getattr(self, 'CarOcc', 1.5) or 1.5), lead=_lead)
+            car_occ=float(getattr(self, 'CarOcc', 1.5) or 1.5), lead=_lead,
+            cross_mult=float(globals().get('GAME_CROSS_STARVE_MULT', 1.0) or 1.0),
+            marginal=_gmarg)
+        # GAME_MARGINAL_DIAG: the payoff evaluator queues a counter line every
+        # 25th action.  Aimsun's print() does not reach the run log, so drain
+        # it through the engine's own sink.  No-op when the flag is off.
+        if _gmarg:
+            _drain = getattr(_ctm2, 'drain_marginal_diag', None)
+            if _drain is not None:
+                for _gml in _drain():
+                    log_to_file(_gml, force=True)
+        return _pay
 
     def _game_ctm2_na(self, reason):
         """[GAME_CTM2_NA] once per junction per reason: why the CTM payoffs
@@ -24331,6 +25635,7 @@ class IntersectionController:
         green extensions of various durations, phase insertion) and picks the
         one with the highest reward R = -(delay + bus_delay).
         """
+        self._na_cause = None   # per-detection NO_ACTION cause (na:* buckets)
         # CBQL_SHAPLEY (observe-only wiring): run the phase-selection Shapley
         # learner on live junction data and log it; it does NOT override the
         # plan yet, so this falls through to the normal decider below.
@@ -24479,6 +25784,7 @@ class IntersectionController:
         if bool(globals().get('ACTUATED_BASE_MODE', False)):
             try:
                 if self._coordinated_actuated_base(time, timeSta, acycle):
+                    self._no_action_reason('actuated_base', time)
                     return
             except Exception as _abe:
                 log_to_file(f"[ACTBASE] inter={self.id} error {_abe!r}")
@@ -24505,8 +25811,44 @@ class IntersectionController:
         # running the full reward calculation on every simulation step when
         # nothing is changing (the 30 s stats debounce only affects counters).
         if time < getattr(self, '_reward_no_action_until', -1.0):
-            self._gate_hit('no_action_hold', time)
-            return
+            # BUS OVERRIDE (2026-11-10): the NO_ACTION debounce exists to skip
+            # re-running a full evaluation when NOTHING has changed -- but a bus
+            # in the zone IS a change, and every [GATE SUMMARY] showed this gate
+            # swallowing the vast majority of decision ticks (inter=39578
+            # no_action_hold=7789 vs cooldown=133 over 4222 s; same shape in the
+            # pre-MP DRL_DENSITY session at 5768 vs 133). A bus arriving inside
+            # the window was therefore never evaluated at all: 973 detections ->
+            # 9 no-action events -> 0 grants. Only skip when no bus is present;
+            # the block is counted separately so the funnel stays readable.
+            _bus_here = False
+            _bus_src = 'cache'
+            try:
+                _bp = np.asarray(getattr(self, 'BusPresence', None), dtype=float)
+                _bus_here = bool(_bp.size) and bool((_bp > 0).any())
+            except Exception:
+                _bus_here = False
+            if not _bus_here:
+                # LIVE FALLBACK (2026-11-10): BusPresence is refreshed by the
+                # 3 s PT scan, so a bus that arrived since the last scan is
+                # invisible to the cached flag and the debounce would still
+                # swallow it. Ask the physical detectors instead -- the same
+                # call run_normal uses -- so an arriving bus always counts.
+                # Only reached while a hold is active, so it costs a handful
+                # of reads per window. Counted separately from the cache hit
+                # so the log shows which path found the bus.
+                try:
+                    _btp = int(getattr(self, 'bus_type_pos', -1))
+                    for _det in (getattr(self, 'BusDet', None) or []):
+                        if AKIDetGetCounterCyclebyId(_det, _btp) > 0:
+                            _bus_here = True
+                            _bus_src = 'live'
+                            break
+                except Exception:
+                    pass
+            if not _bus_here:
+                self._gate_hit('no_action_hold', time)
+                return
+            self._gate_hit('no_action_hold_bus_' + _bus_src, time)
 
         # (legacy mojibake comment truncated)
         if self.flag != 0:
@@ -24544,6 +25886,7 @@ class IntersectionController:
             try:
                 _ps_active = float(ECIGetStartingTimePhase(self.node_id))
                 if (time - _ps_active) < _min_active:
+                    self._no_action_reason('min_phase_active', time)
                     return
             except Exception:
                 pass
@@ -24580,6 +25923,7 @@ class IntersectionController:
                             force=True)
                     except Exception:
                         pass
+                self._no_action_reason('prearm_cycle_end', time)
                 return
             self._prearm_block_logged = False
 
@@ -24644,6 +25988,7 @@ class IntersectionController:
                 try:
                     if self._maybe_skip_empty_phase(time, timeSta, acycle,
                                                     current_phase):
+                        self._no_action_reason('empty_phase_skip', time)
                         return
                 except Exception as _spe:
                     log_to_file(f"[EMPTY_SKIP] inter={self.id} error {_spe!r}")
@@ -24679,6 +26024,8 @@ class IntersectionController:
                             bus_eta_s=1.0e9, veh_id=-1, stats_ok=False, monitor=True)
                 except Exception as _mme:
                     log_to_file(f"[MONITOR] inter={self.id} error {_mme!r}")
+            if getattr(self, '_na_cause', None) is None:
+                self._no_action_reason('monitor_no_bus', time)
             return
 
         # (legacy mojibake comment truncated)
@@ -24702,6 +26049,7 @@ class IntersectionController:
                     f"v={_det_vid} focus_suppress ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â focus bus={_focus_bus_id}")
             _mark_detection_point(self.id, _det_vid, 0.0, 0.0, time, "focus_suppress")
             self._record_detection(time)
+            self._no_action_reason('focus_suppress', time)
             return
 
         # (legacy mojibake comment truncated)
@@ -24741,6 +26089,7 @@ class IntersectionController:
         _cycle = float(self.cycle_len_s)
         if bus_eta_s > 2.0 * _cycle:
             self._reward_no_action_until = time + float(globals().get('NO_ACTION_HOLD_S', 5.0) or 5.0)
+            self._no_action_reason('bus_beyond_2_cycles', time)
             return
         # (legacy mojibake comment truncated)
         # Commit actions only when arrival is near enough to be trusted
@@ -24752,6 +26101,7 @@ class IntersectionController:
             "MIN_EFFECTIVE_PREARM_LEAD_S", 10.0) or 10.0)
         if (_sig_act > _sig_max) or (bus_eta_s < _act_min_lead):
             self._reward_no_action_until = time + 3.0
+            self._no_action_reason('sigma_or_lead_gate', time)
             return
 
         # (legacy mojibake comment truncated)
@@ -24781,6 +26131,8 @@ class IntersectionController:
         # NO_ACTION_HOLD_S before re-checking so the full evaluation is not re-run
         # every sim step while nothing changes. A grant sets its own longer window.
         if self.flag == 0:
+            if getattr(self, '_na_cause', None) is None:
+                self._no_action_reason('unattributed', time)
             _hold = float(globals().get('NO_ACTION_HOLD_S', 5.0) or 0.0)
             if _hold > 0.0:
                 self._reward_no_action_until = max(
@@ -25011,6 +26363,7 @@ class IntersectionController:
             _mark_detection_point(self.id, veh_id, 0.0, 0.0, time, "focus_suppress")
             if stats_ok:
                 self._record_detection(time)
+            self._no_action_reason('focus_suppress_eval', time)
             return
 
         # Action 0: NO_ACTION
@@ -26281,6 +27634,7 @@ class IntersectionController:
                     f"z4_net={_z4_net_pax_s:.1f} pax-s "
                     f"below tolerance={-_z4_eff_tol():.0f} -> forcing NO_ACTION",
                     )
+                self._no_action_reason('z4_gate', time)
                 best_action = "NO_ACTION"
                 best_ge = 0.0
                 best_reward = reward_no_action
@@ -26502,6 +27856,25 @@ class IntersectionController:
                         _na_reason = "decider held: no net-positive action"
                 else:
                     _na_reason = "cost to others outweighs bus benefit"
+            _na_tok = 'cost_veto'
+            _na_nat = False
+            try:
+                _na_nat = bool(_nat_green)
+            except Exception:
+                _na_nat = False
+            if _na_nat:
+                _na_tok = 'natural_green'
+            elif _na_reason.startswith('per-cycle gap'):
+                _na_tok = 'per_cycle_gap'
+            elif _na_reason.startswith('duration <'):
+                _na_tok = 'duration_below_min'
+            elif 'pre-warm' in _na_reason:
+                _na_tok = 'decider_prewarm'
+            elif 'on-time' in _na_reason:
+                _na_tok = 'decider_on_time'
+            elif 'no net-positive' in _na_reason:
+                _na_tok = 'decider_no_gain'
+            self._no_action_reason(_na_tok, time)
             log_to_file(
                 f"[REWARD_TSP] inter={self.id} t={time:.1f} bus={veh_id} "
                 f"eta={_eta_disp} DECISION=NO_ACTION R={best_reward:.1f} "
@@ -29384,6 +30757,12 @@ class IntersectionController:
                     if idx < len(self.GreenStartTimeList):
                         self.GreenStartTimeList[idx][:] = time
                         dur = GetPhaseDuration(self.node_id, current_phase, timeSta)
+                        # NOTE: NextRedStartTime stays PLAN-based on BASE_PLAN --
+                        # it is the commissioned coordination anchor the reactive
+                        # bases hold to (_base_plan_due_to_switch) and the gate
+                        # run_lightsim_mp reads. The guaranteed green the on-top
+                        # GE/INS may rely on is the MIN_GREEN floor, exposed
+                        # separately by _base_plan_committed_green_s.
                         if idx < len(self.NextRedStartTime):
                             self.NextRedStartTime[idx][:] = time + dur
                 self.previous_phase = current_phase
@@ -29462,6 +30841,37 @@ class IntersectionController:
                 tsp_active = self.check_bus_priority(time, timeSta, acycle)
                 if not tsp_active:
                     self.run_rl(time, timeSta, acycle)
+                self.restore_phase_if_needed(time, timeSta, acycle)
+
+            elif CONTROL_MODE == "LIGHTSIM_MP":
+                # BASE PLAN = LightSim MaxPressure; TSP + GAME_SOLUTION on top.
+                # run_reward_tsp() IS the game layer (its _run_reward_tsp_evaluate
+                # calls carry the GAME_SOLUTION / NASH / utilitarian arbitration),
+                # so it runs first and always wins.  The MaxPressure base plan
+                # only sets the stage on ticks where no grant was issued, which
+                # is the "LightSim controller + TSP flavour" stack this mode is
+                # for.  apply_action's MIN_GREEN additionally protects a fresh
+                # grant for 5 s even if a later tick reaches the base plan.
+                self.run_reward_tsp(time, timeSta, acycle)
+                _grant_age = float(time) - float(
+                    getattr(self, 'last_tsp_action_time', -1e9) or -1e9)
+                if _grant_age > 1.0:
+                    self.run_lightsim_mp(time, timeSta, acycle)
+                self.restore_phase_if_needed(time, timeSta, acycle)
+
+            elif CONTROL_MODE == "BASE_PLAN":
+                # LightSim controller FAMILY as the base plan; TSP + GAME layer
+                # on top. Identical stack to LIGHTSIM_MP (run_reward_tsp wins;
+                # the base only fills no-grant ticks + the 5 s grant protection
+                # in apply_action), but BASE_PLAN selects WHICH base controller
+                # runs (FIXEDTIME / WEBSTER / GREENWAVE / MAXPRESSURE / SOTL /
+                # LT_MAXPRESSURE / EFF_MAXPRESSURE). MAXPRESSURE here == the
+                # LIGHTSIM_MP mode's base, reached through the registry.
+                self.run_reward_tsp(time, timeSta, acycle)
+                _grant_age = float(time) - float(
+                    getattr(self, 'last_tsp_action_time', -1e9) or -1e9)
+                if _grant_age > 1.0:
+                    self.run_base_plan(time, timeSta, acycle)
                 self.restore_phase_if_needed(time, timeSta, acycle)
 
             elif CONTROL_MODE == "URTSP":
@@ -31689,13 +33099,95 @@ def AAPILoad():
     # the code Aimsun actually executed rather than the tag someone
     # remembered to bump. '?' means __file__ was unset at import and the
     # stamp is unavailable.
+    # SPECIALIZED_MODES STAMP (2026-11-09): engine.py and specialized_modes.py
+    # are cached by Aimsun INDEPENDENTLY, so a process can run a fresh engine.py
+    # with a STALE specialized_modes.py -- exactly what aborted the 11:09 Logan
+    # sweep (spm 9be1e01e3fbb loaded vs 01fc5654addb on disk). Until now that
+    # showed up only in runner_console.txt's [PREFLIGHT], never in the run log
+    # itself. specialized_modes stamps its own SOURCE_HASH at ITS import, so
+    # emitting it here puts both module identities on the [LOAD] line.
+    # SPM_SRC says what the hash describes: 'loaded' = the bytes this process
+    # imported (diff it against disk to spot a stale module); 'disk' = spm was
+    # not importable, so the value is the file on disk and proves NOTHING about
+    # what actually executed; 'absent' = neither was available.
+    _spm_hash, _spm_src, _spm_file = _spm_stamp()
     _src_hash = str(globals().get('SOURCE_HASH', '?'))
     log_to_file(f"[LOAD] AAPILoad complete | mode={CONTROL_MODE} | "
                 f"n_intersections={len(INTERSECTIONS_CONFIG)} | "
                 f"ENGINE_BUILD={ENGINE_BUILD} | SOURCE_HASH={_src_hash} | "
+                f"SPM_HASH={_spm_hash} | SPM_SRC={_spm_src} | "
+                f"SPM_FILE={_spm_file} | "
                 f"STATS_BUILD={_stats_build} | "
                 f"engine_file={globals().get('__file__') or '?'}")
     return 0
+
+
+# ── per-run CTM cell-cap coverage (2026-11-09) ───────────────────────────────
+# The two-class CTM clamps each approach to CBQL_CTM_MAX_CELLS, so a cap below
+# ceil(L / cell_len) makes the modelled domain SHORTER than the plant section and
+# every vehicle beyond it invisible to the payoff -- silently, because the game
+# still returns a number for a truncated approach. These two record the plant
+# geometry of every approach section whose geometry is built during a run, and
+# AAPIFinish logs ONE [CTM_CAP] line, so a rebuilt model that outgrows the cap
+# says so in the log instead of only in a CSV nobody diffs.
+#
+# Only _cbql_ctm_geom feeds this: it is the PLANT section geometry. The chain
+# geometry in _game_ctm2_chain is a DERIVED domain (its length is capped by
+# GAME_CTM2_CHAIN_REACH_M, not by the section, and it inherits _base.max_cells),
+# so counting it would double-count a section with two different lengths.
+def _ctm_cap_note(_sec, _g):
+    try:
+        _seen = globals().get('_CTM_CAP_SEEN')
+        if _seen is None:
+            _seen = {}
+            globals()['_CTM_CAP_SEEN'] = _seen
+        _seen[int(_sec)] = (float(getattr(_g, 'length_m', 0.0) or 0.0),
+                            float(getattr(_g, 'cell_len_m', 0.0) or 0.0),
+                            int(getattr(_g, 'n_cells', 0) or 0))
+    except Exception as _e:
+        try:
+            _note_swallow('_ctm_cap_note', _e)
+        except Exception:
+            pass
+
+
+def _ctm_cap_report():
+    """One [CTM_CAP] line per run; clears the tally (AAPIInit also resets it)."""
+    try:
+        import math as _m
+        _seen = globals().get('_CTM_CAP_SEEN') or {}
+        if not _seen:
+            return
+        _cap = int(globals().get('CBQL_CTM_MAX_CELLS', 12) or 12)
+        _lcap = int(globals().get('GAME_CTM2_LIGHTSIM_MAX_CELLS', 12) or 12)
+        _bad = []
+        for _s, (_len, _cl, _n) in _seen.items():
+            _span = _cl * _n
+            if _len > 0 and _cl > 0 and _span < _len - 1e-9:
+                _bad.append((_len - _span, _s, _len, _span,
+                             int(_m.ceil(_len / _cl))))
+        if not _bad:
+            log_to_file("[CTM_CAP] ok: 0/%d approach section(s) truncated at "
+                        "CBQL_CTM_MAX_CELLS=%d (GAME_CTM2_LIGHTSIM_MAX_CELLS=%d)"
+                        % (len(_seen), _cap, _lcap), force=True)
+        else:
+            _bad.sort(reverse=True)
+            _lost = sum(_b[0] for _b in _bad)
+            _worst = '; '.join("section %d %.1f m needs %d cells (models %.1f m)"
+                               % (_b[1], _b[2], _b[4], _b[3]) for _b in _bad[:3])
+            log_to_file("[CTM_CAP] TRUNCATED %d/%d approach section(s), %.1f m "
+                        "of approach NOT modelled at CBQL_CTM_MAX_CELLS=%d "
+                        "(GAME_CTM2_LIGHTSIM_MAX_CELLS=%d); worst: %s; raise "
+                        "BOTH cap values in run_config.py"
+                        % (len(_bad), len(_seen), _lost, _cap, _lcap, _worst),
+                        force=True)
+        globals()['_CTM_CAP_SEEN'] = {}
+    except Exception as _e:
+        try:
+            _note_swallow('_ctm_cap_report', _e)
+        except Exception:
+            pass
+
 
 
 def AAPIInit():
@@ -31717,6 +33209,12 @@ def AAPIInit():
     # Reset the swallowed-exception tracker for this replication.
     try:
         _swallow_reset()
+    except Exception:
+        pass
+    # Reset the CTM cell-cap coverage tally for this replication (reported
+    # once at AAPIFinish as a single [CTM_CAP] line).
+    try:
+        globals()['_CTM_CAP_SEEN'] = {}
     except Exception:
         pass
 
@@ -32317,6 +33815,7 @@ def AAPIInit():
             _sm = sys.modules.get('shared_tsp_engine.specialized_modes')
             _sm_top = sys.modules.get('specialized_modes')
             _eng_mod = sys.modules.get(__name__)
+            _spm_h, _spm_s = _spm_stamp()[:2]
             log_to_file(
                 f"[FLAGS] exp={_CURRENT_EXPERIMENT} "
                 f"ZIG_GE={bool(getattr(_spm, 'ZIG_ENABLE_GE', '?'))}/"
@@ -32362,7 +33861,8 @@ def AAPIInit():
                 f"RESTORD={bool(globals().get('RESTRUCTURE_ORDER', True))} "
                 f"RESTGRP={bool(globals().get('RESTRUCTURE_GROUP', True))} "
                 f"GBCTL={bool(globals().get('GROUP_BASED_CONTROL', False))} "
-                f"build={ENGINE_BUILD}",
+                f"build={ENGINE_BUILD} "
+                f"SPM_HASH={_spm_h} SPM_SRC={_spm_s}",
                 force=True)
         except Exception as _fl_e:
             try:
@@ -32705,7 +34205,7 @@ def AAPIInit():
     # (legacy mojibake comment truncated)
     # DYNAOPAC also builds coordinators (uses COORDINATED_TSP / COORDINATION_ALGO
     # to choose shockwave / kalman / adaptive pre-arm policy like GROUP_BASED_HARMONY)
-    if CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY", "HARMONY", "REWARD_TSP", "DRL_DENSITY", "DYNAOPAC", "DYNAOPAC_HARMONY", "MILP_MPC"):
+    if CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY", "HARMONY", "REWARD_TSP", "DRL_DENSITY", "LIGHTSIM_MP", "BASE_PLAN", "DYNAOPAC", "DYNAOPAC_HARMONY", "MILP_MPC"):
         corridor_coordinators = []
         if LOG_INIT:
             log_to_file(f"[INIT] Building corridor coordinators from {len(INTERSECTION_GROUPS)} group(s)")
@@ -33215,7 +34715,7 @@ def AAPISimulationReady():
                     ctrl.gb = GroupBasedController(iid, ctrl)
                 except Exception as _e:
                     _vprint(f"[GB] instantiate failed jct={iid}: {_e}")
-    if (CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY", "HARMONY", "REWARD_TSP", "DRL_DENSITY", "DYNAOPAC", "DYNAOPAC_HARMONY")
+    if (CONTROL_MODE in ("GROUP_BASED", "GROUP_BASED_URTSP", "GROUP_BASED_HARMONY", "HARMONY", "REWARD_TSP", "DRL_DENSITY", "LIGHTSIM_MP", "BASE_PLAN", "DYNAOPAC", "DYNAOPAC_HARMONY")
             or bool(globals().get('GROUP_BASED_CONTROL', False))):
         # (legacy mojibake comment truncated)
         # GROUP_BASED uses ECIChangeSignalGroupState which requires control_type=2/3.
@@ -34870,6 +36370,8 @@ _SCHED_DEPARTURES = {}
 # Sim wall-clock start (seconds-since-midnight) mapping sim-time -> wall time
 # for departure matching; None when unresolvable (headway fallback used).
 _SCHED_WALL_START = [None]
+_SCHED_MATCH_MIN_WINDOW_S = 120.0   # never narrower than this (s)
+_SCHED_MATCH_MAX_WINDOW_S = 900.0   # never wider than this (s)
 
 # Per-STOP scheduled times (2026-10-12, user: measure adherence AT each stop,
 # not just the origin departure). Extracted once from the Aimsun PT plan:
@@ -35110,6 +36612,116 @@ def _sched_spacing_load_timetable():
             pass
     return (_n_line, _n_int, _n_fix)
 
+
+def _turning_adjacency():
+    """{from_section: set(to_section)} from the network's turning table.
+
+    Session-once. Walks every junction's turns through the AAPI turning
+    primitives (AKIInfNetNbTurnsInNode / AKIInfNetGet{Origin,Destination}
+    SectionInTurn), i.e. the network's own connection table -- under SUMO
+    that table is built from kg.net.xml <connection tl= linkIndex= from=
+    to=>. This is the GLOBAL downstream map a per-junction controller cannot
+    otherwise see, and it is what makes a 2-hop subnet possible.
+
+    Returns {} when nothing resolves (callers then keep the 1-hop scalar
+    path). Never raises.
+    """
+    _c = globals().get('_TURN_ADJ_CACHE')
+    if isinstance(_c, dict) and _c:
+        return _c
+    _adj = {}
+    _jids = []
+    try:
+        try:
+            _jids = list(ANGConnGetObjectIdByType('junction'))
+        except Exception:
+            _jids = []
+        for _j in _jids:
+            try:
+                _nt = int(AKIInfNetNbTurnsInNode(int(_j)))
+            except Exception:
+                _nt = 0
+            for _ti in range(max(_nt, 0)):
+                try:
+                    _a = int(AKIInfNetGetOriginSectionInTurn(int(_j), _ti))
+                    _b = int(AKIInfNetGetDestinationSectionInTurn(int(_j), _ti))
+                except Exception:
+                    continue
+                if _a > 0 and _b > 0 and _a != _b:
+                    _adj.setdefault(int(_a), set()).add(int(_b))
+    except Exception:
+        _adj = {}
+    if not _adj:
+        # Second pass: the AKI turn primitives resolved nothing above, but
+        # the SIGNAL plan primitives do -- the same calls _phase_turn_targets
+        # uses per junction. Walk every junction's phases and read each
+        # turning's (from, to), which restores the global table (and the
+        # second hop) under SUMO.
+        try:
+            for _j in _jids:
+                _jj = int(_j)
+                try:
+                    _np = int(ECIGetNumberofPhases(_jj))
+                except Exception:
+                    try:
+                        _np = int(ECIGetNumberPhases(_jj))
+                    except Exception:
+                        _np = 0
+                for _p in range(1, max(_np, 0) + 1):
+                    _sgs = set()
+                    for _idx in (int(_p), int(_p) - 1):
+                        try:
+                            _nsg = int(ECIGetNbSignalGroupsPhaseofJunction(
+                                _jj, _idx, 0.0))
+                        except Exception:
+                            continue
+                        for _pos in range(1, max(_nsg, 0) + 1):
+                            try:
+                                _sg = int(ECIGetSignalGroupPhaseofJunction(
+                                    _jj, _idx, _pos, 0.0))
+                            except Exception:
+                                continue
+                            if _sg >= 0:
+                                _sgs.add(_sg)
+                        if _sgs:
+                            break
+                    for _sg in _sgs:
+                        try:
+                            _nt = int(ECIGetNumberTurningsofSignalGroup(
+                                _jj, _sg))
+                        except Exception:
+                            _nt = 0
+                        for _ti in range(max(_nt, 0)):
+                            try:
+                                _fp = intp(); _tp = intp()
+                                ECIGetFromToofTurningofSignalGroup(
+                                    _jj, _sg, _ti, _fp, _tp)
+                                _a = int(_fp.value())
+                                _b = int(_tp.value())
+                            except Exception:
+                                continue
+                            if _a > 0 and _b > 0 and _a != _b:
+                                _adj.setdefault(_a, set()).add(_b)
+        except Exception:
+            pass
+    try:
+        if os.environ.get('SPILL_BLOCK_LOG') and not globals().get(
+                '_TURN_ADJ_LOGGED'):
+            globals()['_TURN_ADJ_LOGGED'] = True  # TURNADJ-SG
+            log_to_file("[TURNADJ] jids=%d sections_with_out=%d edges=%d "
+                        "getter_present=%r"
+                        % (len(_jids), len(_adj),
+                           sum(len(v) for v in _adj.values()),
+                           globals().get('ANGConnGetObjectIdByType') is not None),
+                        force=True)
+    except Exception:
+        pass
+    if _adj:
+        try:
+            globals()['_TURN_ADJ_CACHE'] = _adj
+        except Exception:
+            pass
+    return _adj
 
 def _model_topo():
     """Session-once network topology from the MODEL (PyANGKernel), as a
@@ -35456,31 +37068,69 @@ def _sched_spacing_load():
                 force=True)
 
 
-def _match_departure(line_id, observed_wall_s):
-    """(deviation_s, intended_departure_s) against the nearest scheduled
-    departure for the line. dev = observed wall entry - intended (early
-    negative, late positive). Returns (None, None) when the line has no fixed
-    departures (interval lines / unknown wall-start) so callers fall back to
-    the headway method. Never raises."""
+def _sched_match_window_s(line_id):
+    """Half-headway match window for one line, clamped to [120, 900] s.
+
+    A bus more than half a headway from a departure cannot be told apart from
+    the bus on the NEXT departure, so this is the largest deviation the
+    timetable can still attribute to a specific run.
+    """
     try:
-        _deps = _SCHED_DEPARTURES.get(int(line_id))
+        _h = float(_SCHED_SPACING.get(int(line_id)) or 0.0)
+    except Exception:
+        _h = 0.0
+    _w = 0.5 * _h if _h > 0.0 else _SCHED_MATCH_MAX_WINDOW_S
+    return max(_SCHED_MATCH_MIN_WINDOW_S, min(_SCHED_MATCH_MAX_WINDOW_S, _w))
+
+
+def _match_departure(line_id, observed_wall_s, stop_offset_s=0.0):
+    """Attribute one bus observation to a scheduled departure of ITS line.
+
+    Returns (deviation_s, intended_s, confidence, mode):
+      'window'    matched inside the line's half-headway window; confidence is
+                  1 - |dev|/window, so 1.0 is dead on time and ->0 sits at the
+                  window edge.
+      'unmatched' the nearest departure is further than any bus on that line
+                  could plausibly be. The deviation is still returned so the
+                  caller penalises it (at the clamp), but it is counted as
+                  unattributed instead of being reported as lateness.
+      None        the line has no timetable; caller uses the headway method.
+
+    stop_offset_s shifts the departure to the scheduled time at a downstream
+    stop, so the same window works per stop rather than only at line entry.
+
+    2026-11-10: this used to return the unbounded nearest departure. On the KG
+    corridor that produced mean |dev| 877 s and mean signed -418 s on lines
+    whose headway makes that physically impossible -- the match was landing
+    roughly half a headway away and reporting the gap as lateness.
+    """
+    try:
+        _lid = int(line_id)
+        _deps = _SCHED_DEPARTURES.get(_lid)
         if not _deps:
-            return (None, None)
+            return (None, None, 0.0, None)
         _obs = float(observed_wall_s)
+        _off = float(stop_offset_s or 0.0)
+        _win = _sched_match_window_s(_lid)
         _best_d = None
         _best_t = None
         for _t in _deps:
             try:
-                _tt = float(_t)
+                _tt = float(_t) + _off
             except Exception:
                 continue
             _d = _obs - _tt
             if _best_d is None or abs(_d) < abs(_best_d):
                 _best_d = _d
                 _best_t = _tt
-        return (_best_d, _best_t)
+        if _best_d is None:
+            return (None, None, 0.0, None)
+        if abs(_best_d) <= _win:
+            return (_best_d, _best_t,
+                    max(0.0, min(1.0, 1.0 - abs(_best_d) / _win)), "window")
+        return (_best_d, _best_t, 0.0, "unmatched")
     except Exception:
-        return (None, None)
+        return (None, None, 0.0, None)
 
 
 def _match_departure_dev(line_id, observed_wall_s):
@@ -35662,14 +37312,20 @@ def _pt_sigwait_tick(time):
                 # skip: their true entry predates the sim.
                 dev = None
                 _intended = None
+                _match_mode = None
+                _match_conf = 0.0
+                _match_win = None
                 if _PT_FIRST_SEEN.get(_vid, 1e9) > WARMUP_GRACE_S:
                     try:
                         _w0 = _SCHED_WALL_START[0]
                         if _w0 is not None:
-                            dev, _intended = _match_departure(
+                            _match_win = _sched_match_window_s(int(_lid))
+                            dev, _intended, _match_conf, _match_mode = _match_departure(
                                 int(_lid), float(_w0) + float(time))
                     except Exception:
                         dev, _intended = None, None
+                        _match_mode = None
+                        _match_conf = 0.0
                 if dev is None:
                     # FALLBACK: headway method (interval lines / unknown wall
                     # / pre-existing bus). Needs a previous genuine entry.
@@ -35693,6 +37349,7 @@ def _pt_sigwait_tick(time):
                         _pt_inj.MANAGER, "scalar", 1.0) or 1.0))
                     _intended = _last + (_H / _s_eff)
                     dev = float(time) - _intended
+                    _match_mode = 'headway'
                 else:
                     _PT_LAST_ENTRY[int(_lid)] = float(time)
                     _PT_LAST_VID[int(_lid)] = _vid
@@ -35700,7 +37357,9 @@ def _pt_sigwait_tick(time):
                     stats.add_schedule_dev(
                         int(_lid), dev, veh_id=_vid,
                         observed_time_s=float(time), intended_time_s=_intended,
-                        headway_s=_H)
+                        headway_s=_H, match_mode=_match_mode,
+                        match_confidence=_match_conf, match_window_s=_match_win,
+                        stop_offset_s=0.0)
                 except Exception:
                     pass
     except Exception:
@@ -35876,13 +37535,19 @@ def _record_schedule_entry(veh_id, line_ids, now_s):
             continue
         dev = None
         _intended = None
+        _match_mode = None
+        _match_conf = 0.0
+        _match_win = None
         if (_PT_FIRST_SEEN.get(vid, 1e9) > WARMUP_GRACE_S
                 and _w0 is not None):
             try:
-                dev, _intended = _match_departure(
+                _match_win = _sched_match_window_s(lid)
+                dev, _intended, _match_conf, _match_mode = _match_departure(
                     lid, float(_w0) + float(now_s))
             except Exception:
                 dev, _intended = None, None
+                _match_mode = None
+                _match_conf = 0.0
         if dev is None:
             prev_vid = _PT_LAST_VID.get(lid)
             last = _PT_LAST_ENTRY.get(lid)
@@ -35897,13 +37562,16 @@ def _record_schedule_entry(veh_id, line_ids, now_s):
                 continue
             _intended = last + (headway / scalar)
             dev = float(now_s) - _intended
+            _match_mode = 'headway'
         else:
             _PT_LAST_ENTRY[lid] = float(now_s)
             _PT_LAST_VID[lid] = vid
         try:
             stats.add_schedule_dev(
                 lid, dev, veh_id=vid, observed_time_s=float(now_s),
-                intended_time_s=_intended, headway_s=headway)
+                intended_time_s=_intended, headway_s=headway,
+                match_mode=_match_mode, match_confidence=_match_conf,
+                match_window_s=_match_win, stop_offset_s=0.0)
         except Exception:
             pass
 
@@ -38844,6 +40512,10 @@ def _overlay_detections_on_aimsun_map():
 
 def AAPIFinish():
     log_to_file("===== AAPIFinish =====")
+    try:
+        _ctm_cap_report()
+    except Exception as _cce:
+        log_to_file("[CTM_CAP] report failed: %r" % (_cce,), force=True)
     try:
         _vlt_finish()
     except Exception as _vfe:

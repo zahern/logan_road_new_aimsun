@@ -95,6 +95,32 @@ if not _HERE:
     except NameError:
         _HERE = _HERE_DEFAULT
 
+# ── stale-knob guard ────────────────────────────────────────────────────────
+# FIXED_ARMS / FIXED_OUT are CALLER knobs and os.environ lives for the whole
+# Aimsun process, so this launcher would otherwise inherit the arm list and
+# output name of whatever ran before it. Each launcher stamps the env with its
+# own name and a value left by a DIFFERENT launcher is discarded. Two cases are
+# still honoured: a value set in a clean session (the caller meant it), and a
+# re-run of this same launcher. A ladder that delegates here sets the stamp to
+# this file's name first, so its arms survive.
+_ENV_OWNER = "FIXED_ENV_OWNER"
+_MY_NAME = "run_cellq_held_kg.py"
+_prev_owner = _os.environ.get(_ENV_OWNER, "").strip()
+_foreign = bool(_prev_owner) and _prev_owner != _MY_NAME
+
+
+def _knob(key, default):
+    """The caller's value, unless a DIFFERENT launcher left it in the env."""
+    _v = (_os.environ.get(key, "") or "").strip()
+    if not _v or not _foreign:
+        return _v or default
+    _shown = ("%d arms" % len(_v.split(","))) if key == "FIXED_ARMS" else _v
+    print("[ENV] %s = %s was left by %s -- DISCARDED, this launcher's value wins"
+          % (key, _shown, _prev_owner))
+    _os.environ.pop(key, None)   # gone from the env, so a re-run cannot revive it
+    return default
+
+
 SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
 
 # Learner PRE-TRAINING seeds (the paper's protocol: train on 800-1100, then
@@ -104,7 +130,7 @@ SEEDS = _os.environ.get("FIXED_SEEDS", "300,400,500")
 # these extra seeds first (~15 min each). FIXED_TRAIN_SEEDS="" to skip.
 TRAIN_SEEDS = _os.environ.get("FIXED_TRAIN_SEEDS", "800,900,1000,1100")
 
-ARMS = _os.environ.get(
+ARMS = _knob(
     "FIXED_ARMS",
     "CHAMP_ADAPTIVE_DSW_CELLQ_GATED,"
     "CHAMP_ADAPTIVE_DSW_CELLQ_GATED_OPEN")
@@ -118,8 +144,11 @@ CORRIDOR = _os.environ.get("FIXED_CORRIDOR", "kg")
 # pass a different one.  A colliding EXPLICIT name is still refused -- that is a
 # deliberate choice, and silently writing elsewhere would hide it.
 _DEFAULT_OUT = "cellq_held_kg.csv"
-_FIXED_OUT_RAW = _os.environ.get("FIXED_OUT", "").strip()
+_FIXED_OUT_RAW = _knob("FIXED_OUT", "")
 OUT = _FIXED_OUT_RAW or _DEFAULT_OUT
+# Claim the env, so a launcher exec'd after this one discards these knobs.
+_os.environ["FIXED_ARMS"] = ARMS
+_os.environ[_ENV_OWNER] = _MY_NAME
 
 # ── output protection ───────────────────────────────────────────────────────
 # Published / previously-reported result files. Refused even with

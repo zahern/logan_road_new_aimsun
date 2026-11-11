@@ -54,6 +54,21 @@ _MAX_SECTION_FLOW_VPH_PER_LANE = 2600.0
 # Max plausible bus traversal time (s) for one tracked approach/zone window.
 # WAS 600 s, which dropped legitimately slow buses at HIGH DEMAND (optimistic
 # bus TT/delay); raised to 1200 s. Lower it if ID reuse pollutes. (2026-09-07)
+# VEHICLE-TYPE POSITION PINS (2026-11-09) -- see _resolve_type in finalise_init.
+# Permanent per-corridor constants, because run_config.py cannot carry them:
+# batch_runner.write_run_config() rewrites that file from scratch on every sweep
+# (an appended pin is lost), and run_config is propagated into engine.py's
+# globals rather than this module's -- which is also why the pre-existing
+# VEH_TYPE_ID_BUS lookup in _resolve_type has always read 0 here.
+# Measured, not guessed: (car,bus,truck) = (1,3,2), unanimous across every
+# per-intersection result CSV in this corridor since 2026-08-27 (CarTypePos/
+# BusTypePos/TruckTypePos, written from these very attributes), with zero
+# non-positive and zero colliding rows. A run_config value, if ever propagated
+# into this module, rebinds these and wins.
+VEH_TYPE_POS_CONSTANTS_20261109 = True
+VEH_TYPE_POS_CAR = 1
+VEH_TYPE_POS_TRUCK = 2
+VEH_TYPE_POS_BUS = 3
 _MAX_BUS_TRIP_S = 1200.0
 
 # Car/truck approach-section scan cadence (s) for track_bus_positions. Bus
@@ -360,28 +375,63 @@ class SimulationStats:
         main_sections = list(config.get('MainSections', []))
         side_sections = list(config.get('SideSections', []))
 
+        # The engine can hand us a config rebuilt from a model scan (the
+        # AUTO_PLACE_DETECTORS path), which drops MainSections/SideSections even
+        # though the corridor definition declares them. Recover the static
+        # corridor split by IntersectionID, so the classification never depends
+        # on which flavour of config arrived. Logan 17383 and 22603 came out
+        # with 3 mains instead of the configured 2 on some runs for exactly
+        # this reason: main then fell through to "all topology incoming".
+        if not main_sections or not side_sections:
+            try:
+                from intersection_configs import INTERSECTIONS_CONFIG as _IC
+                _static_cfg = _IC.get(int(iid)) or {}
+                if not main_sections:
+                    main_sections = [int(s) for s in
+                                     (_static_cfg.get('MainSections') or [])]
+                if not side_sections:
+                    side_sections = [int(s) for s in
+                                     (_static_cfg.get('SideSections') or [])]
+            except Exception:
+                pass
+
+        main_sections_source = 'explicit' if main_sections else ''
+
         # Detector-derived sections are main approaches; side streets should
         # come from topology, not an arbitrary split of detector sections.
         if not main_sections and all_sections:
             main_sections = list(all_sections)
+            main_sections_source = 'detectors'
 
-        # When a junction has NO detectors and NO explicit MainSections (e.g.
-        # 19363), every approach at this junction is still on the managed
-        # corridor -- a missing detector is a data-availability gap, not
-        # evidence the junction carries no corridor traffic. Classify ALL
-        # incoming sections as main by default (side is a supplementary
-        # classification, only applied where we have positive evidence —
-        # i.e. an explicit MainSections config or resolved detectors — that
-        # some entering sections are genuinely cross-street).  Defaulting
-        # unresolved junctions to "side" instead silently half-weighted
+        # When a junction has NO detector config and NO explicit MainSections
+        # (e.g. 19363), every approach is still on the managed corridor -- a
+        # missing detector is a data-availability gap, not evidence the
+        # junction carries no corridor traffic. Classify ALL incoming sections
+        # as main (side is supplementary, applied only where we have positive
+        # evidence that some entering sections are genuinely cross-street).
+        # Defaulting such junctions to "side" would silently half-weight
         # (REWARD_SIDE_SECTION_WEIGHT vs REWARD_MAIN_SECTION_WEIGHT) their
-        # delay in the reward/objective calculations for no real reason.
-        if not main_sections and not side_sections:
+        # delay in the reward/objective for no reason.
+        #
+        # The fallback applies ONLY when UpDetList is empty. When UpDetList IS
+        # configured but the detectors cannot be resolved yet
+        # (register_intersection runs at AAPIInit, before
+        # AKIDetGetPropertiesDetectorById is reliable), main_sections is left
+        # EMPTY for _re_resolve_main_sections() to fill at
+        # AAPISimulationReady. Falling back to topology in that window used to
+        # PROMOTE every incoming section to main, and because
+        # _re_resolve_main_sections() skipped any non-empty list, that wrong
+        # set survived the whole run — so the same model produced a different
+        # main/side split from run to run (Logan 21847: 2 vs 5 mains, which
+        # moved CarVehPassages and the objective by 63% with no traffic
+        # difference).
+        if not main_sections and not side_sections and not up_det_list:
             all_incoming = self._side_sections_from_topology(iid, [])
             if all_incoming:
                 main_sections = list(all_incoming)
+                main_sections_source = 'topology'
                 self._print(
-                    f"[STATS] No detectors for inter={iid} — treating all "
+                    f"[STATS] No detector config for inter={iid} — treating all "
                     f"{len(main_sections)} topology sections as main: {main_sections}"
                 )
 
@@ -441,6 +491,10 @@ class SimulationStats:
             'truck_occ':      truck_occ,
             'all_sections':   all_sections,
             'main_sections':  main_sections,
+            # 'explicit' | 'detectors' | 'topology' | '' (unresolved). Only
+            # 'explicit' is authoritative; every other value may be replaced
+            # once the detectors are resolvable at AAPISimulationReady.
+            'main_sections_source': main_sections_source,
             'side_sections':  side_sections,
             'side_sections_resolved': bool(side_sections),
             'call_sections':  call_sections,
@@ -663,10 +717,30 @@ class SimulationStats:
             except Exception:
                 return -1
 
-        def _resolve_type(cur_pos, id_key, name_key, extra_names):
+        def _resolve_type(cur_pos, id_key, name_key, extra_names, pos_key=''):
+            # POSITION PIN (VEH_TYPE_POS_* module constants, 2026-11-09): the measured
+            # internal position of this type, so resolution stops depending on
+            # SWIG name decoding and on the corridor folder basename that keys
+            # VEH_TYPE_POS_OVERRIDE. Order: explicit ANG object id (VEH_TYPE_ID_*)
+            # > this pin > the already-resolved position > name lookup. A pin that
+            # exceeds the model's type count is ignored, so swapping models cannot
+            # silently label the wrong class.
             _p = _pos_from_id(globals().get(id_key, 0))
             if _p > 0:
-                return _p                       # explicit ID wins outright
+                return _p                       # explicit ANG id wins outright
+            if pos_key:
+                _pp = _sanitize_type_pos(globals().get(pos_key, 0))
+                if _pp > 0:
+                    try:
+                        _nb = int(AKIVehGetNbVehTypes())
+                    except Exception:
+                        _nb = 0
+                    if _nb > 0 and _pp > _nb:
+                        self._print(f"[STATS] WARNING {pos_key}={_pp} exceeds the "
+                                    f"{_nb} vehicle types in this model -- ignoring "
+                                    f"the pin")
+                    else:
+                        return _pp
             if cur_pos > 0:
                 return cur_pos                  # keep an already-good position
             _cfg = str(globals().get(name_key, '') or '')
@@ -678,11 +752,24 @@ class SimulationStats:
             return cur_pos
 
         self._car_pos   = _resolve_type(self._car_pos,   'VEH_TYPE_ID_CAR',
-                                        'VEH_TYPE_NAME_CAR',   ('Car - bcc', 'Car-bcc'))
+                                        'VEH_TYPE_NAME_CAR',   ('Car - bcc', 'Car-bcc'),
+                                        'VEH_TYPE_POS_CAR')
         self._truck_pos = _resolve_type(self._truck_pos, 'VEH_TYPE_ID_TRUCK',
-                                        'VEH_TYPE_NAME_TRUCK', ('Truck - bcc', 'Truck-bcc'))
+                                        'VEH_TYPE_NAME_TRUCK', ('Truck - bcc', 'Truck-bcc'),
+                                        'VEH_TYPE_POS_TRUCK')
         self._bus_pos   = _resolve_type(self._bus_pos,   'VEH_TYPE_ID_BUS',
-                                        'VEH_TYPE_NAME_BUS',   ('Bus - bcc', 'Bus-bcc'))
+                                        'VEH_TYPE_NAME_BUS',   ('Bus - bcc', 'Bus-bcc'),
+                                        'VEH_TYPE_POS_BUS')
+        # Colliding pins are worse than no pin: the car/bus split drives every
+        # passenger-weighted metric, so report it instead of trusting it.
+        if len({self._car_pos, self._bus_pos, self._truck_pos}) < 3:
+            self._print("[STATS] WARNING vehicle-type positions COLLIDE "
+                        f"(car={self._car_pos} bus={self._bus_pos} "
+                        f"truck={self._truck_pos}) -- check VEH_TYPE_POS_* pins")
+        if self._bus_pos > 0 and not self._bus_type_name:
+            _ppin = int(globals().get('VEH_TYPE_POS_BUS', 0) or 0)
+            self._bus_type_name = (f'bus(pos pin {_ppin})'
+                                   if _ppin == self._bus_pos else 'bus(override)')
         # Logan Road: known Aimsun GKVehicle ANG id for "Car - bcc" (74453) as a
         # final fallback if both the SWIG name scan and the name lookup missed it.
         if self._car_pos <= 0:
@@ -4457,12 +4544,13 @@ class SimulationStats:
         """
         n_fixed = 0
         for iid, d in self._inter.items():
-            if d['main_sections']:
-                continue  # already populated — explicit config value, leave it
+            if d.get('main_sections_source') == 'explicit':
+                continue  # explicit config MainSections is authoritative
 
             config        = d['config']
             up_det_list   = config.get('UpDetList', [])
             all_sections  = self._sections_from_detectors(up_det_list)
+            _from_topology = False
 
             # Filter out invalid IDs (0 or negative mean the detector wasn't found)
             all_sections = [s for s in all_sections if s and s > 0]
@@ -4488,6 +4576,14 @@ class SimulationStats:
                     f"detector-derived mains")
 
             if not all_sections:
+                if d['main_sections']:
+                    # Keep the detector-derived set already registered rather
+                    # than downgrading to topology on a transient lookup miss.
+                    self._print(
+                        f"[STATS] inter={iid}: detector lookup empty at "
+                        f"AAPISimulationReady — keeping existing main_sections "
+                        f"{d['main_sections']}")
+                    continue
                 # No detectors resolvable either — same reasoning as the
                 # registration-time fallback: this junction is still on the
                 # managed corridor, so fall back to topology rather than
@@ -4495,6 +4591,7 @@ class SimulationStats:
                 # collection for this intersection for the whole run).
                 all_sections = [s for s in self._side_sections_from_topology(iid, [])
                                 if s and s > 0 and _is_real_section(s)]
+                _from_topology = True
                 if not all_sections:
                     self._print(
                         f"[STATS] WARNING _re_resolve_main_sections: "
@@ -4513,6 +4610,18 @@ class SimulationStats:
             # Side sections are derived from topology in _resolve_side_sections.
             d['all_sections']  = all_sections
             d['main_sections'] = all_sections
+            d['main_sections_source'] = ('topology' if _from_topology
+                                         else 'detectors')
+            # call/exit sections default to the main approaches when a
+            # junction has no BusCallDetectors. Registration may have seen an
+            # empty main list, so re-apply that default now that main is known.
+            if all_sections and not d.get('call_sections'):
+                d['call_sections'] = list(all_sections)
+                if not d.get('exit_sections'):
+                    d['exit_sections'] = list(all_sections)
+                self._print(
+                    f"[STATS] inter={iid}: call/exit sections taken from "
+                    f"resolved main {all_sections}")
             n_fixed += 1
             self._print(
                 f"[STATS] inter={iid} main_sections resolved → {all_sections}"

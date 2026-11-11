@@ -21,6 +21,14 @@ can be proven WITHOUT running the 1.5 h x 55-run sim:
       Nash bargaining tiers, CENTRALISED, and the generalized-Nash bargaining
       powers.
 
+  [C] CTM CELL CAPS (static, measured geometry). The two-class CTM clamps every
+      approach to max_cells, so a cap below ceil(L / cell_len) SILENTLY truncates
+      the approach and the payoff never sees the upstream queue. The requirement
+      is recomputed from ctm_approach_reach.csv (never hard-coded) and checked
+      against both run_configs and every arm that pins a cap. Implemented in
+      check_ctm_cap_requirement.py; arms declared as deliberate below-cap
+      controls (the cap A/B's CAP12 arm) are reported, not failed.
+
 What this does NOT cover (needs a short in-Aimsun smoke -- see --help notes):
   bus-demand scaling and car-demand resolution are Aimsun-runtime; run one short
   replication (1 seed) to observe those. This script only proves the decision
@@ -216,6 +224,31 @@ def check_algorithms(spm):
         _bad(f"CENTRALISED gate broken: delayed={r_act[0]} idle={r_idle[0]}")
 
 
+# ── [C] CTM CELL CAPS ────────────────────────────────────────────────────────
+def check_ctm_caps():
+    """A cap below the measured requirement silently truncates an approach.
+
+    Requirement and the run_config/arm comparison live in
+    check_ctm_cap_requirement.py so the same gate can run standalone (exit 1)
+    or be called from a launcher before a sweep starts.
+    """
+    print("\n[C] CTM CELL CAPS (static, measured geometry)")
+    path = _os.path.join(_HERE, "check_ctm_cap_requirement.py")
+    spec = _ilu.spec_from_file_location("_pf_ctmcap", path)
+    m = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    lines = []
+    _n = m.run(corridors=None, arms=None, out=lines.append)
+    for _ln in lines:
+        print("  " + _ln)
+    if _n:
+        _bad("%d CTM cell-cap problem(s): a cap below the measured requirement "
+             "truncates the approach" % _n)
+    else:
+        _ok("every configured CTM cell cap covers its corridor's longest "
+             "approach")
+
+
 def main():
     print("=" * 70)
     print("PIPELINE PRE-FLIGHT (offline -- no Aimsun, no simulation)")
@@ -223,6 +256,7 @@ def main():
     spm = _load_modes()
     check_wiring(spm)
     check_algorithms(spm)
+    check_ctm_caps()
     print("\n" + "=" * 70)
     print(f"RESULT: {len(_PASS)} passed, {len(_FAIL)} failed, {len(_WARN)} warnings")
     if _WARN:
